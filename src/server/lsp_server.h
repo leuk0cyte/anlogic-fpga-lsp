@@ -164,6 +164,23 @@ private:
     HandlerResult HandleSemanticTokensFull(const Json& params);
 
     // =========================================================================
+    //  textDocument/formatting —— 内嵌 Verible formatter
+    // =========================================================================
+    //  链接了 fpga_lsp::verible_bridge 时（FPGA_LSP_VERIBLE_ENABLED=ON）走真实格式化；
+    //  否则返回 []（等于"不改文本"），见 src/server/CMakeLists.txt。
+    //
+    //  为什么先只做全文档、rangeFormatting 仍返回 []：
+    //    全文档走 `FormatVerilog + 空 LineNumberSet`，这条路径已被
+    //    ctest -L formatgate 的 102/102 文件逐字节验证。
+    //    区间格式化在 CLI 语义下是 `FormatVerilog + 非空 LineNumberSet`
+    //    （同样已验证 194/194），但**编辑器的"格式化选区"用的是另一个 API**
+    //    `FormatVerilogRange`（只输出区间那一段、不做收敛性检验），
+    //    该 API 尚未做等价性验证（tests/FORMAT-GATE-REPORT.md §8）。
+    //    在没验证前不接，避免"看起来能用但输出与官方 CLI 不同"。
+    HandlerResult HandleFormatting(const Json& params);
+    HandlerResult HandleRangeFormatting(const Json& params);
+
+    // =========================================================================
     //  handler（符号类，定义在 hdl_handlers.cpp）
     // =========================================================================
     HandlerResult HandleCompletion(const Json& params);

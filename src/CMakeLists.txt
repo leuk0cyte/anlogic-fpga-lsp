@@ -59,7 +59,16 @@ add_subdirectory(flow)
 #   必须排在 server 之前：server 链接 fpga_lsp::hdl。
 add_subdirectory(hdl)
 
-# 阶段 2-γ：LSP 服务主体（编排 platform/jsonrpc/lsp/project/td，不依赖 Verible）
+# 内嵌 Verible 的可选能力桥（目前只有 formatter）。
+#   ⚠ 必须排在 server 之前：server 需要它来把 textDocument/formatting 接成真实现。
+#   只在 FPGA_LSP_VERIBLE_ENABLED=ON 时存在；缺它时 server 会通过
+#   FPGA_LSP_HAVE_VERIBLE_BRIDGE 宏回退成"返回空编辑"（见 src/server/CMakeLists.txt）。
+if(FPGA_LSP_VERIBLE_ENABLED
+   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/verible_bridge/CMakeLists.txt")
+    add_subdirectory(verible_bridge)
+endif()
+
+# 阶段 2-γ：LSP 服务主体（编排 platform/jsonrpc/lsp/project/td；formatter 走可选桥）
 add_subdirectory(server)
 
 # 阶段 5-α：ADC 引脚约束 + SDC 时序约束（纯文本解析，不依赖 Verible / 真实 TD）

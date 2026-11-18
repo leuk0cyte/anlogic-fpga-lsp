@@ -34,6 +34,12 @@
 #include "td/td_install.h"
 #include "td/td_session.h"
 
+// 内嵌 Verible formatter 桥（可选）。
+//   链接了 fpga_lsp::verible_bridge 时 fmt 可用；否则走"返回空编辑"。
+#if defined(FPGA_LSP_HAVE_VERIBLE_BRIDGE)
+#include "verible_bridge/format_text.h"
+#endif
+
 namespace fpgalsp::server {
 namespace {
 
@@ -242,9 +248,9 @@ void LspServer::RegisterAll(jsonrpc::Dispatcher& dispatcher) {
     dispatcher.Register("textDocument/codeAction",
                         [this](const Json& params) { return HandleEmptyList(params); });
     dispatcher.Register("textDocument/formatting",
-                        [this](const Json& params) { return HandleEmptyList(params); });
+                        [this](const Json& params) { return HandleFormatting(params); });
     dispatcher.Register("textDocument/rangeFormatting",
-                        [this](const Json& params) { return HandleEmptyList(params); });
+                        [this](const Json& params) { return HandleRangeFormatting(params); });
     dispatcher.Register("textDocument/prepareRename",
                         [this](const Json& params) { return HandleNull(params); });
     dispatcher.Register("textDocument/rename",
@@ -378,6 +384,87 @@ HandlerResult LspServer::HandleNull(const Json& params) {
 }
 
 HandlerResult LspServer::HandleEmptyList(const Json& params) {
+    (void)params;
+    return HandlerResult::Ok(Json::array());
+}
+
+// =============================================================================
+//  textDocument/formatting —— 内嵌 Verible formatter
+// =============================================================================
+//  返回**单条覆盖全文的 TextEdit**（PROTOCOL-V2 v4/v5 的约定：
+//    "textDocument/formatting 返回单条覆盖全文的 TextEdit；未找到 Verible 时返回 []（不报错）"）
+//
+//  行为细节（都有实测依据）：
+//    * 文本没变 → 返回 []。不回一条"把原文替换成原文"的编辑，否则每次保存都会
+//      让编辑器的 dirty 标记闪一下。
+//    * 格式化失败（语法错误等）→ 返回 []，**不抛错也不弹窗**。
+//      用户正在输入时文件常常是残缺的，弹错会打断；真正的语法问题由
+//      TD / Verible lint 的 diagnostics 通道报告（那里有行号能定位）。
+//    * 空文档 / 纯空白 → 直接 []（桥里已短路）。
+HandlerResult LspServer::HandleFormatting(const Json& params) {
+#if !defined(FPGA_LSP_HAVE_VERIBLE_BRIDGE)
+    // 未链接 formatter 桥：保持旧契约 —— 合法空结果，绝不 -32601
+    (void)params;
+    return HandlerResult::Ok(Json::array());
+#else
+    // 取 uri：params.textDocument.uri（不可信输入，逐层判类型，缺失即空）
+    std::string uri;
+    if (auto doc = params.find("textDocument");
+        doc != params.end() && doc->is_object()) {
+        if (auto it = doc->find("uri"); it != doc->end() && it->is_string()) {
+            uri = it->get<std::string>();
+        }
+    }
+    if (uri.empty()) return HandlerResult::Ok(Json::array());
+
+    const std::string path = platform::uri_to_path(uri);
+    const auto text = LoadText(path);  // 未保存缓冲区优先，落盘回落
+    if (!text.has_value()) return HandlerResult::Ok(Json::array());
+
+    const auto result = verible_bridge::FormatText(*text, path);
+    if (!result.ok || result.text == *text) {
+        // 失败、或"本来就已格式化"：都返回空编辑数组
+        return HandlerResult::Ok(Json::array());
+    }
+
+    // 覆盖全文的单条 TextEdit。
+    // 结束位置按**旧文本**的末尾算（LSP 语义：编辑基于请求时的文档状态）。
+    //
+    // 末尾位置要精确：
+    //   * 文本以 '\n' 结尾 → 末尾是"下一行的第 0 列"（行号 = 换行符个数）
+    //   * 不以 '\n' 结尾  → 末尾是最后一行的末列
+    // 只写 {line:0, character:0}..{line:大数,0} 在某些客户端上会多删一个空行。
+    std::size_t last_break = text->rfind('\n');
+    int end_line = 0;
+    int end_char = 0;
+    if (last_break == std::string::npos) {
+        end_char = static_cast<int>(text->size());
+    } else {
+        end_line = static_cast<int>(
+            std::count(text->begin(), text->end(), '\n'));
+        end_char = static_cast<int>(text->size() - last_break - 1);
+    }
+
+    Json range;
+    range["start"] = {{"line", 0}, {"character", 0}};
+    range["end"] = {{"line", end_line}, {"character", end_char}};
+
+    Json edit;
+    edit["range"] = std::move(range);
+    edit["newText"] = result.text;
+
+    Json edits = Json::array();
+    edits.push_back(std::move(edit));
+    return HandlerResult::Ok(std::move(edits));
+#endif
+}
+
+// textDocument/rangeFormatting —— 暂不实现（返回 []）
+//   编辑器的"格式化选区"走 Verible 的 FormatVerilogRange（只输出区间那一段、
+//   不做收敛性检验），该 API 尚未做等价性验证（FORMAT-GATE-REPORT.md §8）。
+//   验证前不接，避免"看起来能用但输出与官方 CLI 不同"。
+//   右键 → Format Document（全文档）已可用。
+HandlerResult LspServer::HandleRangeFormatting(const Json& params) {
     (void)params;
     return HandlerResult::Ok(Json::array());
 }

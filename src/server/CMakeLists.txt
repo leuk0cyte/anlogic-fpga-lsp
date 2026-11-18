@@ -39,6 +39,17 @@ else()
     message(STATUS "src/server: 未找到 fpga_lsp::flow，flow 命令保持占位")
 endif()
 
+# 内嵌 Verible 的可选能力桥（formatter）。
+#   链接它就自动获得 FPGA_LSP_HAVE_VERIBLE_BRIDGE=1（INTERFACE 定义），
+#   于是 textDocument/formatting 会走真实 Verible formatter 而不是返回 []。
+#   未链接时（FPGA_LSP_VERIBLE_ENABLED=OFF）保持原来的"合法空结果"。
+if(TARGET fpga_lsp::verible_bridge)
+    target_link_libraries(fpga_lsp_server PUBLIC fpga_lsp::verible_bridge)
+    message(STATUS "src/server: formatter 桥已接入（textDocument/formatting 为真实实现）")
+else()
+    message(STATUS "src/server: 无 formatter 桥 → textDocument/formatting 返回空编辑")
+endif()
+
 target_compile_features(fpga_lsp_server PUBLIC cxx_std_23)
 
 target_compile_definitions(fpga_lsp_server PRIVATE
