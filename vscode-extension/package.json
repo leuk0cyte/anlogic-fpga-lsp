@@ -1,0 +1,813 @@
+{
+  "name": "fpga-lsp-anlogic",
+  "displayName": "Anlogic FPGA LSP (TangDynasty)",
+  "description": "Language support and IDE views for Anlogic TD FPGA projects: ADC pin constraints, SDC, project .al, Verilog index, TD-backed diagnostics, module hierarchy, syn/phy flow control and QoR/timing/area reports.",
+  "version": "0.11.0",
+  "publisher": "fpga-lsp",
+  "license": "AGPL-3.0-or-later",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Linters",
+    "Visualization"
+  ],
+  "activationEvents": [
+    "onView:fpgaLsp.modulesView",
+    "onView:fpgaLsp.flowView",
+    "onLanguage:verilog",
+    "onLanguage:systemverilog",
+    "onLanguage:vhdl",
+    "onLanguage:adc",
+    "onLanguage:sdc",
+    "onLanguage:al-project",
+    "workspaceContains:**/*.al"
+  ],
+  "main": "./extension.js",
+  "scripts": {
+    "test": "node test/run.js",
+    "test:integration": "node test/integration-server.js",
+    "test:locate": "node test/locate-server.test.js",
+    "bundle:server": "node scripts/bundle-server.js",
+    "package": "node scripts/bundle-server.js && vsce package --allow-missing-repository --skip-license",
+    "test:vscode": "powershell -ExecutionPolicy Bypass -File scripts/run-vscode-test.ps1",
+    "test:verible": "node test/verible.test.js"
+  },
+  "contributes": {
+    "languages": [
+      {
+        "id": "adc",
+        "aliases": [
+          "ADC",
+          "Anlogic ADC"
+        ],
+        "extensions": [
+          ".adc"
+        ]
+      },
+      {
+        "id": "sdc",
+        "aliases": [
+          "SDC",
+          "Timing Constraints"
+        ],
+        "extensions": [
+          ".sdc"
+        ]
+      },
+      {
+        "id": "al-project",
+        "aliases": [
+          "Anlogic Project"
+        ],
+        "extensions": [
+          ".al"
+        ]
+      },
+      {
+        "id": "verilog",
+        "aliases": [
+          "Verilog",
+          "verilog"
+        ],
+        "extensions": [
+          ".v",
+          ".vh"
+        ],
+        "configuration": "./language-configuration/verilog.json"
+      },
+      {
+        "id": "systemverilog",
+        "aliases": [
+          "SystemVerilog",
+          "systemverilog"
+        ],
+        "extensions": [
+          ".sv",
+          ".svh"
+        ],
+        "configuration": "./language-configuration/verilog.json"
+      },
+      {
+        "id": "vhdl",
+        "aliases": [
+          "VHDL",
+          "vhdl"
+        ],
+        "extensions": [
+          ".vhd",
+          ".vhdl"
+        ],
+        "configuration": "./language-configuration/vhdl.json"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "fpgaLsp",
+          "title": "FPGA",
+          "icon": "resources/icon-activitybar.svg"
+        }
+      ]
+    },
+    "views": {
+      "fpgaLsp": [
+        {
+          "id": "fpgaLsp.modulesView",
+          "name": "Module Hierarchy"
+        },
+        {
+          "id": "fpgaLsp.flowView",
+          "name": "Project & Flow"
+        },
+        {
+          "id": "fpgaLsp.reportsView",
+          "name": "Reports"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "fpgaLsp.modulesView",
+        "contents": "No Anlogic .al project found.\n[Open Folder](command:workbench.action.files.openFolder)\n[Refresh](command:fpgaLsp.refreshModules)"
+      },
+      {
+        "view": "fpgaLsp.flowView",
+        "contents": "No flow data yet.\n[Run Synthesis](command:fpgaLsp.runSyn)\n[Run Full Flow](command:fpgaLsp.runAll)"
+      }
+    ],
+    "configuration": {
+      "title": "Anlogic FPGA LSP",
+      "properties": {
+        "fpgaLsp.serverPath": {
+          "type": "string",
+          "default": "",
+          "description": "原生语言服务器 fpgalsp-native.exe 的路径（留空自动查找：serverRoot / dev 构建目录 / vsix 内置 server/bin）"
+        },
+        "fpgaLsp.tdPath": {
+          "type": "string",
+          "default": "",
+          "description": "TangDynasty installation root, e.g. C:/Anlogic/TD_Release_2026.2.210.850. Empty = auto-detect."
+        },
+        "fpgaLsp.tdCheckOnSave": {
+          "type": "boolean",
+          "default": true,
+          "description": "Run the authoritative TD read_hdl/read_adc check on save (~1-2 s) and publish its diagnostics."
+        },
+        "fpgaLsp.projectFile": {
+          "type": "string",
+          "default": "",
+          "description": "Explicit .al project file. Empty = use the nearest enclosing project."
+        },
+        "fpgaLsp.flowJobs": {
+          "type": "number",
+          "default": 6,
+          "minimum": 1,
+          "maximum": 64,
+          "description": "Number of parallel jobs passed to launch_runs (TD -jobs). Default 6 matches the TD GUI default."
+        },
+        "fpgaLsp.logFile": {
+          "type": "string",
+          "default": "",
+          "description": "Language server log file. Empty = <workspace>/.fpgalsp/logs/server.log."
+        },
+        "fpgaLsp.verible.path": {
+          "type": "string",
+          "default": "",
+          "description": "Directory containing verible-verilog-format / verible-verilog-ls (or a full .exe path). Empty = PATH."
+        },
+        "fpgaLsp.verible.format": {
+          "type": "boolean",
+          "default": true,
+          "description": "Use verible-verilog-format for Format Document (through the language server)."
+        },
+        "fpgaLsp.verible.args": {
+          "type": "array",
+          "default": [
+            "--column_limit=160",
+            "--indentation_spaces=4",
+            "--wrap_spaces=4",
+            "--try_wrap_long_lines=true",
+            "--assignment_statement_alignment=align",
+            "--case_items_alignment=align",
+            "--distribution_items_alignment=align",
+            "--enum_assignment_statement_alignment=align",
+            "--module_net_variable_alignment=align",
+            "--class_member_variable_alignment=align",
+            "--struct_union_members_alignment=align",
+            "--parameter_declaration_alignment=align",
+            "--port_declarations_alignment=align",
+            "--formal_parameters_alignment=align",
+            "--named_parameter_alignment=align",
+            "--named_port_alignment=align",
+            "--port_declarations_right_align_packed_dimensions=true",
+            "--port_declarations_right_align_unpacked_dimensions=true",
+            "--formal_parameters_indentation=indent",
+            "--named_parameter_indentation=indent",
+            "--named_port_indentation=indent",
+            "--port_declarations_indentation=indent",
+            "--alignment_group_boundary=blank-lines-and-separator-comments"
+          ],
+          "description": "Extra arguments for verible-verilog-format. Defaults follow the team's alignment style."
+        },
+        "fpgaLsp.verible.enable": {
+          "type": "boolean",
+          "default": true,
+          "description": "Start verible-verilog-ls as a second language client (lint/quick-fixes). Diagnostics are tagged 'verible'."
+        },
+        "fpgaLsp.verible.autofix": {
+          "type": "boolean",
+          "default": true,
+          "description": "Offer quick fixes from verible-verilog-lint --autofix as code actions."
+        },
+        "fpgaLsp.verible.lintArgs": {
+          "type": "array",
+          "default": [
+            "--rules=+line-length=length:160"
+          ],
+          "description": "Extra arguments for verible-verilog-lint. Default matches the 160-column formatter; comment-only no-tabs warnings are suppressed by the extension."
+        },
+        "fpgaLsp.verible.command": {
+          "type": "string",
+          "default": "",
+          "description": "Override the Verible language-server executable (default: auto-detected verible-verilog-ls)."
+        },
+        "fpgaLsp.verible.lsArgs": {
+          "type": "array",
+          "default": [
+            "--rules=+line-length=length:160"
+          ],
+          "description": "Extra arguments passed to verible-verilog-ls. Default matches the 160-column formatter."
+        },
+        "fpgaLsp.verible.highlight": {
+          "type": "boolean",
+          "default": true,
+          "description": "Use verible-verilog-syntax for fine-grained semantic highlighting of .v/.sv files (falls back to the built-in grammar + HDL tokens when unavailable)."
+        },
+        "fpgaLsp.mcp.allowFlow": {
+          "type": "boolean",
+          "default": true,
+          "description": "Expose MCP flow/analysis/strategy tools to agents (starts TD flows)."
+        },
+        "fpgaLsp.mcp.allowWrite": {
+          "type": "boolean",
+          "default": false,
+          "description": "Expose MCP project write tools (update/add source/rename .al)."
+        },
+        "fpgaLsp.mcp.dynamicProvider": {
+          "type": "boolean",
+          "default": false,
+          "description": "Register the extension's dynamic MCP server definition provider. Disabled by default because Copilot cannot associate dynamic servers with a workspace; use FPGA: Install MCP Configuration to write a workspace .vscode/mcp.json instead."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "fpgalsp.check",
+        "title": "FPGA: Run TD Check (read_hdl + read_adc)",
+        "icon": "$(check)"
+      },
+      {
+        "command": "fpgalsp.info",
+        "title": "FPGA: Show Project Info"
+      },
+      {
+        "command": "fpgalsp.restart",
+        "title": "FPGA: Restart TD Session"
+      },
+      {
+        "command": "fpgaLsp.refreshModules",
+        "title": "FPGA: Refresh Module Hierarchy",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "fpgaLsp.openModuleNode",
+        "title": "FPGA: Open Module Node"
+      },
+      {
+        "command": "fpgaLsp.goToDefinition",
+        "title": "Go to Definition",
+        "category": "FPGA"
+      },
+      {
+        "command": "fpgaLsp.goToInstantiation",
+        "title": "Go to Instantiation",
+        "category": "FPGA"
+      },
+      {
+        "command": "fpgaLsp.copyModulePath",
+        "title": "Copy File Path",
+        "category": "FPGA"
+      },
+      {
+        "command": "fpgaLsp.runSyn",
+        "title": "FPGA: Run Synthesis",
+        "icon": "$(play)"
+      },
+      {
+        "command": "fpgaLsp.runPhy",
+        "title": "FPGA: Run Place & Route",
+        "icon": "$(debug-start)"
+      },
+      {
+        "command": "fpgaLsp.runAll",
+        "title": "FPGA: Run Full Flow",
+        "icon": "$(run-all)"
+      },
+      {
+        "command": "fpgaLsp.cancelFlow",
+        "title": "FPGA: Cancel Flow",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "fpgaLsp.showReports",
+        "title": "FPGA: Show Reports",
+        "icon": "$(graph)"
+      },
+      {
+        "command": "fpgaLsp.refreshFlow",
+        "title": "FPGA: Refresh Flow Tree",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "fpgaLsp.refreshReports",
+        "title": "FPGA: Refresh Reports"
+      },
+      {
+        "command": "fpgaLsp.openArtifact",
+        "title": "Open Artifact",
+        "category": "FPGA"
+      },
+      {
+        "command": "fpgaLsp.openReportFile",
+        "title": "Open Report File",
+        "category": "FPGA"
+      },
+      {
+        "command": "fpgaLsp.showLogs",
+        "title": "FPGA: Show Logs"
+      },
+      {
+        "command": "fpgaLsp.showActions",
+        "title": "FPGA: More Actions…",
+        "icon": "$(ellipsis)"
+      },
+      {
+        "command": "fpgaLsp.runIncrementalRoute",
+        "title": "FPGA: Re-run Place && Route (reuse synthesis, ~8 s)",
+        "icon": "$(run)"
+      },
+      {
+        "command": "fpgaLsp.runAnalysis",
+        "title": "FPGA: Run DRC / CDC Analysis",
+        "icon": "$(shield)"
+      },
+      {
+        "command": "fpgaLsp.compareStrategies",
+        "title": "FPGA: Compare Strategies…",
+        "icon": "$(diff)"
+      },
+      {
+        "command": "fpgaLsp.programSram",
+        "title": "FPGA: Program SRAM (JTAG)",
+        "icon": "$(zap)"
+      },
+      {
+        "command": "fpgaLsp.programFlash",
+        "title": "FPGA: Program Flash (SPI)",
+        "icon": "$(database)"
+      },
+      {
+        "command": "fpgaLsp.generateSvf",
+        "title": "FPGA: Generate SVF…",
+        "icon": "$(file-binary)"
+      },
+      {
+        "command": "fpgaLsp.showCables",
+        "title": "FPGA: Show Cable / Device",
+        "icon": "$(plug)"
+      },
+      {
+        "command": "fpgaLsp.openTimingPoint",
+        "title": "FPGA: Open Timing Point",
+        "icon": "$(go-to-file)"
+      },
+      {
+        "command": "fpgaLsp.insertInstantiation",
+        "title": "FPGA: Insert Module Instantiation…",
+        "icon": "$(symbol-class)"
+      },
+      {
+        "command": "fpgaLsp.veribleStatus",
+        "title": "FPGA: Verible Status",
+        "icon": "$(checklist)"
+      },
+      {
+        "command": "fpgaLsp.selectProject",
+        "title": "FPGA: Select Project…",
+        "icon": "$(folder-opened)"
+      },
+      {
+        "command": "fpgaLsp.tdInfo",
+        "title": "FPGA: TD Installations",
+        "icon": "$(versions)"
+      },
+      {
+        "command": "fpgaLsp.highlightDiagnostics",
+        "title": "FPGA: Highlight Diagnostics",
+        "icon": "$(symbol-color)"
+      },
+      {
+        "command": "fpgaLsp.copyInstantiation",
+        "title": "FPGA: Copy Instantiation of This File",
+        "icon": "$(copy)"
+      },
+      {
+        "command": "fpgaLsp.copySymbolPath",
+        "title": "FPGA: Copy Hierarchical Symbol Path",
+        "icon": "$(symbol-reference)"
+      },
+      {
+        "command": "fpgaLsp.addSourceFile",
+        "title": "FPGA: Add Source File to .al",
+        "icon": "$(add)"
+      },
+      {
+        "command": "fpgaLsp.searchHierarchy",
+        "title": "FPGA: Search Hierarchy",
+        "icon": "$(search)"
+      },
+      {
+        "command": "fpgaLsp.duplicateModules",
+        "title": "FPGA: Find Duplicate Module Definitions",
+        "icon": "$(diff)"
+      },
+      {
+        "command": "fpgaLsp.renameProject",
+        "title": "FPGA: Rename Project (edit .al)",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "fpgaLsp.updateProject",
+        "title": "FPGA: Update Project (.al, open_project -update)",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "fpgaLsp.showSynReports",
+        "title": "FPGA: Synthesis Reports",
+        "icon": "$(graph)"
+      },
+      {
+        "command": "fpgaLsp.showPhyReports",
+        "title": "FPGA: Place & Route Reports",
+        "icon": "$(graph)"
+      },
+      {
+        "command": "fpgaLsp.copyMcpConfig",
+        "title": "FPGA: Copy MCP Configuration",
+        "icon": "$(copy)"
+      },
+      {
+        "command": "fpgaLsp.showFlowLog",
+        "title": "FPGA: Show Flow Log",
+        "icon": "$(output)"
+      },
+      {
+        "command": "fpgaLsp.installMcpConfig",
+        "title": "FPGA: Install MCP Configuration",
+        "icon": "$(gear)"
+      },
+      {
+        "command": "fpgaLsp.doctor",
+        "title": "FPGA: Doctor",
+        "icon": "$(stethoscope)"
+      },
+      {
+        "command": "fpgaLsp.readDesign",
+        "title": "FPGA: Check Read Design",
+        "icon": "$(check)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "fpgaLsp.refreshModules",
+          "when": "view == fpgaLsp.modulesView",
+          "group": "navigation@1"
+        },
+        {
+          "command": "fpgaLsp.runSyn",
+          "when": "view == fpgaLsp.flowView",
+          "group": "navigation@1"
+        },
+        {
+          "command": "fpgaLsp.runPhy",
+          "when": "view == fpgaLsp.flowView",
+          "group": "navigation@2"
+        },
+        {
+          "command": "fpgaLsp.runAll",
+          "when": "view == fpgaLsp.flowView",
+          "group": "navigation@3"
+        },
+        {
+          "command": "fpgaLsp.cancelFlow",
+          "when": "view == fpgaLsp.flowView",
+          "group": "navigation@6"
+        },
+        {
+          "command": "fpgaLsp.refreshFlow",
+          "when": "view == fpgaLsp.flowView",
+          "group": "navigation@7"
+        },
+        {
+          "command": "fpgaLsp.showActions",
+          "when": "view == fpgaLsp.flowView",
+          "group": "navigation@9"
+        },
+        {
+          "command": "fpgaLsp.addSourceFile",
+          "when": "view == fpgaLsp.modulesView",
+          "group": "navigation@2"
+        },
+        {
+          "command": "fpgaLsp.searchHierarchy",
+          "when": "view == fpgaLsp.modulesView",
+          "group": "navigation@1"
+        },
+        {
+          "command": "fpgaLsp.duplicateModules",
+          "when": "view == fpgaLsp.modulesView",
+          "group": "navigation@3"
+        },
+        {
+          "command": "fpgaLsp.showSynReports",
+          "when": "view == fpgaLsp.reportsView",
+          "group": "navigation@1"
+        },
+        {
+          "command": "fpgaLsp.showPhyReports",
+          "when": "view == fpgaLsp.reportsView",
+          "group": "navigation@2"
+        },
+        {
+          "command": "fpgaLsp.refreshReports",
+          "when": "view == fpgaLsp.reportsView",
+          "group": "navigation@3"
+        },
+        {
+          "command": "fpgaLsp.showFlowLog",
+          "when": "view == fpgaLsp.flowView",
+          "group": "navigation@8"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "fpgaLsp.goToDefinition",
+          "when": "view == fpgaLsp.modulesView && viewItem =~ /^fpgaModule(Defined|Root)$/",
+          "group": "navigation@1"
+        },
+        {
+          "command": "fpgaLsp.goToInstantiation",
+          "when": "view == fpgaLsp.modulesView && viewItem =~ /^fpgaModule(Defined|Blackbox)$/",
+          "group": "navigation@2"
+        },
+        {
+          "command": "fpgaLsp.copyModulePath",
+          "when": "view == fpgaLsp.modulesView && viewItem =~ /^fpgaModule/",
+          "group": "navigation@3"
+        },
+        {
+          "command": "fpgaLsp.openArtifact",
+          "when": "view == fpgaLsp.flowView && viewItem == fpgaArtifact",
+          "group": "navigation@1"
+        },
+        {
+          "command": "fpgaLsp.openReportFile",
+          "when": "view == fpgaLsp.flowView && viewItem == fpgaReportFile",
+          "group": "navigation@1"
+        },
+        {
+          "command": "fpgaLsp.showReports",
+          "when": "view == fpgaLsp.flowView && viewItem == fpgaAction",
+          "group": "navigation@1"
+        },
+        {
+          "command": "fpgaLsp.renameProject",
+          "when": "view == fpgaLsp.flowView && viewItem == fpgaProject",
+          "group": "inline@1"
+        },
+        {
+          "command": "fpgaLsp.updateProject",
+          "when": "view == fpgaLsp.flowView && viewItem == fpgaProject",
+          "group": "inline@2"
+        },
+        {
+          "command": "fpgaLsp.selectProject",
+          "when": "view == fpgaLsp.flowView && viewItem =~ /^fpgaProject(File)?$/",
+          "group": "inline@0"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "fpgaLsp.openModuleNode",
+          "when": "false"
+        },
+        {
+          "command": "fpgaLsp.goToDefinition",
+          "when": "false"
+        },
+        {
+          "command": "fpgaLsp.goToInstantiation",
+          "when": "false"
+        },
+        {
+          "command": "fpgaLsp.copyModulePath",
+          "when": "false"
+        },
+        {
+          "command": "fpgaLsp.openArtifact",
+          "when": "false"
+        },
+        {
+          "command": "fpgaLsp.openReportFile",
+          "when": "false"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "fpgaLsp.readDesign",
+          "when": "resourceExtname =~ /\\.(v|vh|sv|svh)$/",
+          "group": "navigation@9"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "fpgaLsp.copySymbolPath",
+          "when": "resourceLangId =~ /verilog|systemverilog/",
+          "group": "navigation@8"
+        }
+      ]
+    },
+    "grammars": [
+      {
+        "language": "verilog",
+        "scopeName": "source.verilog",
+        "path": "./syntaxes/verilog.tmLanguage.json"
+      },
+      {
+        "language": "systemverilog",
+        "scopeName": "source.verilog",
+        "path": "./syntaxes/verilog.tmLanguage.json"
+      },
+      {
+        "language": "vhdl",
+        "scopeName": "source.vhdl",
+        "path": "./syntaxes/vhdl.tmLanguage.json"
+      }
+    ],
+    "semanticTokenScopes": [
+      {
+        "language": "verilog",
+        "scopes": {
+          "class": [
+            "entity.name.type.verilog"
+          ],
+          "namespace": [
+            "entity.name.namespace.verilog"
+          ],
+          "property": [
+            "entity.name.tag.port.verilog"
+          ],
+          "variable": [
+            "variable.other.readwrite.verilog"
+          ],
+          "parameter": [
+            "variable.other.constant.verilog"
+          ],
+          "function": [
+            "entity.name.function.verilog"
+          ],
+          "type": [
+            "support.type.verilog"
+          ],
+          "keyword": [
+            "keyword.control.verilog"
+          ],
+          "number": [
+            "constant.numeric.verilog"
+          ],
+          "string": [
+            "string.quoted.double.verilog"
+          ],
+          "comment": [
+            "comment.line.double-slash.verilog"
+          ],
+          "operator": [
+            "keyword.operator.verilog"
+          ],
+          "macro": [
+            "entity.name.function.preprocessor.verilog"
+          ]
+        }
+      },
+      {
+        "language": "systemverilog",
+        "scopes": {
+          "class": [
+            "entity.name.type.verilog"
+          ],
+          "namespace": [
+            "entity.name.namespace.verilog"
+          ],
+          "property": [
+            "entity.name.tag.port.verilog"
+          ],
+          "variable": [
+            "variable.other.readwrite.verilog"
+          ],
+          "parameter": [
+            "variable.other.constant.verilog"
+          ],
+          "function": [
+            "entity.name.function.verilog"
+          ],
+          "type": [
+            "support.type.verilog"
+          ],
+          "keyword": [
+            "keyword.control.verilog"
+          ],
+          "number": [
+            "constant.numeric.verilog"
+          ],
+          "string": [
+            "string.quoted.double.verilog"
+          ],
+          "comment": [
+            "comment.line.double-slash.verilog"
+          ],
+          "operator": [
+            "keyword.operator.verilog"
+          ],
+          "macro": [
+            "entity.name.function.preprocessor.verilog"
+          ]
+        }
+      }
+    ],
+    "mcpServerDefinitionProviders": [
+      {
+        "id": "fpgaLsp.mcp",
+        "label": "Anlogic FPGA LSP"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "verilog",
+        "path": "./snippets/verilog.json"
+      },
+      {
+        "language": "systemverilog",
+        "path": "./snippets/systemverilog.json"
+      },
+      {
+        "language": "vhdl",
+        "path": "./snippets/vhdl.json"
+      },
+      {
+        "language": "adc",
+        "path": "./snippets/adc.json"
+      },
+      {
+        "language": "sdc",
+        "path": "./snippets/sdc.json"
+      }
+    ]
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "icon": "resources/icon.png",
+  "author": {
+    "name": "leuk0cyte"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/leuk0cyte/fpga-lsp.git"
+  },
+  "homepage": "https://github.com/leuk0cyte/fpga-lsp#readme",
+  "bugs": {
+    "url": "https://github.com/leuk0cyte/fpga-lsp/issues"
+  },
+  "devDependencies": {
+    "vscode-oniguruma": "^2.0.1",
+    "vscode-textmate": "^9.3.2"
+  },
+  "__metadata": {
+    "installedTimestamp": 1795000207028,
+    "targetPlatform": "undefined",
+    "size": 6287636
+  }
+}

@@ -1,0 +1,293 @@
+{
+  "module with parameters": {
+    "prefix": ["paramod", "module #"],
+    "body": [
+      "module ${1:moduleName} #(",
+      "\t${2:parameter}",
+      ") (",
+      "\t${3:ports}",
+      ");",
+      "\t$0",
+      "endmodule"
+    ],
+    "description": "Verilog module with parameters"
+  },
+  "module without parameters": {
+    "prefix": "module",
+    "body": [
+      "module ${1:moduleName} (",
+      "\t${2:ports}",
+      ");",
+      "\t$0",
+      "endmodule"
+    ],
+    "description": "Verilog module without parameters"
+  },
+  "instantiate module": {
+    "prefix": ["inst", "instantiate module"],
+    "body": [
+      "${1:module_name} ${2:u_${1:module_name}} (",
+      "\t.${3:port}(${4:signal}),",
+      "\t$0",
+      ");"
+    ],
+    "description": "Instantiate a module with named ports"
+  },
+  "always block": {
+    "prefix": ["al", "always"],
+    "body": [
+      "always @(${1:sensitivity}) begin",
+      "\t$0",
+      "end"
+    ],
+    "description": "always @(...) begin ... end"
+  },
+  "always posedge": {
+    "prefix": ["alclk", "alwaysposclk"],
+    "body": [
+      "always @(posedge ${1:clk} or negedge ${2:rst_n}) begin",
+      "\tif (!${2:rst_n}) begin",
+      "\t\t$3",
+      "\tend else begin",
+      "\t\t$0",
+      "\tend",
+      "end"
+    ],
+    "description": "Sequential always block with async reset"
+  },
+  "always negedge": {
+    "prefix": ["alnegclk", "alwaysnegclk"],
+    "body": [
+      "always @(negedge ${1:clk}) begin",
+      "\t$0",
+      "end"
+    ],
+    "description": "always @(negedge clk)"
+  },
+  "initial block": {
+    "prefix": "initial",
+    "body": [
+      "initial begin",
+      "\t$0",
+      "end"
+    ],
+    "description": "initial begin ... end"
+  },
+  "if": {
+    "prefix": "if",
+    "body": [
+      "if (${1:condition}) begin",
+      "\t$0",
+      "end"
+    ],
+    "description": "if (...) begin ... end"
+  },
+  "if else": {
+    "prefix": "ifelse",
+    "body": [
+      "if (${1:condition}) begin",
+      "\t$2",
+      "end else begin",
+      "\t$0",
+      "end"
+    ],
+    "description": "if (...) ... else ..."
+  },
+  "case": {
+    "prefix": "case",
+    "body": [
+      "case (${1:expression})",
+      "\t${2:value}: ${3:statement}",
+      "\tdefault: ${0:statement}",
+      "endcase"
+    ],
+    "description": "case (...) ... endcase"
+  },
+  "casez": {
+    "prefix": "casez",
+    "body": [
+      "casez (${1:expression})",
+      "\t${2:value}: ${3:statement}",
+      "\tdefault: ${0:statement}",
+      "endcase"
+    ],
+    "description": "casez (...) ... endcase"
+  },
+  "casex": {
+    "prefix": "casex",
+    "body": [
+      "casex (${1:expression})",
+      "\t${2:value}: ${3:statement}",
+      "\tdefault: ${0:statement}",
+      "endcase"
+    ],
+    "description": "casex (...) ... endcase"
+  },
+  "for loop": {
+    "prefix": "for",
+    "body": [
+      "for (${1:i} = ${2:0}; ${1:i} < ${3:N}; ${1:i} = ${1:i} + 1) begin",
+      "\t$0",
+      "end"
+    ],
+    "description": "for (...) begin ... end"
+  },
+  "generate": {
+    "prefix": "generate",
+    "body": [
+      "generate",
+      "\t$0",
+      "endgenerate"
+    ],
+    "description": "generate ... endgenerate"
+  },
+  "genvar": {
+    "prefix": "genvar",
+    "body": "genvar ${1:i};",
+    "description": "genvar i;"
+  },
+  "assign": {
+    "prefix": "assign",
+    "body": "assign ${1:lhs} = ${0:rhs};",
+    "description": "assign lhs = rhs;"
+  },
+  "wire": {
+    "prefix": "wire",
+    "body": "wire ${1:name};",
+    "description": "wire name;"
+  },
+  "wire array": {
+    "prefix": ["wirearray", "wire ["],
+    "body": "wire [${1:7}:${2:0}] ${3:name};",
+    "description": "wire [N:0] name;"
+  },
+  "reg": {
+    "prefix": "reg",
+    "body": "reg ${1:name};",
+    "description": "reg name;"
+  },
+  "reg array": {
+    "prefix": ["regarray", "reg ["],
+    "body": "reg [${1:7}:${2:0}] ${3:name};",
+    "description": "reg [N:0] name;"
+  },
+  "memory": {
+    "prefix": ["regmemory", "memory"],
+    "body": "reg [${1:7}:${2:0}] ${3:mem} [0:${4:255}];",
+    "description": "reg [N:0] mem [0:M];"
+  },
+  "parameter": {
+    "prefix": "parameter",
+    "body": "parameter ${1:NAME} = ${2:value};",
+    "description": "parameter NAME = value;"
+  },
+  "localparam": {
+    "prefix": "localparam",
+    "body": "localparam ${1:NAME} = ${2:value};",
+    "description": "localparam NAME = value;"
+  },
+  "input port": {
+    "prefix": "input",
+    "body": "input ${1:wire} ${2:name}",
+    "description": "input port"
+  },
+  "output port": {
+    "prefix": "output",
+    "body": "output ${1:wire} ${2:name}",
+    "description": "output port"
+  },
+  "inout port": {
+    "prefix": "inout",
+    "body": "inout ${1:wire} ${2:name}",
+    "description": "inout port"
+  },
+  "function": {
+    "prefix": "function",
+    "body": [
+      "function ${1:width} ${2:function_name};",
+      "\tinput ${3:width} ${4:arg};",
+      "\tbegin",
+      "\t\t$0",
+      "\tend",
+      "endfunction"
+    ],
+    "description": "function ... endfunction"
+  },
+  "task": {
+    "prefix": "task",
+    "body": [
+      "task ${1:task_name};",
+      "\tbegin",
+      "\t\t$0",
+      "\tend",
+      "endtask"
+    ],
+    "description": "task ... endtask"
+  },
+  "include": {
+    "prefix": ["include", "`include"],
+    "body": "`include \"${1:file.vh}\"",
+    "description": "`include"
+  },
+  "define": {
+    "prefix": ["def", "define", "`define"],
+    "body": "`define ${1:MACRO} ${0:value}",
+    "description": "`define"
+  },
+  "ifdef": {
+    "prefix": ["ifdef", "`ifdef"],
+    "body": [
+      "`ifdef ${1:MACRO}",
+      "\t$0",
+      "`endif"
+    ],
+    "description": "`ifdef ... `endif"
+  },
+  "ifndef": {
+    "prefix": ["ifndef", "`ifndef"],
+    "body": [
+      "`ifndef ${1:MACRO}",
+      "\t$0",
+      "`endif"
+    ],
+    "description": "`ifndef ... `endif"
+  },
+  "timescale": {
+    "prefix": ["ts", "timescale", "`timescale"],
+    "body": "`timescale ${1:1ns}/${2:1ps}",
+    "description": "`timescale"
+  },
+  "testbench": {
+    "prefix": ["tb", "testbench"],
+    "body": [
+      "`timescale 1ns/1ps",
+      "`default_nettype none",
+      "",
+      "module tb_${1:dut};",
+      "  reg clk;",
+      "  reg rst_n;",
+      "",
+      "  ${2:dut} dut (",
+      "    .clk   (clk),",
+      "    .rst_n (rst_n)",
+      "  );",
+      "",
+      "  localparam CLK_PERIOD = 10;",
+      "  initial clk = 1'b0;",
+      "  always #(CLK_PERIOD/2) clk = ~clk;",
+      "",
+      "  initial begin",
+      "    $dumpfile(\"tb_${1:dut}.vcd\");",
+      "    $dumpvars(0, tb_${1:dut});",
+      "    rst_n = 1'b0;",
+      "    repeat (5) @(posedge clk);",
+      "    rst_n = 1'b1;",
+      "    repeat (100) @(posedge clk);",
+      "    $finish;",
+      "  end",
+      "endmodule",
+      "`default_nettype wire"
+    ],
+    "description": "Testbench skeleton with clock/reset"
+  }
+}

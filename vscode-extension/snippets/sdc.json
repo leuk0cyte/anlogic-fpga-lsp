@@ -1,0 +1,27 @@
+{
+  "create clock": {
+    "prefix": ["clock", "create_clock"],
+    "body": "create_clock -name ${1:clk} -period ${2:20.0} [get_ports ${3:clk}]",
+    "description": "SDC create_clock"
+  },
+  "generated clock": {
+    "prefix": ["genclock", "create_generated_clock"],
+    "body": "create_generated_clock -name ${1:clk_out} -source [get_ports ${2:clk}] -divide_by ${3:2} [get_ports ${4:clk_out}]",
+    "description": "SDC create_generated_clock"
+  },
+  "input delay": {
+    "prefix": ["inputdelay", "set_input_delay"],
+    "body": "set_input_delay -clock ${1:clk} ${2:2.0} [get_ports ${3:data_in}]",
+    "description": "SDC set_input_delay"
+  },
+  "output delay": {
+    "prefix": ["outputdelay", "set_output_delay"],
+    "body": "set_output_delay -clock ${1:clk} ${2:2.0} [get_ports ${3:data_out}]",
+    "description": "SDC set_output_delay"
+  },
+  "false path": {
+    "prefix": ["falsepath", "set_false_path"],
+    "body": "set_false_path -from [get_ports ${1:async_in}] -to [get_clocks ${2:clk}]",
+    "description": "SDC set_false_path"
+  }
+}

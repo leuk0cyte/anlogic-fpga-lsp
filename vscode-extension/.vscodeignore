@@ -1,0 +1,48 @@
+# =============================================================================
+#  .vscodeignore —— 打包 VSIX 时排除的内容
+# =============================================================================
+#  目标：只带运行期需要的东西。
+#
+#  ⚠⚠ 血泪教训（0.10.32 实测）：**绝不能排除 node_modules/** ⚠⚠
+#
+#  第一版这里写了 `node_modules/`，结果打出来的 VSIX 里没有
+#  `node_modules/vscode-languageclient`，而 extension.js 第 18 行是
+#
+#      const { LanguageClient, TransportKind } = require('vscode-languageclient/node');
+#
+#  于是 activate() 在 require 阶段就抛异常 —— 现象极其误导：
+#    * 扩展"看起来装上了"，但完全不工作
+#    * 没有输出任何日志（连 `.fpgalsp/logs/extension.log` 都没写）
+#    * 打开含 `.al` 的工程也"找不到 al 文件"
+#
+#  因为**激活失败发生在写第一行日志之前**，所有自我诊断都还没开始。
+#
+#  本扩展没有 webpack/esbuild 打包，运行期依赖必须以 node_modules 原样随包发布。
+#  想减小体积应该去做 bundling（esbuild），而不是在这里排除 node_modules。
+# =============================================================================
+
+# --- 开发期文件（不影响运行） ---
+**/*.ts
+**/*.map
+test/
+scripts/
+.vscode/
+.vscode-test/
+**/.gitignore
+**/.eslintrc*
+**/tsconfig.json
+**/*.md
+!README.md
+!readme.md
+
+# --- 构建/调试残留 ---
+*.log
+*.vsix
+**/__pycache__/
+**/*.pyc
+
+# --- 注意：下面这些**不要**加，会破坏运行 ---
+#   node_modules/     ← 运行期依赖 vscode-languageclient
+#   server/bin/       ← 原生语言服务器 fpgalsp-native.exe
+#   src/              ← extension.js 运行期 require('./src/...')
+#   resources/        ← 图标与 webview 资源

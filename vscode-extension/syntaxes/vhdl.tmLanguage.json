@@ -1,0 +1,153 @@
+{
+  "name": "VHDL",
+  "scopeName": "source.vhdl",
+  "fileTypes": ["vhd", "vhdl"],
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#characters" },
+    { "include": "#design-unit" },
+    { "include": "#interface-declaration" },
+    { "include": "#object-declaration" },
+    { "include": "#subprogram" },
+    { "include": "#process-label" },
+    { "include": "#numbers" },
+    { "include": "#keywords" },
+    { "include": "#types" },
+    { "include": "#attributes" },
+    { "include": "#operators" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        { "name": "comment.line.double-dash.vhdl", "begin": "--", "end": "$" },
+        { "name": "comment.block.vhdl", "begin": "/\\*", "end": "\\*/" }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.vhdl",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [{ "name": "constant.character.escape.vhdl", "match": "\"\"" }]
+        }
+      ]
+    },
+    "characters": {
+      "patterns": [
+        { "name": "string.quoted.single.vhdl", "match": "'([^']|'')'" }
+      ]
+    },
+    "design-unit": {
+      "patterns": [
+        {
+          "match": "\\b(entity|architecture|package|configuration|component)\\s+([A-Za-z_]\\w*)",
+          "captures": {
+            "1": { "name": "keyword.control.vhdl" },
+            "2": { "name": "entity.name.type.vhdl" }
+          }
+        }
+      ]
+    },
+    "interface-declaration": {
+      "patterns": [
+        {
+          "match": "\\b(generic|port)\\s*\\(\\s*([A-Za-z_]\\w*)\\s*:",
+          "captures": {
+            "1": { "name": "keyword.control.vhdl" },
+            "2": { "name": "entity.name.tag.port.vhdl" }
+          }
+        },
+        {
+          "match": "\\b([A-Za-z_]\\w*)\\s*:\\s*(in|out|inout|buffer|linkage)\\b",
+          "captures": {
+            "1": { "name": "entity.name.tag.port.vhdl" },
+            "2": { "name": "storage.modifier.direction.vhdl" }
+          }
+        }
+      ]
+    },
+    "object-declaration": {
+      "patterns": [
+        {
+          "match": "\\b(signal|variable|shared variable)\\s+([A-Za-z_]\\w*)",
+          "captures": {
+            "1": { "name": "storage.modifier.vhdl" },
+            "2": { "name": "variable.other.readwrite.vhdl" }
+          }
+        },
+        {
+          "match": "\\b(constant)\\s+([A-Za-z_]\\w*)",
+          "captures": {
+            "1": { "name": "storage.modifier.vhdl" },
+            "2": { "name": "variable.other.constant.vhdl" }
+          }
+        },
+        {
+          "match": "\\b(type|subtype)\\s+([A-Za-z_]\\w*)",
+          "captures": {
+            "1": { "name": "keyword.control.vhdl" },
+            "2": { "name": "entity.name.type.vhdl" }
+          }
+        }
+      ]
+    },
+    "subprogram": {
+      "patterns": [
+        {
+          "match": "\\b(function|procedure)\\s+([A-Za-z_]\\w*)",
+          "captures": {
+            "1": { "name": "keyword.control.vhdl" },
+            "2": { "name": "entity.name.function.vhdl" }
+          }
+        }
+      ]
+    },
+    "process-label": {
+      "patterns": [
+        {
+          "match": "\\b([A-Za-z_]\\w*)\\s*:\\s*(process)\\b",
+          "captures": {
+            "1": { "name": "entity.name.label.vhdl" },
+            "2": { "name": "keyword.control.vhdl" }
+          }
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        { "name": "constant.numeric.vhdl", "match": "\\b\\d+#[0-9A-Fa-f_.]+#" },
+        { "name": "constant.numeric.vhdl", "match": "[bBoOxXdD]\"[0-9A-Fa-f_]*\"" },
+        { "name": "constant.numeric.vhdl", "match": "\\b\\d+\\.\\d+([eE][+-]?\\d+)?" },
+        { "name": "constant.numeric.vhdl", "match": "\\b\\d+([eE][+-]?\\d+)?" }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.vhdl",
+          "match": "\\b(abs|access|after|alias|all|and|architecture|array|assert|assume|attribute|begin|block|body|buffer|bus|case|component|configuration|constant|context|cover|disconnect|downto|else|elsif|end|entity|exit|file|for|force|function|generate|generic|group|guarded|if|impure|in|inertial|inout|is|label|library|linkage|literal|loop|map|mod|nand|new|next|nor|not|null|of|on|open|or|others|out|package|port|postponed|procedure|process|protected|pure|range|record|register|reject|release|rem|report|restrict|return|rol|ror|select|sequence|severity|shared|signal|sla|sll|sra|srl|subtype|then|to|transport|type|unaffected|units|until|use|variable|wait|when|while|with|xnor|xor|property|assume_guarantee|fairness|default|parameter|view|vunit)\\b"
+        }
+      ]
+    },
+    "types": {
+      "patterns": [
+        {
+          "name": "support.type.vhdl",
+          "match": "\\b(std_logic|std_logic_vector|std_ulogic|std_ulogic_vector|unsigned|signed|integer|natural|positive|boolean|bit|bit_vector|string|character|time|real|severity_level|line|text|file_open_kind|file_open_status|delay_length|universal_integer|universal_real)\\b"
+        }
+      ]
+    },
+    "attributes": {
+      "patterns": [
+        { "name": "entity.other.attribute-name.vhdl", "match": "\\b[A-Za-z_]\\w*'[A-Za-z_]\\w*" }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        { "name": "keyword.operator.vhdl", "match": "<=|>=|/=|=>|:=|\\*\\*|&|\\+|-|\\*|/|=|<|>" }
+      ]
+    }
+  }
+}

@@ -1,0 +1,884 @@
+/**
+ * References and further reading:
+ *
+ * Wojciech Muła, Daniel Lemire, Base64 encoding and decoding at almost the
+ * speed of a memory copy, Software: Practice and Experience 50 (2), 2020.
+ * https://arxiv.org/abs/1910.05109
+ *
+ * Wojciech Muła, Daniel Lemire, Faster Base64 Encoding and Decoding using AVX2
+ * Instructions, ACM Transactions on the Web 12 (3), 2018.
+ * https://arxiv.org/abs/1704.00605
+ *
+ * Simon Josefsson. 2006. The Base16, Base32, and Base64 Data Encodings.
+ * https://tools.ietf.org/html/rfc4648. (2006). Internet Engineering Task Force,
+ * Request for Comments: 4648.
+ *
+ * Alfred Klomp. 2014a. Fast Base64 encoding/decoding with SSE vectorization.
+ * http://www.alfredklomp.com/programming/sse-base64/. (2014).
+ *
+ * Alfred Klomp. 2014b. Fast Base64 stream encoder/decoder in C99, with SIMD
+ * acceleration. https://github.com/aklomp/base64. (2014).
+ *
+ * Hanson Char. 2014. A Fast and Correct Base 64 Codec. (2014).
+ * https://aws.amazon.com/blogs/developer/a-fast-and-correct-base-64-codec/
+ *
+ * Nick Kopp. 2013. Base64 Encoding on a GPU.
+ * https://www.codeproject.com/Articles/276993/Base-Encoding-on-a-GPU. (2013).
+ */
+
+template <bool base64_url>
+simdutf_really_inline __m256i lookup_pshufb_improved(const __m256i input) {
+  // Precomputed shuffle masks for K = 1 to 16
+  // credit: Wojciech Muła
+  __m256i result = _mm256_subs_epu8(input, _mm256_set1_epi8(51));
+  result =
+      _mm256_sub_epi8(result, _mm256_cmpgt_epi8(input, _mm256_set1_epi8(25)));
+  __m256i shift_LUT;
+  if (base64_url) {
+    shift_LUT = _mm256_setr_epi8(
+        'A', 'a' - 26, '0' - 52, '0' - 52, '0' - 52, '0' - 52, '0' - 52,
+        '0' - 52, '0' - 52, '0' - 52, '0' - 52, '0' - 52, '-' - 62, '_' - 63, 0,
+        0, 'A', 'a' - 26, '0' - 52, '0' - 52, '0' - 52, '0' - 52, '0' - 52,
+        '0' - 52, '0' - 52, '0' - 52, '0' - 52, '0' - 52, '-' - 62, '_' - 63, 0,
+        0);
+  } else {
+    shift_LUT = _mm256_setr_epi8(
+        'A', 'a' - 26, '0' - 52, '0' - 52, '0' - 52, '0' - 52, '0' - 52,
+        '0' - 52, '0' - 52, '0' - 52, '0' - 52, '0' - 52, '+' - 62, '/' - 63, 0,
+        0, 'A', 'a' - 26, '0' - 52, '0' - 52, '0' - 52, '0' - 52, '0' - 52,
+        '0' - 52, '0' - 52, '0' - 52, '0' - 52, '0' - 52, '+' - 62, '/' - 63, 0,
+        0);
+  }
+
+  result = _mm256_shuffle_epi8(shift_LUT, result);
+  return _mm256_add_epi8(result, input);
+}
+
+simdutf_really_inline __m128i load_12_bytes(const uint8_t *input) {
+  __m128i value = _mm_loadl_epi64(reinterpret_cast<const __m128i *>(input));
+  uint32_t tail;
+  std::memcpy(&tail, input + 8, sizeof(tail));
+  return _mm_insert_epi32(value, int(tail), 2);
+}
+
+// Encodes exactly 12 input bytes into 16 output bytes, without reading
+// past input + 12.
+template <bool base64_url>
+simdutf_never_inline void encode_base64_12(uint8_t *output,
+                                           const uint8_t *input) {
+  const __m128i shuf =
+      _mm_set_epi8(10, 11, 9, 10, 7, 8, 6, 7, 4, 5, 3, 4, 1, 2, 0, 1);
+  const __m128i in = _mm_shuffle_epi8(load_12_bytes(input), shuf);
+  const __m256i in256 = _mm256_castsi128_si256(in);
+  const __m256i t0 = _mm256_and_si256(in256, _mm256_set1_epi32(0x0fc0fc00));
+  const __m256i t1 = _mm256_mulhi_epu16(t0, _mm256_set1_epi32(0x04000040));
+  const __m256i t2 = _mm256_and_si256(in256, _mm256_set1_epi32(0x003f03f0));
+  const __m256i t3 = _mm256_mullo_epi16(t2, _mm256_set1_epi32(0x01000010));
+  const __m256i encoded =
+      lookup_pshufb_improved<base64_url>(_mm256_or_si256(t1, t3));
+  _mm_storeu_si128(reinterpret_cast<__m128i *>(output),
+                   _mm256_castsi256_si128(encoded));
+}
+
+simdutf_really_inline __m128i insert_line_feed16(__m128i input, int K) {
+  static const uint8_t shuffle_masks[16][16] = {
+      {15, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14},
+      {0, 15, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14},
+      {0, 1, 15, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14},
+      {0, 1, 2, 15, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14},
+      {0, 1, 2, 3, 15, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14},
+      {0, 1, 2, 3, 4, 15, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14},
+      {0, 1, 2, 3, 4, 5, 15, 6, 7, 8, 9, 10, 11, 12, 13, 14},
+      {0, 1, 2, 3, 4, 5, 6, 15, 7, 8, 9, 10, 11, 12, 13, 14},
+      {0, 1, 2, 3, 4, 5, 6, 7, 15, 8, 9, 10, 11, 12, 13, 14},
+      {0, 1, 2, 3, 4, 5, 6, 7, 8, 15, 9, 10, 11, 12, 13, 14},
+      {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 15, 10, 11, 12, 13, 14},
+      {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 11, 12, 13, 14},
+      {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 15, 12, 13, 14},
+      {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 15, 13, 14},
+      {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15, 14},
+      {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}};
+  input = _mm_insert_epi8(input, '\n', 15);
+  __m128i mask = _mm_loadu_si128((const __m128i *)shuffle_masks[K]);
+  return _mm_shuffle_epi8(input, mask);
+}
+
+simdutf_really_inline __m256i insert_line_feed32(__m256i input, int K) {
+  __m128i lo = _mm256_extracti128_si256(input, 0);
+  __m128i hi = _mm256_extracti128_si256(input, 1);
+  if (K >= 16) {
+    hi = insert_line_feed16(hi, K - 16);
+  } else {
+    hi = _mm_alignr_epi8(hi, lo, 15);
+    lo = insert_line_feed16(lo, K);
+  }
+  __m256i result = _mm256_castsi128_si256(lo);
+  result = _mm256_inserti128_si256(result, hi, 1);
+  return result;
+}
+
+template <bool isbase64url, bool use_lines>
+size_t
+avx2_encode_base64_impl(char *dst, const char *src, size_t srclen,
+                        base64_options options,
+                        size_t line_length = simdutf::default_line_length) {
+  size_t offset = 0;
+
+  if (line_length < 4) {
+    line_length = 4; // We do not support line_length less than 4
+  }
+  // credit: Wojciech Muła
+  const uint8_t *input = (const uint8_t *)src;
+
+  uint8_t *out = (uint8_t *)dst;
+  const __m256i shuf =
+      _mm256_set_epi8(10, 11, 9, 10, 7, 8, 6, 7, 4, 5, 3, 4, 1, 2, 0, 1,
+
+                      10, 11, 9, 10, 7, 8, 6, 7, 4, 5, 3, 4, 1, 2, 0, 1);
+  const __m256i shuf_overlap =
+      _mm256_setr_epi8(5, 4, 6, 5, 8, 7, 9, 8, 11, 10, 12, 11, 14, 13, 15, 14,
+                       1, 0, 2, 1, 4, 3, 5, 4, 7, 6, 8, 7, 10, 9, 11, 10);
+  size_t i = 0;
+  for (; i + 100 <= srclen; i += 96) {
+    const __m128i lo0 = _mm_loadu_si128(
+        reinterpret_cast<const __m128i *>(input + i + 4 * 3 * 0));
+    const __m128i hi0 = _mm_loadu_si128(
+        reinterpret_cast<const __m128i *>(input + i + 4 * 3 * 1));
+    __m256i in0 = _mm256_shuffle_epi8(_mm256_set_m128i(hi0, lo0), shuf);
+    __m256i in1 = _mm256_shuffle_epi8(
+        _mm256_loadu_si256(
+            reinterpret_cast<const __m256i *>(input + i + 24 - 4)),
+        shuf_overlap);
+    __m256i in2 = _mm256_shuffle_epi8(
+        _mm256_loadu_si256(
+            reinterpret_cast<const __m256i *>(input + i + 48 - 4)),
+        shuf_overlap);
+    __m256i in3 = _mm256_shuffle_epi8(
+        _mm256_loadu_si256(
+            reinterpret_cast<const __m256i *>(input + i + 72 - 4)),
+        shuf_overlap);
+
+    const __m256i t0_0 = _mm256_and_si256(in0, _mm256_set1_epi32(0x0fc0fc00));
+    const __m256i t0_1 = _mm256_and_si256(in1, _mm256_set1_epi32(0x0fc0fc00));
+    const __m256i t0_2 = _mm256_and_si256(in2, _mm256_set1_epi32(0x0fc0fc00));
+    const __m256i t0_3 = _mm256_and_si256(in3, _mm256_set1_epi32(0x0fc0fc00));
+
+    const __m256i t1_0 =
+        _mm256_mulhi_epu16(t0_0, _mm256_set1_epi32(0x04000040));
+    const __m256i t1_1 =
+        _mm256_mulhi_epu16(t0_1, _mm256_set1_epi32(0x04000040));
+    const __m256i t1_2 =
+        _mm256_mulhi_epu16(t0_2, _mm256_set1_epi32(0x04000040));
+    const __m256i t1_3 =
+        _mm256_mulhi_epu16(t0_3, _mm256_set1_epi32(0x04000040));
+
+    const __m256i t2_0 = _mm256_and_si256(in0, _mm256_set1_epi32(0x003f03f0));
+    const __m256i t2_1 = _mm256_and_si256(in1, _mm256_set1_epi32(0x003f03f0));
+    const __m256i t2_2 = _mm256_and_si256(in2, _mm256_set1_epi32(0x003f03f0));
+    const __m256i t2_3 = _mm256_and_si256(in3, _mm256_set1_epi32(0x003f03f0));
+
+    const __m256i t3_0 =
+        _mm256_mullo_epi16(t2_0, _mm256_set1_epi32(0x01000010));
+    const __m256i t3_1 =
+        _mm256_mullo_epi16(t2_1, _mm256_set1_epi32(0x01000010));
+    const __m256i t3_2 =
+        _mm256_mullo_epi16(t2_2, _mm256_set1_epi32(0x01000010));
+    const __m256i t3_3 =
+        _mm256_mullo_epi16(t2_3, _mm256_set1_epi32(0x01000010));
+
+    const __m256i input0 = _mm256_or_si256(t1_0, t3_0);
+    const __m256i input1 = _mm256_or_si256(t1_1, t3_1);
+    const __m256i input2 = _mm256_or_si256(t1_2, t3_2);
+    const __m256i input3 = _mm256_or_si256(t1_3, t3_3);
+
+    if (use_lines) {
+      if (line_length >= 32) { // fast path
+        __m256i result;
+        result = lookup_pshufb_improved<isbase64url>(input0);
+        if (offset + 32 > line_length) {
+          size_t location_end = line_length - offset;
+          size_t to_move = 32 - location_end;
+          // We could do this, or extract instead.
+          _mm256_storeu_si256(reinterpret_cast<__m256i *>(out + 1), result);
+          _mm256_storeu_si256(
+              reinterpret_cast<__m256i *>(out),
+              insert_line_feed32(result, static_cast<int>(location_end)));
+          offset = to_move;
+          out += 32 + 1;
+        } else {
+          _mm256_storeu_si256(reinterpret_cast<__m256i *>(out), result);
+          offset += 32;
+          out += 32;
+        }
+        result = lookup_pshufb_improved<isbase64url>(input1);
+
+        if (offset + 32 > line_length) {
+          size_t location_end = line_length - offset;
+          size_t to_move = 32 - location_end;
+
+          // We could do this, or extract instead.
+          _mm256_storeu_si256(reinterpret_cast<__m256i *>(out + 1), result);
+          _mm256_storeu_si256(
+              reinterpret_cast<__m256i *>(out),
+              insert_line_feed32(result, static_cast<int>(location_end)));
+          // see above.
+          // out[32] = static_cast<uint8_t>(_mm256_extract_epi8(result, 31));
+          offset = to_move;
+          out += 32 + 1;
+        } else {
+
+          _mm256_storeu_si256(reinterpret_cast<__m256i *>(out), result);
+
+          offset += 32;
+          out += 32;
+        }
+        result = lookup_pshufb_improved<isbase64url>(input2);
+
+        if (offset + 32 > line_length) {
+          size_t location_end = line_length - offset;
+          size_t to_move = 32 - location_end;
+
+          // We could do this, or extract instead.
+          _mm256_storeu_si256(reinterpret_cast<__m256i *>(out + 1), result);
+          _mm256_storeu_si256(
+              reinterpret_cast<__m256i *>(out),
+              insert_line_feed32(result, static_cast<int>(location_end)));
+          // see above.
+          // out[32] = static_cast<uint8_t>(_mm256_extract_epi8(result, 31));
+          offset = to_move;
+          out += 32 + 1;
+        } else {
+          _mm256_storeu_si256(reinterpret_cast<__m256i *>(out), result);
+          offset += 32;
+          out += 32;
+        }
+        result = lookup_pshufb_improved<isbase64url>(input3);
+
+        if (offset + 32 > line_length) {
+          size_t location_end = line_length - offset;
+          size_t to_move = 32 - location_end;
+
+          // We could do this, or extract instead.
+          _mm256_storeu_si256(reinterpret_cast<__m256i *>(out + 1), result);
+          _mm256_storeu_si256(
+              reinterpret_cast<__m256i *>(out),
+              insert_line_feed32(result, static_cast<int>(location_end)));
+          // see above.
+          // out[32] = static_cast<uint8_t>(_mm256_extract_epi8(result, 31));
+          offset = to_move;
+          out += 32 + 1;
+        } else {
+          _mm256_storeu_si256(reinterpret_cast<__m256i *>(out), result);
+          offset += 32;
+          out += 32;
+        }
+      } else { // slow path
+        // could be optimized
+        uint8_t buffer[128];
+        _mm256_storeu_si256(reinterpret_cast<__m256i *>(buffer),
+                            lookup_pshufb_improved<isbase64url>(input0));
+        _mm256_storeu_si256(reinterpret_cast<__m256i *>(buffer + 32),
+                            lookup_pshufb_improved<isbase64url>(input1));
+        _mm256_storeu_si256(reinterpret_cast<__m256i *>(buffer + 64),
+                            lookup_pshufb_improved<isbase64url>(input2));
+        _mm256_storeu_si256(reinterpret_cast<__m256i *>(buffer + 96),
+                            lookup_pshufb_improved<isbase64url>(input3));
+        size_t out_pos = 0;
+        size_t local_offset = offset;
+        for (size_t j = 0; j < 128;) {
+          if (local_offset == line_length) {
+            out[out_pos++] = '\n';
+            local_offset = 0;
+          }
+          out[out_pos++] = buffer[j++];
+          local_offset++;
+        }
+        offset = local_offset;
+        out += out_pos;
+      }
+    } else {
+      _mm256_storeu_si256(reinterpret_cast<__m256i *>(out),
+                          lookup_pshufb_improved<isbase64url>(input0));
+      _mm256_storeu_si256(reinterpret_cast<__m256i *>(out + 32),
+                          lookup_pshufb_improved<isbase64url>(input1));
+      _mm256_storeu_si256(reinterpret_cast<__m256i *>(out + 64),
+                          lookup_pshufb_improved<isbase64url>(input2));
+      _mm256_storeu_si256(reinterpret_cast<__m256i *>(out + 96),
+                          lookup_pshufb_improved<isbase64url>(input3));
+
+      out += 128;
+    }
+  }
+  // The high half is loaded 4 bytes early so that we never read past
+  // input + i + 24: its shuffle indices are offset by 4.
+  const __m256i shuf_hi_shifted =
+      _mm256_set_epi8(14, 15, 13, 14, 11, 12, 10, 11, 8, 9, 7, 8, 5, 6, 4, 5,
+
+                      10, 11, 9, 10, 7, 8, 6, 7, 4, 5, 3, 4, 1, 2, 0, 1);
+  for (; i + 24 <= srclen; i += 24) {
+    // lo = [xxxx|DDDC|CCBB|BAAA]
+    // hi = [HHHG|GGFF|FEEE|xxxx]
+    const __m128i lo =
+        _mm_loadu_si128(reinterpret_cast<const __m128i *>(input + i));
+    const __m128i hi =
+        _mm_loadu_si128(reinterpret_cast<const __m128i *>(input + i + 8));
+
+    // bytes from groups A, B and C are needed in separate 32-bit lanes
+    // in = [0HHH|0GGG|0FFF|0EEE[0DDD|0CCC|0BBB|0AAA]
+    __m256i in = _mm256_shuffle_epi8(_mm256_set_m128i(hi, lo), shuf_hi_shifted);
+
+    // this part is well commented in encode.sse.cpp
+
+    const __m256i t0 = _mm256_and_si256(in, _mm256_set1_epi32(0x0fc0fc00));
+    const __m256i t1 = _mm256_mulhi_epu16(t0, _mm256_set1_epi32(0x04000040));
+    const __m256i t2 = _mm256_and_si256(in, _mm256_set1_epi32(0x003f03f0));
+    const __m256i t3 = _mm256_mullo_epi16(t2, _mm256_set1_epi32(0x01000010));
+    const __m256i indices = _mm256_or_si256(t1, t3);
+
+    if (use_lines) {
+      if (line_length >= 32) { // fast path
+        _mm256_storeu_si256(reinterpret_cast<__m256i *>(out),
+                            lookup_pshufb_improved<isbase64url>(indices));
+
+        if (offset + 32 > line_length) {
+          size_t location_end = line_length - offset;
+          size_t to_move = 32 - location_end;
+          std::memmove(out + location_end + 1, out + location_end, to_move);
+          out[location_end] = '\n';
+          offset = to_move;
+          out += 32 + 1;
+        } else {
+          offset += 32;
+          out += 32;
+        }
+      } else { // slow path
+        // could be optimized
+        alignas(32) uint8_t buffer[32];
+        _mm256_storeu_si256(reinterpret_cast<__m256i *>(buffer),
+                            lookup_pshufb_improved<isbase64url>(indices));
+        std::memcpy(out, buffer, 32);
+        size_t out_pos = 0;
+        size_t local_offset = offset;
+        for (size_t j = 0; j < 32;) {
+          if (local_offset == line_length) {
+            out[out_pos++] = '\n';
+            local_offset = 0;
+          }
+          out[out_pos++] = buffer[j++];
+          local_offset++;
+        }
+        offset = local_offset;
+        out += out_pos;
+      }
+    } else {
+      _mm256_storeu_si256(reinterpret_cast<__m256i *>(out),
+                          lookup_pshufb_improved<isbase64url>(indices));
+
+      out += 32;
+    }
+  }
+  if constexpr (!use_lines) {
+    if (i + 12 <= srclen) {
+      encode_base64_12<isbase64url>(out, input + i);
+      i += 12;
+      out += 16;
+    }
+  }
+  return ((char *)out - (char *)dst) +
+         scalar::base64::tail_encode_base64_impl<use_lines>(
+             (char *)out, src + i, srclen - i, options, line_length, offset);
+}
+
+template <bool isbase64url>
+size_t encode_base64(char *dst, const char *src, size_t srclen,
+                     base64_options options) {
+  return avx2_encode_base64_impl<isbase64url, false>(dst, src, srclen, options);
+}
+
+static inline void compress(__m128i data, uint16_t mask, char *output) {
+  if (mask == 0) {
+    _mm_storeu_si128(reinterpret_cast<__m128i *>(output), data);
+    return;
+  }
+  // this particular implementation was inspired by work done by @animetosho
+  // we do it in two steps, first 8 bytes and then second 8 bytes
+  uint8_t mask1 = uint8_t(mask);      // least significant 8 bits
+  uint8_t mask2 = uint8_t(mask >> 8); // most significant 8 bits
+  // next line just loads the 64-bit values thintable_epi8[mask1] and
+  // thintable_epi8[mask2] into a 128-bit register, using only
+  // two instructions on most compilers.
+
+  __m128i shufmask = _mm_set_epi64x(tables::base64::thintable_epi8[mask2],
+                                    tables::base64::thintable_epi8[mask1]);
+  // we increment by 0x08 the second half of the mask
+  shufmask =
+      _mm_add_epi8(shufmask, _mm_set_epi32(0x08080808, 0x08080808, 0, 0));
+  // this is the version "nearly pruned"
+  __m128i pruned = _mm_shuffle_epi8(data, shufmask);
+  // we still need to put the two halves together.
+  // we compute the popcount of the first half:
+  int pop1 = tables::base64::BitsSetTable256mul2[mask1];
+  // then load the corresponding mask, what it does is to write
+  // only the first pop1 bytes from the first 8 bytes, and then
+  // it fills in with the bytes from the second 8 bytes + some filling
+  // at the end.
+  __m128i compactmask = _mm_loadu_si128(reinterpret_cast<const __m128i *>(
+      tables::base64::pshufb_combine_table + pop1 * 8));
+  __m128i answer = _mm_shuffle_epi8(pruned, compactmask);
+
+  _mm_storeu_si128(reinterpret_cast<__m128i *>(output), answer);
+}
+
+// --- decoding -----------------------------------------------
+
+template <typename = void>
+simdutf_really_inline void compress(__m256i data, uint32_t mask, char *output) {
+  if (mask == 0) {
+    _mm256_storeu_si256(reinterpret_cast<__m256i *>(output), data);
+    return;
+  }
+  compress(_mm256_castsi256_si128(data), uint16_t(mask), output);
+  compress(_mm256_extracti128_si256(data, 1), uint16_t(mask >> 16),
+           output + count_ones(~mask & 0xFFFF));
+}
+
+// exact_tail: the high 16-byte store would write 4 bytes past the 24 bytes
+// this call produces. The second half of a 64-byte block passes true so the
+// block ends on byte 48. The first half keeps the overlapping store; the
+// next call overwrites those 4 bytes.
+template <bool exact_tail = false>
+simdutf_really_inline void base64_decode(char *out, __m256i str) {
+  // credit: aqrit
+  const __m256i pack_shuffle =
+      _mm256_setr_epi8(2, 1, 0, 6, 5, 4, 10, 9, 8, 14, 13, 12, -1, -1, -1, -1,
+                       2, 1, 0, 6, 5, 4, 10, 9, 8, 14, 13, 12, -1, -1, -1, -1);
+  const __m256i t0 = _mm256_maddubs_epi16(str, _mm256_set1_epi32(0x01400140));
+  const __m256i t1 = _mm256_madd_epi16(t0, _mm256_set1_epi32(0x00011000));
+  const __m256i t2 = _mm256_shuffle_epi8(t1, pack_shuffle);
+
+  // Store the output:
+  _mm_storeu_si128((__m128i *)out, _mm256_castsi256_si128(t2));
+  const __m128i hi = _mm256_extracti128_si256(t2, 1);
+  if constexpr (exact_tail) {
+    _mm_storel_epi64((__m128i *)(out + 12), hi);
+    const int32_t last = _mm_extract_epi32(hi, 2);
+    std::memcpy(out + 20, &last, sizeof(last));
+  } else {
+    _mm_storeu_si128((__m128i *)(out + 12), hi);
+  }
+}
+
+template <bool exact_tail = false>
+simdutf_really_inline void base64_decode_block(char *out, const char *src) {
+  base64_decode(out,
+                _mm256_loadu_si256(reinterpret_cast<const __m256i *>(src)));
+  base64_decode<exact_tail>(
+      out + 24,
+      _mm256_loadu_si256(reinterpret_cast<const __m256i *>(src + 32)));
+}
+
+// --- decoding - base64 class --------------------------------
+
+class block64 {
+  __m256i chunks[2];
+
+public:
+  // The caller of this function is responsible to ensure that there are 64
+  // bytes available from reading at src.
+  simdutf_really_inline block64(const char *src) {
+    chunks[0] = _mm256_loadu_si256(reinterpret_cast<const __m256i *>(src));
+    chunks[1] = _mm256_loadu_si256(reinterpret_cast<const __m256i *>(src + 32));
+  }
+
+  // The caller of this function is responsible to ensure that there are 128
+  // bytes available from reading at src.
+  simdutf_really_inline block64(const char16_t *src) {
+    const auto m1 = _mm256_loadu_si256(reinterpret_cast<const __m256i *>(src));
+    const auto m2 =
+        _mm256_loadu_si256(reinterpret_cast<const __m256i *>(src + 16));
+    const auto m3 =
+        _mm256_loadu_si256(reinterpret_cast<const __m256i *>(src + 32));
+    const auto m4 =
+        _mm256_loadu_si256(reinterpret_cast<const __m256i *>(src + 48));
+
+    const auto m1p = _mm256_permute2x128_si256(m1, m2, 0x20);
+    const auto m2p = _mm256_permute2x128_si256(m1, m2, 0x31);
+    const auto m3p = _mm256_permute2x128_si256(m3, m4, 0x20);
+    const auto m4p = _mm256_permute2x128_si256(m3, m4, 0x31);
+
+    chunks[0] = _mm256_packus_epi16(m1p, m2p);
+    chunks[1] = _mm256_packus_epi16(m3p, m4p);
+  }
+
+  simdutf_really_inline uint64_t equal_sign_mask() const {
+    const __m256i equal = _mm256_set1_epi8('=');
+    const uint64_t m0 =
+        uint32_t(_mm256_movemask_epi8(_mm256_cmpeq_epi8(chunks[0], equal)));
+    const uint64_t m1 =
+        uint32_t(_mm256_movemask_epi8(_mm256_cmpeq_epi8(chunks[1], equal)));
+    return m0 | (m1 << 32);
+  }
+
+  simdutf_really_inline void copy_block(char *output) {
+    _mm256_storeu_si256(reinterpret_cast<__m256i *>(output), chunks[0]);
+    _mm256_storeu_si256(reinterpret_cast<__m256i *>(output + 32), chunks[1]);
+  }
+
+  // decode 64 bytes and output 48 bytes
+  template <bool exact_tail = false>
+  simdutf_really_inline void base64_decode_block(char *out) {
+    base64_decode(out, chunks[0]);
+    base64_decode<exact_tail>(out + 24, chunks[1]);
+  }
+
+  template <bool base64_url, bool ignore_garbage, bool default_or_url>
+  simdutf_really_inline uint64_t to_base64_mask(uint64_t *error) {
+    uint32_t err0 = 0;
+    uint32_t err1 = 0;
+    uint64_t m0 = to_base64_mask<base64_url, ignore_garbage, default_or_url>(
+        &chunks[0], &err0);
+    uint64_t m1 = to_base64_mask<base64_url, ignore_garbage, default_or_url>(
+        &chunks[1], &err1);
+    if (!ignore_garbage) {
+      *error = err0 | ((uint64_t)err1 << 32);
+    }
+    return m0 | (m1 << 32);
+  }
+
+  template <bool base64_url, bool ignore_garbage, bool default_or_url>
+  simdutf_really_inline uint32_t to_base64_mask(__m256i *src, uint32_t *error) {
+    const __m256i ascii_space_tbl =
+        _mm256_setr_epi8(0x20, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x9, 0xa,
+                         0x0, 0xc, 0xd, 0x0, 0x0, 0x20, 0x0, 0x0, 0x0, 0x0, 0x0,
+                         0x0, 0x0, 0x0, 0x9, 0xa, 0x0, 0xc, 0xd, 0x0, 0x0);
+    // credit: aqrit
+    __m256i delta_asso;
+    if (default_or_url) {
+      delta_asso = _mm256_setr_epi8(
+          0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00,
+          0x00, 0x00, 0x11, 0x00, 0x16, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
+          0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x11, 0x00, 0x16);
+    } else if (base64_url) {
+      delta_asso = _mm256_setr_epi8(0x1, 0x1, 0x1, 0x1, 0x1, 0x1, 0x1, 0x1, 0x0,
+                                    0x0, 0x0, 0x0, 0x0, 0xF, 0x0, 0xF, 0x1, 0x1,
+                                    0x1, 0x1, 0x1, 0x1, 0x1, 0x1, 0x0, 0x0, 0x0,
+                                    0x0, 0x0, 0xF, 0x0, 0xF);
+    } else {
+      delta_asso = _mm256_setr_epi8(
+          0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00,
+          0x00, 0x00, 0x0F, 0x00, 0x0F, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
+          0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0F, 0x00, 0x0F);
+    }
+
+    __m256i delta_values;
+    if (default_or_url) {
+      delta_values = _mm256_setr_epi8(
+          uint8_t(0xBF), uint8_t(0xE0), uint8_t(0xB9), uint8_t(0x13),
+          uint8_t(0x04), uint8_t(0xBF), uint8_t(0xBF), uint8_t(0xB9),
+          uint8_t(0xB9), uint8_t(0x00), uint8_t(0xFF), uint8_t(0x11),
+          uint8_t(0xFF), uint8_t(0xBF), uint8_t(0x10), uint8_t(0xB9),
+          uint8_t(0xBF), uint8_t(0xE0), uint8_t(0xB9), uint8_t(0x13),
+          uint8_t(0x04), uint8_t(0xBF), uint8_t(0xBF), uint8_t(0xB9),
+          uint8_t(0xB9), uint8_t(0x00), uint8_t(0xFF), uint8_t(0x11),
+          uint8_t(0xFF), uint8_t(0xBF), uint8_t(0x10), uint8_t(0xB9));
+    } else if (base64_url) {
+      delta_values = _mm256_setr_epi8(
+          0x0, 0x0, 0x0, 0x13, 0x4, uint8_t(0xBF), uint8_t(0xBF), uint8_t(0xB9),
+          uint8_t(0xB9), 0x0, 0x11, uint8_t(0xC3), uint8_t(0xBF), uint8_t(0xE0),
+          uint8_t(0xB9), uint8_t(0xB9), 0x0, 0x0, 0x0, 0x13, 0x4, uint8_t(0xBF),
+          uint8_t(0xBF), uint8_t(0xB9), uint8_t(0xB9), 0x0, 0x11, uint8_t(0xC3),
+          uint8_t(0xBF), uint8_t(0xE0), uint8_t(0xB9), uint8_t(0xB9));
+    } else {
+      delta_values = _mm256_setr_epi8(
+          int8_t(0x00), int8_t(0x00), int8_t(0x00), int8_t(0x13), int8_t(0x04),
+          int8_t(0xBF), int8_t(0xBF), int8_t(0xB9), int8_t(0xB9), int8_t(0x00),
+          int8_t(0x10), int8_t(0xC3), int8_t(0xBF), int8_t(0xBF), int8_t(0xB9),
+          int8_t(0xB9), int8_t(0x00), int8_t(0x00), int8_t(0x00), int8_t(0x13),
+          int8_t(0x04), int8_t(0xBF), int8_t(0xBF), int8_t(0xB9), int8_t(0xB9),
+          int8_t(0x00), int8_t(0x10), int8_t(0xC3), int8_t(0xBF), int8_t(0xBF),
+          int8_t(0xB9), int8_t(0xB9));
+    }
+
+    __m256i check_asso;
+    if (default_or_url) {
+      check_asso = _mm256_setr_epi8(
+          0x0D, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x03,
+          0x07, 0x0B, 0x0E, 0x0B, 0x06, 0x0D, 0x01, 0x01, 0x01, 0x01, 0x01,
+          0x01, 0x01, 0x01, 0x01, 0x03, 0x07, 0x0B, 0x0E, 0x0B, 0x06);
+    } else if (base64_url) {
+      check_asso = _mm256_setr_epi8(0xD, 0x1, 0x1, 0x1, 0x1, 0x1, 0x1, 0x1, 0x1,
+                                    0x1, 0x3, 0x7, 0xB, 0xE, 0xB, 0x6, 0xD, 0x1,
+                                    0x1, 0x1, 0x1, 0x1, 0x1, 0x1, 0x1, 0x1, 0x3,
+                                    0x7, 0xB, 0xE, 0xB, 0x6);
+    } else {
+      check_asso = _mm256_setr_epi8(
+          0x0D, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x03,
+          0x07, 0x0B, 0x0B, 0x0B, 0x0F, 0x0D, 0x01, 0x01, 0x01, 0x01, 0x01,
+          0x01, 0x01, 0x01, 0x01, 0x03, 0x07, 0x0B, 0x0B, 0x0B, 0x0F);
+    }
+    __m256i check_values;
+    if (default_or_url) {
+      check_values = _mm256_setr_epi8(
+          uint8_t(0x80), uint8_t(0x80), uint8_t(0x80), uint8_t(0x80),
+          uint8_t(0xCF), uint8_t(0xBF), uint8_t(0xD5), uint8_t(0xA6),
+          uint8_t(0xB5), uint8_t(0xA1), uint8_t(0x00), uint8_t(0x80),
+          uint8_t(0x00), uint8_t(0x80), uint8_t(0x00), uint8_t(0x80),
+          uint8_t(0x80), uint8_t(0x80), uint8_t(0x80), uint8_t(0x80),
+          uint8_t(0xCF), uint8_t(0xBF), uint8_t(0xD5), uint8_t(0xA6),
+          uint8_t(0xB5), uint8_t(0xA1), uint8_t(0x00), uint8_t(0x80),
+          uint8_t(0x00), uint8_t(0x80), uint8_t(0x00), uint8_t(0x80));
+    } else if (base64_url) {
+      check_values = _mm256_setr_epi8(
+          uint8_t(0x80), uint8_t(0x80), uint8_t(0x80), uint8_t(0x80),
+          uint8_t(0xCF), uint8_t(0xBF), uint8_t(0xB6), uint8_t(0xA6),
+          uint8_t(0xB5), uint8_t(0xA1), 0x0, uint8_t(0x80), 0x0, uint8_t(0x80),
+          0x0, uint8_t(0x80), uint8_t(0x80), uint8_t(0x80), uint8_t(0x80),
+          uint8_t(0x80), uint8_t(0xCF), uint8_t(0xBF), uint8_t(0xB6),
+          uint8_t(0xA6), uint8_t(0xB5), uint8_t(0xA1), 0x0, uint8_t(0x80), 0x0,
+          uint8_t(0x80), 0x0, uint8_t(0x80));
+    } else {
+      check_values = _mm256_setr_epi8(
+          int8_t(0x80), int8_t(0x80), int8_t(0x80), int8_t(0x80), int8_t(0xCF),
+          int8_t(0xBF), int8_t(0xD5), int8_t(0xA6), int8_t(0xB5), int8_t(0x86),
+          int8_t(0xD1), int8_t(0x80), int8_t(0xB1), int8_t(0x80), int8_t(0x91),
+          int8_t(0x80), int8_t(0x80), int8_t(0x80), int8_t(0x80), int8_t(0x80),
+          int8_t(0xCF), int8_t(0xBF), int8_t(0xD5), int8_t(0xA6), int8_t(0xB5),
+          int8_t(0x86), int8_t(0xD1), int8_t(0x80), int8_t(0xB1), int8_t(0x80),
+          int8_t(0x91), int8_t(0x80));
+    }
+    const __m256i shifted = _mm256_srli_epi32(*src, 3);
+    __m256i delta_hash =
+        _mm256_avg_epu8(_mm256_shuffle_epi8(delta_asso, *src), shifted);
+    if (default_or_url) {
+      delta_hash = _mm256_and_si256(delta_hash, _mm256_set1_epi8(0xf));
+    }
+    const __m256i check_hash =
+        _mm256_avg_epu8(_mm256_shuffle_epi8(check_asso, *src), shifted);
+    const __m256i out =
+        _mm256_adds_epi8(_mm256_shuffle_epi8(delta_values, delta_hash), *src);
+    const __m256i chk =
+        _mm256_adds_epi8(_mm256_shuffle_epi8(check_values, check_hash), *src);
+    const int mask = _mm256_movemask_epi8(chk);
+    if (!ignore_garbage && mask) {
+      __m256i ascii_space =
+          _mm256_cmpeq_epi8(_mm256_shuffle_epi8(ascii_space_tbl, *src), *src);
+      *error = (mask ^ _mm256_movemask_epi8(ascii_space));
+    }
+    *src = out;
+    return (uint32_t)mask;
+  }
+
+  simdutf_really_inline uint64_t compress_block(uint64_t mask, char *output) {
+    if (is_power_of_two(mask)) {
+      return compress_block_single(mask, output);
+    }
+
+    uint64_t nmask = ~mask;
+    compress(chunks[0], uint32_t(mask), output);
+    compress(chunks[1], uint32_t(mask >> 32),
+             output + count_ones(nmask & 0xFFFFFFFF));
+    return count_ones(nmask);
+  }
+
+  simdutf_really_inline size_t compress_block_single(uint64_t mask,
+                                                     char *output) {
+    const size_t pos64 = trailing_zeroes(mask);
+    const int8_t pos = pos64 & 0xf;
+    switch (pos64 >> 4) {
+    case 0b00: {
+      const __m128i lane0 = _mm256_extracti128_si256(chunks[0], 0);
+      const __m128i lane1 = _mm256_extracti128_si256(chunks[0], 1);
+
+      const __m128i v0 = _mm_set1_epi8(char(pos - 1));
+      const __m128i v1 =
+          _mm_setr_epi8(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
+      const __m128i v2 = _mm_cmpgt_epi8(v1, v0);
+      const __m128i sh = _mm_sub_epi8(v1, v2);
+      const __m128i compressed = _mm_shuffle_epi8(lane0, sh);
+
+      _mm_storeu_si128((__m128i *)(output + 0 * 16), compressed);
+      _mm_storeu_si128((__m128i *)(output + 1 * 16 - 1), lane1);
+      _mm256_storeu_si256((__m256i *)(output + 2 * 16 - 1), chunks[1]);
+    } break;
+    case 0b01: {
+      const __m128i lane0 = _mm256_extracti128_si256(chunks[0], 0);
+      const __m128i lane1 = _mm256_extracti128_si256(chunks[0], 1);
+      _mm_storeu_si128((__m128i *)(output + 0 * 16), lane0);
+
+      const __m128i v0 = _mm_set1_epi8(char(pos - 1));
+      const __m128i v1 =
+          _mm_setr_epi8(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
+      const __m128i v2 = _mm_cmpgt_epi8(v1, v0);
+      const __m128i sh = _mm_sub_epi8(v1, v2);
+      const __m128i compressed = _mm_shuffle_epi8(lane1, sh);
+
+      _mm_storeu_si128((__m128i *)(output + 1 * 16), compressed);
+      _mm256_storeu_si256((__m256i *)(output + 2 * 16 - 1), chunks[1]);
+    } break;
+    case 0b10: {
+      const __m128i lane2 = _mm256_extracti128_si256(chunks[1], 0);
+      const __m128i lane3 = _mm256_extracti128_si256(chunks[1], 1);
+
+      _mm256_storeu_si256((__m256i *)(output + 0 * 16), chunks[0]);
+
+      const __m128i v0 = _mm_set1_epi8(char(pos - 1));
+      const __m128i v1 =
+          _mm_setr_epi8(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
+      const __m128i v2 = _mm_cmpgt_epi8(v1, v0);
+      const __m128i sh = _mm_sub_epi8(v1, v2);
+      const __m128i compressed = _mm_shuffle_epi8(lane2, sh);
+
+      _mm_storeu_si128((__m128i *)(output + 2 * 16), compressed);
+      _mm_storeu_si128((__m128i *)(output + 3 * 16 - 1), lane3);
+    } break;
+    case 0b11: {
+      const __m128i lane2 = _mm256_extracti128_si256(chunks[1], 0);
+      const __m128i lane3 = _mm256_extracti128_si256(chunks[1], 1);
+
+      _mm256_storeu_si256((__m256i *)(output + 0 * 16), chunks[0]);
+      _mm_storeu_si128((__m128i *)(output + 2 * 16), lane2);
+
+      const __m128i v0 = _mm_set1_epi8(char(pos - 1));
+      const __m128i v1 =
+          _mm_setr_epi8(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
+      const __m128i v2 = _mm_cmpgt_epi8(v1, v0);
+      const __m128i sh = _mm_sub_epi8(v1, v2);
+      const __m128i compressed = _mm_shuffle_epi8(lane3, sh);
+
+      _mm_storeu_si128((__m128i *)(output + 3 * 16), compressed);
+    } break;
+    }
+
+    return 63;
+  }
+};
+
+// One bit per byte of the 32 bytes at p: set if the byte is > 0x20 (signed,
+// like the scalar code). spaces holds 0x20 in every byte.
+simdutf_really_inline uint32_t avx2_above_space_mask(const char *p,
+                                                     __m256i spaces) {
+  __m256i data = _mm256_loadu_si256(reinterpret_cast<const __m256i *>(p));
+  return static_cast<uint32_t>(
+      _mm256_movemask_epi8(_mm256_cmpgt_epi8(data, spaces)));
+}
+
+simdutf_warn_unused size_t avx2_binary_length_from_base64(const char *input,
+                                                          size_t length) {
+  // Inputs this long count four blocks per step in the vector domain.
+  constexpr size_t vector_count_threshold = 128;
+  // Inputs this long (well past what stays hot in L1 between calls) are
+  // first aligned to 32 bytes: an unaligned 32-byte load straddles two cache
+  // lines every other block, and once the data comes from L2 or beyond these
+  // split loads cost more than the counting.
+  constexpr size_t align_threshold = 1024;
+
+  size_t count = 0;
+  const char *ptr = input;
+  const char *end = input + length;
+
+  const __m256i spaces = _mm256_set1_epi8(0x20);
+
+  // The hint keeps the short-input path straight-line; it costs the long
+  // path one taken jump per call.
+  if (simdutf_unlikely(length >= vector_count_threshold)) {
+    if (length >= align_threshold) {
+      // Bytes up to the next 32-byte boundary, 0..31.
+      const size_t head = (32 - (reinterpret_cast<uintptr_t>(ptr) & 31)) & 31;
+      if (head != 0) {
+        count += count_ones(avx2_above_space_mask(ptr, spaces) &
+                            ((uint32_t(1) << head) - 1));
+        ptr += head;
+      }
+    }
+    // Count four blocks per step; at least 128 bytes remain, so the loop
+    // runs at least once. Each compare yields 0 or -1 per byte; the sum of
+    // four is at least -4, so negating it gives per-byte counts of 0..4 that
+    // vpsadbw adds into 64-bit lanes. This replaces a vpmovmskb, a popcnt
+    // and an add per block.
+    const __m256i zero = _mm256_setzero_si256();
+    __m256i sums = zero;
+    do {
+      const __m256i *p = reinterpret_cast<const __m256i *>(ptr);
+      __m256i neg = _mm256_cmpgt_epi8(_mm256_loadu_si256(p), spaces);
+      neg = _mm256_add_epi8(
+          neg, _mm256_cmpgt_epi8(_mm256_loadu_si256(p + 1), spaces));
+      neg = _mm256_add_epi8(
+          neg, _mm256_cmpgt_epi8(_mm256_loadu_si256(p + 2), spaces));
+      neg = _mm256_add_epi8(
+          neg, _mm256_cmpgt_epi8(_mm256_loadu_si256(p + 3), spaces));
+      sums = _mm256_add_epi64(
+          sums, _mm256_sad_epu8(_mm256_sub_epi8(zero, neg), zero));
+      ptr += 128;
+    } while (size_t(end - ptr) >= 128);
+    const __m128i s = _mm_add_epi64(_mm256_castsi256_si128(sums),
+                                    _mm256_extracti128_si256(sums, 1));
+    count += size_t(_mm_cvtsi128_si64(s)) + size_t(_mm_extract_epi64(s, 1));
+  }
+
+  // Whole blocks left over: at most three after the loop above, or up to
+  // three for a short input.
+  while (size_t(end - ptr) >= 32) {
+    count += count_ones(avx2_above_space_mask(ptr, spaces));
+    ptr += 32;
+  }
+
+  if (ptr != end) {
+    if (length >= 32) {
+      // Fewer than 32 bytes remain: count them in the last 32 bytes of the
+      // input, which end at the same place.
+      const size_t rest = size_t(end - ptr);
+      count +=
+          count_ones(avx2_above_space_mask(end - 32, spaces) >> (32 - rest));
+    } else {
+      do {
+        count += (*ptr > 0x20) ? 1 : 0;
+      } while (++ptr != end);
+    }
+  }
+
+  size_t padding = 0;
+  size_t pos = length;
+  while (pos > 0 && padding < 2) {
+    char c = input[--pos];
+    if (c == '=') {
+      padding++;
+    } else if (c > ' ') {
+      break;
+    }
+  }
+  return ((count - padding) * 3) / 4;
+}
+
+simdutf_warn_unused size_t avx2_binary_length_from_base64(const char16_t *input,
+                                                          size_t length) {
+  size_t count = 0;
+  const char16_t *ptr = input;
+  const char16_t *end = input + length;
+
+  __m256i spaces = _mm256_set1_epi16(0x20);
+  while (size_t(end - ptr) >= 16) {
+    __m256i data = _mm256_loadu_si256(reinterpret_cast<const __m256i *>(ptr));
+    __m256i gt_space = _mm256_cmpgt_epi16(data, spaces);
+    uint32_t mask = static_cast<uint32_t>(_mm256_movemask_epi8(gt_space));
+    count += count_ones(mask);
+    ptr += 16;
+  }
+  count /= 2;
+
+  while (ptr < end) {
+    count += (*ptr > 0x20) ? 1 : 0;
+    ptr++;
+  }
+
+  size_t padding = 0;
+  size_t pos = length;
+  while (pos > 0 && padding < 2) {
+    char16_t c = input[--pos];
+    if (c == '=') {
+      padding++;
+    } else if (c > ' ') {
+      break;
+    }
+  }
+  return ((count - padding) * 3) / 4;
+}

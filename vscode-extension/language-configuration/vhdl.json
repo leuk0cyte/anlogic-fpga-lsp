@@ -1,0 +1,22 @@
+{
+  "comments": { "lineComment": "--", "blockComment": ["/*", "*/"] },
+  "brackets": [["(", ")"], ["[", "]"]],
+  "autoClosingPairs": [
+    { "open": "(", "close": ")" },
+    { "open": "[", "close": "]" },
+    { "open": "\"", "close": "\"", "notIn": ["string", "comment"] },
+    { "open": "'", "close": "'", "notIn": ["string", "comment"] }
+  ],
+  "surroundingPairs": [["(", ")"], ["[", "]"], ["\"", "\""]],
+  "folding": {
+    "markers": {
+      "start": "^\\s*--\\s*#?region\\b",
+      "end": "^\\s*--\\s*#?endregion\\b"
+    }
+  },
+  "wordPattern": "([A-Za-z_]\\w*)|(\\d[\\w#.]*)",
+  "indentationRules": {
+    "increaseIndentPattern": "^\\s*((entity|architecture|package|process|block|generate|if|case|loop|record|component|procedure|function|configuration|for|while|when)\\b.*\\b(is|begin|loop|generate|then|record)\\b.*|.*\\b(generate|begin|loop|record)\\s*)$",
+    "decreaseIndentPattern": "^\\s*(end|elsif|else|when|end\\s+(if|case|loop|process|entity|architecture|package|block|generate|record|component|procedure|function|configuration))\\b"
+  }
+}

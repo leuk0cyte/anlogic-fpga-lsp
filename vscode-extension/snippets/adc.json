@@ -1,0 +1,17 @@
+{
+  "pin assignment": {
+    "prefix": ["pin", "set_pin_assignment"],
+    "body": "set_pin_assignment { ${1:port} } { LOCATION = ${2:A17}; IOSTANDARD = ${3:LVCMOS33}; }",
+    "description": "Anlogic ADC pin assignment"
+  },
+  "pin assignment with pull": {
+    "prefix": ["pinpull", "pin pullup"],
+    "body": "set_pin_assignment { ${1:port} } { LOCATION = ${2:A17}; IOSTANDARD = ${3:LVCMOS33}; PULLTYPE = ${4:PULLUP}; }",
+    "description": "ADC pin assignment with pull type"
+  },
+  "bus pin assignment": {
+    "prefix": ["buspin", "pin bus"],
+    "body": "set_pin_assignment { ${1:bus}[${2:0}] } { LOCATION = ${3:A17}; IOSTANDARD = ${4:LVCMOS33}; }",
+    "description": "ADC bus bit assignment"
+  }
+}

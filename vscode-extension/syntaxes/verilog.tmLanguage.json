@@ -1,0 +1,197 @@
+{
+  "name": "Verilog",
+  "scopeName": "source.verilog",
+  "fileTypes": ["v", "vh", "sv", "svh"],
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#preprocessor" },
+    { "include": "#attributes" },
+    { "include": "#module-declaration" },
+    { "include": "#port-declaration" },
+    { "include": "#parameter-declaration" },
+    { "include": "#signal-declaration" },
+    { "include": "#function-task" },
+    { "include": "#instance" },
+    { "include": "#system-task" },
+    { "include": "#label" },
+    { "include": "#numbers" },
+    { "include": "#control-keywords" },
+    { "include": "#storage-keywords" },
+    { "include": "#types" },
+    { "include": "#operators" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        { "name": "comment.line.double-slash.verilog", "begin": "//", "end": "$" },
+        { "name": "comment.block.verilog", "begin": "/\\*", "end": "\\*/" }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.verilog",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [
+            { "name": "constant.character.escape.verilog", "match": "\\\\." },
+            { "name": "constant.character.escape.verilog", "match": "%[0-9.]*[a-zA-Z]" }
+          ]
+        }
+      ]
+    },
+    "preprocessor": {
+      "patterns": [
+        {
+          "name": "keyword.control.preprocessor.verilog",
+          "match": "`\\b(define|undef|include|ifdef|ifndef|elsif|else|endif|timescale|default_nettype|resetall|celldefine|endcelldefine|line|begin_keywords|end_keywords|unconnected_drive|nounconnected_drive|pragma|default_decay_time|default_trireg_strength|delay_mode_distributed|delay_mode_path|delay_mode_unit|delay_mode_zero)\\b"
+        },
+        { "name": "entity.name.function.preprocessor.verilog", "match": "`[A-Za-z_][A-Za-z0-9_$]*" }
+      ]
+    },
+    "attributes": {
+      "patterns": [
+        {
+          "name": "meta.attribute.verilog",
+          "begin": "\\(\\*",
+          "end": "\\*\\)",
+          "patterns": [{ "name": "entity.other.attribute-name.verilog", "match": "[A-Za-z_][A-Za-z0-9_$]*" }]
+        }
+      ]
+    },
+    "module-declaration": {
+      "patterns": [
+        {
+          "name": "meta.module.verilog",
+          "begin": "\\b(module|interface|program|package|class|primitive|config)\\b\\s+([A-Za-z_][A-Za-z0-9_$]*)",
+          "beginCaptures": {
+            "1": { "name": "keyword.control.verilog" },
+            "2": { "name": "entity.name.type.verilog" }
+          },
+          "end": "\\b(endmodule|endinterface|endprogram|endpackage|endclass|endprimitive|endconfig)\\b",
+          "endCaptures": { "1": { "name": "keyword.control.verilog" } },
+          "patterns": [{ "include": "$self" }]
+        }
+      ]
+    },
+    "port-declaration": {
+      "patterns": [
+        {
+          "match": "\\b(input|output|inout|ref)\\b\\s*(?:(wire|reg|logic|tri0|tri1|tri|bit|integer|signed|unsigned)\\b)?\\s*(?:\\[[^\\]]*\\])?\\s+([A-Za-z_][A-Za-z0-9_$]*)",
+          "captures": {
+            "1": { "name": "storage.modifier.direction.verilog" },
+            "2": { "name": "support.type.verilog" },
+            "3": { "name": "entity.name.tag.port.verilog" }
+          }
+        }
+      ]
+    },
+    "parameter-declaration": {
+      "patterns": [
+        {
+          "match": "\\b(parameter|localparam)\\b\\s+(?:signed\\s+)?(?:\\[[^\\]]*\\]\\s*)?([A-Za-z_][A-Za-z0-9_$]*)",
+          "captures": {
+            "1": { "name": "storage.modifier.verilog" },
+            "2": { "name": "variable.other.constant.verilog" }
+          }
+        }
+      ]
+    },
+    "signal-declaration": {
+      "patterns": [
+        {
+          "match": "\\b(wire|reg|logic|bit|byte|shortint|int|longint|integer|time|real|realtime|shortreal|tri|tri0|tri1|triand|trior|trireg|wand|wor|supply0|supply1)\\b\\s*(?:signed\\s+|unsigned\\s+)?(?:\\[[^\\]]*\\]\\s*)?([A-Za-z_][A-Za-z0-9_$]*)",
+          "captures": {
+            "1": { "name": "support.type.verilog" },
+            "2": { "name": "variable.other.readwrite.verilog" }
+          }
+        },
+        {
+          "match": "\\b(genvar)\\b\\s*([A-Za-z_][A-Za-z0-9_$]*)",
+          "captures": {
+            "1": { "name": "storage.modifier.verilog" },
+            "2": { "name": "variable.language.genvar.verilog" }
+          }
+        }
+      ]
+    },
+    "function-task": {
+      "patterns": [
+        {
+          "match": "\\b(function|task)\\b\\s+(?:automatic\\s+)?(?:(?:integer|int|logic|bit|reg|byte|shortint|longint|real|time|string|void)\\s+)?([A-Za-z_][A-Za-z0-9_$]*)",
+          "captures": {
+            "1": { "name": "keyword.control.verilog" },
+            "2": { "name": "entity.name.function.verilog" }
+          }
+        }
+      ]
+    },
+    "instance": {
+      "patterns": [
+        {
+          "match": "\\b([A-Za-z_][A-Za-z0-9_$]*)\\s*(#\\s*\\((?:[^()]|\\([^()]*\\))*\\))?\\s+([A-Za-z_][A-Za-z0-9_$]*)\\s*\\(",
+          "captures": {
+            "1": { "name": "entity.name.type.instance.verilog" },
+            "2": { "name": "meta.parameter-override.verilog" },
+            "3": { "name": "entity.name.function.instance.verilog" }
+          }
+        }
+      ]
+    },
+    "system-task": {
+      "patterns": [{ "name": "support.function.system.verilog", "match": "\\$[A-Za-z_][A-Za-z0-9_$]*" }]
+    },
+    "label": {
+      "patterns": [
+        {
+          "match": "\\b(begin|end)\\s*:\\s*([A-Za-z_][A-Za-z0-9_$]*)",
+          "captures": {
+            "1": { "name": "keyword.control.verilog" },
+            "2": { "name": "entity.name.label.verilog" }
+          }
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        { "name": "constant.numeric.verilog", "match": "\\b\\d*'[sS]?[bBoOdDhH][0-9a-fA-FxXzZ?_]+" },
+        { "name": "constant.numeric.verilog", "match": "'[01xXzZ]" },
+        { "name": "constant.numeric.verilog", "match": "\\b\\d+\\.\\d+([eE][+-]?\\d+)?" },
+        { "name": "constant.numeric.verilog", "match": "\\b\\d+([eE][+-]?\\d+)?" }
+      ]
+    },
+    "control-keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.verilog",
+          "match": "\\b(module|endmodule|macmodule|endmacmodule|interface|endinterface|program|endprogram|package|endpackage|class|endclass|function|endfunction|task|endtask|begin|end|fork|join|join_any|join_none|generate|endgenerate|if|else|case|casez|casex|endcase|for|while|repeat|forever|do|initial|final|always|always_ff|always_comb|always_latch|assign|deassign|force|release|wait|disable|specify|endspecify|table|endtable|primitive|endprimitive|config|endconfig|covergroup|endgroup|property|endproperty|sequence|endsequence|assert|assume|cover|expect|restrict|default|break|continue|return|inside|dist|with|matches|tagged|import|export|typedef|virtual|pure|extends|implements|new|null|this|super|extern|local|protected|static|automatic|const|var|ref|rand|randc|constraint|solve|before|soft|foreach|iff|unique|unique0|priority|context|checker|endchecker|clocking|endclocking|modport|endmodport|nettype|interconnect|let|alias|bind|posedge|negedge|edge)\\b"
+        }
+      ]
+    },
+    "storage-keywords": {
+      "patterns": [
+        {
+          "name": "storage.modifier.verilog",
+          "match": "\\b(parameter|localparam|input|output|inout|signed|unsigned)\\b"
+        }
+      ]
+    },
+    "types": {
+      "patterns": [
+        {
+          "name": "support.type.verilog",
+          "match": "\\b(wire|reg|logic|bit|byte|shortint|int|longint|integer|time|real|realtime|shortreal|tri|tri0|tri1|triand|trior|trireg|wand|wor|supply0|supply1|string|event|struct|union|enum|genvar)\\b"
+        }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.verilog",
+          "match": "<=|>=|==|!=|===|!==|&&|\\|\\||<<<|>>>|<<|>>|~&|~\\||\\^~|~\\^|\\+:|\\-:|\\(\\*\\)|->|=>|##|\\+|-|\\*|/|%|!|~|&|\\||\\^|<|>|\\?|:"
+        }
+      ]
+    }
+  }
+}

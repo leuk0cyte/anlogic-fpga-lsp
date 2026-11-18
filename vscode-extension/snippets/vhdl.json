@@ -1,0 +1,153 @@
+{
+  "entity": {
+    "prefix": ["entity", "ent"],
+    "body": [
+      "entity ${1:entity_name} is",
+      "  port (",
+      "    ${2:clk} : in  std_logic;",
+      "    ${3:rst_n} : in  std_logic;",
+      "    ${4:dout} : out std_logic",
+      "  );",
+      "end entity ${1:entity_name};"
+    ],
+    "description": "VHDL entity declaration"
+  },
+  "architecture": {
+    "prefix": ["architecture", "arch"],
+    "body": [
+      "architecture ${1:rtl} of ${2:entity_name} is",
+      "  signal ${3:name} : std_logic;",
+      "begin",
+      "  $0",
+      "end architecture ${1:rtl};"
+    ],
+    "description": "VHDL architecture"
+  },
+  "process": {
+    "prefix": ["process", "proc"],
+    "body": [
+      "${1:seq_proc} : process (${2:clk}, ${3:rst_n})",
+      "begin",
+      "  if ${3:rst_n} = '0' then",
+      "    $4",
+      "  elsif rising_edge(${2:clk}) then",
+      "    $0",
+      "  end if;",
+      "end process ${1:seq_proc};"
+    ],
+    "description": "Synchronous process with reset"
+  },
+  "if": {
+    "prefix": "if",
+    "body": [
+      "if ${1:condition} then",
+      "  $0",
+      "end if;"
+    ],
+    "description": "if ... end if"
+  },
+  "if else": {
+    "prefix": "ifelse",
+    "body": [
+      "if ${1:condition} then",
+      "  $2",
+      "else",
+      "  $0",
+      "end if;"
+    ],
+    "description": "if ... else ... end if"
+  },
+  "case": {
+    "prefix": "case",
+    "body": [
+      "case ${1:expression} is",
+      "  when ${2:value} =>",
+      "    ${3:statement}",
+      "  when others =>",
+      "    ${0:null};",
+      "end case;"
+    ],
+    "description": "case ... end case"
+  },
+  "for generate": {
+    "prefix": ["forgenerate", "genfor"],
+    "body": [
+      "${1:gen_name} : for ${2:i} in ${3:0} to ${4:N-1} generate",
+      "  $0",
+      "end generate ${1:gen_name};"
+    ],
+    "description": "VHDL for-generate"
+  },
+  "component": {
+    "prefix": ["component", "comp"],
+    "body": [
+      "component ${1:component_name}",
+      "  port (",
+      "    ${2:clk} : in  std_logic;",
+      "    ${3:dout} : out std_logic",
+      "  );",
+      "end component ${1:component_name};"
+    ],
+    "description": "VHDL component declaration"
+  },
+  "port map": {
+    "prefix": ["portmap", "map"],
+    "body": [
+      "${1:u_inst} : ${2:component_name}",
+      "  port map (",
+      "    ${3:clk} => ${4:clk},",
+      "    ${0:dout} => ${5:dout}",
+      "  );"
+    ],
+    "description": "VHDL component instantiation"
+  },
+  "signal": {
+    "prefix": "signal",
+    "body": "signal ${1:name} : ${2:std_logic};",
+    "description": "VHDL signal declaration"
+  },
+  "constant": {
+    "prefix": ["constant", "const"],
+    "body": "constant ${1:NAME} : ${2:integer} := ${3:0};",
+    "description": "VHDL constant declaration"
+  },
+  "type": {
+    "prefix": ["type", "typedef"],
+    "body": [
+      "type ${1:state_t} is (",
+      "  ${2:IDLE},",
+      "  ${3:RUN}",
+      ");"
+    ],
+    "description": "VHDL enumeration type"
+  },
+  "testbench": {
+    "prefix": ["tb", "testbench"],
+    "body": [
+      "library ieee;",
+      "use ieee.std_logic_1164.all;",
+      "use ieee.numeric_std.all;",
+      "",
+      "entity tb_${1:dut} is",
+      "end entity tb_${1:dut};",
+      "",
+      "architecture sim of tb_${1:dut} is",
+      "  signal clk   : std_logic := '0';",
+      "  signal rst_n : std_logic := '0';",
+      "  constant CLK_PERIOD : time := 10 ns;",
+      "begin",
+      "  clk <= not clk after CLK_PERIOD / 2;",
+      "",
+      "  stimulus : process",
+      "  begin",
+      "    rst_n <= '0';",
+      "    wait for CLK_PERIOD * 5;",
+      "    rst_n <= '1';",
+      "    wait for CLK_PERIOD * 100;",
+      "    std.env.stop;",
+      "  end process stimulus;",
+      "end architecture sim;"
+    ],
+    "description": "VHDL testbench skeleton"
+  }
+}

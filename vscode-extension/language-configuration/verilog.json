@@ -1,0 +1,30 @@
+{
+  "comments": { "lineComment": "//", "blockComment": ["/*", "*/"] },
+  "brackets": [["{", "}"], ["[", "]"], ["(", ")"]],
+  "autoClosingPairs": [
+    { "open": "{", "close": "}" },
+    { "open": "[", "close": "]" },
+    { "open": "(", "close": ")" },
+    { "open": "\"", "close": "\"", "notIn": ["string", "comment"] },
+    { "open": "'", "close": "'", "notIn": ["string", "comment"] },
+    { "open": "/*", "close": "*/", "notIn": ["string"] }
+  ],
+  "surroundingPairs": [
+    ["{", "}"],
+    ["[", "]"],
+    ["(", ")"],
+    ["\"", "\""],
+    ["'", "'"]
+  ],
+  "folding": {
+    "markers": {
+      "start": "^\\s*//\\s*#?region\\b",
+      "end": "^\\s*//\\s*#?endregion\\b"
+    }
+  },
+  "wordPattern": "(-?\\d*\\.\\d\\w*)|([^\\`\\~\\!\\@\\#\\%\\^\\&\\*\\(\\)\\-\\+\\=\\{\\}\\|\\[\\]\\\\;\\'\\:\\\"\\,\\.\\<\\>\\/\\?\\s]+)",
+  "indentationRules": {
+    "increaseIndentPattern": "^\\s*((module|interface|package|program|class|function|task|begin|case|casez|casex|generate|fork|covergroup|property|sequence|table|specify|clocking|checker|modport)\\b.*|.*\\b(begin|fork)\\s*)$",
+    "decreaseIndentPattern": "^\\s*(end|endmodule|endinterface|endpackage|endprogram|endclass|endfunction|endtask|endcase|endgenerate|join|join_any|join_none|endgroup|endproperty|endsequence|endspecify|endtable|endclocking|endchecker|endmodport)\\b"
+  }
+}

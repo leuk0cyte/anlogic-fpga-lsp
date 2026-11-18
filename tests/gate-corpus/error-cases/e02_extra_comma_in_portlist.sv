@@ -1,0 +1,8 @@
+module mod_ports (
+  input  logic a,
+  ,
+  input  logic b,
+  output logic c
+);
+  assign c = a & b;
+endmodule

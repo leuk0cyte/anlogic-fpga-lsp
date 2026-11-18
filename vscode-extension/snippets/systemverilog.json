@@ -1,0 +1,208 @@
+{
+  "module": {
+    "prefix": "module",
+    "body": [
+      "module ${1:moduleName} (",
+      "\t${2:ports}",
+      ");",
+      "\t$0",
+      "endmodule"
+    ],
+    "description": "SystemVerilog module"
+  },
+  "always_ff": {
+    "prefix": "always_ff",
+    "body": [
+      "always_ff @(posedge ${1:clk} or negedge ${2:rst_n}) begin : ${3:seq_ff}",
+      "\tif (!${2:rst_n}) begin",
+      "\t\t$4",
+      "\tend else begin",
+      "\t\t$0",
+      "\tend",
+      "end"
+    ],
+    "description": "always_ff flip-flop block"
+  },
+  "always_comb": {
+    "prefix": "always_comb",
+    "body": [
+      "always_comb begin : ${1:comb_block}",
+      "\t$0",
+      "end"
+    ],
+    "description": "always_comb block"
+  },
+  "always_latch": {
+    "prefix": "always_latch",
+    "body": [
+      "always_latch begin : ${1:latch_block}",
+      "\t$0",
+      "end"
+    ],
+    "description": "always_latch block"
+  },
+  "logic": {
+    "prefix": "logic",
+    "body": "logic ${1:name};",
+    "description": "logic declaration"
+  },
+  "logic array": {
+    "prefix": ["logicarray", "logic ["],
+    "body": "logic [${1:7}:${2:0}] ${3:name};",
+    "description": "logic [N:0] name;"
+  },
+  "bit": {
+    "prefix": "bit",
+    "body": "bit ${1:name};",
+    "description": "bit declaration"
+  },
+  "int": {
+    "prefix": "int",
+    "body": "int ${1:name};",
+    "description": "int declaration"
+  },
+  "typedef struct packed": {
+    "prefix": ["typedef struct", "struct packed"],
+    "body": [
+      "typedef struct packed {",
+      "\t$0",
+      "} ${1:struct_name};"
+    ],
+    "description": "packed struct typedef"
+  },
+  "typedef enum": {
+    "prefix": ["typedef enum", "enum"],
+    "body": [
+      "typedef enum logic [${1:1}:0] {",
+      "\t${2:IDLE} = 2'd0,",
+      "\t${3:RUN}  = 2'd1",
+      "} ${4:state_t};"
+    ],
+    "description": "enum typedef"
+  },
+  "class": {
+    "prefix": "class",
+    "body": [
+      "class ${1:className};",
+      "\tfunction new();",
+      "\t\t$0",
+      "\tendfunction",
+      "endclass"
+    ],
+    "description": "class ... endclass"
+  },
+  "package": {
+    "prefix": "package",
+    "body": [
+      "package ${1:pkg_name};",
+      "\t$0",
+      "endpackage"
+    ],
+    "description": "package ... endpackage"
+  },
+  "import": {
+    "prefix": "import",
+    "body": "import ${1:pkg_name}::*;",
+    "description": "import package"
+  },
+  "interface": {
+    "prefix": "interface",
+    "body": [
+      "interface ${1:if_name};",
+      "\t$0",
+      "endinterface"
+    ],
+    "description": "interface ... endinterface"
+  },
+  "modport": {
+    "prefix": "modport",
+    "body": [
+      "modport ${1:mp_name} (",
+      "\tinput  ${2:in_ports},",
+      "\toutput ${3:out_ports}",
+      ");"
+    ],
+    "description": "modport declaration"
+  },
+  "task": {
+    "prefix": "task",
+    "body": [
+      "task ${1:task_name}(${2:args});",
+      "\t$0",
+      "endtask"
+    ],
+    "description": "task ... endtask"
+  },
+  "function": {
+    "prefix": "function",
+    "body": [
+      "function ${1:return_type} ${2:fn_name}(${3:args});",
+      "\t$0",
+      "endfunction"
+    ],
+    "description": "function ... endfunction"
+  },
+  "assert": {
+    "prefix": "assert",
+    "body": [
+      "assert (${1:condition}) else $error(\"${2:message}\");",
+      "$0"
+    ],
+    "description": "assert ... else $error"
+  },
+  "fork join": {
+    "prefix": ["fork join", "fork"],
+    "body": [
+      "fork",
+      "\t$0",
+      "join"
+    ],
+    "description": "fork ... join"
+  },
+  "queue": {
+    "prefix": "queue",
+    "body": "${1:int} ${2:q} [$];",
+    "description": "queue declaration"
+  },
+  "associative array": {
+    "prefix": ["AA", "assoc"],
+    "body": "${1:int} ${2:map}[${3:string}];",
+    "description": "associative array"
+  },
+  "display": {
+    "prefix": "display",
+    "body": "$display(\"${1:%0d}\", ${2:value});",
+    "description": "$display"
+  },
+  "testbench": {
+    "prefix": ["tb", "testbench"],
+    "body": [
+      "`timescale 1ns/1ps",
+      "",
+      "module tb_${1:dut};",
+      "  logic clk;",
+      "  logic rst_n;",
+      "",
+      "  ${2:dut} dut (",
+      "    .clk   (clk),",
+      "    .rst_n (rst_n)",
+      "  );",
+      "",
+      "  localparam CLK_PERIOD = 10;",
+      "  initial clk = 0;",
+      "  always #(CLK_PERIOD/2) clk = ~clk;",
+      "",
+      "  initial begin",
+      "    $dumpfile(\"tb_${1:dut}.vcd\");",
+      "    $dumpvars(0, tb_${1:dut});",
+      "    rst_n = 0;",
+      "    repeat (5) @(posedge clk);",
+      "    rst_n = 1;",
+      "    repeat (100) @(posedge clk);",
+      "    $finish;",
+      "  end",
+      "endmodule"
+    ],
+    "description": "SystemVerilog testbench skeleton"
+  }
+}

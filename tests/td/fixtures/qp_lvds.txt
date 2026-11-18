@@ -1,0 +1,173 @@
+
+
+
+RUN-1002 : start command "query_current_package -lvds"
+USR-8192 ERROR: Differential location P119 (of P120) is for dedicate pin or unavailable. Choose another pin for normal use
+RUN-1001 : Input LVDS pairs in package EF2L45LG144B : 
+RUN-1001 : ---------------------------------------------------------------------------------
+RUN-1001 :   #   |  Type  |  IntBank  |  ExtBank  |  Name <[P],[N]>  |  Location <[P],[N]>  
+RUN-1001 : ---------------------------------------------------------------------------------
+RUN-1001 :   1   |  LVDS  |     7     |     2     |   <P100 , P99>   |    <PT8A , PT8B>     
+RUN-1001 :   2   |  LVDS  |     8     |     2     |  <P104 , P105>   |    <PT4A , PT4B>     
+RUN-1001 :   3   |  LVDS  |     8     |     2     |  <P106 , P107>   |    <PT2A , PT2B>     
+RUN-1001 :   4   |  LVDS  |     3     |     0     |   <P11 , P12>    |    <PB9C , PB9D>     
+RUN-1001 :   5   |  LVDS  |     1     |     3     |  <P110 , P109>   |   <PL27C , PL27D>    
+RUN-1001 :   6   |  LVDS  |     1     |     3     |  <P112 , P111>   |   <PL24A , PL24B>    
+RUN-1001 :   7   |  LVDS  |     1     |     3     |  <P114 , P113>   |   <PL24C , PL24D>    
+RUN-1001 :   8   |  LVDS  |     1     |     3     |  <P115 , P117>   |   <PL21A , PL21B>    
+RUN-1001 :   9   |  LVDS  |     1     |     3     |  <P122 , P121>   |   <PL18A , PL18B>    
+RUN-1001 :   10  |  LVDS  |     1     |     3     |  <P126 , P125>   |   <PL18C , PL18D>    
+RUN-1001 :   11  |  LVDS  |     1     |     3     |  <P128 , P127>   |   <PL14C , PL14D>    
+RUN-1001 :   12  |  LVDS  |     3     |     0     |   <P13 , P14>    |    <PB8A , PB8B>     
+RUN-1001 :   13  |  LVDS  |     1     |     3     |  <P132 , P133>   |    <PL8A , PL8B>     
+RUN-1001 :   14  |  LVDS  |     1     |     3     |  <P139 , P138>   |    <PL5C , PL5D>     
+RUN-1001 :   15  |  LVDS  |     1     |     3     |  <P140 , P141>   |    <PL2A , PL2B>     
+RUN-1001 :   16  |  LVDS  |     1     |     3     |  <P143 , P142>   |    <PL2C , PL2D>     
+RUN-1001 :   17  |  LVDS  |     3     |     0     |   <P19 , P20>    |   <PB10C , PB10D>    
+RUN-1001 :   18  |  LVDS  |     2     |     0     |    <P2 , P1>     |    <PB1A , PB1B>     
+RUN-1001 :   19  |  LVDS  |     4     |     0     |   <P21 , P22>    |   <PB11C , PB11D>    
+RUN-1001 :   20  |  LVDS  |     4     |     0     |   <P23 , P24>    |   <PB13A , PB13B>    
+RUN-1001 :   21  |  LVDS  |     4     |     0     |   <P25 , P26>    |   <PB13C , PB13D>    
+RUN-1001 :   22  |  LVDS  |     4     |     0     |   <P27 , P28>    |   <PB15C , PB15D>    
+RUN-1001 :   23  |  LVDS  |     5     |     0     |   <P32 , P33>    |   <PB23A , PB23B>    
+RUN-1001 :   24  |  LVDS  |     5     |     0     |   <P34 , P35>    |   <PB20A , PB20B>    
+RUN-1001 :   25  |  LVDS  |     6     |     1     |   <P38 , P39>    |    <PR5C , PR5D>     
+RUN-1001 :   26  |  LVDS  |     2     |     0     |    <P4 , P3>     |    <PB1C , PB1D>     
+RUN-1001 :   27  |  LVDS  |     6     |     1     |   <P40 , P41>    |    <PR5A , PR5B>     
+RUN-1001 :   28  |  LVDS  |     6     |     1     |   <P42 , P43>    |    <PR8C , PR8D>     
+RUN-1001 :   29  |  LVDS  |     6     |     1     |   <P45 , P44>    |    <PR8A , PR8B>     
+RUN-1001 :   30  |  LVDS  |     6     |     1     |   <P47 , P48>    |   <PR11C , PR11D>    
+RUN-1001 :   31  |  LVDS  |     6     |     1     |   <P50 , P49>    |   <PR11A , PR11B>    
+RUN-1001 :   32  |  LVDS  |     6     |     1     |   <P52 , P54>    |   <PR14C , PR14D>    
+RUN-1001 :   33  |  LVDS  |     6     |     1     |   <P56 , P55>    |   <PR14A , PR14B>    
+RUN-1001 :   34  |  LVDS  |     6     |     1     |   <P57 , P58>    |   <PR18C , PR18D>    
+RUN-1001 :   35  |  LVDS  |     6     |     1     |   <P59 , P60>    |   <PR18A , PR18B>    
+RUN-1001 :   36  |  LVDS  |     2     |     0     |    <P6 , P5>     |    <PB2C , PB2D>     
+RUN-1001 :   37  |  LVDS  |     6     |     1     |   <P61 , P62>    |   <PR21C , PR21D>    
+RUN-1001 :   38  |  LVDS  |     6     |     1     |   <P67 , P65>    |   <PR21A , PR21B>    
+RUN-1001 :   39  |  LVDS  |     6     |     1     |   <P68 , P69>    |   <PR24C , PR24D>    
+RUN-1001 :   40  |  LVDS  |     6     |     1     |   <P71 , P70>    |   <PR24A , PR24B>    
+RUN-1001 :   41  |  LVDS  |     7     |     2     |   <P74 , P73>    |   <PT22C , PT22D>    
+RUN-1001 :   42  |  LVDS  |     7     |     2     |   <P76 , P75>    |   <PT19A , PT19B>    
+RUN-1001 :   43  |  LVDS  |     7     |     2     |   <P78 , P77>    |   <PT18A , PT18B>    
+RUN-1001 :   44  |  LVDS  |     7     |     2     |   <P82 , P81>    |   <PT16C , PT16D>    
+RUN-1001 :   45  |  LVDS  |     7     |     2     |   <P84 , P83>    |   <PT16A , PT16B>    
+RUN-1001 :   46  |  LVDS  |     7     |     2     |   <P86 , P85>    |   <PT15C , PT15D>    
+RUN-1001 :   47  |  LVDS  |     7     |     2     |   <P89 , P87>    |   <PT15A , PT15B>    
+RUN-1001 :   48  |  LVDS  |     3     |     0     |    <P9 , P10>    |    <PB9A , PB9B>     
+RUN-1001 :   49  |  LVDS  |     7     |     2     |   <P92 , P91>    |   <PT14C , PT14D>    
+RUN-1001 :   50  |  LVDS  |     7     |     2     |   <P98 , P97>    |    <PT8C , PT8D>     
+RUN-1001 : ---------------------------------------------------------------------------------
+USR-8192 ERROR: Differential location P119 (of P120) is for dedicate pin or unavailable. Choose another pin for normal use
+RUN-1001 : Output LVDS pairs in package EF2L45LG144B : 
+RUN-1001 : -----------------------------------------------------------------------------------
+RUN-1001 :   #   |   Type   |  IntBank  |  ExtBank  |  Name <[P],[N]>  |  Location <[P],[N]>  
+RUN-1001 : -----------------------------------------------------------------------------------
+RUN-1001 :   1   |   LVDS   |     1     |     3     |  <P110 , P109>   |   <PL27C , PL27D>    
+RUN-1001 :   2   |   LVDS   |     1     |     3     |  <P112 , P111>   |   <PL24A , PL24B>    
+RUN-1001 :   3   |   LVDS   |     1     |     3     |  <P114 , P113>   |   <PL24C , PL24D>    
+RUN-1001 :   4   |   LVDS   |     1     |     3     |  <P115 , P117>   |   <PL21A , PL21B>    
+RUN-1001 :   5   |   LVDS   |     1     |     3     |  <P122 , P121>   |   <PL18A , PL18B>    
+RUN-1001 :   6   |   LVDS   |     1     |     3     |  <P126 , P125>   |   <PL18C , PL18D>    
+RUN-1001 :   7   |   LVDS   |     1     |     3     |  <P128 , P127>   |   <PL14C , PL14D>    
+RUN-1001 :   8   |   LVDS   |     1     |     3     |  <P132 , P133>   |    <PL8A , PL8B>     
+RUN-1001 :   9   |   LVDS   |     1     |     3     |  <P139 , P138>   |    <PL5C , PL5D>     
+RUN-1001 :   10  |   LVDS   |     1     |     3     |  <P140 , P141>   |    <PL2A , PL2B>     
+RUN-1001 :   11  |   LVDS   |     1     |     3     |  <P143 , P142>   |    <PL2C , PL2D>     
+RUN-1001 :   12  |   LVDS   |     6     |     1     |   <P38 , P39>    |    <PR5C , PR5D>     
+RUN-1001 :   13  |   LVDS   |     6     |     1     |   <P40 , P41>    |    <PR5A , PR5B>     
+RUN-1001 :   14  |   LVDS   |     6     |     1     |   <P42 , P43>    |    <PR8C , PR8D>     
+RUN-1001 :   15  |   LVDS   |     6     |     1     |   <P45 , P44>    |    <PR8A , PR8B>     
+RUN-1001 :   16  |   LVDS   |     6     |     1     |   <P47 , P48>    |   <PR11C , PR11D>    
+RUN-1001 :   17  |   LVDS   |     6     |     1     |   <P50 , P49>    |   <PR11A , PR11B>    
+RUN-1001 :   18  |   LVDS   |     6     |     1     |   <P52 , P54>    |   <PR14C , PR14D>    
+RUN-1001 :   19  |   LVDS   |     6     |     1     |   <P56 , P55>    |   <PR14A , PR14B>    
+RUN-1001 :   20  |   LVDS   |     6     |     1     |   <P57 , P58>    |   <PR18C , PR18D>    
+RUN-1001 :   21  |   LVDS   |     6     |     1     |   <P59 , P60>    |   <PR18A , PR18B>    
+RUN-1001 :   22  |   LVDS   |     6     |     1     |   <P61 , P62>    |   <PR21C , PR21D>    
+RUN-1001 :   23  |   LVDS   |     6     |     1     |   <P67 , P65>    |   <PR21A , PR21B>    
+RUN-1001 :   24  |   LVDS   |     6     |     1     |   <P68 , P69>    |   <PR24C , PR24D>    
+RUN-1001 :   25  |   LVDS   |     6     |     1     |   <P71 , P70>    |   <PR24A , PR24B>    
+RUN-1001 :   26  |  E_LVDS  |     7     |     2     |   <P100 , P99>   |    <PT8A , PT8B>     
+RUN-1001 :   27  |  E_LVDS  |     8     |     2     |  <P104 , P105>   |    <PT4A , PT4B>     
+RUN-1001 :   28  |  E_LVDS  |     8     |     2     |  <P106 , P107>   |    <PT2A , PT2B>     
+RUN-1001 :   29  |  E_LVDS  |     3     |     0     |   <P11 , P12>    |    <PB9C , PB9D>     
+RUN-1001 :   30  |  E_LVDS  |     3     |     0     |   <P13 , P14>    |    <PB8A , PB8B>     
+RUN-1001 :   31  |  E_LVDS  |     3     |     0     |   <P19 , P20>    |   <PB10C , PB10D>    
+RUN-1001 :   32  |  E_LVDS  |     2     |     0     |    <P2 , P1>     |    <PB1A , PB1B>     
+RUN-1001 :   33  |  E_LVDS  |     4     |     0     |   <P21 , P22>    |   <PB11C , PB11D>    
+RUN-1001 :   34  |  E_LVDS  |     4     |     0     |   <P23 , P24>    |   <PB13A , PB13B>    
+RUN-1001 :   35  |  E_LVDS  |     4     |     0     |   <P25 , P26>    |   <PB13C , PB13D>    
+RUN-1001 :   36  |  E_LVDS  |     4     |     0     |   <P27 , P28>    |   <PB15C , PB15D>    
+RUN-1001 :   37  |  E_LVDS  |     5     |     0     |   <P32 , P33>    |   <PB23A , PB23B>    
+RUN-1001 :   38  |  E_LVDS  |     5     |     0     |   <P34 , P35>    |   <PB20A , PB20B>    
+RUN-1001 :   39  |  E_LVDS  |     2     |     0     |    <P4 , P3>     |    <PB1C , PB1D>     
+RUN-1001 :   40  |  E_LVDS  |     2     |     0     |    <P6 , P5>     |    <PB2C , PB2D>     
+RUN-1001 :   41  |  E_LVDS  |     7     |     2     |   <P74 , P73>    |   <PT22C , PT22D>    
+RUN-1001 :   42  |  E_LVDS  |     7     |     2     |   <P76 , P75>    |   <PT19A , PT19B>    
+RUN-1001 :   43  |  E_LVDS  |     7     |     2     |   <P78 , P77>    |   <PT18A , PT18B>    
+RUN-1001 :   44  |  E_LVDS  |     7     |     2     |   <P82 , P81>    |   <PT16C , PT16D>    
+RUN-1001 :   45  |  E_LVDS  |     7     |     2     |   <P84 , P83>    |   <PT16A , PT16B>    
+RUN-1001 :   46  |  E_LVDS  |     7     |     2     |   <P86 , P85>    |   <PT15C , PT15D>    
+RUN-1001 :   47  |  E_LVDS  |     7     |     2     |   <P89 , P87>    |   <PT15A , PT15B>    
+RUN-1001 :   48  |  E_LVDS  |     3     |     0     |    <P9 , P10>    |    <PB9A , PB9B>     
+RUN-1001 :   49  |  E_LVDS  |     7     |     2     |   <P92 , P91>    |   <PT14C , PT14D>    
+RUN-1001 :   50  |  E_LVDS  |     7     |     2     |   <P98 , P97>    |    <PT8C , PT8D>     
+RUN-1001 : -----------------------------------------------------------------------------------
+USR-8192 ERROR: Differential location P119 (of P120) is for dedicate pin or unavailable. Choose another pin for normal use
+RUN-1001 : Inout LVDS pairs in package EF2L45LG144B : 
+RUN-1001 : -----------------------------------------------------------------------------------
+RUN-1001 :   #   |   Type   |  IntBank  |  ExtBank  |  Name <[P],[N]>  |  Location <[P],[N]>  
+RUN-1001 : -----------------------------------------------------------------------------------
+RUN-1001 :   1   |   LVDS   |     1     |     3     |  <P110 , P109>   |   <PL27C , PL27D>    
+RUN-1001 :   2   |   LVDS   |     1     |     3     |  <P112 , P111>   |   <PL24A , PL24B>    
+RUN-1001 :   3   |   LVDS   |     1     |     3     |  <P114 , P113>   |   <PL24C , PL24D>    
+RUN-1001 :   4   |   LVDS   |     1     |     3     |  <P115 , P117>   |   <PL21A , PL21B>    
+RUN-1001 :   5   |   LVDS   |     1     |     3     |  <P122 , P121>   |   <PL18A , PL18B>    
+RUN-1001 :   6   |   LVDS   |     1     |     3     |  <P126 , P125>   |   <PL18C , PL18D>    
+RUN-1001 :   7   |   LVDS   |     1     |     3     |  <P128 , P127>   |   <PL14C , PL14D>    
+RUN-1001 :   8   |   LVDS   |     1     |     3     |  <P132 , P133>   |    <PL8A , PL8B>     
+RUN-1001 :   9   |   LVDS   |     1     |     3     |  <P139 , P138>   |    <PL5C , PL5D>     
+RUN-1001 :   10  |   LVDS   |     1     |     3     |  <P140 , P141>   |    <PL2A , PL2B>     
+RUN-1001 :   11  |   LVDS   |     1     |     3     |  <P143 , P142>   |    <PL2C , PL2D>     
+RUN-1001 :   12  |   LVDS   |     6     |     1     |   <P38 , P39>    |    <PR5C , PR5D>     
+RUN-1001 :   13  |   LVDS   |     6     |     1     |   <P40 , P41>    |    <PR5A , PR5B>     
+RUN-1001 :   14  |   LVDS   |     6     |     1     |   <P42 , P43>    |    <PR8C , PR8D>     
+RUN-1001 :   15  |   LVDS   |     6     |     1     |   <P45 , P44>    |    <PR8A , PR8B>     
+RUN-1001 :   16  |   LVDS   |     6     |     1     |   <P47 , P48>    |   <PR11C , PR11D>    
+RUN-1001 :   17  |   LVDS   |     6     |     1     |   <P50 , P49>    |   <PR11A , PR11B>    
+RUN-1001 :   18  |   LVDS   |     6     |     1     |   <P52 , P54>    |   <PR14C , PR14D>    
+RUN-1001 :   19  |   LVDS   |     6     |     1     |   <P56 , P55>    |   <PR14A , PR14B>    
+RUN-1001 :   20  |   LVDS   |     6     |     1     |   <P57 , P58>    |   <PR18C , PR18D>    
+RUN-1001 :   21  |   LVDS   |     6     |     1     |   <P59 , P60>    |   <PR18A , PR18B>    
+RUN-1001 :   22  |   LVDS   |     6     |     1     |   <P61 , P62>    |   <PR21C , PR21D>    
+RUN-1001 :   23  |   LVDS   |     6     |     1     |   <P67 , P65>    |   <PR21A , PR21B>    
+RUN-1001 :   24  |   LVDS   |     6     |     1     |   <P68 , P69>    |   <PR24C , PR24D>    
+RUN-1001 :   25  |   LVDS   |     6     |     1     |   <P71 , P70>    |   <PR24A , PR24B>    
+RUN-1001 :   26  |  E_LVDS  |     7     |     2     |   <P100 , P99>   |    <PT8A , PT8B>     
+RUN-1001 :   27  |  E_LVDS  |     8     |     2     |  <P104 , P105>   |    <PT4A , PT4B>     
+RUN-1001 :   28  |  E_LVDS  |     8     |     2     |  <P106 , P107>   |    <PT2A , PT2B>     
+RUN-1001 :   29  |  E_LVDS  |     3     |     0     |   <P11 , P12>    |    <PB9C , PB9D>     
+RUN-1001 :   30  |  E_LVDS  |     3     |     0     |   <P13 , P14>    |    <PB8A , PB8B>     
+RUN-1001 :   31  |  E_LVDS  |     3     |     0     |   <P19 , P20>    |   <PB10C , PB10D>    
+RUN-1001 :   32  |  E_LVDS  |     2     |     0     |    <P2 , P1>     |    <PB1A , PB1B>     
+RUN-1001 :   33  |  E_LVDS  |     4     |     0     |   <P21 , P22>    |   <PB11C , PB11D>    
+RUN-1001 :   34  |  E_LVDS  |     4     |     0     |   <P23 , P24>    |   <PB13A , PB13B>    
+RUN-1001 :   35  |  E_LVDS  |     4     |     0     |   <P25 , P26>    |   <PB13C , PB13D>    
+RUN-1001 :   36  |  E_LVDS  |     4     |     0     |   <P27 , P28>    |   <PB15C , PB15D>    
+RUN-1001 :   37  |  E_LVDS  |     5     |     0     |   <P32 , P33>    |   <PB23A , PB23B>    
+RUN-1001 :   38  |  E_LVDS  |     5     |     0     |   <P34 , P35>    |   <PB20A , PB20B>    
+RUN-1001 :   39  |  E_LVDS  |     2     |     0     |    <P4 , P3>     |    <PB1C , PB1D>     
+RUN-1001 :   40  |  E_LVDS  |     2     |     0     |    <P6 , P5>     |    <PB2C , PB2D>     
+RUN-1001 :   41  |  E_LVDS  |     7     |     2     |   <P74 , P73>    |   <PT22C , PT22D>    
+RUN-1001 :   42  |  E_LVDS  |     7     |     2     |   <P76 , P75>    |   <PT19A , PT19B>    
+RUN-1001 :   43  |  E_LVDS  |     7     |     2     |   <P78 , P77>    |   <PT18A , PT18B>    
+RUN-1001 :   44  |  E_LVDS  |     7     |     2     |   <P82 , P81>    |   <PT16C , PT16D>    
+RUN-1001 :   45  |  E_LVDS  |     7     |     2     |   <P84 , P83>    |   <PT16A , PT16B>    
+RUN-1001 :   46  |  E_LVDS  |     7     |     2     |   <P86 , P85>    |   <PT15C , PT15D>    
+RUN-1001 :   47  |  E_LVDS  |     7     |     2     |   <P89 , P87>    |   <PT15A , PT15B>    
+RUN-1001 :   48  |  E_LVDS  |     3     |     0     |    <P9 , P10>    |    <PB9A , PB9B>     
+RUN-1001 :   49  |  E_LVDS  |     7     |     2     |   <P92 , P91>    |   <PT14C , PT14D>    
+RUN-1001 :   50  |  E_LVDS  |     7     |     2     |   <P98 , P97>    |    <PT8C , PT8D>     
+RUN-1001 : -----------------------------------------------------------------------------------
+

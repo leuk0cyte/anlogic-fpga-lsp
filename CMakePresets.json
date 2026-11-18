@@ -1,0 +1,70 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 24, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "windows-msvc-base",
+      "displayName": "Windows / MSVC x64 (Ninja) - base",
+      "description": "基础配置：Ninja + cl.exe（由 vcvars64.bat 提供环境），静态 CRT，C++23。不直接使用，请用 debug/release/relwithdebinfo。",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build",
+      "architecture": { "value": "x64", "strategy": "external" },
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "cl",
+        "CMAKE_CXX_COMPILER": "cl",
+        "CMAKE_CXX_STANDARD": "23",
+        "CMAKE_CXX_STANDARD_REQUIRED": "ON",
+        "CMAKE_CXX_EXTENSIONS": "OFF",
+        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded$<$<CONFIG:Debug>:Debug>",
+        "ABSL_MSVC_STATIC_RUNTIME": "ON",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "BUILD_SHARED_LIBS": "OFF",
+        "BUILD_TESTING": "ON",
+        "FPGA_LSP_VERIBLE_ENABLED": "ON"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
+    },
+    {
+      "name": "windows-msvc-debug",
+      "displayName": "Windows / MSVC Debug",
+      "description": "调试构建：/MTd + /Od + 调试信息",
+      "inherits": "windows-msvc-base",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    },
+    {
+      "name": "windows-msvc-release",
+      "displayName": "Windows / MSVC Release",
+      "description": "发布构建：/MT + /O2（默认）",
+      "inherits": "windows-msvc-base",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+    },
+    {
+      "name": "windows-msvc-relwithdebinfo",
+      "displayName": "Windows / MSVC RelWithDebInfo",
+      "description": "带调试信息的发布构建：/MT + /O2 + PDB",
+      "inherits": "windows-msvc-base",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" }
+    },
+    {
+      "name": "windows-msvc",
+      "displayName": "Windows / MSVC x64 (Release, 默认)",
+      "description": "等价于 windows-msvc-release 的别名 preset，方便直接用 `cmake --preset windows-msvc`。",
+      "inherits": "windows-msvc-release"
+    }
+  ],
+  "buildPresets": [
+    { "name": "windows-msvc-debug", "displayName": "Build: MSVC Debug", "configurePreset": "windows-msvc-debug", "configuration": "Debug", "jobs": 0 },
+    { "name": "windows-msvc-release", "displayName": "Build: MSVC Release", "configurePreset": "windows-msvc-release", "configuration": "Release", "jobs": 0 },
+    { "name": "windows-msvc-relwithdebinfo", "displayName": "Build: MSVC RelWithDebInfo", "configurePreset": "windows-msvc-relwithdebinfo", "configuration": "RelWithDebInfo", "jobs": 0 },
+    { "name": "windows-msvc", "displayName": "Build: MSVC Release (默认)", "configurePreset": "windows-msvc", "configuration": "Release", "jobs": 0 }
+  ],
+  "testPresets": [
+    { "name": "windows-msvc-debug", "displayName": "Test: MSVC Debug", "configurePreset": "windows-msvc-debug", "configuration": "Debug", "output": { "outputOnFailure": true } },
+    { "name": "windows-msvc-release", "displayName": "Test: MSVC Release", "configurePreset": "windows-msvc-release", "configuration": "Release", "output": { "outputOnFailure": true } }
+  ]
+}
