@@ -72,3 +72,7 @@ vscode-extension/node_modules/
 .fpgalsp/
 *_Runs/
 __pycache__/
+
+# ---- 修复阶段的中间产物（每个 tag 的协议原始转储，可重跑生成；只留 baseline 与 wave1-final）----
+audit/2026-11-19/fix/results/*/lsp-raw*.json
+audit/2026-11-19/fix/results/*/mcp-raw*.json
