@@ -117,7 +117,32 @@ std::vector<std::string> DbPrefixesForFamily(std::string_view family) {
     return {};  // Python: DB_PREFIXES.get(fam, ())
 }
 
-std::vector<std::string> DbCandidates(std::string_view td_root, std::string_view family) {
+// 对应 Python `_db_candidates` 里的
+//   re.search(r"(?:L|X)(\d+)|_(\d+)", project.device)
+// 返回型号里的容量数字（EF2L45LG144B -> 45）；没有则空串。
+std::string DeviceSizeNumber(std::string_view device) {
+    const auto digits_from = [&](std::size_t start) -> std::string {
+        std::size_t end = start;
+        while (end < device.size() && std::isdigit(static_cast<unsigned char>(device[end]))) ++end;
+        return end > start ? std::string(device.substr(start, end - start)) : std::string();
+    };
+    for (std::size_t i = 0; i + 1 < device.size(); ++i) {
+        const char c = device[i];
+        if (c == 'L' || c == 'l' || c == 'X' || c == 'x') {
+            std::string number = digits_from(i + 1);
+            if (!number.empty()) return number;
+        }
+    }
+    for (std::size_t i = 0; i + 1 < device.size(); ++i) {
+        if (device[i] == '_') {
+            std::string number = digits_from(i + 1);
+            if (!number.empty()) return number;
+        }
+    }
+    return {};
+}
+std::vector<std::string> DbCandidates(std::string_view td_root, std::string_view family,
+                                      std::string_view device) {
     std::vector<std::string> dbs;
     try {
         const std::filesystem::path arch{std::string(td_root) + "/arch"};
@@ -133,7 +158,16 @@ std::vector<std::string> DbCandidates(std::string_view td_root, std::string_view
         return {};
     }
 
+    // Python 在 prefix 循环里用 `sorted(dbs)`；目录遍历顺序是文件系统顺序，
+    // 不排序会让"同前缀的多个 db 谁先被试"与参考实现不一致。
+    std::sort(dbs.begin(), dbs.end());
+
     const auto prefixes = DbPrefixesForFamily(family);
+    // Python: re.search(r"(?:L|X)(\d+)|_(\d+)", project.device) -> 型号里的容量数字
+    // （EF2L45LG144B -> 45）。有该数字时，`<prefix>_<size>` 开头的 db 优先——
+    // 这正是 Python `_db_candidates` 的第一层优先，C++ 之前漏了，导致同前缀有多个
+    // db 时要多试几个（每次失败 import 约 15 ms）。
+    const std::string size = DeviceSizeNumber(device);
     std::vector<std::string> ordered;
     std::set<std::string> seen;
 
@@ -144,19 +178,22 @@ std::vector<std::string> DbCandidates(std::string_view td_root, std::string_view
         }
     };
 
-    // 第一步：按前缀优先级挑出「<prefix>_ 开头」的
     for (const auto& prefix : prefixes) {
+        if (!size.empty()) {
+            const std::string want = prefix + "_" + size;
+            for (const auto& db : dbs) {
+                if (ToLower(db).compare(0, want.size(), want) == 0) push(db);
+            }
+        }
+        const std::string prefix_underscore = prefix + "_";
         for (const auto& db : dbs) {
-            if (db.size() > prefix.size() + 1 &&
-                ToLower(db).compare(0, prefix.size(), prefix) == 0 && db[prefix.size()] == '_') {
+            if (ToLower(db).compare(0, prefix_underscore.size(), prefix_underscore) == 0) {
                 push(db);
             }
         }
     }
-    // 第二步：其余全部按字典序补上（对应 Python: for db in sorted(dbs): push(db)）
-    std::vector<std::string> sorted = dbs;
-    std::sort(sorted.begin(), sorted.end());
-    for (const auto& db : sorted) push(db);
+    // 最后：其余全部按字典序补上（对应 Python: for db in sorted(dbs): push(db)）
+    for (const auto& db : dbs) push(db);
 
     return ordered;
 }

@@ -448,7 +448,7 @@ EnsureDeviceResult EnsureDevice(const project::Project& project, TdSession& sess
     // 按降级顺序逐个试
     std::vector<std::string> candidates;
     try {
-        candidates = DbCandidates(td_root, project.family);
+        candidates = DbCandidates(td_root, project.family, project.device);
     } catch (...) {
         candidates.clear();
     }

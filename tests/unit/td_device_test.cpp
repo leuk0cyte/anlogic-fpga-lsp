@@ -397,4 +397,39 @@ TEST(TdDbCandidates, MissingArchDirReturnsEmpty) {
     EXPECT_TRUE(DbCandidates("C:/definitely/not/here", "EF2").empty());
 }
 
+TEST(TdDbCandidates, SizeNumberPrefersMatchingDbLikePython) {
+    // 合成 arch 目录（不依赖本机 TD 安装），锁定 Python `_db_candidates` 的两层优先：
+    //   1) `<prefix>_<size>`（size 从 device 型号里抓，EF2L45LG144B -> 45）
+    //   2) `<prefix>_`
+    //   3) 其余按字典序
+    const auto root = std::filesystem::temp_directory_path() / "fpgalsp-dbcand-test";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    std::filesystem::create_directories(root / "arch", ec);
+    ASSERT_FALSE(ec) << ec.message();
+    for (const char* name : {"ef2_1.db", "ef2_2.db", "ef2_4.db", "ef2_45.db", "ph1_3.db"}) {
+        std::ofstream(root / "arch" / name) << "x";
+    }
+
+    // device 里带 45 -> ef2_45.db 必须排第一
+    const auto with_size = DbCandidates(root.string(), "EF2", "EF2L45LG144B");
+    ASSERT_FALSE(with_size.empty());
+    EXPECT_EQ(with_size.front(), "ef2_45.db")
+        << "Python 会先试 <prefix>_<size>，C++ 之前漏了这层导致多试几个";
+
+    // 没有 size 信息 -> 同前缀按字典序，ef2_1 先
+    const auto no_size = DbCandidates(root.string(), "EF2", "");
+    ASSERT_GE(no_size.size(), 4u);
+    EXPECT_EQ(no_size[0], "ef2_1.db");
+    EXPECT_EQ(no_size[1], "ef2_2.db");
+
+    // 未知 family -> 没有前缀可用，退化为全字典序（与 Python 完全一致，不是缺陷）
+    const auto unknown = DbCandidates(root.string(), "NOPE", "EF2L45LG144B");
+    auto sorted = unknown;
+    std::sort(sorted.begin(), sorted.end());
+    EXPECT_EQ(unknown, sorted);
+
+    std::filesystem::remove_all(root, ec);
+}
+
 }  // namespace

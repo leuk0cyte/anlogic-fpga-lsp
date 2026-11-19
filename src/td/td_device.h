@@ -62,7 +62,8 @@ std::vector<std::string> DbPrefixesForFamily(std::string_view family);
 
 // 对应 Python _db_candidates:
 //   列出 <td_root>/arch/*.db，按「family 前缀优先、其余按字典序」排序。
-std::vector<std::string> DbCandidates(std::string_view td_root, std::string_view family);
+std::vector<std::string> DbCandidates(std::string_view td_root, std::string_view family,
+                                      std::string_view device = {});
 
 // 表行切分（对应 Python _parse_pipe_table）
 //   只保留含至少 2 个 '|' 的行；剔除以 "XXX-1234 :" 或 "XXX-1234" 开头的首单元。
