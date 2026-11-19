@@ -173,7 +173,12 @@ int Serve(TransportBaseCommon& transport, Dispatcher& dispatcher, bool is_lsp,
         // ---- MCP 模式：整条消息交给 mcp::McpServer ----
         if (mcp_server != nullptr) {
             const std::string mcp_method = fpgalsp::jsonrpc::GetString(msg, "method");
-            if (auto response = mcp_server->Handle(msg)) {
+            // P-B4：tools/call 在内部 worker 上跑，读循环继续 —— 否则取消通知进不来。
+            // 结果由 writer 写回（transport 写自带锁；progress 也走同一把锁）。
+            auto writer = [&transport](const Json& response) {
+                transport.WriteMessage(response);
+            };
+            if (auto response = mcp_server->HandleRouted(msg, writer)) {
                 transport.WriteMessage(*response);
             }
             // 对应 Python mcp.py：应答 shutdown 后结束

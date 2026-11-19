@@ -100,7 +100,108 @@ bool MissingRequired(const Json* value) {
 }  // namespace
 
 McpServer::McpServer(ToolDispatcher& dispatcher, McpServerOptions options)
-    : dispatcher_(dispatcher), options_(std::move(options)) {}
+    : dispatcher_(dispatcher), options_(std::move(options)) {
+    StartWorker();
+}
+
+McpServer::~McpServer() { StopWorker(); }
+
+void McpServer::StartWorker() {
+    worker_ = std::thread([this]() { WorkerLoop(); });
+}
+
+void McpServer::StopWorker() {
+    {
+        std::lock_guard<std::mutex> lock(queue_mutex_);
+        stopping_ = true;
+    }
+    queue_cv_.notify_all();
+    if (worker_.joinable()) worker_.join();
+}
+
+void McpServer::WorkerLoop() {
+    for (;;) {
+        std::function<void()> task;
+        {
+            std::unique_lock<std::mutex> lock(queue_mutex_);
+            queue_cv_.wait(lock, [this]() { return stopping_ || !tasks_.empty(); });
+            if (tasks_.empty()) {
+                if (stopping_) return;
+                continue;
+            }
+            task = std::move(tasks_.front());
+            tasks_.pop_front();
+        }
+        try {
+            task();
+        } catch (...) {
+            // 工具层已经把自己的异常转成 isError；这里兜住"连转换都失败"的极端情况，
+            // 不允许让 worker 线程死去（否则该连接后续所有调用都排队等死）。
+        }
+    }
+}
+
+void McpServer::CancelRequest(const Json& request_id) {
+    const std::string key = request_id.dump();
+    std::lock_guard<std::mutex> lock(inflight_mutex_);
+    const auto it = inflight_.find(key);
+    if (it != inflight_.end() && it->second != nullptr) {
+        it->second->store(true);
+    }
+}
+
+std::optional<Json> McpServer::HandleRouted(const Json& message,
+                                            const std::function<void(const Json&)>& writer) {
+    if (!message.is_object()) return Handle(message);
+    const Json* method_member = GetMember(message, "method");
+    const std::string method =
+        (method_member != nullptr && method_member->is_string()) ? method_member->get<std::string>()
+                                                                : std::string();
+
+    // 取消通知：必须在这里吃掉 —— 它没有 id，Handle() 会当作"通知"直接返回 nullopt，
+    // 但我们要在返回前置位令牌。
+    if (method == "notifications/cancelled") {
+        if (const Json* params = GetMember(message, "params"); params != nullptr) {
+            if (const Json* request_id = GetMember(*params, "requestId");
+                request_id != nullptr) {
+                CancelRequest(*request_id);
+            }
+        }
+        return std::nullopt;
+    }
+
+    if (method != "tools/call") return Handle(message);
+
+    Json id;
+    if (!HasId(message, &id)) return Handle(message);  // tools/call 的通知形式：同步跑
+
+    const std::string key = id.dump();
+    const auto token = std::make_shared<std::atomic<bool>>(false);
+    {
+        std::lock_guard<std::mutex> lock(inflight_mutex_);
+        inflight_[key] = token;
+    }
+    {
+        std::lock_guard<std::mutex> lock(queue_mutex_);
+        tasks_.push_back([this, message, writer, key, token, id]() {
+            dispatcher_.SetCancelToken(token);
+            std::optional<Json> response;
+            try {
+                response = HandleSingle(message);
+            } catch (...) {
+                response = Response(id, WrapToolError("InternalError: worker crashed"));
+            }
+            dispatcher_.SetCancelToken(nullptr);
+            {
+                std::lock_guard<std::mutex> guard(inflight_mutex_);
+                inflight_.erase(key);
+            }
+            if (response.has_value()) writer(*response);
+        });
+    }
+    queue_cv_.notify_one();
+    return std::nullopt;
+}
 
 void McpServer::SetNotificationWriter(std::function<void(const Json&)> writer) {
     notification_writer_ = std::move(writer);

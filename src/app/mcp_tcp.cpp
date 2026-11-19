@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <mutex>
 #include <set>
 #include <string>
@@ -268,6 +269,16 @@ class McpTcpHost::Impl {
         try {
             mcp::Bridge bridge(options);
             mcp::McpServer server(bridge, server_options);
+            // P-B4：工具的响应/进度现在可能来自 MCP worker 线程，而会话线程同时在写。
+            // 没有这把锁，两个线程的 JSON 行会互相穿插（客户端直接解析失败）。
+            auto write_mutex = std::make_shared<std::mutex>();
+            auto write_line = [this, client, write_mutex](const std::string& payload) {
+                std::lock_guard<std::mutex> lock(*write_mutex);
+                return SendAll(client, payload);
+            };
+            server.SetNotificationWriter([write_line](const jsonrpc::Json& note) {
+                write_line(jsonrpc::Serialize(note, true) + "\n");
+            });
             std::string buffer;
             char chunk[65536];
             while (!stop_.load()) {
@@ -286,7 +297,7 @@ class McpTcpHost::Impl {
                         jsonrpc::MakeError(std::string(), jsonrpc::kInvalidRequest,
                                            "Message too large"),
                         true);
-                    SendAll(client, error + "\n");
+                    write_line(error + "\n");
                     platform::default_logger().error(
                         std::string("mcp-tcp: message exceeds ") +
                         std::to_string(jsonrpc::kMaxBodyBytes) + " bytes; closing connection");
@@ -307,12 +318,17 @@ class McpTcpHost::Impl {
                             jsonrpc::MakeError(std::string(), jsonrpc::kParseError,
                                                "Parse error"),
                             true);
-                        SendAll(client, error + "\n");
+                        write_line(error + "\n");
                         continue;
                     }
                     const std::string method = jsonrpc::GetString(message, "method");
-                    if (auto response = server.Handle(message)) {
-                        if (!SendAll(client, jsonrpc::Serialize(*response, true) + "\n")) return;
+                    // P-B4：tools/call 交给 MCP worker，本会话线程继续读
+                    // （否则取消通知永远进不来）。
+                    auto writer = [write_line](const jsonrpc::Json& response) {
+                        write_line(jsonrpc::Serialize(response, true) + "\n");
+                    };
+                    if (auto response = server.HandleRouted(message, writer)) {
+                        if (!write_line(jsonrpc::Serialize(*response, true) + "\n")) return;
                     }
                     if (method == "shutdown") return;
                 }

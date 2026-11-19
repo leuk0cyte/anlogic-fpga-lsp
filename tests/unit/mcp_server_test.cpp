@@ -15,7 +15,12 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <mutex>
 #include <stdexcept>
+#include <thread>
 #include <string>
 #include <vector>
 
@@ -494,4 +499,105 @@ TEST(McpResultRepresentationTest, InitializeWithoutCapabilityKeepsCompactTier) {
 
     EXPECT_TRUE(server.Handle(Request("initialize", params)).has_value());
     EXPECT_FALSE(server.structured_results());
+}
+
+// ------------------------------------------------- P-B4：异步 tools/call + 取消
+
+namespace {
+
+// 会一直阻塞到被取消的假工具：模拟 flow_wait / 长扫描。
+class BlockingDispatcher : public ToolDispatcher {
+  public:
+    Json Call(std::string_view handler, const Json& arguments) override {
+        (void)handler;
+        (void)arguments;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            started_ = true;
+        }
+        started_cv_.notify_all();
+        for (int i = 0; i < 300; ++i) {  // 最多 3 s，避免测试挂死
+            if (Cancelled()) throw ToolError("cancelled");
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        Json out = Json::object();
+        out["ok"] = true;
+        return out;
+    }
+
+    void WaitStarted() {
+        std::unique_lock<std::mutex> lock(mutex_);
+        started_cv_.wait_for(lock, std::chrono::seconds(2), [this]() { return started_; });
+    }
+
+  private:
+    std::mutex mutex_;
+    std::condition_variable started_cv_;
+    bool started_ = false;
+};
+
+Json CancelRequest(const Json& request_id) {
+    Json params = Json::object();
+    params["requestId"] = request_id;
+    Json message = Json::object();
+    message["jsonrpc"] = "2.0";
+    message["method"] = "notifications/cancelled";
+    message["params"] = params;
+    return message;
+}
+
+}  // namespace
+
+TEST(McpCancelTest, RoutedCallIsAsyncAndCancellable) {
+    BlockingDispatcher dispatcher;
+    McpServerOptions options;
+    options.allow_flow = true;
+    McpServer server(dispatcher, options);
+
+    std::mutex output_mutex;
+    std::condition_variable output_cv;
+    std::vector<Json> written;
+    const auto writer = [&](const Json& message) {
+        {
+            std::lock_guard<std::mutex> lock(output_mutex);
+            written.push_back(message);
+        }
+        output_cv.notify_all();
+    };
+
+    const Json call = CallRequest("fpga_flow_wait", Json::object(), Json(7));
+    const auto immediate = server.HandleRouted(call, writer);
+    EXPECT_FALSE(immediate.has_value()) << "tools/call 必须交给 worker，读循环不能被占住";
+
+    dispatcher.WaitStarted();
+    // 读循环此刻仍在跑 —— 取消通知能被立刻处理（旧实现里这条消息永远进不来）
+    const auto cancelled = server.HandleRouted(CancelRequest(Json(7)), writer);
+    EXPECT_FALSE(cancelled.has_value());
+
+    {
+        std::unique_lock<std::mutex> lock(output_mutex);
+        ASSERT_TRUE(output_cv.wait_for(lock, std::chrono::seconds(3),
+                                       [&]() { return !written.empty(); }))
+            << "取消后 worker 没有写出响应";
+        ASSERT_EQ(written.size(), 1u);
+        const Json& result = written[0].at("result");
+        EXPECT_TRUE(result.at("isError").get<bool>());
+        EXPECT_NE(result.at("content").at(0).at("text").get<std::string>().find("cancelled"),
+                  std::string::npos);
+    }
+}
+
+TEST(McpCancelTest, NonToolMethodsStaySynchronous) {
+    BlockingDispatcher dispatcher;
+    McpServerOptions options;
+    McpServer server(dispatcher, options);
+    const auto writer = [](const Json&) {};
+
+    Json ping = Json::object();
+    ping["jsonrpc"] = "2.0";
+    ping["id"] = 1;
+    ping["method"] = "ping";
+    const auto response = server.HandleRouted(ping, writer);
+    ASSERT_TRUE(response.has_value()) << "非 tools/call 仍然同步返回";
+    EXPECT_EQ(response->at("result"), Json::object());
 }

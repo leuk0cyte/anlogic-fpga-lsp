@@ -2683,6 +2683,8 @@ Json Bridge::SearchTextTool(const Json& arguments) {
     int searched = 0;
     bool truncated = false;
     for (const std::string& file_path : files) {
+        // P-B4：协作式取消（客户端发 notifications/cancelled 后，长扫描要能收手）
+        if (Cancelled()) throw ToolError("cancelled");
         if (!glob.empty() && !GlobMatch(glob, BaseName(file_path))) continue;
         const std::string lowered = LowerAscii(file_path);
         bool suffix_ok = false;
@@ -3448,6 +3450,8 @@ Json Bridge::FlowWait(const Json& arguments) {
         return std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
     };
     while (true) {
+        // P-B4：flow_wait 是最长的阻塞点（默认 3600 s），必须能被取消。
+        if (Cancelled()) throw ToolError("cancelled");
         flow::FlowState state = flow_runner_->Status();
         const double elapsed = elapsed_seconds();
         const std::string message = !state.last_message.empty() ? state.last_message

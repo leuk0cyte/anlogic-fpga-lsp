@@ -22,12 +22,19 @@
 
 #pragma once
 
+#include <atomic>
+#include <condition_variable>
 #include <cstddef>
+#include <deque>
 #include <functional>
+#include <map>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -56,8 +63,17 @@ class ToolDispatcher {
         progress_ = std::move(emitter);
     }
 
+    // P-B4：取消令牌。服务端收到 `notifications/cancelled` 时置位；
+    // 长任务（flow_wait / search_text / rename_edits）在循环边界自查。
+    virtual void SetCancelToken(std::shared_ptr<std::atomic<bool>> token) {
+        cancel_ = std::move(token);
+    }
+
   protected:
     std::function<void(double, const std::string&)> progress_;
+    // 协作式取消：为空时永不取消（同步单测/旧行为）。
+    bool Cancelled() const { return cancel_ != nullptr && cancel_->load(); }
+    std::shared_ptr<std::atomic<bool>> cancel_;
 };
 
 struct McpServerOptions {
@@ -82,6 +98,7 @@ class McpServer {
                                                           "2025-06-18"};
 
     McpServer(ToolDispatcher& dispatcher, McpServerOptions options);
+    ~McpServer();
 
     // 通知外发通道（notifications/progress 用）。生产环境接 transport.WriteMessage。
     void SetNotificationWriter(std::function<void(const Json&)> writer);
@@ -89,6 +106,14 @@ class McpServer {
     // 处理一条已解码消息；nullopt = 无需应答（通知）。
     // 输入可以是单个对象，也可以是批量数组（MCP 允许）。
     std::optional<Json> Handle(const Json& message);
+
+    // P-B4：**给 serve 循环用**的入口。
+    // `tools/call` 交给内部单 worker 执行，读循环继续跑 —— 否则客户端根本没机会
+    // 发 `notifications/cancelled`（读循环被工具占着，取消消息永远进不来）。
+    // 通知（含取消）在这里直接处理；其余方法等价于 Handle()。
+    // 异步执行的结果通过 writer 写出（transport 写是线程安全的）。
+    std::optional<Json> HandleRouted(const Json& message,
+                                     const std::function<void(const Json&)>& writer);
 
     bool allow_flow() const { return options_.allow_flow; }
     bool allow_write() const { return options_.allow_write; }
@@ -104,9 +129,25 @@ class McpServer {
     std::optional<Json> HandleSingle(const Json& message);
     Json CallTool(const Json& params);
 
+    // ---- P-B4：异步 tools/call + 取消 ----
+    void StartWorker();
+    void StopWorker();
+    void WorkerLoop();
+    void CancelRequest(const Json& request_id);
+
     ToolDispatcher& dispatcher_;
     McpServerOptions options_;
     std::function<void(const Json&)> notification_writer_;
+
+    std::thread worker_;
+    std::mutex queue_mutex_;
+    std::condition_variable queue_cv_;
+    std::deque<std::function<void()>> tasks_;
+    bool stopping_ = false;
+
+    std::mutex inflight_mutex_;
+    // requestId(dump 后的字符串) -> 取消令牌
+    std::map<std::string, std::shared_ptr<std::atomic<bool>>> inflight_;
 };
 
 }  // namespace fpgalsp::mcp
