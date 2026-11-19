@@ -23,6 +23,7 @@
 
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -256,6 +257,8 @@ private:
     HandlerResult HandleFlowStatus(const Json& params);
     HandlerResult HandleExecuteCommand(const Json& params);
     Json TdSummary();
+    // P-D2：带 5 s TTL 的 FindTd（负结果也缓存，避免缺 TD 时每请求都扫安装目录）
+    std::optional<td::TdChoice> FindTdCached(const std::string& configured);
     HandlerResult CommandDevice();
 
     // =========================================================================
@@ -460,6 +463,14 @@ private:
     // flow 引擎（src/flow）。runner 内部自带 worker 线程与 cancel/join 语义。
     std::mutex flow_mutex_;
     std::shared_ptr<flow::FlowRunner> flow_;
+
+    // P-D2：TD 安装根探测缓存。`td::FindTd` 每次都枚举安装目录（审计 0.89–0.93 ms），
+    // 而它几乎不可能在几秒内变化；reports/project_info 都走同一条路。
+    std::mutex td_cache_mutex_;
+    std::string td_cache_key_;
+    std::optional<td::TdChoice> td_cache_value_;
+    bool td_cache_valid_ = false;
+    std::chrono::steady_clock::time_point td_cache_at_{};
 };
 
 // JSON 里取诊断的落点路径：td::MapMessage 把绝对路径写在 data["path"]（见
@@ -488,6 +499,10 @@ const std::vector<std::string>& ExecuteCommandNames();
 // 返回的数组同时带 logSeq / logStartSeq 两个字段的信息由调用方写入 flow 对象。
 jsonrpc::Json SliceFlowLog(const flow::FlowState& state,
                            std::optional<std::uint64_t> since, std::uint64_t* log_start_seq);
+
+// P-D5：语义高亮的真增量（纯函数，单测直接覆盖）。
+// 输入/输出都是 LSP 的 5 元组数组；只返回覆盖变化区间的那一条编辑（或空数组）。
+jsonrpc::Json SemanticDeltaEdits(const jsonrpc::Json& previous, const jsonrpc::Json& current);
 
 // capability 里广播的子集：全表减去扩展自己 contributes 的 3 条（check/info/restart）。
 // vscode-languageclient 会为广播的每条命令注册 VS Code 命令，重复注册会让 initialize 失败。

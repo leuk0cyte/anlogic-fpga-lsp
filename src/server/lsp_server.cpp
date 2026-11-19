@@ -658,6 +658,66 @@ std::string SemanticResultId(const Json& data, std::string_view uri) {
 
 }  // namespace
 
+// P-D5：真正的语义高亮增量。
+// 数据是 5 元组数组（deltaLine, deltaStart, length, type, modifiers），所以前缀/后缀
+// 只能落在 5 的倍数上。返回 0 或 1 条编辑：
+//   * 完全相同时 0 条（客户端复用旧 token）；
+//   * 否则一条 {start, deleteCount, data}，只覆盖真正变了的区间。
+// 旧实现把**整个新数组**塞进 deleteCount = 旧长度 的编辑里，等于"旧数组 + 新数组"
+// 都传一遍，比 full 还贵。
+jsonrpc::Json SemanticDeltaEdits(const jsonrpc::Json& previous,
+                                 const jsonrpc::Json& current) {
+    constexpr std::size_t kStride = 5;
+    const std::size_t before = previous.is_array() ? previous.size() : 0;
+    const std::size_t after = current.is_array() ? current.size() : 0;
+
+    std::size_t prefix = 0;
+    while (prefix + kStride <= before && prefix + kStride <= after) {
+        bool same = true;
+        for (std::size_t k = 0; k < kStride; ++k) {
+            if (previous[prefix + k] != current[prefix + k]) {
+                same = false;
+                break;
+            }
+        }
+        if (!same) break;
+        prefix += kStride;
+    }
+
+    std::size_t suffix = 0;
+    while (suffix + kStride <= before - prefix && suffix + kStride <= after - prefix) {
+        const std::size_t p = before - kStride - suffix;
+        const std::size_t c = after - kStride - suffix;
+        bool same = true;
+        for (std::size_t k = 0; k < kStride; ++k) {
+            if (previous[p + k] != current[c + k]) {
+                same = false;
+                break;
+            }
+        }
+        if (!same) break;
+        suffix += kStride;
+    }
+
+    const std::size_t delete_count = before - prefix - suffix;
+    const std::size_t insert_count = after - prefix - suffix;
+    Json edits = Json::array();
+    if (delete_count == 0 && insert_count == 0) return edits;
+
+    Json edit = Json::object();
+    edit["start"] = prefix;
+    edit["deleteCount"] = delete_count;
+    if (insert_count > 0) {
+        Json slice = Json::array();
+        for (std::size_t i = prefix; i < prefix + insert_count; ++i) {
+            slice.push_back(current[i]);
+        }
+        edit["data"] = std::move(slice);
+    }
+    edits.push_back(std::move(edit));
+    return edits;
+}
+
 HandlerResult LspServer::HandleSemanticTokensFull(const Json& params) {
     std::string uri;
     if (!TextDocumentUri(params, &uri)) {
@@ -697,11 +757,8 @@ HandlerResult LspServer::HandleSemanticTokensDelta(const Json& params) {
         std::lock_guard<std::mutex> lock(semantic_mutex_);
         SemanticCacheEntry& entry = semantic_cache_[uri];
         if (entry.result_id != id) {
-            Json edit = Json::object();
-            edit["start"] = 0;
-            edit["deleteCount"] = entry.data.is_array() ? entry.data.size() : 0;
-            edit["data"] = data;
-            edits.push_back(std::move(edit));
+            // P-D5：只发真正变化的那一段（而不是"新数组 + deleteCount=旧长度"）。
+            edits = SemanticDeltaEdits(entry.data, data);
         }
         entry.result_id = id;
         entry.data = data;

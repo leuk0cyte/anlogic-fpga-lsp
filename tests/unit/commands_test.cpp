@@ -177,3 +177,38 @@ TEST(FlowLogSliceTest, WindowAndIncrementalCases) {
     EXPECT_NE(behind[0].get<std::string>().find("truncated"), std::string::npos);
     EXPECT_EQ(behind[5].get<std::string>(), "e");
 }
+
+// P-D5：语义高亮增量只覆盖变化区间（旧实现把整个新数组塞进 delta，比 full 还贵）
+TEST(SemanticDeltaTest, SingleTokenEditKeepsPrefixAndSuffix) {
+    // LSP 的 data 是**扁平**的 5 元组数组（不是"数组的数组"）
+    const auto push_token = [](Json& arr, int line, int start, int len, int type) {
+        arr.push_back(line);
+        arr.push_back(start);
+        arr.push_back(len);
+        arr.push_back(type);
+        arr.push_back(0);
+    };
+    Json before = Json::array();
+    for (int i = 0; i < 10; ++i) push_token(before, 0, i * 4, 3, 1);
+    Json after = Json::array();
+    for (int i = 0; i < 10; ++i) push_token(after, 0, i * 4, 3, 1);
+    after[3 * 5 + 3] = 7;  // 第 4 个 token 的类型变了
+
+    const Json edits = fpgalsp::server::SemanticDeltaEdits(before, after);
+    ASSERT_EQ(edits.size(), 1u);
+    const Json& edit = edits[0];
+    EXPECT_EQ(edit.at("start").get<int>(), 15);       // 3 个 token × 5
+    EXPECT_EQ(edit.at("deleteCount").get<int>(), 5);  // 只删 1 个 token
+    EXPECT_EQ(edit.at("data").size(), 5u);            // 只补 1 个 token
+
+    // 完全相同 -> 空编辑（客户端复用旧 token）
+    EXPECT_TRUE(fpgalsp::server::SemanticDeltaEdits(after, after).empty());
+
+    // 纯追加 -> start 在末尾、deleteCount=0
+    Json appended = after;
+    push_token(appended, 0, 40, 3, 1);
+    const Json tail_edits = fpgalsp::server::SemanticDeltaEdits(after, appended);
+    ASSERT_EQ(tail_edits.size(), 1u);
+    EXPECT_EQ(tail_edits[0].at("start").get<int>(), 50);
+    EXPECT_EQ(tail_edits[0].at("deleteCount").get<int>(), 0);
+}

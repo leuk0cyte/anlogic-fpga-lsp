@@ -403,7 +403,7 @@ Json LspServer::FeatureReports(const Json& params) {
     Json available = Json::array();
     const std::string configured =
         settings_.td_path.empty() ? td_explicit_ : settings_.td_path;
-    if (const std::optional<td::TdChoice> td = td::FindTd(configured); td.has_value()) {
+    if (const std::optional<td::TdChoice> td = FindTdCached(configured); td.has_value()) {
         for (const std::string& name :
              flow::AvailableStrategies(td->root, project->family)) {
             available.push_back(name);
@@ -432,8 +432,24 @@ Json LspServer::FeatureReports(const Json& params) {
 //  fpgaLsp/flowStatus —— 真实 flow 状态 + 最后 200 行日志（协议 §3）
 // =============================================================================
 
-HandlerResult LspServer::HandleFlowStatus(const Json& params) {
-    return OkObject(FeatureFlowStatus(params));
+// P-D2：TD 安装根探测缓存（5 s TTL，负结果同样缓存）。
+std::optional<td::TdChoice> LspServer::FindTdCached(const std::string& configured) {
+    constexpr auto kTtl = std::chrono::seconds(5);
+    const auto now = std::chrono::steady_clock::now();
+    std::lock_guard<std::mutex> lock(td_cache_mutex_);
+    if (td_cache_valid_ && td_cache_key_ == configured &&
+        now - td_cache_at_ < kTtl) {
+        return td_cache_value_;
+    }
+    std::optional<td::TdChoice> found = td::FindTd(configured);
+    td_cache_key_ = configured;
+    td_cache_value_ = found;
+    td_cache_valid_ = true;
+    td_cache_at_ = now;
+    return found;
+}
+
+HandlerResult LspServer::HandleFlowStatus(const Json& params) {    return OkObject(FeatureFlowStatus(params));
 }
 
 // P-C4：纯函数，便于单测覆盖窗口/落后/全量三种情况。
@@ -520,7 +536,7 @@ Json LspServer::FeatureFlowStatus(const Json& params) {
 Json LspServer::TdSummary() {
     const std::string configured =
         settings_.td_path.empty() ? td_explicit_ : settings_.td_path;
-    const std::optional<td::TdChoice> choice = td::FindTd(configured);
+    const std::optional<td::TdChoice> choice = FindTdCached(configured);
 
     Json result = Json::object();
     if (!choice.has_value()) {
@@ -931,7 +947,7 @@ HandlerResult LspServer::HandleExecuteCommand(const Json& params) {
         if (!project.has_value()) return Failure(".al project not found");
         const std::string configured =
             settings_.td_path.empty() ? td_explicit_ : settings_.td_path;
-        const std::optional<td::TdChoice> td = td::FindTd(configured);
+        const std::optional<td::TdChoice> td = FindTdCached(configured);
         if (!td.has_value()) return Failure("No TangDynasty installation found");
 
         const Json options =
@@ -959,7 +975,7 @@ HandlerResult LspServer::HandleExecuteCommand(const Json& params) {
         if (!project.has_value()) return Failure(".al project not found");
         const std::string configured =
             settings_.td_path.empty() ? td_explicit_ : settings_.td_path;
-        const std::optional<td::TdChoice> td = td::FindTd(configured);
+        const std::optional<td::TdChoice> td = FindTdCached(configured);
         if (!td.has_value()) return Failure("No TangDynasty installation found");
 
         const Json options =
@@ -980,7 +996,7 @@ HandlerResult LspServer::HandleExecuteCommand(const Json& params) {
         if (!project.has_value()) return Failure(".al project not found");
         const std::string configured =
             settings_.td_path.empty() ? td_explicit_ : settings_.td_path;
-        const std::optional<td::TdChoice> td = td::FindTd(configured);
+        const std::optional<td::TdChoice> td = FindTdCached(configured);
         if (!td.has_value()) return Failure("No TangDynasty installation found");
 
         const Json options =
@@ -995,7 +1011,7 @@ HandlerResult LspServer::HandleExecuteCommand(const Json& params) {
         if (!project.has_value()) return Failure(".al project not found");
         const std::string configured =
             settings_.td_path.empty() ? td_explicit_ : settings_.td_path;
-        const std::optional<td::TdChoice> td = td::FindTd(configured);
+        const std::optional<td::TdChoice> td = FindTdCached(configured);
         if (!td.has_value()) return Failure("No TangDynasty installation found");
 
         const Json options =
@@ -1015,7 +1031,7 @@ HandlerResult LspServer::HandleExecuteCommand(const Json& params) {
         if (!project.has_value()) return Failure(".al project not found");
         const std::string configured =
             settings_.td_path.empty() ? td_explicit_ : settings_.td_path;
-        const std::optional<td::TdChoice> td = td::FindTd(configured);
+        const std::optional<td::TdChoice> td = FindTdCached(configured);
         if (!td.has_value()) return Failure("No TangDynasty installation found");
 
         const Json options =
