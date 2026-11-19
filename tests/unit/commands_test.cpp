@@ -15,9 +15,11 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <fstream>
 #include <memory>
 #include <set>
 #include <sstream>
+#include <ctime>
 #include <string>
 #include <vector>
 
@@ -242,4 +244,118 @@ TEST_F(CommandsTest, ModuleChildrenReturnsOneLevelAndPaginates) {
     params["module"] = "definitely_not_a_module";
     const Json unknown = server().FeatureModuleChildren(params);
     EXPECT_FALSE(unknown.at("ok").get<bool>());
+}
+
+// =============================================================================
+//  B-B8：工程级诊断（.al 里记了但磁盘上没有的文件 / 解析告警）
+// =============================================================================
+TEST(ProjectDiagnosticsTest, ReportsMissingFilesAndWarnings) {
+    fpgalsp::project::Project project;
+    project.dir = "Y:/fake";
+    project.al_path = "Y:/fake/p.al";
+    project.name = "fake";
+
+    fpgalsp::project::AlFile missing;
+    missing.path = "Y:/fake/src/missing.v";
+    missing.rel = "src/missing.v";
+    missing.kind = fpgalsp::project::FileKind::Verilog;
+    missing.exists = false;
+
+    fpgalsp::project::AlFile disabled;
+    disabled.path = "Y:/fake/src/disabled.v";
+    disabled.rel = "src/disabled.v";
+    disabled.kind = fpgalsp::project::FileKind::Verilog;
+    disabled.exists = false;
+    disabled.enabled = false;  // 用户显式关掉了：不该报
+
+    project.files = {missing, disabled};
+    project.warnings = {"td_version missing"};
+
+    const auto diagnostics = fpgalsp::server::ProjectDiagnostics(project);
+    ASSERT_EQ(diagnostics.size(), 2u);
+    bool has_missing = false;
+    bool has_warning = false;
+    for (const auto& diagnostic : diagnostics) {
+        EXPECT_EQ(diagnostic.range.start.line, 0);
+        if (diagnostic.code == "AL-MISSING-FILE") {
+            has_missing = true;
+            EXPECT_EQ(diagnostic.severity, fpgalsp::lsp::kError);
+            EXPECT_NE(diagnostic.message.find("src/missing.v"), std::string::npos);
+        }
+        if (diagnostic.code == "AL-WARNING") {
+            has_warning = true;
+            EXPECT_EQ(diagnostic.severity, fpgalsp::lsp::kWarning);
+        }
+    }
+    EXPECT_TRUE(has_missing);
+    EXPECT_TRUE(has_warning);
+}
+
+// =============================================================================
+//  B-A3：workspace/willRenameFiles 必须改写 .al 里的路径
+// =============================================================================
+TEST(RenameNotificationTest, WillRenameRewritesAlFileEntry) {
+    namespace fs = std::filesystem;
+    const fs::path dir =
+        fs::temp_directory_path() / ("fpgalsp-rename-" + std::to_string(::time(nullptr)));
+    fs::create_directories(dir / "src");
+    {
+        std::ofstream out(dir / "src" / "old.v");
+        out << "module old (input clk, output q);\n  assign q = clk;\nendmodule\n";
+    }
+    const std::string al_text =
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+        "<Project Version=\"3\" Minor=\"2\" Path=\"" + dir.generic_string() + "\">\n"
+        "    <Name>rename</Name>\n"
+        "    <HardWare><Family>EF2</Family><Device>EF2L45LG144B</Device></HardWare>\n"
+        "    <Source_Files><Verilog>\n"
+        "        <File Path=\"src/old.v\"><FileInfo><Attr Name=\"CompileOrder\" Val=\"1\"/></FileInfo></File>\n"
+        "    </Verilog></Source_Files>\n"
+        "    <Top_Module>old</Top_Module>\n"
+        "</Project>\n";
+    {
+        std::ofstream out(dir / "p.al");
+        out << al_text;
+    }
+
+    std::istringstream input;
+    std::ostringstream output;
+    auto transport = fpgalsp::jsonrpc::MakeTransport(fpgalsp::jsonrpc::TransportMode::Lsp, input,
+                                                     output);
+    LspServer server(*transport);
+    Json init = Json::object();
+    init["rootUri"] = fpgalsp::platform::path_to_uri(dir.generic_string());
+    server.FeatureInitialize(init);
+
+    Json params = Json::object();
+    Json files = Json::array();
+    Json rename = Json::object();
+    rename["oldUri"] = fpgalsp::platform::path_to_uri((dir / "src" / "old.v").generic_string());
+    rename["newUri"] = fpgalsp::platform::path_to_uri((dir / "src" / "renamed.v").generic_string());
+    files.push_back(std::move(rename));
+    params["files"] = std::move(files);
+
+    const Json edit = server.FeatureWillRenameFiles(params);
+    ASSERT_TRUE(edit.contains("changes")) << edit.dump();
+    const Json& changes = edit.at("changes");
+    ASSERT_EQ(changes.size(), 1u);
+    const auto list = changes.begin().value();
+    ASSERT_EQ(list.size(), 1u);
+    EXPECT_EQ(list.at(0).at("newText").get<std::string>(), "src/renamed.v");
+    // 编辑必须落在 .al 里那一行的路径上
+    const Json& range = list.at(0).at("range");
+    EXPECT_EQ(range.at("start").at("line").get<int>(), 5);
+    EXPECT_EQ(range.at("start").at("character").get<int>(),
+              static_cast<int>(std::string("        <File Path=\"").size()));
+}
+
+// B-A3：必须声明 fileOperations，否则客户端根本不会发 willRenameFiles。
+TEST_F(CommandsTest, DeclaresFileOperationFilters) {
+    const Json init = server().FeatureInitialize(Json::object());
+    const Json& operations = init.at("capabilities").at("workspace").at("fileOperations");
+    ASSERT_TRUE(operations.contains("willRename"));
+    ASSERT_TRUE(operations.contains("didRename"));
+    const std::string glob =
+        operations.at("willRename").at("filters").at(0).at("pattern").at("glob").get<std::string>();
+    EXPECT_NE(glob.find("{v,sv"), std::string::npos) << glob;
 }

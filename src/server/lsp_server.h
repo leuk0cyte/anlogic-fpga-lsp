@@ -149,6 +149,8 @@ public:
     Json FeatureModuleTree(std::string_view uri, bool include_primitives = false);
     // P-C2：懒加载子节点（offset/limit 分页）
     Json FeatureModuleChildren(const Json& params);
+    // B-A3：改名会破坏 .al 的路径记录 —— 必须在客户端改名前给出 WorkspaceEdit。
+    Json FeatureWillRenameFiles(const Json& params);
     // 工程摘要（与 fpgalsp.info 同一实现）
     Json FeatureInfo();
 
@@ -256,6 +258,8 @@ private:
     // =========================================================================
     HandlerResult HandleModuleTree(const Json& params);
     HandlerResult HandleModuleChildren(const Json& params);
+    HandlerResult HandleWillRenameFiles(const Json& params);
+    HandlerResult HandleDidRenameFiles(const Json& params);
     HandlerResult HandleReports(const Json& params);
     HandlerResult HandleFlowStatus(const Json& params);
     HandlerResult HandleExecuteCommand(const Json& params);
@@ -484,6 +488,9 @@ std::string DiagnosticPath(const lsp::Diagnostic& diagnostic, std::string_view f
 //   * 排序键：line -> character -> severity -> source -> code -> message（确定性，便于"内容相同就不重发"）
 //   * 去重：完全相同的 (range,severity,code,source,message) 只留一条
 //   * 红线：**lint 不覆盖 TD、TD 不覆盖 lint** —— 两个来源的条目都会保留
+// B-B8：工程级诊断（.al 缺文件 / 解析告警），发布到 .al 文件上。
+lsp::DiagnosticList ProjectDiagnostics(const project::Project& project);
+
 lsp::DiagnosticList MergeDiagnosticSources(const lsp::DiagnosticList& lint,
                                            const lsp::DiagnosticList& td);
 

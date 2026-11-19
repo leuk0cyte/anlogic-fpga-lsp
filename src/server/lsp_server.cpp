@@ -294,6 +294,10 @@ void LspServer::RegisterAll(jsonrpc::Dispatcher& dispatcher) {
                         [this](const Json& params) { return HandleFoldingRange(params); });
 
     // ---- 自定义 v2 方法（PROTOCOL-V2.md）----
+    dispatcher.Register("workspace/willRenameFiles",
+                        [this](const Json& params) { return HandleWillRenameFiles(params); });
+    dispatcher.Register("workspace/didRenameFiles",
+                        [this](const Json& params) { return HandleDidRenameFiles(params); });
     dispatcher.Register("fpgaLsp/moduleChildren",
                         [this](const Json& params) { return HandleModuleChildren(params); });
     dispatcher.Register("fpgaLsp/moduleTree",
@@ -359,6 +363,22 @@ Json LspServer::FeatureInitialize(const Json& params) {
     folders["changeNotifications"] = true;
     Json workspace = Json::object();
     workspace["workspaceFolders"] = std::move(folders);
+    // B-A3：改名通知。只声明 HDL 扩展名（.al 由我们改，不由用户手工改）。
+    Json rename_filters = Json::array();
+    Json filter = Json::object();
+    filter["scheme"] = "file";
+    Json pattern = Json::object();
+    pattern["glob"] = "**/*.{v,sv,vh,svh,vhd,vhdl}";
+    filter["pattern"] = std::move(pattern);
+    rename_filters.push_back(std::move(filter));
+    Json operations = Json::object();
+    Json will_rename = Json::object();
+    will_rename["filters"] = rename_filters;
+    operations["willRename"] = std::move(will_rename);
+    Json did_rename = Json::object();
+    did_rename["filters"] = rename_filters;
+    operations["didRename"] = std::move(did_rename);
+    workspace["fileOperations"] = std::move(operations);
     capabilities["workspace"] = std::move(workspace);
 
     capabilities["hoverProvider"] = true;
@@ -1241,6 +1261,50 @@ lsp::DiagnosticList MergeDiagnosticSources(const lsp::DiagnosticList& lint,
     return merged;
 }
 
+// B-B8：工程自身的诊断（.al 里记了但磁盘上没有的文件、解析告警）。
+// 这一条以前只写在 fpga_info 的 warnings 计数里，编辑器 Problems 完全看不见 ——
+// 用户看到的是"0 error"，而 elaborate 根本没跑（PYTHON-BUGS P-1 同族）。
+lsp::DiagnosticList ProjectDiagnostics(const project::Project& project) {
+    lsp::DiagnosticList out;
+    const auto rel_or = [](const project::AlFile& file) -> std::string {
+        return file.rel.empty() ? file.path : file.rel;
+    };
+
+    int missing = 0;
+    for (const project::AlFile& file : project.files) {
+        if (file.exists || !file.enabled || file.excluded) continue;
+        ++missing;
+        lsp::Diagnostic diagnostic;
+        diagnostic.severity = lsp::kError;
+        diagnostic.code = "AL-MISSING-FILE";
+        diagnostic.source = "fpga-lsp:project";
+        diagnostic.message = "File listed in .al but missing on disk: " + rel_or(file);
+        diagnostic.range.start = lsp::Position{0, 0};
+        diagnostic.range.end = lsp::Position{0, 1};
+        lsp::Json data = lsp::Json::object();
+        data["origin"] = "al";
+        data["rel"] = file.rel;
+        diagnostic.data = std::move(data);
+        out.push_back(std::move(diagnostic));
+        if (out.size() >= 20) break;  // 工程级诊断不刷屏
+    }
+    (void)missing;
+
+    for (const std::string& warning : project.warnings) {
+        if (warning.empty()) continue;
+        lsp::Diagnostic diagnostic;
+        diagnostic.severity = lsp::kWarning;
+        diagnostic.code = "AL-WARNING";
+        diagnostic.source = "fpga-lsp:project";
+        diagnostic.message = warning;
+        diagnostic.range.start = lsp::Position{0, 0};
+        diagnostic.range.end = lsp::Position{0, 1};
+        out.push_back(std::move(diagnostic));
+        if (out.size() >= 40) break;
+    }
+    return out;
+}
+
 void LspServer::PublishMergedPath(const project::Project* project, const std::string& path) {
     lsp::DiagnosticList lint;
     lsp::DiagnosticList td;
@@ -1255,11 +1319,17 @@ void LspServer::PublishMergedPath(const project::Project* project, const std::st
             }
         }
     }
-    if (lint.empty() && td.empty()) {
+    // B-B8：.al 本身的诊断（缺文件 / 解析告警）与 lint、TD 一起合并发布。
+    lsp::DiagnosticList project_diags;
+    if (project != nullptr && path == project->al_path) {
+        project_diags = ProjectDiagnostics(*project);
+    }
+    if (lint.empty() && td.empty() && project_diags.empty()) {
         PublishDiagnostics(path, lsp::DiagnosticList{});
         return;
     }
-    PublishDiagnostics(path, MergeDiagnosticSources(lint, td));
+    PublishDiagnostics(path, MergeDiagnosticSources(MergeDiagnosticSources(lint, td),
+                                                    project_diags));
 }
 
 void LspServer::PublishMerged(const project::Project& project, const std::string* only_path) {

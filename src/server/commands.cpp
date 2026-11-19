@@ -833,6 +833,153 @@ const std::vector<std::string>& AdvertisedCommandNames() {
     return kNames;
 }
 
+// =============================================================================
+//  B-A3：workspace/willRenameFiles + didRenameFiles
+// =============================================================================
+//  为什么必须有：`.al` 用路径记录参与构建的文件，而 `AlFile::exists` 为假时
+//  `InBuild()` 就是 false —— 改个文件名，工程**静默少喂一个文件**，综合还能"成功"，
+//  用户看到 0 error。这是本仓库唯一会破坏工程数据的一类缺陷。
+namespace {
+
+std::string ReadTextFileOrEmpty(const std::string& path) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return {};
+    std::ostringstream buffer;
+    buffer << in.rdbuf();
+    return buffer.str();
+}
+
+std::string LowerAscii(std::string_view text) {
+    std::string out(text);
+    for (char& ch : out) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    return out;
+}
+
+// `.al` 里记录的路径可能是相对（最常见）或绝对；新值保持同样的风格。
+std::string RebasedPath(const project::Project& project, const std::string& old_rel,
+                        const std::string& new_abs) {
+    const bool absolute = old_rel.size() > 1 &&
+                          (old_rel[0] == '/' || old_rel[1] == ':');
+    if (absolute) return platform::normalize_path(new_abs);
+    const std::string dir = LowerAscii(platform::normalize_path(project.dir)) + "/";
+    const std::string normal = platform::normalize_path(new_abs);
+    if (LowerAscii(normal).rfind(dir, 0) == 0) {
+        return normal.substr(dir.size());  // 相对 .al 目录
+    }
+    return normal;  // 移到工程外了：只能写绝对路径
+}
+
+struct AlEdit {
+    std::string al_path;
+    int line = 0;
+    int character = 0;
+    int length = 0;
+    std::string new_text;
+};
+
+// 为"old_abs 被改名为 new_abs"规划 .al 里的文本替换（只改第一处，避免误伤同名字符串）。
+std::vector<AlEdit> PlanRenameEdits(const project::Project& project,
+                                    const std::string& old_abs,
+                                    const std::string& new_abs) {
+    const project::AlFile* entry = nullptr;
+    for (const project::AlFile& file : project.files) {
+        if (LowerAscii(platform::normalize_path(file.path)) ==
+            LowerAscii(platform::normalize_path(old_abs))) {
+            entry = &file;
+            break;
+        }
+    }
+    if (entry == nullptr) return {};
+
+    const std::string recorded = entry->rel.empty() ? entry->path : entry->rel;
+    const std::string text = ReadTextFileOrEmpty(project.al_path);
+    if (text.empty()) return {};
+    const std::size_t pos = text.find(recorded);
+    if (pos == std::string::npos) return {};
+
+    // 位置换算：路径是 ASCII，字节偏移 = UTF-16 列偏移。
+    int line = 0;
+    int character = 0;
+    for (std::size_t i = 0; i < pos; ++i) {
+        if (text[i] == '\n') {
+            ++line;
+            character = 0;
+        } else {
+            ++character;
+        }
+    }
+
+    AlEdit edit;
+    edit.al_path = project.al_path;
+    edit.line = line;
+    edit.character = character;
+    edit.length = static_cast<int>(recorded.size());
+    edit.new_text = RebasedPath(project, recorded, new_abs);
+    return {edit};
+}
+
+}  // namespace
+
+Json LspServer::FeatureWillRenameFiles(const Json& params) {
+    Json changes = Json::object();
+    for (const Json& item : jsonrpc::GetArray(params, "files")) {
+        const std::string old_uri = jsonrpc::GetString(item, "oldUri");
+        const std::string new_uri = jsonrpc::GetString(item, "newUri");
+        if (old_uri.empty() || new_uri.empty()) continue;
+        const std::string old_path = platform::uri_to_path(old_uri);
+        const std::string new_path = platform::uri_to_path(new_uri);
+        const auto project = ProjectForPath(old_path);
+        if (!project.has_value()) continue;
+        for (const AlEdit& edit : PlanRenameEdits(*project, old_path, new_path)) {
+            Json text_edit = Json::object();
+            Json range = Json::object();
+            Json start = Json::object();
+            start["line"] = edit.line;
+            start["character"] = edit.character;
+            Json end = Json::object();
+            end["line"] = edit.line;
+            end["character"] = edit.character + edit.length;
+            range["start"] = std::move(start);
+            range["end"] = std::move(end);
+            text_edit["range"] = std::move(range);
+            text_edit["newText"] = edit.new_text;
+            const std::string al_uri = platform::path_to_uri(edit.al_path);
+            if (!changes.contains(al_uri)) changes[al_uri] = Json::array();
+            changes[al_uri].push_back(std::move(text_edit));
+        }
+    }
+    Json result = Json::object();
+    if (!changes.empty()) result["changes"] = std::move(changes);
+    return result;
+}
+
+HandlerResult LspServer::HandleWillRenameFiles(const Json& params) {
+    return OkObject(FeatureWillRenameFiles(params));
+}
+
+HandlerResult LspServer::HandleDidRenameFiles(const Json& params) {
+    // 客户端已经把 .al 改好了（或用户手工改的）。这里让工程模型/索引/诊断跟上，
+    // 否则下一次 hover/诊断仍然用旧文件集合 —— 又是"静默少文件"。
+    bool touched = false;
+    for (const Json& item : jsonrpc::GetArray(params, "files")) {
+        const std::string new_uri = jsonrpc::GetString(item, "newUri");
+        if (new_uri.empty()) continue;
+        touched = true;
+    }
+    if (!touched) return HandlerResult::Ok(Json());
+
+    InvalidateProjectCaches();
+    if (const auto project = CurrentProject(); project.has_value()) {
+        if (index_service_) {
+            index_service_->SetProject(*project);
+            index_service_->OnWatchedFiles({project->al_path}, {});
+        }
+        PublishMerged(*project, nullptr);
+        MaybeNotifyIndexChanged({project->al_path});
+    }
+    return HandlerResult::Ok(Json());
+}
+
 HandlerResult LspServer::HandleExecuteCommand(const Json& params) {
     const std::string command = jsonrpc::GetString(params, "command");
     const Json args = jsonrpc::GetArray(params, "arguments");
