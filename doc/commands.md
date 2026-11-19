@@ -64,6 +64,11 @@
 
 | 方法 | 状态 | 说明 |
 | --- | --- | --- |
+| `workspace/willRenameFiles` | **已实现（B-A3）** | 改名 HDL 文件时返回 `.al` 的精确 `WorkspaceEdit`；`didRenameFiles` 重解析工程并重发诊断 |
+| `fpgalsp.compareRuns` | **已实现（B-B6）** | `{from?,to?}` → 两次 run 的 QoR/时序/面积差异（方向 + 汇总） |
+| `fpgalsp.runs` | **已实现（X-B2）** | run 列表 + 指标（趋势面板数据源） |
+| `fpgalsp.testbench` | **已实现（B-B10）** | `{module?,clock?,reset?}` → 可解析的 testbench 文本 + `parseOk` |
+| `fpgalsp.constraintTable` | **已实现（X-B3）** | `.adc` 逐行结构化 + 每行诊断数（只读） |
 | `fpgaLsp/moduleChildren` | **已实现（P-C2）** | `{uri?, module, offset, limit, includePrimitives}` → `{ok,parent,children[],total,nextOffset,hasMore}`；只回一层，子节点带 `hasChildren` 不带 `children`；未知模块 `ok:false` |
 | `fpgaLsp/moduleTree` | **已实现（真实索引）** | 基于 `src/hdl` 的 Verible 符号索引；`includePrimitives=false` 时按 745 条器件原语过滤黑盒 |
 | `fpgaLsp/reports` | **已实现** | `reports::BuildReports` + `routed_db` + `strategies.available` + `flow`；无 flow 时 `ok:false` + Python 同文案 |

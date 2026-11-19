@@ -14,7 +14,7 @@
 | 项目 | 数据 |
 | --- | --- |
 | LSP | 25 个方法（补全 / 悬停 / 定义 / 引用 / 文档与工作区符号 / 代码动作 / 格式化 ×2 / 重命名 / 调用层次 / 语义高亮 / 折叠 / inlayHint / reports …） |
-| MCP | **41 个工具全部真实实现（0 占位）**（Python 对齐 39 + `job_status`/`job_cancel`）；默认只读，flow / 写操作需显式开启；4 个只读 resources |
+| MCP | **43 个工具全部真实实现（0 占位）**（Python 对齐 39 + `job_status`/`job_cancel`/`run_diff`/`testbench`）；默认只读，flow / 写操作需显式开启；4 个只读 resources |
 | TD 集成 | 会话与诊断、Flow + BitWizard、报告解析、ADC + SDC 符号、HDL 索引 |
 
 ## M1 协议层减法（已落地，2026-11-19）
@@ -52,6 +52,33 @@
 | P-C2 | `fpgaLsp/moduleChildren`（一层 + 分页 + `hasChildren`），客户端展开时懒加载 | 一层/翻页/未知模块（单测）；展开只请求一次（插件用例） |
 
 回归：`ctest` **61/61**；插件 `node test/run.js` **36/36**。
+
+## M3 功能开发（已落地，2026-11-20）
+
+> 计划见 [doc/design/README.md](design/README.md) §3。M1/M2 见上面两节。
+
+| 波次 | 项 | 结果 |
+| --- | --- | --- |
+| 数据完整性 | B-A3 改名通知 | 声明 `workspace.fileOperations`；`willRenameFiles` 精确改写 `.al` 路径；`didRenameFiles` 失效缓存→重解析→重建索引→重发诊断 |
+| | B-B8 工程一致性 | 缺文件 `AL-MISSING-FILE`(error) + 解析告警 `AL-WARNING`(warning)，发布到 `.al` |
+| 接线 | B-B1 约束诊断进 Problems | `ConstraintDiagnostics` 成为第三诊断来源（与 MCP 同源端口表） |
+| | B-B2 时序端点→源码 | `ResolveTimingEndpoints`（实例链下钻 + 失败 reason 分级），插件端点可点击 |
+| 领域 | B-B5 约束覆盖（第一批） | 未约束 IO 给一条 `ADC-COVERAGE`(info)；bank 电压域/交叉表仍缺（需要 device 引脚表接线） |
+| | B-B6 两次 run 差异 | `fpgalsp.compareRuns` + MCP `fpga_run_diff`（方向判定 + 汇总） |
+| | B-B7 面积热点→源码 | `ResolveAreaModules` + 面积表 Source 列可点 |
+| | B-B10 testbench 骨架 | `fpgalsp.testbench` + MCP `fpga_testbench`（含 `ParseVerilog` 自检） |
+| | B-B4 CDC/DRC 进 Problems | `ResolveHdlPath` 把 CDC cell 钉到信号声明（`CDC-UNSAFE`），DRC 给 `.al` 上计数摘要 |
+| 插件 | S5/S3/S1 | 崩溃自动重启（3 次退避）、Reports 树随 `reportsChanged` 刷新、状态栏「项目·器件·WNS·flow」 |
+| | S6/S7/S2/S8 | 补齐未声明设置、`agent: flow/write` 徽标、人话错误 + Show Logs、多根工作区按 `.al` 选目录 |
+| | X-B1/X-B2/X-B3/X-B7 | 时序端点链接、QoR 跨 run 趋势面板、引脚约束表（只读+跳行）、`lm.registerTool` 5 个只读工具 |
+
+**明确推迟（写在计划里但本轮没做）**：
+B-B4 的 codeAction（一键加同步器/false_path —— "生成哪种修复"交给用户更稳妥）；
+X-B3 的表格内编辑（保持在编辑器里改，避免不可撤销写文件）；
+B-B5 的 bank 电压域/交叉表审计；以及计划 §8 的 backlog（B-B11 多工程语义、B-B12 TD 版本矩阵、
+B-B13 波形联动、X-B4/B5/B6/B8 等）。
+
+回归：`ctest` **61/61**、插件 `node test/run.js` **41/41**。
 
 ## 审计 §0.2 第 1–6 条的修复（详见 [doc/audit/2026-11-19/static/FIXES.md](audit/2026-11-19/static/FIXES.md)）
 

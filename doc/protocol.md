@@ -45,3 +45,19 @@ build\bin\fpgalsp-native.exe --stdio --log build\server.log --verbose
 
 `stdout` 永远归协议独占。所有诊断信息走 `stderr` 或 `--log` 指定的文件；
 **禁止**在服务端代码里用 `std::print` / `std::println`（它们默认写 stdout）。
+
+## MCP loopback：端点广告与令牌（P-A3）
+
+`--mcp-port <n>` 启动后，LSP 进程把 `{version,port,token,pid,root,startedAt}` 写到
+`<FPGALSP_STATE_DIR>/mcp-endpoint-<port>.json`（先写 `.tmp` 再 rename，退出时删除）。
+扩展据此连接，不再靠 FNV 派生端口 + TCP 探测。
+
+* **令牌**：每进程 16 字节随机十六进制；TCP 会话的首条消息可带
+  `initialize.params._meta.fpgalspToken`。带了就必须相等（否则 `-32001` 并断开）；
+  没带时只有 `FPGALSP_MCP_REQUIRE_TOKEN=1` 才拒绝（两版本灰度）。
+  token 不写任何日志。
+* **`--attach-port` 代理**会从端点文件读 token 并注入第一条消息，
+  所以旧扩展不需要改动也能在强制档下工作。
+* **多客户端**：每连接一个会话线程，`FPGALSP_MCP_CLIENTS`（默认 8）为上限，
+  超限回 `-32002`；`tools/call` 在内部 worker 上执行，读循环继续跑，
+  因此 `notifications/cancelled` 能真正送达。
