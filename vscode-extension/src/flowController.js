@@ -63,6 +63,9 @@ class FlowController {
         this.reports = opts.reports;
 
         this.output = vscode.window.createOutputChannel('FPGA Flow');
+        // P-C4: flowStatus 只回新增日志行；这里保存合并后的最近窗口（给树用）。
+        this._logSeq = undefined;
+        this._recentLog = [];
         this._flowDiagnostics = undefined;
         try {
             if (vscode.languages && typeof vscode.languages.createDiagnosticCollection === 'function') {
@@ -343,13 +346,25 @@ class FlowController {
         if (!this.active) return;
         let payload;
         try {
-            payload = await this.rpc.request(METHODS.flowStatus, {});
+            // P-C4: ask only for lines we have not seen. The server answers with a monotonic
+            // `flow.logSeq` plus just the new lines; older servers ignore the field and return
+            // the whole window, which still works.
+            const params = this._logSeq === undefined ? {} : { sinceSeq: this._logSeq };
+            payload = await this.rpc.request(METHODS.flowStatus, params);
         } catch (_) {
             return; // transient failure: keep polling
         }
         if (!this.active) return;
         const flow = payload && payload.flow;
         if (!flow || typeof flow !== 'object') return;
+        const logSeq = Number(flow.logSeq);
+        if (Number.isFinite(logSeq)) this._logSeq = logSeq;
+        if (Array.isArray(flow.log) && flow.log.length) {
+            for (const line of flow.log) this._appendFlowLog(line);
+            // The tree must keep the whole recent history even though the server only sent
+            // the delta: hand it the merged window rather than the slice.
+            flow.log = this._recentLog;
+        }
 
         if (this.flowTree && typeof this.flowTree.applyFlowStatus === 'function') {
             this.flowTree.applyFlowStatus(payload);
@@ -369,6 +384,16 @@ class FlowController {
             const ok = flow.ok !== false && !flow.error;
             this.finish(ok, ok ? undefined : (flow.error || flow.lastMessage || 'flow failed'));
         }
+    }
+
+    /** P-C4: append one server log line to the local ring buffer (200 lines). */
+    _appendFlowLog(line) {
+        if (line === undefined || line === null) return;
+        const text = String(line);
+        if (!text) return;
+        this._recentLog.push(text);
+        if (this._recentLog.length > 200) this._recentLog.splice(0, this._recentLog.length - 200);
+        this.output.appendLine(`[${nowText()}] ${text}`);
     }
 
     _logMessage(message) {

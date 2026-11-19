@@ -1796,7 +1796,21 @@ std::shared_ptr<flow::FlowRunner> LspServer::EnsureFlowRunner(const project::Pro
     flow_ = std::make_shared<flow::FlowRunner>(
         project, td,
         // 通知：直接发 fpgaLsp/flowEvent（transport 写操作线程安全，可从 worker 线程调用）
-        [this](const Json& event) { SendFlowEvent(event); },
+        [this, project](const Json& event) {
+            SendFlowEvent(event);
+            // P-D7：flow 刚写完报告时，watcher 的 glob 不覆盖 *_Runs/**（只有 .v/.sv/.vhd/
+            // .adc/.sdc/.al），所以 reportsChanged 只能靠这里主动检查一次。
+            // CheckForChanges 只 stat 已知报告文件，代价 ≈1 ms（审计 REPORTS.md）。
+            const std::string type = jsonrpc::GetString(event, "type");
+            if ((type == "done" || type == "error") && report_store_ != nullptr) {
+                if (const std::shared_ptr<const project::Project> current = CurrentProjectShared();
+                    current != nullptr && current->al_path == project.al_path) {
+                    if (report_store_->CheckForChanges(*current)) {
+                        SendReportsChanged(*current, {});
+                    }
+                }
+            }
+        },
         // 日志：走 window/logMessage（同样线程安全）
         [this](int type, std::string_view text) { LogMessage(type, text); });
     platform::default_logger().info("flow runner 已创建: " + project.al_path);

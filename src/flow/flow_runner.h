@@ -98,6 +98,9 @@ struct FlowState {
     std::optional<bool> ok;
     std::string error;
     std::vector<std::string> log;  // 最后 200 行
+    // P-C4：累计写入的日志行数（单调递增，不随裁剪回退）。
+    // 客户端用 sinceSeq 只取新增行：log[i] 的序号 = log_seq - (log.size() - i)。
+    std::uint64_t log_seq = 0;
     int jobs = 6;
 
     jsonrpc::Json ToJson() const;

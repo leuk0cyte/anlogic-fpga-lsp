@@ -443,6 +443,7 @@ struct FlowRunner::Impl {
             if (!message.empty()) {
                 state.last_message = message;
                 state.log.push_back(FormatLogLine(elapsed, state.stage, message));
+                ++state.log_seq;  // P-C4：累计行号（供 flowStatus 的 sinceSeq 增量）
                 state.log = TrimLog(std::move(state.log), 200);
             }
             if (type == "done" || type == "error") state.elapsed = elapsed;

@@ -42,6 +42,7 @@
 #include "lsp/document_store.h"
 #include "project/al_project.h"
 #include "td/td_service.h"
+#include "flow/flow_runner.h"  // P-C4：SliceFlowLog 需要 FlowState 的完整定义
 #include "server/index_service.h"
 #include "server/lint_service.h"
 #include "server/report_store.h"
@@ -152,7 +153,7 @@ public:
     //  这些方法的实现在 src/server/features_*.cpp；B2–B10 各自填充自己的模块，
     //  但**签名与 dispatch 已在此固定**，避免并行改 lsp_server.cpp。
     Json FeatureReports(const Json& params);
-    Json FeatureFlowStatus();
+    Json FeatureFlowStatus(const Json& params = Json::object());
     Json FeatureSemanticTokens(std::string_view path);
     Json FeatureFoldingRanges(std::string_view path);
     Json FeatureCodeActions(std::string_view path, const Json& range, const Json& context);
@@ -480,6 +481,13 @@ Json ProjectSummaryOf(std::string_view al_path);
 // 新增命令时必须同时登记；`tests/unit/commands_test.cpp` 会逐个断言"能分发"，
 // 防止出现"声明了但没实现"（B-A2 的验收条件）。
 const std::vector<std::string>& ExecuteCommandNames();
+
+// P-C4：`fpgaLsp/flowStatus` 的日志切片（纯函数，单测直接覆盖）。
+// since 为空 = 旧客户端语义（回完整窗口）；给了 since 就只回序号 > since 的行，
+// 若客户端落后于窗口（since < logStartSeq）第一行是 truncated 标记。
+// 返回的数组同时带 logSeq / logStartSeq 两个字段的信息由调用方写入 flow 对象。
+jsonrpc::Json SliceFlowLog(const flow::FlowState& state,
+                           std::optional<std::uint64_t> since, std::uint64_t* log_start_seq);
 
 // capability 里广播的子集：全表减去扩展自己 contributes 的 3 条（check/info/restart）。
 // vscode-languageclient 会为广播的每条命令注册 VS Code 命令，重复注册会让 initialize 失败。

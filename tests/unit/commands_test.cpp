@@ -148,3 +148,32 @@ TEST_F(CommandsTest, ReportsHonourIfRevision) {
     const Json third = server().FeatureReports(params);
     EXPECT_FALSE(third.contains("unchanged"));
 }
+
+// P-C4：flowStatus 的日志切片（窗口 / 增量 / 落后）
+TEST(FlowLogSliceTest, WindowAndIncrementalCases) {
+    fpgalsp::flow::FlowState state;
+    state.log = {"a", "b", "c", "d", "e"};
+    state.log_seq = 12;  // 7..11 的 5 行在窗口里，序号 = log_seq - (size - i)
+
+    std::uint64_t start = 0;
+    // 旧客户端：完整窗口
+    Json all = fpgalsp::server::SliceFlowLog(state, std::nullopt, &start);
+    EXPECT_EQ(start, 7u);
+    EXPECT_EQ(all.size(), 5u);
+    EXPECT_EQ(all[0].get<std::string>(), "a");
+
+    // 增量：只回 since 之后的行（since=10 -> 第 11 行 = "e"）
+    Json tail = fpgalsp::server::SliceFlowLog(state, std::uint64_t{10}, &start);
+    ASSERT_EQ(tail.size(), 1u);
+    EXPECT_EQ(tail[0].get<std::string>(), "e");
+
+    // 无新行
+    Json none = fpgalsp::server::SliceFlowLog(state, std::uint64_t{12}, &start);
+    EXPECT_TRUE(none.empty());
+
+    // 落后于窗口：先给 truncated 标记，再给整个窗口
+    Json behind = fpgalsp::server::SliceFlowLog(state, std::uint64_t{1}, &start);
+    ASSERT_EQ(behind.size(), 6u);
+    EXPECT_NE(behind[0].get<std::string>().find("truncated"), std::string::npos);
+    EXPECT_EQ(behind[5].get<std::string>(), "e");
+}

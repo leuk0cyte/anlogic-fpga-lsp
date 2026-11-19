@@ -1230,3 +1230,35 @@ test('reports service: uses ifRevision and reuses the cached payload when unchan
     eq(calls.length, 3, 'a changed revision falls back to a real request');
     ok(third !== first, 'changed revision produces fresh data');
 });
+
+// P-C4: flowStatus 增量日志。第二次轮询必须带 sinceSeq，且本地窗口要合并而不是被
+// 增量切片覆盖（否则树里的历史日志会消失）。
+test('flow controller: polls flowStatus incrementally (sinceSeq) and merges the log window', async () => {
+    const requests = [];
+    let seq = 0;
+    const controller = new FlowController({
+        rpc: {
+            request: async (method, params) => {
+                requests.push({ method, params });
+                if (method !== 'fpgaLsp/flowStatus') return { ok: true };
+                const next = seq + 2;
+                const lines = [`line-${seq}`, `line-${seq + 1}`];
+                seq = next;
+                return { ok: true, flow: { running: true, stage: 'syn', logSeq: seq, log: lines } };
+            },
+            execute: async () => ({ ok: true, runId: 'r1' }),
+        },
+        getProjectInfo: async () => ({ al: 'Y:/p/demo.al' }),
+    });
+    controller.active = { runId: 'r1', startedAt: Date.now(), sawRunning: true, label: 'syn' };
+
+    await controller.pollOnce();
+    eq(requests.length, 1, 'first poll');
+    eq(requests[0].params.sinceSeq, undefined, 'no sinceSeq before we know the sequence');
+
+    await controller.pollOnce();
+    eq(requests[1].params.sinceSeq, 2, 'second poll asks only for newer lines');
+    eq(controller._recentLog.length, 4, 'local window keeps both batches');
+
+    controller.dispose();
+});

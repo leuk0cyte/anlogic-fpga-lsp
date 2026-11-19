@@ -433,19 +433,60 @@ Json LspServer::FeatureReports(const Json& params) {
 // =============================================================================
 
 HandlerResult LspServer::HandleFlowStatus(const Json& params) {
-    (void)params;
-    return OkObject(FeatureFlowStatus());
+    return OkObject(FeatureFlowStatus(params));
 }
 
-Json LspServer::FeatureFlowStatus() {
+// P-C4：纯函数，便于单测覆盖窗口/落后/全量三种情况。
+jsonrpc::Json SliceFlowLog(const flow::FlowState& state, std::optional<std::uint64_t> since,
+                           std::uint64_t* log_start_seq) {
+    const std::uint64_t total = state.log_seq;
+    const std::uint64_t lines = static_cast<std::uint64_t>(state.log.size());
+    const std::uint64_t start_seq = total > lines ? total - lines : 0u;
+    if (log_start_seq != nullptr) *log_start_seq = start_seq;
+
+    Json log = Json::array();
+    std::size_t first = 0;
+    if (since.has_value()) {
+        if (*since < start_seq) {
+            // 客户端落后于窗口：明确告诉它丢了行，别让它拼出错误的时间线。
+            log.push_back("<log truncated: " + std::to_string(start_seq - *since) +
+                          " lines dropped>");
+        }
+        // sinceSeq 是"已看到的最后一行序号"，所以下一行是 since - start_seq + 1。
+        const std::uint64_t skip = *since >= start_seq ? *since - start_seq + 1 : 0u;
+        first = static_cast<std::size_t>(std::min<std::uint64_t>(skip, lines));
+    }
+    for (std::size_t i = first; i < state.log.size(); ++i) log.push_back(state.log[i]);
+    return log;
+}
+
+Json LspServer::FeatureFlowStatus(const Json& params) {
     const std::shared_ptr<flow::FlowRunner> runner = flow_runner();
 
     Json result = Json::object();
     result["ok"] = true;
     Json flow = CurrentFlowObject(runner);
-    Json log = Json::array();
+    flow::FlowState state;
+    bool have_state = false;
     if (runner) {
-        for (const std::string& line : runner->Status().log) log.push_back(line);
+        state = runner->Status();
+        have_state = true;
+    }
+
+    // P-C4：日志增量。`sinceSeq` = 客户端已看到的最后一行序号；只回新增行。
+    // 旧客户端（不带 sinceSeq）仍然拿完整的最后 200 行，行为不变。
+    std::optional<std::uint64_t> since;
+    if (const auto it = params.find("sinceSeq");
+        it != params.end() && it->is_number_integer()) {
+        const auto value = it->get<std::int64_t>();
+        since = value > 0 ? static_cast<std::uint64_t>(value) : 0u;
+    }
+    Json log = Json::array();
+    if (have_state) {
+        std::uint64_t start_seq = 0;
+        log = SliceFlowLog(state, since, &start_seq);
+        flow["logSeq"] = state.log_seq;
+        flow["logStartSeq"] = start_seq;
     }
     flow["log"] = std::move(log);
     if (!flow.contains("ok")) flow["ok"] = nullptr;
