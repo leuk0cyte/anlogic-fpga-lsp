@@ -97,7 +97,6 @@ const VSCodeCommands = Object.freeze({
     showCables: 'fpgaLsp.showCables',
     openTimingPoint: 'fpgaLsp.openTimingPoint',
     insertInstantiation: 'fpgaLsp.insertInstantiation',
-    veribleStatus: 'fpgaLsp.veribleStatus',
     selectProject: 'fpgaLsp.selectProject',
     tdInfo: 'fpgaLsp.tdInfo',
     highlightDiagnostics: 'fpgaLsp.highlightDiagnostics',

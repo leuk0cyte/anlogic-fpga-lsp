@@ -57,7 +57,7 @@ exports.run = async function () {
         const v3 = ['fpgaLsp.runIncrementalRoute', 'fpgaLsp.runAnalysis', 'fpgaLsp.compareStrategies',
             'fpgaLsp.programSram', 'fpgaLsp.programFlash', 'fpgaLsp.generateSvf', 'fpgaLsp.showCables',
             'fpgaLsp.openTimingPoint', 'fpgaLsp.showActions', 'fpgaLsp.insertInstantiation',
-            'fpgaLsp.veribleStatus', 'fpgaLsp.selectProject', 'fpgaLsp.tdInfo'];
+            'fpgaLsp.selectProject', 'fpgaLsp.tdInfo'];
         check('v3 commands registered', v3.every((id) => ours.indexOf(id) >= 0),
             v3.filter((id) => ours.indexOf(id) < 0).join(',') || 'all present');
 

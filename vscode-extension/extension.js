@@ -20,10 +20,8 @@ const { LanguageClient, TransportKind } = require('vscode-languageclient/node');
 
 const { METHODS, COMMANDS, VSCodeCommands, VIEWS } = require('./src/protocol');
 const { resolveServer, resolveServerRoot: locateServerRoot } = require('./src/locateServer');
-const { resolveVerible } = require('./src/verible');
 // Wave 3：状态目录（原来写在工作目录的 .fpgalsp）——统一解析到系统 temp。
 const { STATE_ENV, resolveStateDir } = require('./src/stateDir');
-const { VeribleDiagnosticsClient } = require('./src/veribleDiagnostics');
 const { checkPython, appendLog, flushLogSync } = require('./src/launchCheck');
 const {
     ModuleTreeProvider,
@@ -44,7 +42,6 @@ const {
 } = require('./src/mcpConfig');
 
 let client;
-let veribleDiag;
 let moduleProvider;
 let flowProvider;
 let flowController;
@@ -437,26 +434,11 @@ function activate(context) {
     }));
 
     // ------------------------------------------------------------ hints
-    const veribleResolved = resolveVerible({ veriblePath: config().get('verible.path') });
-    if (!veribleResolved.formatter) {
-        const hintKey = 'fpgaLsp.hint.noVerible';
-        if (!context.workspaceState.get(hintKey)) {
-            context.workspaceState.update(hintKey, true);
-            diag('hint: verible not found, basic grammar highlighting only');
-            vscode.window.showInformationMessage(
-                'FPGA: Verible not detected - basic Verilog/SystemVerilog/VHDL syntax highlighting is enabled; ' +
-                'install Verible (or set fpgaLsp.verible.path) for fine-grained highlighting, formatting and lint autofix.',
-                'Open Settings'
-            ).then((choice) => {
-                if (choice === 'Open Settings') {
-                    vscode.commands.executeCommand('workbench.action.openSettings', 'fpgaLsp.verible.path');
-                }
-            });
-        }
-    }
-    // VHDL is outside Verible's scope: tell the user once that only basic highlighting applies
+    // 单一 exe：Verible 已内嵌在 fpgalsp-native.exe 里（格式化 / lint / autofix 都由服务端提供），
+    // 所以这里不再探测外部 verible，也不再提示"请安装 Verible"。
+    // VHDL 仍只有基础高亮（Verible 不支持 VHDL），这条提示保留。
     context.subscriptions.push(vscode.workspace.onDidOpenTextDocument((document) => {
-        if (document.languageId !== 'vhdl' || veribleResolved.formatter) return;
+        if (document.languageId !== 'vhdl') return;
         const key = 'fpgaLsp.hint.vhdl';
         if (context.workspaceState.get(key)) return;
         context.workspaceState.update(key, true);
@@ -999,54 +981,6 @@ function activate(context) {
         const doc = await vscode.workspace.openTextDocument({ content: lines.join('\n'), language: 'text' });
         vscode.window.showTextDocument(doc, { preview: true });
     });
-    // ------------------------------------------------------------ Verible (optional)
-    const veribleSettings = () => ({
-        enabled: config().get('verible.enable') === true,
-        path: config().get('verible.path') || '',
-        args: config().get('verible.args') || [],
-        format: config().get('verible.format') !== false,
-    });
-
-    async function startVerible() {
-        const settings = veribleSettings();
-        if (!settings.enabled) return;
-        const resolved = resolveVerible({ veriblePath: settings.path });
-        if (!resolved.languageServer) {
-            vscode.window.showWarningMessage(
-                'FPGA: Verible diagnostics are enabled but verible-verilog-ls was not found. Set fpgaLsp.verible.path or add it to PATH.');
-            return;
-        }
-        const lsCommand = config().get('verible.command') || resolved.languageServer;
-        const lsArgs = config().get('verible.lsArgs') || [];
-        diag(`verible diagnostics: exe=${lsCommand} args=${JSON.stringify(lsArgs)} cwd=${cwd}`);
-        veribleDiag = new VeribleDiagnosticsClient({ exe: lsCommand, args: lsArgs, cwd, env, log: diag });
-        const ok = await veribleDiag.start();
-        if (!ok) {
-            veribleDiag.dispose();
-            veribleDiag = undefined;
-            vscode.window.showWarningMessage('FPGA: failed to start Verible diagnostics (see FPGA: Show Logs).');
-            return;
-        }
-        const isVerilog = (document) => /\.(v|sv|vh|svh)$/i.test(document.uri.path);
-        for (const document of vscode.workspace.textDocuments) {
-            if (isVerilog(document)) veribleDiag.didOpen(document);
-        }
-        context.subscriptions.push(
-            vscode.workspace.onDidOpenTextDocument((document) => {
-                if (veribleDiag && isVerilog(document)) veribleDiag.didOpen(document);
-            }),
-            vscode.workspace.onDidChangeTextDocument((event) => {
-                if (veribleDiag && isVerilog(event.document)) veribleDiag.didChange(event.document);
-            }),
-            vscode.workspace.onDidCloseTextDocument((document) => {
-                if (veribleDiag) veribleDiag.didClose(document);
-            })
-        );
-        diag('verible diagnostics client started: ' + lsCommand);
-        vscode.window.showInformationMessage(
-            'FPGA: Verible diagnostics started (source: verible; formatting is still performed by fpga-lsp calling Verible).');
-    }
-
     register(VSCodeCommands.selectProject, async () => {
         const result = await rpc.execute(COMMANDS.projects, []);
         if (!result || !result.ok || !(result.projects || []).length) {
@@ -1088,24 +1022,6 @@ function activate(context) {
                 : ['  (none)']),
             '',
             'To pin a version: set fpgaLsp.tdPath or the TD_ROOT environment variable.',
-        ];
-        const doc = await vscode.workspace.openTextDocument({ content: lines.join('\n'), language: 'text' });
-        vscode.window.showTextDocument(doc, { preview: true });
-    });
-
-    register(VSCodeCommands.veribleStatus, async () => {
-        const settings = veribleSettings();
-        const resolved = resolveVerible({ veriblePath: settings.path });
-        const lines = [
-            `fpgaLsp.verible.enable : ${settings.enabled}`,
-            `fpgaLsp.verible.path   : ${settings.path || '(PATH)'}`,
-            `formatter              : ${resolved.formatter || '(not found)'}`,
-            `language server        : ${resolved.languageServer || '(not found)'}`,
-            `format via server      : ${settings.format}`,
-            '',
-            resolved.formatter
-                ? 'Format Document (Shift+Alt+F) is served by the language server via verible-verilog-format.'
-                : 'verible-verilog-format not found: Format Document is unavailable (other features are unaffected).',
         ];
         const doc = await vscode.workspace.openTextDocument({ content: lines.join('\n'), language: 'text' });
         vscode.window.showTextDocument(doc, { preview: true });
@@ -1205,8 +1121,6 @@ function activate(context) {
             const root = workspaceFolder();
             const info = await getProjectInfo();
             const tdResult = await rpc.execute(COMMANDS.tdInfo, []).catch(() => undefined);
-            const vSettings = veribleSettings();
-            const vResolved = resolveVerible({ veriblePath: vSettings.path });
             let pythonCheck;
             try {
                 pythonCheck = await checkPython({
@@ -1259,13 +1173,7 @@ function activate(context) {
                 `- Server root: ${serverRoot}`,
                 `- Server log: ${config().get('logFile') || (root ? path.join(resolveStateDir(root), 'logs', 'server.log') : '(n/a)')}`,
                 '',
-                '## Verible',
-                `- fpgaLsp.verible.enable: ${vSettings.enabled}`,
-                `- fpgaLsp.verible.format: ${vSettings.format}`,
-                `- Configured path: ${vSettings.path || '(PATH)'}`,
-                `- verible-verilog-format: ${vResolved.formatter || '(not found)'}`,
-                `- verible-verilog-ls: ${vResolved.languageServer || '(not found)'}`,
-                `- Diagnostics client: ${vSettings.enabled ? (veribleDiag ? 'running' : 'not running') : 'disabled by setting'}`,
+                '## Verible (内嵌，无需外部二进制)',
                 `- Format args: ${(vSettings.args || []).length} option(s)`,
                 '',
                 '## TangDynasty',
@@ -1524,7 +1432,6 @@ function activate(context) {
         ]);
         const activeDocument = vscode.window.activeTextEditor && vscode.window.activeTextEditor.document;
         if (activeDocument) writeHighlightReport(activeDocument).catch(() => undefined);
-        startVerible().catch((err) => diag('verible start failed: ' + (err && err.message)));
     }).catch((err) => {
         const message = (err && err.message) || String(err);
         diag('START FAILED: ' + (err && err.stack ? err.stack : message));
@@ -1559,10 +1466,6 @@ function deactivate() {
     if (reportsTreeProvider) {
         reportsTreeProvider.dispose();
         reportsTreeProvider = undefined;
-    }
-    if (veribleDiag) {
-        veribleDiag.dispose();
-        veribleDiag = undefined;
     }
     // F6/R8: the log is buffered now, so flush whatever is still in memory before the extension
     // host goes away (shutdown is the one moment a lost tail would be hard to explain).

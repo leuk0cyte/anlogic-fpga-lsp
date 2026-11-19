@@ -72,7 +72,6 @@ const { FALLBACK_POLL_MS } = require('../src/flowController');
 const { ReportsService, CancelledError } = require('../src/reportsService');
 const { renderReportsHtml } = require('../src/reportsHtml');
 const { ReportsPanel } = require('../src/reportsPanel');
-const { VeribleDiagnosticsClient } = require('../src/veribleDiagnostics');
 const { appendLog, flushLogSync } = require('../src/launchCheck');
 
 // ------------------------------------------------------------------ tiny test harness
@@ -944,50 +943,6 @@ test('module tree: indexChanged without a patchable module refreshes immediately
     eq(requested.length, before + 1, 'the pushed refresh cancelled the pending fallback timer');
 });
 
-// F6/R4: `_publish()` used to re-split the whole document once per diagnostic to decide whether
-// a `no-tabs` finding sits in a comment (50 findings on 1 MB = 405 ms). It now builds one comment
-// index per publish; these cases pin the *behaviour* so the optimisation cannot silently change
-// which diagnostics are suppressed.
-test('verible diagnostics: tabs in comments are suppressed, tabs in code survive', async () => {
-    const captured = [];
-    const client = new VeribleDiagnosticsClient({
-        exe: 'verible-verilog-ls', args: [], cwd: '.', env: {}, log: () => undefined,
-    });
-    // The mock's diagnostic collection swallows writes; capture them instead.
-    client.collection = {
-        set(uri, list) { captured.push({ uri, list }); },
-        delete() {}, clear() {}, dispose() {},
-    };
-    const text = [
-        'module m;',                            // 0
-        '\twire a;',                            // 1  code tab          -> kept
-        '    //\tcomment tab',                  // 2  line-comment tab   -> suppressed
-        '    /*\tblock comment tab */',         // 3  block-comment tab  -> suppressed
-        '    wire b;\t // trailing code tab',   // 4  code tab          -> kept
-        '    /* multi',                         // 5  block comment opens here ...
-        '\tline block */',                      // 6  ... tab on the next line -> suppressed
-        '    if (a == "x//y")\t;',              // 7  "//" inside a string is not a comment -> kept
-        'endmodule',                            // 8
-    ].join('\n');
-    client.texts.set('file:///f6.v', text);
-    const at = (line, character) => ({
-        start: { line, character }, end: { line, character: character + 1 },
-    });
-    const tabs = (line, character) => ({
-        range: at(line, character), message: 'Use spaces, not tabs.', severity: 2, code: 'no-tabs',
-    });
-    client._publish({
-        uri: 'file:///f6.v',
-        diagnostics: [
-            tabs(1, 0), tabs(2, 6), tabs(3, 6), tabs(4, 11), tabs(6, 0), tabs(7, 20),
-            // a non-tab diagnostic must never be filtered by the comment index
-            { range: at(1, 0), message: 'Line too long.', severity: 2, code: 'line-length' },
-        ],
-    });
-    eq(captured.length, 1, 'one diagnostic collection update per publish');
-    eq(captured[0].list.length, 4,
-        'kept: 3 code tabs + the line-length finding; dropped: 3 comment tabs');
-});
 
 // F6/R8: `appendLog()` is called from event handlers, so it must never do synchronous disk I/O.
 test('launch log: appendLog is buffered and flushes asynchronously', async () => {
