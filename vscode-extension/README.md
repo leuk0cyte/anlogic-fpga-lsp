@@ -34,17 +34,18 @@
 
 ### 1. 前置条件
 
-```powershell
-python --version        # 需要 Python 3.9+，且 python 在 PATH 上
-```
+**无需安装 Python，也无需单独安装 Verible** —— 语言服务器是单一原生可执行文件
+`fpgalsp-native.exe`，Verible 的解析 / lint / 格式化已编译进这个 exe。
 
-- TD 默认自动探测 `C:\Anlogic\TD_Release_*` 等安装目录；探测不到时设置 `fpgaLsp.tdPath`。
-- Verible 可选；未安装时格式化/高亮会降级，不影响 TD 流程。
+- 安装 TangDynasty（TD）。默认自动探测 `C:\Anlogic\TD_Release_*` 等目录；探测不到时设置
+  `fpgaLsp.tdPath`。
+- Windows x64，VS Code ≥ 1.80。
+- 扩展自带 `server/bin/fpgalsp-native.exe`；想用自建的 exe 时设 `fpgaLsp.serverPath`。
 
 ### 2. 安装扩展并重载
 
 ```powershell
-code --install-extension Y:\fpga_lsp\vscode-extension\fpga-lsp-anlogic-0.10.32.vsix
+code --install-extension Y:\fpga-lsp-cpp\vscode-extension\fpga-lsp-anlogic-0.14.0.vsix
 ```
 
 安装后按提示 **Reload**，或执行 `Developer: Reload Window`。
@@ -139,18 +140,17 @@ code --install-extension Y:\fpga_lsp\vscode-extension\fpga-lsp-anlogic-0.10.32.v
 
 ### Verible
 
-Verible 是可选的，但推荐安装：
+**Verible 已内嵌在 `fpgalsp-native.exe` 里，不需要另外安装**（解析、lint、格式化都由
+服务端提供）：
 
-```powershell
-# 示例：C:\Users\<you>\verible
-```
-
-- 格式化：`verible-verilog-format`，通过语言服务器调用。
-- 高亮：检测到 `verible-verilog-syntax` 时使用细粒度 token，否则回退内置高亮。
-- Lint/quick fix：`fpgaLsp.verible.enable=true` 时启动 `verible-verilog-ls`，诊断来源标记为 `verible`。
-- Autofix：检测到 `verible-verilog-lint` 时提供 `Verible: apply lint autofixes`。
-- 找不到 Verible：基础功能正常，格式化回退内置缩进器，不会阻止插件启动。
-- `FPGA: Verible Status` 查看当前探测结果。
+- 格式化：由内嵌 Verible 完成，通过语言服务器调用；参数见 `fpgaLsp.verible.args`
+  （默认 160 列 + 一组对齐选项）。`fpgaLsp.verible.format=false` 可关掉。
+- Lint / quick fix：`fpgaLsp.verible.autofix=true`（默认）时，quick fix 由内嵌 lint
+  直接算出来，**不需要外部 verible 二进制**。
+- 语法高亮：基础着色由 TextMate 语法（`syntaxes/*.tmLanguage.json`）提供，语义高亮由
+  服务端的 `semanticTokens`（内嵌 Verible CST 驱动）叠加；不依赖外部 `verible-verilog-syntax`。
+- 因此不再有「找不到 Verible 就降级」的行为——历史上那套外部 Verible 探测是在
+  Python 后端时期，已随原生化移除。
 
 ### MCP（Copilot / Cline / 其他 agent）
 
@@ -166,9 +166,9 @@ FPGA: Install MCP Configuration
 选择 **VS Code workspace**（推荐第一个选项）或 portable `.mcp.json`。
 
 - `fpgaLsp.mcp.allowFlow` 默认 `true`；`allowWrite` 默认 `false`。
-- 新工具：`fpga_flow_log`、`fpga_flow_issues`、`fpga_flow_wait`（带 progress 通知）、`fpga_read_file`、`fpga_search_text`、`fpga_constraint_audit`。
-- 设置 `fpgaLsp.mcp.allowFlow` / `fpgaLsp.mcp.allowWrite` 可开启 flow/工程写操作。
-- 完整工具目录与安全限制见仓库根目录 `MCP.md`。
+- 常用新工具：`fpga_flow_log`、`fpga_flow_issues`、`fpga_flow_wait`（带 progress 通知）、`fpga_read_file`、`fpga_search_text`、`fpga_constraint_audit`。
+- 全部 39 个工具与安全限制见仓库的 `src/mcp/tools.cpp` 与
+  `audit/2026-11-18/parity-mcp/tools-diff.md`（工具清单与 Python 侧差异对照）。
 
 ### ADC / SDC
 
@@ -182,24 +182,19 @@ FPGA: Install MCP Configuration
 
 | 设置 | 默认值 | 说明 |
 | --- | --- | --- |
-| `fpgaLsp.pythonPath` | `python` | 运行语言服务器的 Python |
-| `fpgaLsp.serverRoot` | `""` | 语言服务器目录；vsix 自动使用内置 `server/` |
+| `fpgaLsp.serverPath` | `""` | 原生语言服务器 `fpgalsp-native.exe` 路径；留空自动查找（vsix 内置 `server/bin` → 同仓库 `build*/bin` → PATH） |
 | `fpgaLsp.tdPath` | `""` | TD 安装根目录，空 = 自动探测 |
-| `fpgaLsp.tdCheckOnSave` | `true` | 保存时运行 TD 权威检查 |
-| `fpgaLsp.projectFile` | `""` | 显式指定 `.al` |
-| `fpgaLsp.flowJobs` | `6` | flow 并行 jobs（1–64） |
+| `fpgaLsp.tdCheckOnSave` | `true` | 保存时运行 TD 权威检查（`read_hdl` + `read_adc`，约 1–2 s） |
+| `fpgaLsp.projectFile` | `""` | 显式指定 `.al`；空 = 用最近的上级工程 |
+| `fpgaLsp.flowJobs` | `6` | 传给 `launch_runs` 的并行 jobs（与 TD GUI 默认一致） |
 | `fpgaLsp.logFile` | `""` | 服务器日志，空 = `<workspace>/.fpgalsp/logs/server.log` |
-| `fpgaLsp.verible.path` | `""` | Verible bin 目录或可执行文件；空 = PATH/常见目录 |
-| `fpgaLsp.verible.enable` | `true` | 启动 `verible-verilog-ls` 诊断/quick-fix 客户端 |
-| `fpgaLsp.verible.format` | `true` | 使用 Verible 格式化 |
-| `fpgaLsp.verible.args` | 160 列 + 对齐参数 | 传给 `verible-verilog-format` |
-| `fpgaLsp.verible.highlight` | `true` | 使用 Verible 语法 token |
-| `fpgaLsp.verible.autofix` | `true` | Verible lint autofix |
-| `fpgaLsp.verible.lintArgs` | `--rules=+line-length=length:160` | 传给 `verible-verilog-lint` |
-| `fpgaLsp.verible.command` | `""` | 自定义 Verible LS 命令 |
-| `fpgaLsp.verible.lsArgs` | `--rules=+line-length=length:160` | 传给 Verible LS；与格式化 160 列一致 |
-| `fpgaLsp.mcp.allowFlow` | `true` | 允许 MCP 执行 flow |
-| `fpgaLsp.mcp.allowWrite` | `false` | 允许 MCP 修改工程 |
+| `fpgaLsp.verible.format` | `true` | 用内嵌 Verible 格式化（Format Document） |
+| `fpgaLsp.verible.args` | 160 列 + 一组对齐参数 | 传给内嵌 `verible-verilog-format` |
+| `fpgaLsp.verible.autofix` | `true` | quick fix 由内嵌 Verible linter 计算（**不需要外部 verible 二进制**） |
+| `fpgaLsp.mcp.allowFlow` | `true` | 向 agent 暴露 flow / analysis / strategy 工具（会真的启动 TD flow） |
+| `fpgaLsp.mcp.allowWrite` | `false` | 向 agent 暴露工程写工具（更新 / 添加源文件 / 重命名 `.al`） |
+| `fpgaLsp.mcp.attachOnStart` | `true` | 启动时附着 MCP server；`false` 则完全跳过附着与注册 |
+| `fpgaLsp.mcp.dynamicProvider` | `false` | 注册动态 MCP server provider。默认关闭：Copilot 无法把动态 server 关联到 workspace，建议用 `FPGA: Install MCP Configuration` 写工作区 `.vscode/mcp.json` |
 
 默认的 `fpgaLsp.verible.args`：
 
@@ -266,34 +261,38 @@ FPGA: Install MCP Configuration
 | --- | --- |
 | 看不到 FPGA 图标 | VS Code ≥ 1.80；扩展是否启用；Reload Window |
 | 模块树空 | 确认打开的是包含 `.al` 的**文件夹**，或设置 `fpgaLsp.projectFile` |
-| 找不到 python | 把 `fpgaLsp.pythonPath` 设为绝对路径 |
+| 语言服务器没起来 | 看 `FPGA: Show Logs`；确认包内 `server/bin/fpgalsp-native.exe` 存在，或用 `fpgaLsp.serverPath` 指向自建 exe |
 | `.v` 没有补全/跳转 | 确认语言模式为 Verilog/SystemVerilog；本扩展按后缀匹配，不依赖其他 Verilog 插件 |
 | `.al` 被识别成其他语言 | 右键 → `Reopen Editor With…` → **Anlogic Project** |
 | Flow 报 `PRJ-8001` / `PRJ-8806` | 检查是否有残留 `td_commands_prompt.exe` / `run.exe`；看 Problems 的 `fpga-flow` 诊断和 `FPGA Flow` 输出 |
 | Flow 失败但只有 `PRJ-8806` | TD 子进程可能没有写 `run.log`；插件会显示失败步骤和 run.log 路径。详情见 `FPGA Flow` 和 run 目录里的 `.error.f` 标记 |
 | Reports 没有 Area 数据 | 需要成功的 phy 运行生成 `*_phy.area`；仅有 OOC `cw/*.area` 时不会当顶层面积报告 |
 | MCP 不在 `MCP: List Servers` | 执行 `FPGA: Install MCP Configuration` 选 **VS Code workspace** 后 Reload |
-| Verible 未找到 | 设置 `fpgaLsp.verible.path`，或安装 Verible；不影响 TD 功能 |
-| Verible 报注释 tab | 插件会过滤注释内的 `no-tabs`；代码中的 tab 仍会提示。`Verible: apply lint autofixes` 同时会把注释内的 tab 展开为空格。line-length 默认 160 |
-| 格式化没有任何变化 | 检查 `fpgaLsp.verible.format` / `verible-format` 是否可用；无 Verible 时使用内置缩进回退 |
+| 注释里的 tab 被 lint 报出 | 插件会过滤注释内的 `no-tabs`；代码中的 tab 仍会提示。line-length 默认 160 |
+| 格式化没有任何变化 | 检查 `fpgaLsp.verible.format` 是否为 `true`；格式化由内嵌 Verible 完成，不需要外部工具 |
 
 ---
 
 ## 开发与测试
 
 ```powershell
-cd Y:\fpga_lsp\vscode-extension
+cd Y:\fpga-lsp-cpp\vscode-extension
 npm install
 npm test
 npm run test:locate
 npm run test:integration
 npm run test:vscode
-npm run bundle:server
-npm run package
-code --extensionDevelopmentPath="Y:\fpga_lsp\vscode-extension" %WORKSPACE%\CorpusAlpha
+npm run bundle:server     # 从 ../build/bin 取 fpgalsp-native.exe 放进 server/bin
+npm run package           # bundle:server + vsce package -> fpga-lsp-anlogic-<version>.vsix
+code --extensionDevelopmentPath="Y:\fpga-lsp-cpp\vscode-extension" %WORKSPACE%\CorpusAlpha
 ```
 
-开发模式下扩展使用仓库里的 `../fpgalsp`；vsix 模式使用打包进 `server/` 的副本。两种布局由 `src/locateServer.js` 解析；`fpgaLsp.serverRoot` 可强制覆盖。
+服务端定位逻辑在 `src/locateServer.js`：依次尝试 `fpgaLsp.serverPath` → 内置
+`server/bin/` → 同仓库的 `build*/bin/`。**扩展只对接原生 exe**，Python 后端属于迁移期的
+参考实现（`Y:\fpga-lsp`），不参与打包。
+
+打包前请先构建出 exe（`build/bin/fpgalsp-native.exe`，Release 默认含全量 LTCG），
+否则 `bundle-server.js` 会报错并提示先构建。
 
 ---
 

@@ -24,14 +24,26 @@
 
 ## 1. 升级后必须执行的验证步骤（按顺序）
 
+> **2026-11-19 补充：生成时机有两个入口，别被它迷惑。**
+>
+> - **构建期**：G1–G6b 是 `add_custom_command`，`DEPENDS` 里包含 `win_flex` / `win_bison`
+>   本身。所以**原地升级工具**后，ninja 会因工具 mtime 变化而重新生成——这条路径不受影响。
+> - **配置期**：`VERIBLE_PREGENERATE_AT_CONFIGURE`（默认 ON）只在产物**缺失**时补生成，
+>   用于让全新目录一次 configure 就能挂接（见 `audit/2026-11-19/static/LTCG.md` §3）。
+>   它**不会**因为工具升级而重新生成（产物已存在），所以升级后**不要**指望 configure 帮你刷新；
+>   要么让 ninja 跑（推荐），要么删掉 `build/verible/gen` 再 configure。
+>
+> 判据：升级 bison/flex 后先跑下面步骤 1 的锚点核对。若数字不符，说明生成物还是旧工具产出的，
+> 先强制重新生成再核对。
+
 ### 步骤 1：锚点计数核对（最先做，最便宜）
 
 升级后**第一件事**，在打补丁**之前**，对原始 `verilog.tab.cc` 统计补丁锚点出现次数。
 
 ```powershell
 python tests/check_generated_parser.py `
-  --generated build/.../verilog-final.tab.cc `
-  --raw-cc   build/.../verilog.tab.cc
+  --generated build/verible/gen/verible/verilog/parser/verilog-final.tab.cc `
+  --raw-cc    build/verible/gen/verible/verilog/parser/verilog.tab.cc
 ```
 
 脚本里 `EXPECTED_ANCHORS` 硬编码了 bison **3.8.2** 下的实测值：

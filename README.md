@@ -24,7 +24,8 @@ Python 版中的解析、索引、诊断逻辑迁到本工程后，LSP 协议层
 | vcvars | `"C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvars64.bat"` |
 | CMake | ≥ 3.24（本机实测 4.5.0） |
 | Ninja | 1.13.0（在 PATH 里） |
-| C++ 标准 | C++23（`/std:c++23preview`），静态 CRT（`/MT` / `/MTd`） |
+| C++ 标准 | C++23（`/std:c++23`），静态 CRT（`/MT` / `/MTd`） |
+| LTO | Release 默认开启全量 LTCG（`/GL` + `/LTCG`），见下文「构建」 |
 
 > 只支持 MSVC + Ninja x64。**不支持** GCC / Clang / clang-cl。
 
@@ -37,7 +38,7 @@ Python 版中的解析、索引、诊断逻辑迁到本工程后，LSP 协议层
 call "C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvars64.bat"
 cd /d Y:\fpga-lsp-cpp
 
-:: 配置（Release 为默认；也可以指定 debug / relwithdebinfo）
+:: 配置（Release 为默认，含全量 LTO；也可以指定 debug / relwithdebinfo）
 cmake --preset windows-msvc-release
 
 :: 构建（-j 的并行度由 buildPresets 的 jobs:0 = 用满所有核心控制，本机 192 逻辑核）
@@ -53,17 +54,60 @@ PowerShell 里可以一条命令完成：
 cmd /c '"C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvars64.bat" >nul && cmake --preset windows-msvc-release && cmake --build --preset windows-msvc-release'
 ```
 
+**全新目录一次 configure 就能构建成功**（无需 configure 两次）。原因见下节
+「Verible CMake 化的风险画像」里的「生成物未挂接」一条：
+`cmake/scripts/verible-generators.cmake` 会在 configure 期把缺失的 flex/bison 产物
+补出来，使 `verible_mount_generated_sources()` 在同一次 configure 内就能挂接。
+
+### Release 默认开启全量 LTO
+
+| 项 | 实测值（本机 192 核，`-j24`） |
+| --- | --- |
+| 全新目录 configure | 约 29 s（含配置期预生成 flex/bison，占数秒） |
+| 全新目录全量构建（844 目标） | 约 3.3 min（含 50+ 测试可执行文件） |
+| **仅重链**（改一个 .cpp 后） | **约 48 s**（`/LTCG` 全程序分析，比普通链接慢很多） |
+| 二进制体积 | 6,132,736 B（同源码非 LTO 为 6,248,960 B，**−1.9%**） |
+| 性能 | lint 规则层 CPU **−11.9%**（361 KB 文件 / 1028 条诊断）；纯解析层基本不变 |
+
+只改代码、想快速迭代时用无 LTO 的 `windows-msvc-relwithdebinfo`：
+
+```powershell
+cmake --preset windows-msvc-relwithdebinfo
+cmake --build --preset windows-msvc-relwithdebinfo
+```
+
+相关 CMake 开关（默认值保证不改变行为）：
+
+| 开关 | 默认 | 作用 |
+| --- | --- | --- |
+| `CMAKE_INTERPROCEDURAL_OPTIMIZATION` | Release preset 里 ON | CMake 级 IPO（`/GL` + `/LTCG`） |
+| `FPGA_LSP_VERIBLE_ALLOW_LTO` | OFF | 是否让 Verible 也参与 LTO；**Release preset 里为 ON** |
+| `FPGA_LSP_LTO_OWN_CODE` | OFF | 只给 `src/` 自有代码开 `/GL`（对照配置，验证收益用） |
+| `VERIBLE_PREGENERATE_AT_CONFIGURE` | ON | configure 期补生成缺失的 flex/bison 产物（全新目录必需） |
+
+> 历史背景：早期两次 LTO 尝试都失败并被错误归因为「flex 生成物与 `/GL` 不兼容」。
+> 真实原因有两个叠加——生成物未挂接、以及 `cmake/Verible.cmake` 曾无条件把 Verible
+> 的 IPO 设为 OFF（等于 Verible 从未进过 LTO 图）。完整实验记录见
+> [`audit/2026-11-19/static/LTCG.md`](audit/2026-11-19/static/LTCG.md)。
+
 ### Preset 一览
 
 | Configure / Build Preset | 构建类型 | 说明 |
 | --- | --- | --- |
 | `windows-msvc-base` | — | hidden 基础 preset（Ninja、`cl`、静态 CRT、C++23） |
 | `windows-msvc` | Release | 默认，等于 `windows-msvc-release` |
-| `windows-msvc-debug` | Debug | `/MTd`、`/Od`、PDB |
-| `windows-msvc-release` | Release | `/MT`、`/O2` |
-| `windows-msvc-relwithdebinfo` | RelWithDebInfo | `/MT`、`/O2`、PDB |
+| `windows-msvc-debug` | Debug | `/MTd`、`/Od`、PDB，无 LTO |
+| `windows-msvc-release` | Release | `/MT`、`/O2`、**全量 LTO**（自有代码 + Verible） |
+| `windows-msvc-relwithdebinfo` | RelWithDebInfo | `/MT`、`/O2`、PDB，**无 LTO**（保留可调试性与快速迭代） |
+| `windows-msvc-release-lto` | Release | 与 release 相同的 LTO 配置，但输出到 `build-lto/`，用于与 `build/` 做 A/B |
 
-构建目录固定为 `build/`（已 `.gitignore`）。
+构建目录：
+
+| 目录 | 用途 |
+| --- | --- |
+| `build/` | 权威构建目录（Release，含 LTO），扩展打包默认从这里取 exe |
+| `build-lto/` | `windows-msvc-release-lto` 的独立目录，仅用于 A/B 对照 |
+| `build-<topic>/` | 各人/各任务的临时目录 |
 
 ## 依赖清单（全部 vendored 在 `thirdparty/`，不依赖网络）
 
@@ -79,6 +123,13 @@ cmd /c '"C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Buil
 | Verible | vendored | Bazel → CMake 移植（`cmake/Verible.cmake`） | SystemVerilog 解析/lint/format |
 
 **明确不引入** zlib 和 protobuf（原 Bazel 构建中的这两项依赖已从源码中剥离）。
+
+> **供应链现状（2026-11-19 审计结论）**：`thirdparty/` 全部入库（7,338 个文件），构建完全
+> 封闭、不存在"拉错版本"的风险；代价是上游修复要手工合入。其中 **abseil 没有版本锚点**
+> （`MODULE.bazel` 里 `version = "head"`、CMake `project(absl)` 无 VERSION），Verible 也
+> 未打标签——因此无法自动回答"落后哪些 CVE"。建议补 `thirdparty/*/UPSTREAM-VERSION.txt`
+> （上游 tag + commit + 同步日期）。其余依赖版本明确：re2 `2025-11-05`（SONAME 11）、
+> nlohmann 3.12.0、spdlog 1.17.0、simdutf 9.4.0、googletest 1.18.0。
 
 ### 可链接的 target 名
 
@@ -97,30 +148,52 @@ fpga_lsp::verible             (Verible 聚合 facade，供后续任务 link)
 
 ```
 CMakeLists.txt              顶层构建脚本
-CMakePresets.json           preset 定义
+CMakePresets.json           preset 定义（Release 含全量 LTO）
 cmake/
   Dependencies.cmake        第三方依赖接入（顺序敏感）
-  Verible.cmake             Verible 接入（阶段 0-B/0-D）
+  Verible.cmake             Verible 接入 + 配置期/构建期生成物挂接
   CompilerWarnings.cmake    本项目自有代码的警告策略
-  scripts/                  flex/bison 生成规则（阶段 0-D）
+  scripts/                  flex/bison 生成规则（G1–G6b）+ 配置期预生成
 thirdparty/                 vendored 第三方源码（只读，不修改）
 src/
   platform/                 平台层：UTF-16 位置换算 / 路径 / URI / 日志 / 编码
   jsonrpc/                  JSON-RPC 传输层（LSP Content-Length / MCP newline）+ 分派
-  app/                      fpgalsp-native 可执行入口
+  lsp/                      文档存储 / 诊断
+  server/                   LSP 服务端：方法分发、索引服务、报告存储、各 feature
+  mcp/                      MCP 服务端与工具实现（bridge / tools）
+  hdl/                      HDL 索引（模块/实例/端口）
+  semantics/                语义高亮、折叠等
+  constraints/              ADC / SDC 解析、诊断、补全
+  reports/                  综合/布线报告解析（QoR / timing / area / DRC-CDC）
+  flow/                     Flow 运行器、策略比较、BitWizard 编程
+  td/                       TangDynasty 会话、器件库、诊断、Tcl 安全拼装
+  project/                  .al 工程解析、XML
+  analysis/                 DRC/CDC 分析与 project_update
+  verible_bridge/           内嵌 Verible 的 lint / format 封装
+  tools/                    cst_dump / lint_dump / format_dump 调试工具
+  app/                       fpgalsp-native 可执行入口（含 MCP TCP 模式）
 tests/
-  unit/                     平台层 + JSON-RPC 的 GoogleTest 单测
+  unit/                     GoogleTest 单测（40 个 target）
+  td/                       TD 集成测试
+  perf/                     性能探针（index / latency / reports / mcp / td）
   gate-corpus/              阶段0 Verible 门禁语料
   golden/                   vendored 裁剪基准
+tools/
+  audit/                    静态分析流水线（run_audit.ps1 / summarize.py /
+                            check_tcl_invariant.py）与探针
+  perf/                     性能剖析与压测脚手架
+audit/                      各轮审计报告与证据（2026-11-18 / 2026-11-19）
+vscode-extension/           VS Code 扩展（打包时把 build/bin 的 exe 塞进 server/bin）
 build/                      构建目录（不提交）
 ```
 
 > 测试根目录统一为 `tests/`（复数）。顶层 `CMakeLists.txt` 优先加载
 > `tests/CMakeLists.txt`，并保留对旧 `test/` 的兼容（会给出废弃提示）。
 
-## 平台层与传输层（阶段 2-α）
+## 可执行入口与两种传输模式
 
-`fpgalsp-native.exe` 是传输层的可运行骨架，用于验证协议栈并驱动 e2e 测试：
+`fpgalsp-native.exe` 既是 LSP 服务端，也是 MCP 服务端；两种模式共用同一套协议栈与
+业务层，仅 framing 与序列化密度不同：
 
 ```bat
 :: LSP 模式（Content-Length framing）
@@ -129,12 +202,21 @@ build\bin\fpgalsp-native.exe --stdio
 :: MCP 模式（newline-delimited JSON）
 build\bin\fpgalsp-native.exe --mcp
 
+:: MCP over loopback TCP（供扩展/agent 以 client 身份附着）
+build\bin\fpgalsp-native.exe --mcp --mcp-port <n> --root <dir>
+
 :: 可选：日志写文件（stdout 永远归协议独占）
 build\bin\fpgalsp-native.exe --stdio --log build\server.log --verbose
 ```
 
-已实现方法：LSP 模式下 `initialize` / `shutdown` / `exit`；MCP 模式下
-`initialize` / `tools/list` / `ping` / `shutdown`。其余方法返回 `-32601`。
+`--mcp-port` / `--attach-port` / `--allow-flow` / `--allow-write` / `--verible` 等开关见
+`-h`。各条路径都有单条消息上限：LSP 的 `Content-Length` 帧与 MCP 的 loopback TCP 共用
+`kMaxBodyBytes`（64 MiB，先判上限再分配），MCP stdio 使用有界读行。
+
+已实现方法：LSP 模式覆盖 25 个方法（`initialize` / `shutdown` / `exit` / 补全 / 悬停 /
+定义 / 引用 / 文档与工作区符号 / 代码动作 / 格式化 ×2 / 重命名 / 调用层次 / 语义高亮 /
+折叠 / inlayHint / reports 等）；MCP 模式暴露 **39 个工具**（`initialize` / `tools/list` /
+`ping` / `shutdown` + 工程、符号、诊断、报告、flow、约束等能力）。未实现的方法返回 `-32601`。
 
 ### 两个容易踩的规范要点
 
@@ -184,7 +266,8 @@ ctest -L unit --output-on-failure
 
 | 目录 | 用途 | 谁维护 |
 | --- | --- | --- |
-| `build/` | **权威构建**，只放已验证状态 | Lead 统一维护 |
+| `build/` | **权威构建**，只放已验证状态（Release + 全量 LTO） | Lead 统一维护 |
+| `build-lto/` | `windows-msvc-release-lto` 的 A/B 对照目录 | Lead 统一维护 |
 | `build-<topic>/` | 各人/各任务的迭代目录 | 各自维护 |
 
 **永远不要用裸 `cmake -S . -B build` 配置共享目录** —— 必须走 preset：
@@ -205,6 +288,9 @@ cmake -S . -B build-mytopic -G Ninja -DCMAKE_BUILD_TYPE=Release `
   -DABSL_MSVC_STATIC_RUNTIME=ON -DBUILD_TESTING=ON `
   -DFPGA_LSP_VERIBLE_ENABLED=ON
 ```
+
+> 要复刻 preset 的 **LTO** 行为，再补 `-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON
+> -DFPGA_LSP_VERIBLE_ALLOW_LTO=ON`；不要用裸 `cmake` 改共享 `build/`。
 
 **恢复被污染的共享目录**（症状：`CMAKE_CXX_FLAGS` 为空、`C4530` 增多、抛-捕测试 abort）：
 
@@ -235,6 +321,8 @@ cmake --preset windows-msvc-release
 | G1/G2/G3 的 `VERBATIM` 引号把 `--outfile=...` 传成带字面引号的参数 | 参数传递 | ✅ 响亮（文件没生成） |
 | **G4 锚点失效**（CMake 正则 `^` 只匹配整段开头，`(^\|\n)` 的 `^` 在位置 0 空匹配） | **文本处理** | ❌ **静默**（`REGEX MATCH` 返回非空、`hits=1` 看起来正常，产物却是坏的） |
 | **G6a `std::move` 补丁未生效** | **文本处理** | ❌ **静默**（命令执行成功，产物未改到目标行） |
+| **生成物未挂接到 target**（首次 configure 时 flex/bison 产物还不存在） | **生成物装配** | ❌ **静默**（库只含空占位源；`verilog-y-cc.lib` 只有 1 KB 而非 2 MB，链接期才报 35 个符号） |
+| **Verible 被无条件排除在 LTO 之外**（`INTERPROCEDURAL_OPTIMIZATION OFF`） | **LTO 装配** | ❌ **静默**（构建成功、行为正常，只是没吃到优化；且让「LTO 失败」的归因长期错在 flex 上） |
 
 ### 关键规律：**静默类缺陷全部在"文本处理"层**
 
@@ -246,6 +334,21 @@ cmake --preset windows-msvc-release
 
 `tests/check_generated_parser.py` 就是按这个原则写的：它硬编码 bison 3.8.2 的
 基线计数，逐项断言，并专门防 `0 == 0` 假通过。
+
+**2026-11-19 补充：还多了一条"装配类"静默缺陷。** 上面两条挂接相关的问题都不是
+文本处理，而是**目标源文件列表**与**生成时机**的错配：
+
+- `verible_mount_generated_sources()` 只在 configure 期用 `EXISTS` 判断，而 G1–G6b
+  是构建期命令 → 全新目录首次 configure 时挂接被跳过 → 库缺 lexer/parser 源。
+  症状要到**链接期**才出现（35 个符号），且**不开 LTO 也一样**，因此极易误判成
+  LTO 不兼容。
+- 修法：`cmake/scripts/verible-generators.cmake` 增加**配置期预生成**
+  （`VERIBLE_PREGENERATE_AT_CONFIGURE`，默认 ON，只补缺失产物），使挂接在同一次
+  configure 内完成。`ctest -L generator` 的基线断言仍然保留——它防的是"产物内容错了"，
+  而这次修的是"产物根本没进库"，两者互补。
+
+教训：**"能编译"和"目标里真的有这些源文件"是两件事。** 判断后者要查库内容
+（`dumpbin /linkermember` 看成员），不要只看构建是否成功。
 
 ### 两个补丁的风险等级不同（务必区分）
 
@@ -278,7 +381,67 @@ python tests\run_gates.py --json build\gates.json
 ```
 ---
 
-## 交付状态（2026-11-18，Phase B 后）
+## 交付状态（当前：2026-11-19）
+
+### 构建与测试
+
+| 项目 | 数据 |
+| --- | --- |
+| **全新目录干净构建** | configure 29 s → build 3.3 min → **844 个目标全部成功**（Release + 全量 LTO） |
+| **`ctest` 全量** | **58/58 通过**（`unit` 40 · `e2e` 3 · `formatgate` 4 · `lintgate` 3 · `gate` 2 · `generator` 1 · `mcp` 1 · `td` 3 · `bench` 1） |
+| **原生产物** | `build/bin/fpgalsp-native.exe`（**6,132,736 B**，全量 LTCG；SHA256 `1E5B207B…B1595A`） |
+| **单元测试规模** | 40 个 gtest target，含本轮新增的 5 条回归断言 |
+
+### 本轮修复内容（审计 `REPORT.md` §0.2 的 1–6 条）
+
+| 编号 | 问题 | 位置 |
+| --- | --- | --- |
+| SEC-01（High） | `.al` 的 `<Device>` 裸拼进 TD 的 Tcl → 任意命令执行（上轮修复的漏网点） | `server/commands.cpp` |
+| SEC-02（Medium） | `ResolveFile` 缺包含校验 → `fpga_format` 可读任意文件；另堵掉 `FormatTool` 两条绕过路径 | `mcp/bridge.cpp` |
+| SEC-03/04/05 | SDC 无界递归、`analysis.cpp` 五处裸 `{...}`、MCP TCP 接收缓冲无上限 | `constraints/sdc.cpp`、`analysis/analysis.cpp`、`app/mcp_tcp.cpp` |
+| C1/C2（性能 P0） | 每请求两份 `Project` 深拷贝（读路径 31 处调用点）、报告快照整份深拷贝 | `server/*`、`server/commands.cpp` |
+| 现代化 | 4 处 `snprintf` 定长缓冲 → `std::format`（截断会切断 UTF-8 多字节序列） | `constraints/sdc.cpp`、`flow/flow_runner.cpp` |
+
+### 静态审计（详见 [`audit/2026-11-19/static/`](audit/2026-11-19/static/)）
+
+| 报告 | 内容 |
+| --- | --- |
+| [`REPORT.md`](audit/2026-11-19/static/REPORT.md) | 三维度汇总、7 条必办项、方法论与两个计数陷阱、修复路线图 |
+| [`SECURITY.md`](audit/2026-11-19/static/SECURITY.md) | 威胁模型 + 15 条发现（全部带调用链）+ 16 项已正确防护 |
+| [`PERFORMANCE.md`](audit/2026-11-19/static/PERFORMANCE.md) | 4 条确认 / 4 条可疑 / 76 条噪音逐条判定 |
+| [`MODERNIZATION.md`](audit/2026-11-19/static/MODERNIZATION.md) | A/B/C 分级、10 主题记分卡、三批自动修复路线 |
+| [`LTCG.md`](audit/2026-11-19/static/LTCG.md) | 5 组对照实验；推翻「flex 生成物与 `/GL` 不兼容」的旧归因 |
+
+### 质量门禁工具（`tools/audit/`）
+
+| 工具 | 用途 |
+| --- | --- |
+| `run_audit.ps1` | 一键全流程：vcvars 自举 → 编译数据库新鲜度校验 → clang-tidy → MSVC `/analyze` → 汇总 |
+| `summarize.py` | 去重口径聚合（`--header-filter` 会让原始条数虚高约 30%）、模块密度、函数长度分布 |
+| `check_tcl_invariant.py` | **Tcl 拼装不变量守卫**：禁止把不可信值裸拼进 `Run(...)`。已做阳性对照——对修复前代码报 6 条违规，对当前树 PASS。建议接进 CI |
+| `make_clang_db.py` / `run_clang_tidy.py` | cl.exe 命令行 → clang 可消费的编译数据库；单 TU 语法检查（`--verify`） |
+
+> 诊断基线（当前代码）：clang-tidy **8 616 原始 → 6 092 唯一位置**，62/62 TU 全部解析成功；
+> MSVC `/analyze` 62 TU **0 条**（control 证明分析器生效，但 `CppCoreCheck.dll` 未安装，
+> C26xxx 未覆盖）。
+
+### VS Code 扩展（0.14.0）
+
+```
+Y:\fpga-lsp-cpp\vscode-extension\fpga-lsp-anlogic-0.14.0.vsix   224 files / 2.86 MB
+  └─ extension/server/bin/fpgalsp-native.exe                 6,132,736 B（全量 LTCG）
+```
+
+打包命令：`npm run package`（= `node scripts/bundle-server.js && vsce package …`，
+`bundle-server.js` 会从 `build/bin/` 取 exe 塞进 `server/bin/`）。
+已核对包内 exe 与 `build/bin` 哈希一致。
+
+---
+
+## 交付状态（历史快照：2026-11-18，Phase B 后）
+
+> ⚠ 以下是当日快照，其中 `ctest 53/53`、exe `5,945,344 B`、扩展 `0.13.0` 等数字**已被
+> 后续提交刷新**，当前数字见上一节。保留原文是为了留存 Phase B 的证据链。
 
 ### 已通过验证
 
