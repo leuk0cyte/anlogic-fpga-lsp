@@ -1262,3 +1262,31 @@ test('flow controller: polls flowStatus incrementally (sinceSeq) and merges the 
 
     controller.dispose();
 });
+
+
+// P-A3: 端点文件（真实端口 + token）是扩展连接 MCP 的唯一依据，不再靠 FNV 派生端口。
+test('mcp endpoint: reads port/token, rejects a foreign root, ignores corrupt files', () => {
+    const os = require('os');
+    const fs = require('fs');
+    const path = require('path');
+    const { readMcpEndpoint } = require('../src/mcpEndpoint');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fpgalsp-endpoint-'));
+
+    fs.writeFileSync(path.join(dir, 'mcp-endpoint-45001.json'), JSON.stringify({
+        version: 1, port: 45001, token: 'a'.repeat(32), pid: process.pid,
+        root: 'Y:/p/demo', startedAt: 2,
+    }));
+    const found = readMcpEndpoint(dir, { root: 'Y:\\p\\demo' });
+    ok(found && found.port === 45001, 'reads the advertised port');
+    eq(found.token.length, 32, 'carries the token');
+
+    eq(readMcpEndpoint(dir, { root: 'Y:/other' }), null, 'foreign workspace is ignored');
+
+    fs.writeFileSync(path.join(dir, 'mcp-endpoint-45002.json'), '{not json');
+    fs.writeFileSync(path.join(dir, 'mcp-endpoint-45003.json'), JSON.stringify({
+        version: 1, port: 45003, token: 'b'.repeat(32), pid: process.pid,
+        root: 'Y:/p/demo', startedAt: 3,
+    }));
+    eq(readMcpEndpoint(dir, { root: 'Y:/p/demo' }).port, 45003,
+       'newest endpoint wins even when another file is corrupt');
+});

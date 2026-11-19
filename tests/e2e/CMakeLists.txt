@@ -110,3 +110,22 @@ set_tests_properties(e2e.mcp_concurrency PROPERTIES
 )
 
 message(STATUS "tests/e2e: 已注册 e2e.mcp_concurrency（ctest -L e2e）")
+
+# =============================================================================
+#  P-A3：MCP loopback 端点广告 + 令牌鉴权
+# =============================================================================
+#  断言端点文件（真实端口/token/pid）、强制档下无 token 被 -32001 拒绝、
+#  正确/错误 token 的差异，以及 attach 代理会替旧客户端把 token 注入 initialize。
+add_test(
+    NAME e2e.mcp_auth
+    COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/mcp_auth.py"
+            --server "$<TARGET_FILE:fpgalsp-native>"
+)
+set_tests_properties(e2e.mcp_auth PROPERTIES
+    LABELS "e2e"
+    TIMEOUT 120
+    RUN_SERIAL TRUE
+)
+
+message(STATUS "tests/e2e: 已注册 e2e.mcp_auth（ctest -L e2e）")

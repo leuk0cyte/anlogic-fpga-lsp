@@ -21,7 +21,14 @@
 #include "mcp/bridge.h"
 #include "mcp/mcp_server.h"
 #include "platform/log.h"
+#include "platform/path.h"
 #include "server/lsp_server.h"
+
+#include <filesystem>
+#include <fstream>
+#include <process.h>
+#include <random>
+#include <sstream>
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -29,6 +36,106 @@
 #endif
 
 namespace fpgalsp::app {
+
+namespace {
+
+// P-A3：每进程一个随机 token（16 字节 -> 32 位十六进制）。
+std::string GenerateToken() {
+    std::random_device device;
+    std::mt19937_64 engine((static_cast<std::uint64_t>(device()) << 32) ^ device());
+    static const char* kHex = "0123456789abcdef";
+    std::string token;
+    token.reserve(32);
+    for (int i = 0; i < 4; ++i) {
+        std::uint64_t value = engine();
+        for (int octet = 0; octet < 8; ++octet) {
+            token.push_back(kHex[(value >> (octet * 4)) & 0xF]);
+        }
+    }
+    return token;
+}
+
+// stateDir = FPGALSP_STATE_DIR（扩展总会设置）；没设置就不写端点文件。
+std::string StateDir() {
+    const char* configured = std::getenv("FPGALSP_STATE_DIR");
+    return configured != nullptr ? std::string(configured) : std::string();
+}
+
+std::string EndpointPath(unsigned short port) {
+    const std::string dir = StateDir();
+    if (dir.empty()) return {};
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    return platform::path_join(dir, "mcp-endpoint-" + std::to_string(port) + ".json");
+}
+
+// 从一条消息里取 params._meta.fpgalspToken。
+std::string TokenOfMessage(const jsonrpc::Json& message) {
+    const auto params = message.find("params");
+    if (params == message.end() || !params->is_object()) return {};
+    const auto meta = params->find("_meta");
+    if (meta == params->end() || !meta->is_object()) return {};
+    const auto token = meta->find("fpgalspToken");
+    if (token == meta->end() || !token->is_string()) return {};
+    return token->get<std::string>();
+}
+
+}  // namespace
+
+// P-A3：端点广告（原子替换，避免扩展读到半个文件）。
+std::string WriteMcpEndpoint(unsigned short port, const std::string& root,
+                             const std::string& token) {
+    const std::string path = EndpointPath(port);
+    if (path.empty()) return {};
+    jsonrpc::Json endpoint = jsonrpc::Json::object();
+    endpoint["version"] = 1;
+    endpoint["port"] = port;
+    endpoint["token"] = token;
+    endpoint["pid"] = static_cast<std::int64_t>(_getpid());
+    endpoint["root"] = root;
+    endpoint["startedAt"] =
+        static_cast<std::int64_t>(std::chrono::duration_cast<std::chrono::seconds>(
+                                      std::chrono::system_clock::now().time_since_epoch())
+                                      .count());
+    const std::string temp = path + ".tmp";
+    {
+        std::ofstream out(temp, std::ios::binary | std::ios::trunc);
+        if (!out) return {};
+        out << endpoint.dump(1, ' ');
+        if (!out) return {};
+    }
+    std::error_code ec;
+    std::filesystem::rename(temp, path, ec);
+    if (ec) {
+        std::filesystem::remove(path, ec);
+        std::filesystem::rename(temp, path, ec);
+    }
+    return ec ? std::string() : path;
+}
+
+void RemoveMcpEndpoint(const std::string& path) {
+    if (path.empty()) return;
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+    std::filesystem::remove(path + ".tmp", ec);
+}
+
+// 读端点文件里的 token（给 attach 代理用）。
+std::string EndpointTokenForPort(unsigned short port) {
+    const std::string path = EndpointPath(port);
+    if (path.empty()) return {};
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return {};
+    try {
+        const jsonrpc::Json endpoint = jsonrpc::Json::parse(in);
+        if (endpoint.contains("token") && endpoint["token"].is_string()) {
+            return endpoint["token"].get<std::string>();
+        }
+    } catch (...) {
+        // 半个文件 / 旧版本：当作没有 token
+    }
+    return {};
+}
 
 class McpTcpHost::Impl {
   public:
@@ -45,6 +152,13 @@ class McpTcpHost::Impl {
         if (const char* configured = std::getenv("FPGALSP_MCP_CLIENTS"); configured != nullptr) {
             const int parsed = std::atoi(configured);
             if (parsed >= 1 && parsed <= 64) max_clients_ = parsed;
+        }
+        // P-A3：每进程随机 token；FPGALSP_MCP_REQUIRE_TOKEN=1 时才强制（两版本灰度：
+        // 先让旧扩展在"给了 token 就校验、没给就放行"的宽松模式下跑一轮）。
+        token_ = GenerateToken();
+        if (const char* required = std::getenv("FPGALSP_MCP_REQUIRE_TOKEN");
+            required != nullptr && std::strcmp(required, "1") == 0) {
+            require_token_ = true;
         }
         WSADATA data;
         if (WSAStartup(MAKEWORD(2, 2), &data) != 0) {
@@ -102,6 +216,7 @@ class McpTcpHost::Impl {
             return false;
         }
         wake_addr_ = wake_addr;
+        endpoint_path_ = WriteMcpEndpoint(actual_port_, root_, token_);
         thread_ = std::thread([this]() { Loop(); });
         return true;
 #else
@@ -156,6 +271,7 @@ class McpTcpHost::Impl {
             if (worker.joinable()) worker.join();
         }
         if (thread_.joinable()) thread_.join();  // accept 循环：listen 已关 + Wake 过，会正常退出
+        RemoveMcpEndpoint(endpoint_path_);
         WSACleanup();
 #endif
     }
@@ -269,6 +385,7 @@ class McpTcpHost::Impl {
         try {
             mcp::Bridge bridge(options);
             mcp::McpServer server(bridge, server_options);
+            bool authenticated_ = false;
             // P-B4：工具的响应/进度现在可能来自 MCP worker 线程，而会话线程同时在写。
             // 没有这把锁，两个线程的 JSON 行会互相穿插（客户端直接解析失败）。
             auto write_mutex = std::make_shared<std::mutex>();
@@ -322,6 +439,33 @@ class McpTcpHost::Impl {
                         continue;
                     }
                     const std::string method = jsonrpc::GetString(message, "method");
+                    // P-A3：首条消息鉴权。
+                    //   * 带了 token -> 必须相等，否则 -32001 并断开；
+                    //   * 没带 token -> 只有 require_token_（FPGALSP_MCP_REQUIRE_TOKEN=1）
+                    //     才拒绝，宽松期放行（旧扩展的 attach 代理不带 token）。
+                    if (!authenticated_) {
+                        const std::string supplied = TokenOfMessage(message);
+                        if (!supplied.empty()) {
+                            if (supplied != token_) {
+                                write_line(jsonrpc::Serialize(
+                                               jsonrpc::MakeError(std::string(), -32001,
+                                                                  "Invalid MCP token"),
+                                               true) +
+                                           "\n");
+                                return;
+                            }
+                            authenticated_ = true;
+                        } else if (require_token_) {
+                            write_line(jsonrpc::Serialize(
+                                           jsonrpc::MakeError(std::string(), -32001,
+                                                              "MCP token required"),
+                                           true) +
+                                       "\n");
+                            return;
+                        } else {
+                            authenticated_ = true;
+                        }
+                    }
                     // P-B4：tools/call 交给 MCP worker，本会话线程继续读
                     // （否则取消通知永远进不来）。
                     auto writer = [write_line](const jsonrpc::Json& response) {
@@ -356,6 +500,10 @@ class McpTcpHost::Impl {
     std::mutex sessions_mutex_;
     std::vector<std::thread> sessions_;
     std::set<SOCKET> clients_;
+    // P-A3：端点 + 令牌（宽松期：没带 token 也放行；带了就必须对）
+    std::string token_;
+    bool require_token_ = false;
+    std::string endpoint_path_;
 #endif
 };
 
@@ -398,14 +546,48 @@ int RunTcpAttachProxy(unsigned short port) {
         return 3;
     }
 
+    // P-A3：如果端点文件里有 token，注入到第一条消息（initialize）的
+    // params._meta.fpgalspToken 里。旧扩展不改也能连上——它只是被代理补了一个字段。
+    const std::string token = EndpointTokenForPort(port);
     std::atomic<bool> done{false};
     std::thread upstream([&]() {
         char buffer[65536];
         DWORD read = 0;
+        bool first_message = true;
+        std::string pending;
         while (!done.load() &&
                ReadFile(GetStdHandle(STD_INPUT_HANDLE), buffer, sizeof(buffer), &read, nullptr) &&
                read > 0) {
-            if (send(socket, buffer, static_cast<int>(read), 0) <= 0) break;
+            if (!first_message) {
+                if (send(socket, buffer, static_cast<int>(read), 0) <= 0) break;
+                continue;
+            }
+            pending.append(buffer, static_cast<std::size_t>(read));
+            const std::size_t newline = pending.find('\n');
+            if (newline == std::string::npos) {
+                if (pending.size() > jsonrpc::kMaxBodyBytes) break;  // 病态输入
+                continue;
+            }
+            std::string line = pending.substr(0, newline);
+            pending.erase(0, newline + 1);
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            if (!token.empty()) {
+                try {
+                    jsonrpc::Json message = jsonrpc::Json::parse(line);
+                    if (message.contains("params") && message["params"].is_object()) {
+                        message["params"]["_meta"]["fpgalspToken"] = token;
+                        line = jsonrpc::Serialize(message, true);
+                    }
+                } catch (...) {
+                    // 解析不了就原样转发，让服务端回协议错误
+                }
+            }
+            const std::string frame = line + "\n";
+            if (send(socket, frame.data(), static_cast<int>(frame.size()), 0) <= 0) break;
+            if (!pending.empty()) {
+                if (send(socket, pending.data(), static_cast<int>(pending.size()), 0) <= 0) break;
+            }
+            first_message = false;
         }
         done.store(true);
         shutdown(socket, SD_SEND);

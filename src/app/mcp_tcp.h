@@ -38,6 +38,16 @@ private:
 
 // MCP 模式下的薄代理：stdin/stdout <-> 127.0.0.1:<port>，只做字节泵。
 // 返回进程退出码（0 正常，3 连接失败）。
+// P-A3：如果 `<stateDir>/mcp-endpoint-<port>.json` 里有 token，会在第一条消息
+// （initialize）的 `params._meta.fpgalspToken` 里补上 —— 旧扩展无需改动。
 int RunTcpAttachProxy(unsigned short port);
+
+// P-A3：端点广告。MCP 监听启动后把 {port, token, pid, root} 写到
+// `<stateDir>/mcp-endpoint-<port>.json`（原子替换），扩展据此连接，不再靠
+// FNV 派生端口 + 探测。stateDir 取 FPGALSP_STATE_DIR；未设置时不写（旧行为）。
+// 返回写出的路径（空 = 没写）。
+std::string WriteMcpEndpoint(unsigned short port, const std::string& root,
+                             const std::string& token);
+void RemoveMcpEndpoint(const std::string& path);
 
 }  // namespace fpgalsp::app

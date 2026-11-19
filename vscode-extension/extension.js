@@ -22,6 +22,7 @@ const { METHODS, COMMANDS, VSCodeCommands, VIEWS } = require('./src/protocol');
 const { resolveServer, resolveServerRoot: locateServerRoot } = require('./src/locateServer');
 // Wave 3：状态目录（原来写在工作目录的 .fpgalsp）——统一解析到系统 temp。
 const { STATE_ENV, resolveStateDir } = require('./src/stateDir');
+const { readMcpEndpoint, endpointAlive } = require('./src/mcpEndpoint');
 const { checkPython, appendLog, flushLogSync } = require('./src/launchCheck');
 const {
     ModuleTreeProvider,
@@ -332,6 +333,23 @@ function activate(context) {
     };
 
     // ------------------------------------------------------------ MCP server definition
+    // P-A3: the server writes <stateDir>/mcp-endpoint-<port>.json once its loopback
+    // listener is up. Read it (real port, token, pid) instead of guessing the port.
+    const resolveAttachPort = async () => {
+        if (!isNative) return 0;
+        try {
+            const endpoint = readMcpEndpoint(stateDir, { root: cwd, port: mcpPort });
+            if (endpoint && endpointAlive(endpoint)) {
+                diag(`MCP endpoint: port=${endpoint.port} pid=${endpoint.pid} token=${endpoint.token ? 'yes' : 'no'}`);
+                return endpoint.port;
+            }
+        } catch (err) {
+            diag(`MCP endpoint lookup failed: ${(err && err.message) || err}`);
+        }
+        // Old server without the endpoint file: keep the historical probe.
+        return (mcpPort && (await mcpPortOpen(mcpPort))) ? mcpPort : 0;
+    };
+
     const buildMcpDefinition = async () => {
         const root = workspaceFolder();
         if (!root) return undefined;
@@ -353,7 +371,9 @@ function activate(context) {
             allowWrite: config().get('mcp.allowWrite') === true,
             version: context.extension.packageJSON.version,
             existingPythonPath: process.env.PYTHONPATH,
-            attachPort: (mcpPort && await mcpPortOpen(mcpPort)) ? mcpPort : 0,
+            // P-A3: prefer the advertised endpoint (real port + token) over the
+            // FNV-derived port + 300 ms TCP probe; old servers fall back to it.
+            attachPort: await resolveAttachPort(),
         });
     };
     const registerMcpProvider = () => {
