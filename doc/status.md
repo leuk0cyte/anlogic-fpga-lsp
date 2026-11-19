@@ -14,7 +14,7 @@
 | 项目 | 数据 |
 | --- | --- |
 | LSP | 25 个方法（补全 / 悬停 / 定义 / 引用 / 文档与工作区符号 / 代码动作 / 格式化 ×2 / 重命名 / 调用层次 / 语义高亮 / 折叠 / inlayHint / reports …） |
-| MCP | **39 个工具全部真实实现（0 占位）**；默认只读，flow / 写操作需显式开启 |
+| MCP | **41 个工具全部真实实现（0 占位）**（Python 对齐 39 + `job_status`/`job_cancel`）；默认只读，flow / 写操作需显式开启；4 个只读 resources |
 | TD 集成 | 会话与诊断、Flow + BitWizard、报告解析、ADC + SDC 符号、HDL 索引 |
 
 ## M1 协议层减法（已落地，2026-11-19）
@@ -31,6 +31,27 @@
 | B-A2 | 声明 `executeCommandProvider`（广播 22 条；`check/info/restart` 因扩展已 contributes 而排除） | 第三方客户端可见；`unit.commands` 断言表/能力一致 |
 
 回归：`ctest` **59/59**（原 58 + 新增 `unit.commands`）。
+
+## M2 增量与并发（已落地，2026-11-19/20）
+
+> 计划见 [doc/design/README.md](design/README.md) §2.2–§2.3。M1 见上一节。
+
+| 项 | 改动 | 验收 |
+| --- | --- | --- |
+| P-A1 | MCP loopback 每连接一个会话线程（`FPGALSP_MCP_CLIENTS`，默认 8）；超限 `-32002`；Shutdown 唤醒并 join | A 卡在半行时 B 仍能 `ping`（实测 <1 ms）；`e2e.mcp_concurrency` |
+| P-B4 | `tools/call` 交给内置 worker；`notifications/cancelled` → 协作式取消；TCP 路径补上 `SetNotificationWriter` + 每会话写锁 | `flow_wait`/`search_text` 可取消，响应 `isError: cancelled` |
+| P-C3 | `reports` 响应带 revision，请求可带 `ifRevision` → `{unchanged:true}` | 一次 flow 结束只真取一次；插件复用缓存对象 |
+| P-C4 | `flowStatus` 支持 `sinceSeq`（`logSeq`/`logStartSeq`，落后时 truncated 标记） | 轮询只回新增行；插件合并成 200 行窗口 |
+| P-D7 | flow `done`/`error` 回调里 `CheckForChanges` → `reportsChanged` | 报告落盘 1 s 内有通知 |
+| P-D5 | 语义高亮真 delta（公共前后缀，5 元组对齐） | 单 token 改动只传 1 条编辑 |
+| P-D2 | `FindTd` 5 s 缓存（负结果也缓存） | summary 请求少付 0.9 ms |
+| P-B2 | >800 KB 改成分页裁剪 + `nextOffset`/`total`/`itemsField`；`workspace_symbols` 支持 `offset` | 两页拼接 == 全量前 6 项（单测） |
+| P-A3 | 端点文件 `mcp-endpoint-<port>.json`（真实端口 + 随机 token + pid）+ TCP 鉴权（两版本灰度）；attach 代理自动注入 token | `e2e.mcp_auth` 10 条断言；token 不进日志 |
+| P-B5 | `flow_run` 返回 `job`（= runId 别名）；新增 `fpga_job_status`/`fpga_job_cancel` | 空闲时 `found:false`（单测） |
+| P-B6 | `resources/list` + `resources/read`（工程信息/文件/报告摘要/flow） | 未知 uri → `-32602` |
+| P-C2 | `fpgaLsp/moduleChildren`（一层 + 分页 + `hasChildren`），客户端展开时懒加载 | 一层/翻页/未知模块（单测）；展开只请求一次（插件用例） |
+
+回归：`ctest` **61/61**；插件 `node test/run.js` **36/36**。
 
 ## 审计 §0.2 第 1–6 条的修复（详见 [doc/audit/2026-11-19/static/FIXES.md](audit/2026-11-19/static/FIXES.md)）
 

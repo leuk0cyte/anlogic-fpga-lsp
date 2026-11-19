@@ -64,6 +64,7 @@
 
 | 方法 | 状态 | 说明 |
 | --- | --- | --- |
+| `fpgaLsp/moduleChildren` | **已实现（P-C2）** | `{uri?, module, offset, limit, includePrimitives}` → `{ok,parent,children[],total,nextOffset,hasMore}`；只回一层，子节点带 `hasChildren` 不带 `children`；未知模块 `ok:false` |
 | `fpgaLsp/moduleTree` | **已实现（真实索引）** | 基于 `src/hdl` 的 Verible 符号索引；`includePrimitives=false` 时按 745 条器件原语过滤黑盒 |
 | `fpgaLsp/reports` | **已实现** | `reports::BuildReports` + `routed_db` + `strategies.available` + `flow`；无 flow 时 `ok:false` + Python 同文案 |
 | `fpgaLsp/flowStatus` | **已实现** | `{ok, flow{...,log,ok}, artifacts{runs[]}}` |
