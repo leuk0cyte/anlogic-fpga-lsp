@@ -1007,3 +1007,47 @@ TEST(IndexServiceTest, ChangeSetMarksModuleAdditionAsFull) {
     const IndexService::ChangeSet changes = service.LastChanges();
     EXPECT_TRUE(changes.full) << "新增模块必须整树重取";
 }
+
+// =============================================================================
+//  B-B2：时序端点 -> 源码（服务端注入 HDL 索引后重算）
+// =============================================================================
+TEST(IndexServiceTest, ResolvesTimingEndpointsAgainstTheIndex) {
+    TinyProject tiny("timing_endpoints");
+    IndexService service(DiskLoader);
+    service.SetProject(tiny.Parse());
+    const IndexService::Snapshot index = service.Get();
+    ASSERT_NE(index, nullptr);
+
+    // m1 = top，例化了 m2/u2 与 m3/u3（见 TinyProject 夹具）
+    const fpgalsp::project::Project project = tiny.Parse();
+    ASSERT_EQ(project.top, "m1");
+
+    nlohmann::json data = nlohmann::json::object();
+    nlohmann::json timing = nlohmann::json::object();
+    nlohmann::json paths = nlohmann::json::array();
+    nlohmann::json path = nlohmann::json::object();
+    // 解析得到：m2 的端口 clk（u2 是 m1 里的实例名）
+    path["begin_at"] = {{"signal", "clk"}, {"hierarchy", {"u2"}}, {"resolved", false},
+                        {"reason", "hdl-index-unavailable"}};
+    // 解析不到：m1 里没有这个信号
+    path["end_at"] = {{"signal", "no_such_signal"}, {"hierarchy", nlohmann::json::array()},
+                      {"resolved", false}, {"reason", "hdl-index-unavailable"}};
+    paths.push_back(path);
+    timing["paths"] = paths;
+    data["timing"] = timing;
+
+    fpgalsp::server::features::ResolveTimingEndpoints(*index, project, data);
+
+    const nlohmann::json& patched = data["timing"]["paths"][0];
+    EXPECT_TRUE(patched["begin_at"]["resolved"].get<bool>()) << patched["begin_at"].dump();
+    EXPECT_EQ(patched["begin_at"]["module"].get<std::string>(), "m2");
+    EXPECT_FALSE(patched["begin_at"]["file"].is_null());
+    EXPECT_FALSE(patched["begin_at"]["reason"].is_string()) << "解析成功时不应再带 reason";
+
+    EXPECT_FALSE(patched["end_at"]["resolved"].get<bool>());
+    EXPECT_EQ(patched["end_at"]["reason"].get<std::string>(), "signal-not-in-module");
+
+    const nlohmann::json& counts = data["timing"]["begin_end_resolved"];
+    EXPECT_EQ(counts["total"].get<int>(), 2);
+    EXPECT_EQ(counts["resolved"].get<int>(), 1);
+}

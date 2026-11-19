@@ -417,6 +417,18 @@ Json LspServer::FeatureReports(const Json& params) {
         };
         return deep(deep, snapshot->data);
     }();
+    // B-B2：把时序端点解析到源码。reports 层拿不到索引（`timing.cpp` 因此恒
+    // resolved=false / reason="hdl-index-unavailable"），这里在服务端注入索引后重算。
+    // ⚠ 只改这份 `data` 副本：快照本身是共享不可变的，绝不能就地改。
+    if (!project->top.empty()) {
+        bool ignored_truncation = false;
+        if (const std::shared_ptr<const hdl::HdlIndex> index =
+                IndexForProject(*project, &ignored_truncation, nullptr);
+            index != nullptr) {
+            features::ResolveTimingEndpoints(*index, *project, data);
+        }
+    }
+
     if (!section_text.empty()) data["section"] = section_text;
     data["project"] = project->name;
     data["al"] = project->al_path;

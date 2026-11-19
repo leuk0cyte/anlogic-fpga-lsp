@@ -56,6 +56,13 @@ Json InlayHints(const hdl::HdlIndex& index, std::string_view path);
 Json Completion(const hdl::HdlIndex& index, std::string_view path, std::string_view text,
                 int line, int character);
 
+// B-B2：把 timing 路径的 begin_at/end_at 解析到源码（就地修改传入的 JSON 副本）。
+// 之前 reports 层恒 resolved=false、reason="hdl-index-unavailable"（那层拿不到索引），
+// 导致插件的"时序点跳源码"是死链接。这里在服务端注入索引后重算，并把
+// timing.begin_end_resolved 的解析数一起更新。
+void ResolveTimingEndpoints(const hdl::HdlIndex& index, const project::Project& project,
+                            Json& data);
+
 // fpgaLsp/moduleChildren（P-C2）：只回 parent 的直接子节点（带 hasChildren，不带 children），
 // offset/limit 分页。parent 为空时用 project.top。
 Json ModuleChildren(const hdl::HdlIndex& index, const project::Project& project,

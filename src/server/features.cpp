@@ -432,6 +432,125 @@ Json Completion(const HdlIndex& index, std::string_view path, std::string_view t
     return result;
 }
 
+// -----------------------------------------------------------------------------
+//  B-B2：时序端点 -> 源码
+// -----------------------------------------------------------------------------
+namespace {
+
+bool ResolveOneEndpoint(const HdlIndex& index, const project::Project& project, Json& endpoint) {
+    if (!endpoint.is_object()) return false;
+    const std::string signal = endpoint.value("signal", std::string());
+    if (signal.empty()) return false;
+
+    std::vector<std::string> chain;
+    if (const auto it = endpoint.find("hierarchy");
+        it != endpoint.end() && it->is_array()) {
+        for (const Json& part : *it) {
+            if (part.is_string()) chain.push_back(part.get<std::string>());
+        }
+    }
+
+    std::string module = project.top;
+    std::size_t consumed = 0;
+    for (; consumed < chain.size(); ++consumed) {
+        const hdl::Module* current = index.ModuleByName(module);
+        if (current == nullptr) break;
+        const std::string& step = chain[consumed];
+        const hdl::Instance* hit = nullptr;
+        for (const hdl::Instance* instance : index.InstancesOfFile(current->file)) {
+            if (instance->line < current->line || instance->line > current->end_line) continue;
+            if (instance->name == step) {
+                hit = instance;
+                break;
+            }
+        }
+        if (hit == nullptr) {
+            // 报告里有时写的是模块名而不是实例名
+            if (index.ModuleByName(step) != nullptr) {
+                module = step;
+                continue;
+            }
+            break;
+        }
+        if (hit->module.empty()) break;
+        module = hit->module;
+    }
+
+    const hdl::Module* definition = index.ModuleByName(module);
+    if (definition == nullptr) {
+        endpoint["resolved"] = false;
+        endpoint["reason"] = "module-not-in-index";
+        return false;
+    }
+
+    for (const hdl::ModuleInfo* info : index.ModulesOfFile(definition->file)) {
+        if (info->module.name != definition->name) continue;
+        for (const hdl::Signal& sig : info->signals) {
+            if (sig.name != signal) continue;
+            endpoint["file"] = platform::path_to_uri(sig.file.empty() ? definition->file : sig.file);
+            endpoint["line"] = sig.line;
+            endpoint["character"] = sig.character;
+            endpoint["module"] = module;
+            endpoint["resolved"] = true;
+            endpoint["reason"] = nullptr;
+            return true;
+        }
+        for (const hdl::Port& port : definition->ports) {
+            if (port.name != signal) continue;
+            endpoint["file"] =
+                platform::path_to_uri(port.file.empty() ? definition->file : port.file);
+            endpoint["line"] = port.line;
+            endpoint["character"] = port.character;
+            endpoint["module"] = module;
+            endpoint["resolved"] = true;
+            endpoint["reason"] = nullptr;
+            return true;
+        }
+        break;
+    }
+
+    endpoint["resolved"] = false;
+    endpoint["reason"] = consumed < chain.size() ? "hierarchy-not-in-index" : "signal-not-in-module";
+    return false;
+}
+
+void ResolveTimingSection(const HdlIndex& index, const project::Project& project, Json& section) {
+    if (!section.is_object()) return;
+    const auto paths_it = section.find("paths");
+    if (paths_it == section.end() || !paths_it->is_array()) return;
+    int total = 0;
+    int resolved = 0;
+    for (Json& path : *paths_it) {
+        if (!path.is_object()) continue;
+        for (const char* key : {"begin_at", "end_at"}) {
+            const auto it = path.find(key);
+            if (it == path.end() || !it->is_object()) continue;
+            ++total;
+            if (ResolveOneEndpoint(index, project, *it)) ++resolved;
+        }
+    }
+    if (total > 0) {
+        Json counts = Json::object();
+        counts["total"] = total;
+        counts["resolved"] = resolved;
+        section["begin_end_resolved"] = std::move(counts);
+    }
+}
+
+}  // namespace
+
+void ResolveTimingEndpoints(const HdlIndex& index, const project::Project& project, Json& data) {
+    if (project.top.empty() || !data.is_object()) return;
+    if (auto it = data.find("timing"); it != data.end()) ResolveTimingSection(index, project, *it);
+    for (const char* stage : {"syn", "phy"}) {
+        if (auto stage_it = data.find(stage); stage_it != data.end() && stage_it->is_object()) {
+            if (auto timing = stage_it->find("timing"); timing != stage_it->end()) {
+                ResolveTimingSection(index, project, *timing);
+            }
+        }
+    }
+}
+
 // P-C2：懒加载子节点。只构建**直接子节点**（每个都不带 children），
 // 并给出 hasChildren 让客户端知道还能继续展开。
 // 这样 1000 节点工程的首屏只传根的一层，而不是整棵树（服务端 500 子节点上限
