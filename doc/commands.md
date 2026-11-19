@@ -67,7 +67,7 @@
 | `fpgaLsp/moduleTree` | **已实现（真实索引）** | 基于 `src/hdl` 的 Verible 符号索引；`includePrimitives=false` 时按 745 条器件原语过滤黑盒 |
 | `fpgaLsp/reports` | **已实现** | `reports::BuildReports` + `routed_db` + `strategies.available` + `flow`；无 flow 时 `ok:false` + Python 同文案 |
 | `fpgaLsp/flowStatus` | **已实现** | `{ok, flow{...,log,ok}, artifacts{runs[]}}` |
-| `fpgaLsp/flowEvent`（通知，服务器→客户端） | 预留 | `LspServer::SendFlowEvent(event)` 已固定签名与 wire 形状，flow 接入后直接调用；本阶段**没有调用点** |
+| `fpgaLsp/flowEvent`（通知，服务器→客户端） | **已实现** | `LspServer::SendFlowEvent(event)` → `SendNotification`；调用点是 `FlowRunner` 的事件回调（`lsp_server.cpp:1760-1768`），由后台 worker 线程推送 |
 
 ### `fpgaLsp/moduleTree`（阶段 3 起用真实 HDL 索引）
 

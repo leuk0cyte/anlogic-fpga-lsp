@@ -15,6 +15,7 @@
 | [quality.md](quality.md) | 静态分析流水线、两个计数陷阱、诊断基线、审计报告索引 |
 | [status.md](status.md) | 当前交付状态：构建/测试数据、6 项修复、VSIX、已知差异、仍未验证项 |
 | [extension-development.md](extension-development.md) | VS Code 扩展的开发、测试与打包 |
+| [design/](design/README.md) | **设计提案（未实现）**：端到端协议优化 32 条、后端功能缺口 25 条、插件功能 28 条，含优先级与验收标准 |
 
 ## 审计证据归档（按日期，只增不改）
 

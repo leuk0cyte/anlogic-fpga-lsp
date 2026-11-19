@@ -62,6 +62,16 @@ vscode-extension/fpga-lsp-anlogic-0.14.0.vsix   224 files / 2.86 MB
 3. **`tests/golden/snapshots/`**：仓库内快照保留为历史基线；Phase B 的等价性证据在
    [doc/audit/2026-11-18/golden-final/](audit/2026-11-18/golden-final/)（Python/native 双采 + compare）。
 
+## 下一步（设计提案，未实现）
+
+端到端优化与功能缺口已整理成三份提案，按优先级与验收标准排序，入口见
+[doc/design/README.md](design/README.md)：协议/传输/后端链路 32 条
+（[protocol-optimization.md](design/protocol-optimization.md)）、后端能力缺口 25 条
+（[backend-features.md](design/backend-features.md)）、插件能力 28 条
+（[extension-features.md](design/extension-features.md)）。
+第一批建议为协议层"纯减法"四项（≈4 人日，收益可用字节数/毫秒数直接验收），
+其次是把已有分析器接进编辑器的"接线"三项（约束诊断、时序端点跳转、`.al` 一致性）。
+
 ## 参考实现缺陷里最该知道的两条
 
 - **P-1**：`ip_generated_hdl` 把 `.vhd` 混进 Verilog 列表 → elaborate 整体失败 →
