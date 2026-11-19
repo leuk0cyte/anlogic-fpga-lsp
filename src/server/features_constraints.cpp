@@ -58,6 +58,37 @@ bool IsConstraintDocument(std::string_view path) {
     return KindOf(path) != ConstraintKind::kNone;
 }
 
+// B-B1：约束诊断（编辑器 Problems 与 MCP fpga_diagnostics 走同一批纯函数）。
+lsp::DiagnosticList ConstraintDiagnostics(std::string_view path, std::string_view text,
+                                          const std::vector<constraints::Port>& ports) {
+    lsp::DiagnosticList out;
+    const auto ends_with = [](std::string_view value, std::string_view suffix) {
+        if (value.size() < suffix.size()) return false;
+        for (std::size_t i = 0; i < suffix.size(); ++i) {
+            const char left = static_cast<char>(
+                std::tolower(static_cast<unsigned char>(value[value.size() - suffix.size() + i])));
+            if (left != suffix[i]) return false;
+        }
+        return true;
+    };
+    if (ends_with(path, ".adc")) {
+        const std::vector<constraints::adc::Entry> entries = constraints::adc::Parse(text);
+        for (const lsp::Diagnostic& diagnostic :
+             constraints::adc::Diagnostics(entries, ports, nullptr, text)) {
+            // 落在顶层端口声明行的 bit 宽度提示由 HDL 层发布，这里不重复。
+            if (diagnostic.code == "BIT-8123") continue;
+            out.push_back(diagnostic);
+        }
+    } else if (ends_with(path, ".sdc")) {
+        const std::vector<constraints::sdc::Command> commands = constraints::sdc::Parse(text);
+        for (const lsp::Diagnostic& diagnostic :
+             constraints::sdc::Diagnostics(commands, ports, nullptr)) {
+            out.push_back(diagnostic);
+        }
+    }
+    return out;
+}
+
 Json ConstraintDocumentSymbols(std::string_view path, std::string_view text) {
     switch (KindOf(path)) {
         case ConstraintKind::kAdc:

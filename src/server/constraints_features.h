@@ -22,6 +22,7 @@
 #include <nlohmann/json.hpp>
 
 #include "constraints/port.h"
+#include "lsp/diagnostic.h"
 
 namespace fpgalsp::server {
 
@@ -34,6 +35,11 @@ bool IsConstraintDocument(std::string_view path);
 // 以下三个函数的 `text` 是**已经装载好的**文档文本（缓冲区优先，见 LoadText）。
 // 都不抛异常；`path` 不是约束文档时返回 Python 的"该方法不支持"形态
 // （documentSymbol/补全 -> 空数组/空 items，hover -> null）。
+// B-B1：单个约束文档的诊断（.adc / .sdc）。text 是已装载的缓冲区/磁盘内容，
+// ports 是顶层端口表（与 MCP 的 fpga_diagnostics 同源）。
+lsp::DiagnosticList ConstraintDiagnostics(std::string_view path, std::string_view text,
+                                          const std::vector<constraints::Port>& ports);
+
 Json ConstraintDocumentSymbols(std::string_view path, std::string_view text);
 Json ConstraintHover(std::string_view path, std::string_view text, int line, int character,
                      const std::vector<constraints::Port>& ports);

@@ -29,6 +29,7 @@
 #include "hdl/hdl_index.h"
 #include "hdl/primitives.h"
 #include "project/al_project.h"
+#include "server/constraints_features.h"
 #include "server/features.h"
 
 namespace {
@@ -572,4 +573,33 @@ TEST(FeaturesCompletion, PrimitiveCandidateCarriesDetailLikePython) {
         break;
     }
     EXPECT_TRUE(found) << "器件原语必须出现在候选池里（MCP 也要拿到）";
+}
+// =============================================================================
+//  B-B1：约束诊断接入 LSP（编辑器 Problems 与 MCP fpga_diagnostics 同源）
+// =============================================================================
+TEST(ConstraintDiagnosticsTest, AdcProblemsAreExposedThroughTheServerHelper) {
+    std::vector<fpgalsp::constraints::Port> ports;
+    fpgalsp::constraints::Port w;
+    w.name = "w";
+    w.direction = "input";
+    w.width = 8;
+    w.msb = 7;
+    w.lsb = 0;
+    ports.push_back(w);
+
+    // 缺 LOCATION -> USR-8056（error），与 adc_test 用同一条规则
+    const std::string text =
+        "set_pin_assignment\t{ w[0] }\t{ IOSTANDARD = LVCMOS33; }";
+    const auto diagnostics =
+        fpgalsp::server::ConstraintDiagnostics("x.adc", text, ports);
+    ASSERT_FALSE(diagnostics.empty());
+    bool found = false;
+    for (const auto& diagnostic : diagnostics) {
+        if (diagnostic.code == "USR-8056") found = true;
+        EXPECT_FALSE(diagnostic.source.empty()) << "诊断必须带来源，Problems 才能分组";
+    }
+    EXPECT_TRUE(found) << "缺 LOCATION 必须产出 USR-8056";
+
+    // 非约束文档 -> 空（不能把 HDL 文件当成 .adc 解析）
+    EXPECT_TRUE(fpgalsp::server::ConstraintDiagnostics("x.v", text, ports).empty());
 }

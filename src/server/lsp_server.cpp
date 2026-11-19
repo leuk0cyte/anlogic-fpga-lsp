@@ -11,6 +11,7 @@
 //    **0 个残留 td_commands_prompt.exe**（P-5）。
 // =============================================================================
 
+#include "server/constraints_features.h"
 #include "server/lsp_server.h"
 
 #include <algorithm>
@@ -1323,6 +1324,39 @@ void LspServer::PublishMergedPath(const project::Project* project, const std::st
     lsp::DiagnosticList project_diags;
     if (project != nullptr && path == project->al_path) {
         project_diags = ProjectDiagnostics(*project);
+    }
+
+    // B-B1：.adc / .sdc 的诊断以前只有 MCP 工具能看见（Problems 一条都不出）。
+    // 这里接第三个来源；端口表用 HDL 索引（与 MCP 的 fpga_diagnostics 同源）。
+    if (project != nullptr && IsConstraintDocument(path)) {
+        if (const std::optional<std::string> text = LoadText(path); text.has_value()) {
+            std::vector<constraints::Port> ports;
+            if (!project->top.empty()) {
+                if (const std::shared_ptr<const hdl::HdlIndex> index =
+                        IndexForProject(*project, nullptr, nullptr);
+                    index != nullptr) {
+                    if (const hdl::Module* module = index->ModuleByName(project->top);
+                        module != nullptr) {
+                        for (const hdl::Port& port : module->ports) {
+                            constraints::Port converted;
+                            converted.name = port.name;
+                            converted.direction = port.direction;
+                            converted.width = port.width;
+                            converted.msb = port.msb;
+                            converted.lsb = port.lsb;
+                            converted.line = port.line;
+                            converted.character = port.character;
+                            converted.file = port.file;
+                            ports.push_back(std::move(converted));
+                        }
+                    }
+                }
+            }
+            const lsp::DiagnosticList constraint_diags =
+                ConstraintDiagnostics(path, *text, ports);
+            project_diags.insert(project_diags.end(), constraint_diags.begin(),
+                                 constraint_diags.end());
+        }
     }
     if (lint.empty() && td.empty() && project_diags.empty()) {
         PublishDiagnostics(path, lsp::DiagnosticList{});
