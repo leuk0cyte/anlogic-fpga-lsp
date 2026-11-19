@@ -127,7 +127,8 @@ struct EnsureDeviceResult {
     bool ok = false;
     std::string db;       // 成功时：实际使用的 db 文件名
     std::string error;    // 失败原因（不抛异常）
-    int tried = 0;        // 尝试过的候选数
+    int tried = 0;        // 尝试过的候选数（命中缓存时 = 1）
+    bool from_cache = false;  // W4：true = 直接用了缓存里上次成功的 db
 };
 
 // 对应 Python ensure_device：

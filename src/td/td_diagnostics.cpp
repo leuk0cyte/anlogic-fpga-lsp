@@ -6,10 +6,19 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
+#include <cstdint>
+#include <cstdio>
 #include <filesystem>
+#include <optional>
 #include <string>
+#include <system_error>
 #include <vector>
 
+#include <nlohmann/json.hpp>
+
+#include "platform/encoding.h"
+#include "platform/log.h"
 #include "platform/path.h"
 #include "td/td_device.h"
 #include "td/td_session.h"
@@ -255,6 +264,116 @@ lsp::DiagnosticList DiagnosticsFromReadHdlOutput(std::string_view output,
 }
 
 // -----------------------------------------------------------------------------
+//  W4-B：import_device 成功候选缓存
+// -----------------------------------------------------------------------------
+//  实测（真实工程副本，EF2L45LG144B）：一轮会按 DbCandidates 顺序试 3 个候选，
+//  ef2_1 / ef2_2 各失败一次（~15 ms/次），第 3 个 ef2_4 才成功（~230 ms）。
+//  失败候选是纯白工；family 匹配不上时（家族为空/未知）候选会退化成"所有 db 按
+//  字典序"，白工可达上百毫秒。
+//
+//  方案：把"上次成功的 db 名"按 (td_root, TD exe mtime, device, family, speed)
+//  记到状态目录；下一轮**先试它**，成功直接用；失败则删掉该条并回退全量试错。
+//    * 失效：key 含 td_root + exe mtime（换安装/升级自动 miss）、device/family/speed；
+//      缓存文件缺失/损坏、条目对应的 db 文件不存在 -> 静默全量回退；
+//    * 写盘失败只记 debug 日志：缓存是纯优化，不能变成新的失败点。
+namespace {
+
+constexpr std::size_t kDeviceCacheMaxEntries = 16;
+
+std::string DeviceCachePath(const project::Project& project) {
+    if (project.dir.empty()) return {};
+    return platform::path_join(platform::state_dir(project.dir), "cache/td_device_db.json");
+}
+
+// key 里带 td_root + exe 的 mtime：TD 升级 / 换安装目录后旧条目自动失效。
+std::string DeviceCacheKey(const project::Project& project, const td::TdChoice& td) {
+    std::int64_t mtime = 0;
+    std::error_code ec;
+    const auto write_time =
+        std::filesystem::last_write_time(std::filesystem::path(td.exe), ec);
+    if (!ec) mtime = static_cast<std::int64_t>(write_time.time_since_epoch().count());
+    std::string key = td.root;
+    key += '|';
+    key += std::to_string(mtime);
+    key += '|';
+    key += project.device;
+    key += '|';
+    key += project.family;
+    key += '|';
+    key += project.speed.has_value() ? *project.speed : std::string("-");
+    return key;
+}
+
+std::optional<std::string> ReadDeviceCache(const std::string& path, const std::string& key) {
+    if (path.empty()) return std::nullopt;
+    const std::optional<std::string> text = platform::try_read_file_utf8(path);
+    if (!text.has_value()) return std::nullopt;
+    try {
+        const nlohmann::json parsed = nlohmann::json::parse(*text);
+        if (!parsed.is_object()) return std::nullopt;
+        const auto it = parsed.find(key);
+        if (it == parsed.end() || !it->is_object()) return std::nullopt;
+        const auto db = it->find("db");
+        if (db == it->end() || !db->is_string()) return std::nullopt;
+        return db->get<std::string>();
+    } catch (...) {
+        return std::nullopt;  // 损坏 = 未命中
+    }
+}
+
+void UpdateDeviceCache(const std::string& path, const std::string& key,
+                       const std::optional<std::string>& db) {
+    if (path.empty()) return;
+    try {
+        nlohmann::json root = nlohmann::json::object();
+        if (const std::optional<std::string> text = platform::try_read_file_utf8(path);
+            text.has_value()) {
+            try {
+                const nlohmann::json parsed = nlohmann::json::parse(*text);
+                if (parsed.is_object()) root = parsed;
+            } catch (...) {
+                root = nlohmann::json::object();
+            }
+        }
+        if (db.has_value()) {
+            root[key] = nlohmann::json{{"db", *db}};
+            if (root.size() > kDeviceCacheMaxEntries) {
+                root = nlohmann::json::object();
+                root[key] = nlohmann::json{{"db", *db}};
+            }
+        } else {
+            root.erase(key);
+            if (root.empty()) return;  // 不留空文件
+        }
+        std::error_code ec;
+        const std::filesystem::path file(path);
+        std::filesystem::create_directories(file.parent_path(), ec);
+        if (ec) return;
+        const std::string temp = path + ".tmp";
+        if (!platform::write_file_utf8(temp, root.dump())) return;
+        std::filesystem::rename(temp, file, ec);
+        if (ec) {
+            std::filesystem::remove(file, ec);
+            std::filesystem::rename(temp, file, ec);
+            if (ec) {
+                std::error_code ignored;
+                std::filesystem::remove(temp, ignored);
+            }
+        }
+    } catch (...) {
+        // 写缓存失败 = 静默放弃；下一轮还是全量试错（行为不变）
+    }
+}
+
+bool DbFileExists(std::string_view td_root, const std::string& db) {
+    std::error_code ec;
+    return std::filesystem::exists(
+        std::filesystem::path(platform::path_join(std::string(td_root), "arch/" + db)), ec);
+}
+
+}  // namespace
+
+// -----------------------------------------------------------------------------
 // ensure_device
 // -----------------------------------------------------------------------------
 
@@ -296,6 +415,36 @@ EnsureDeviceResult EnsureDevice(const project::Project& project, TdSession& sess
         }
     }
 
+    // W4-B：先试"上次成功的 db"（命中时省掉前面所有失败候选的 import）。
+    std::string cache_path;
+    std::string cache_key;
+    const bool cache_enabled = !project.dir.empty();
+    if (cache_enabled) {
+        cache_key = DeviceCacheKey(project, session.td());
+        cache_path = DeviceCachePath(project);
+        const std::optional<std::string> cached = ReadDeviceCache(cache_path, cache_key);
+        if (cached.has_value() && DbFileExists(td_root, *cached)) {
+            ++result.tried;
+            try {
+                const std::string out = session.Run(
+                    MakeImportDeviceCommand(*cached, package, project.speed), 90.0);
+                if (!HasError(out)) {
+                    result.ok = true;
+                    result.db = *cached;
+                    result.from_cache = true;
+                    platform::default_logger().debug("import_device: cache hit " + *cached);
+                    return result;
+                }
+            } catch (const std::exception& exc) {
+                result.error = std::string(exc.what());
+                return result;
+            }
+            // 缓存条目被 TD 拒绝（升级 / db 不再支持该器件）：删掉它，回退全量试错。
+            UpdateDeviceCache(cache_path, cache_key, std::nullopt);
+            platform::default_logger().debug("import_device: cached db rejected: " + *cached);
+        }
+    }
+
     // 按降级顺序逐个试
     std::vector<std::string> candidates;
     try {
@@ -312,6 +461,8 @@ EnsureDeviceResult EnsureDevice(const project::Project& project, TdSession& sess
             if (!HasError(out)) {
                 result.ok = true;
                 result.db = candidate;
+                // 记住成功候选（best-effort；写失败不影响本轮结果）
+                if (cache_enabled) UpdateDeviceCache(cache_path, cache_key, result.db);
                 return result;
             }
         } catch (const std::exception& exc) {
