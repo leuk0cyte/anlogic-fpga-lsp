@@ -4,7 +4,7 @@
 ------
 1. `fpgalsp-native.exe --mcp` 启动，`initialize` → 断言协议版本协商、能力声明、
    serverInfo、instructions（agent 会读到这段文字）。
-2. `tools/list` → 默认 34 个只读工具；加 `--allow-flow --allow-write` 后 42 个；
+2. `tools/list` → 默认 35 个只读工具；加 `--allow-flow --allow-write` 后 43 个；
    每个工具都要有 name/title/description/inputSchema/annotations。
 3. 逐个调用**只读**工具（不碰 TD、不写文件）：
       fpga_project_list / fpga_project_info / fpga_project_files
@@ -41,8 +41,8 @@ REPO_ROOT = os.path.dirname(os.path.dirname(HERE))
 CORPUS = os.path.join(REPO_ROOT, "tests", "gate-corpus", "corpus_alpha")
 
 FALLBACK_SERVER = os.path.join(REPO_ROOT, "build", "bin", "fpgalsp-native.exe")
-EXPECTED_READONLY_TOOLS = 34
-EXPECTED_ALL_TOOLS = 42
+EXPECTED_READONLY_TOOLS = 35
+EXPECTED_ALL_TOOLS = 43
 
 
 class McpProcess:
@@ -199,7 +199,7 @@ def run_suite(exe: str) -> list[str]:
             check(tool["inputSchema"]["additionalProperties"] is False,
                   "additionalProperties 不是 false：%s" % tool["name"])
             check("handler" not in tool, "内部字段 handler 泄漏到 wire：%s" % tool["name"])
-        note("tools/list 42 个工具，schema 形状齐全，内部字段已剥离")
+        note("tools/list 43 个工具，schema 形状齐全，内部字段已剥离")
 
         # ---- 3. 只读工具 ----
         result = call_tool(client, "fpga_project_list", {"root": CORPUS})

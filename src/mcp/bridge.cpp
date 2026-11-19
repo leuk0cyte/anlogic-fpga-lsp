@@ -1932,6 +1932,18 @@ Json Bridge::Call(std::string_view handler, const Json& arguments) {
     if (name == "flow_run") return FlowRunTool(arguments);
     if (name == "flow_cancel") return FlowCancelTool(arguments);
     // P-B5：job 是 runId 的稳定别名（flow_run 启动异步线程后立刻返回 runId）
+    if (name == "testbench") {
+        // B-B10：与 LSP 的 fpgalsp.testbench 同一实现
+        if (options_.shared_server != nullptr) {
+            return options_.shared_server->FeatureTestbench(arguments);
+        }
+        const project::Project& project = ProjectFor(arguments);
+        const hdl::HdlIndex& index = EnsureHdlIndex(project);
+        return server::features::TestbenchSkeleton(index, project,
+                                                   arguments.value("module", std::string()),
+                                                   arguments.value("clock", std::string()),
+                                                   arguments.value("reset", std::string()));
+    }
     if (name == "run_diff") {
         // B-B6：两次 run 的 QoR/时序/面积差异（数据来自 <project>_Runs/*）
         const project::Project& project = ProjectFor(arguments);

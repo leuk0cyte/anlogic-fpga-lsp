@@ -820,7 +820,7 @@ const std::vector<std::string>& ExecuteCommandNames() {
         "fpgalsp.instantiate",  "fpgalsp.copyInstantiation", "fpgalsp.symbolPath",
         "fpgalsp.duplicateModules", "fpgalsp.searchHierarchy", "fpgalsp.addSourceFile",
         "fpgalsp.setProjectName", "fpgalsp.updateProject", "fpgalsp.debugHighlight",
-        "fpgalsp.metrics",      "fpgalsp.compareRuns", "fpgalsp.runs",
+        "fpgalsp.metrics",      "fpgalsp.compareRuns", "fpgalsp.runs",      "fpgalsp.testbench",
     };
     return kNames;
 }
@@ -996,6 +996,27 @@ HandlerResult LspServer::HandleDidRenameFiles(const Json& params) {
 
 // B-B6：两次 run 的差异（QoR/时序/面积）。数据来自 <project>_Runs/<name>/。
 // B-B6/X-B2：run 列表 + 指标（趋势图的数据源）。与 CompareRuns 同源。
+// B-B10：testbench 骨架（只生成文本，不落盘；写文件交给调用方/agent）。
+Json LspServer::FeatureTestbench(const Json& params) {
+    const auto project = ProjectFromParams(params);
+    Json out = Json::object();
+    if (!project.has_value()) {
+        out["ok"] = false;
+        out["error"] = "No Anlogic .al project found";
+        return out;
+    }
+    bool truncated = false;
+    const std::shared_ptr<const hdl::HdlIndex> index = IndexForProject(*project, &truncated, nullptr);
+    if (index == nullptr) {
+        out["ok"] = false;
+        out["error"] = "No HDL index";
+        return out;
+    }
+    return features::TestbenchSkeleton(*index, *project, jsonrpc::GetString(params, "module"),
+                                       jsonrpc::GetString(params, "clock"),
+                                       jsonrpc::GetString(params, "reset"));
+}
+
 Json LspServer::FeatureListRuns(const Json& params) {
     const auto project = ProjectFromParams(params);
     Json out = Json::object();
@@ -1313,6 +1334,9 @@ HandlerResult LspServer::HandleExecuteCommand(const Json& params) {
     }
     if (command == "fpgalsp.debugHighlight") {
         return OkObject(FeatureDebugHighlight(params));
+    }
+    if (command == "fpgalsp.testbench") {
+        return OkObject(FeatureTestbench(params));
     }
     if (command == "fpgalsp.runs") {
         return OkObject(FeatureListRuns(params));

@@ -60,6 +60,13 @@ Json Completion(const hdl::HdlIndex& index, std::string_view path, std::string_v
 // 之前 reports 层恒 resolved=false、reason="hdl-index-unavailable"（那层拿不到索引），
 // 导致插件的"时序点跳源码"是死链接。这里在服务端注入索引后重算，并把
 // timing.begin_end_resolved 的解析数一起更新。
+// B-B10：testbench 骨架。用 HDL 索引里的端口表生成可编译的 TB，
+// 并用 hdl::ParseVerilog 自检（我们的解析器内部就是 Verible 词法 + 结构识别）。
+// 返回 {ok, module, text, clock, reset, warnings[], parseErrors[]}。
+Json TestbenchSkeleton(const hdl::HdlIndex& index, const project::Project& project,
+                       std::string_view module, std::string_view clock,
+                       std::string_view reset);
+
 // B-B7：把面积报告里的模块（area.modules）解析到源码定义位置。
 // 面积热点"跳到源码"依赖它；模块名不在索引里时 resolved=false 并给出 reason。
 void ResolveAreaModules(const hdl::HdlIndex& index, const project::Project& project,

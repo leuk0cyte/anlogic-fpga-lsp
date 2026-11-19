@@ -155,6 +155,8 @@ public:
     Json FeatureCompareRuns(const Json& params);
     // X-B2：run 列表与指标（趋势图数据源）
     Json FeatureListRuns(const Json& params);
+    // B-B10：testbench 骨架（返回文本 + 解析自检）
+    Json FeatureTestbench(const Json& params);
     // 工程摘要（与 fpgalsp.info 同一实现）
     Json FeatureInfo();
 

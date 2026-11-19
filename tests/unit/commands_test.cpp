@@ -359,3 +359,26 @@ TEST_F(CommandsTest, DeclaresFileOperationFilters) {
         operations.at("willRename").at("filters").at(0).at("pattern").at("glob").get<std::string>();
     EXPECT_NE(glob.find("{v,sv"), std::string::npos) << glob;
 }
+
+// B-B10：testbench 骨架（端口声明/例化/自检）
+TEST_F(CommandsTest, TestbenchSkeletonIsParseable) {
+    Json params = Json::object();
+    params["module"] = "top";
+    const Json out = server().FeatureTestbench(params);
+    ASSERT_TRUE(out.at("ok").get<bool>()) << out.dump();
+    EXPECT_EQ(out.at("module").get<std::string>(), "top");
+    const std::string text = out.at("text").get<std::string>();
+    EXPECT_NE(text.find("module top_tb;"), std::string::npos);
+    EXPECT_NE(text.find("u_dut"), std::string::npos);
+    EXPECT_NE(text.find("endmodule"), std::string::npos);
+    EXPECT_TRUE(out.at("parseOk").get<bool>()) << out.at("parseErrors").dump();
+
+    // 猜不到时钟时也有可编译的骨架（不生成 always 块）
+    const bool has_clock = !out.at("clock").get<std::string>().empty();
+    EXPECT_EQ(text.find("always #5"), has_clock ? text.find("always #5") : std::string::npos);
+
+    Json unknown = Json::object();
+    unknown["module"] = "definitely_not_a_module";
+    const Json missing = server().FeatureTestbench(unknown);
+    EXPECT_FALSE(missing.at("ok").get<bool>());
+}

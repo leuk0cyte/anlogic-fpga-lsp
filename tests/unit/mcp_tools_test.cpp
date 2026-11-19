@@ -61,6 +61,7 @@ const char* const kExpectedNames[] = {
     "fpga_constraints_status",
     "fpga_td_info",
     // B-B6 / P-B5：cpp 独有的工具（Python 版没有）
+    "fpga_testbench",
     "fpga_run_diff",
     "fpga_job_status",
     "fpga_job_cancel",
@@ -111,9 +112,9 @@ void CheckEnumsAreStrings(const Json& schema, const std::string& path) {
 
 }  // namespace
 
-TEST(McpTools, TableHas42Tools) {
+TEST(McpTools, TableHas43Tools) {
     // 39 个 Python 对齐工具 + P-B5 的 fpga_job_status/fpga_job_cancel
-    EXPECT_EQ(fpgalsp::mcp::AllTools().size(), 42u);
+    EXPECT_EQ(fpgalsp::mcp::AllTools().size(), 43u);
 }
 
 TEST(McpTools, NamesMatchDeclaredOrder) {
@@ -129,7 +130,7 @@ TEST(McpTools, NamesAreUnique) {
     for (const Tool& tool : fpgalsp::mcp::AllTools()) {
         EXPECT_TRUE(names.insert(tool.name).second) << tool.name;
     }
-    EXPECT_EQ(names.size(), 42u);
+    EXPECT_EQ(names.size(), 43u);
 }
 
 TEST(McpTools, EveryToolHasTitleAndDescription) {
@@ -225,7 +226,7 @@ TEST(McpTools, ToolToJsonStripsInternalFields) {
 
 TEST(McpTools, VisibleToolsDefaultHidesGatedTools) {
     const std::vector<Json> visible = fpgalsp::mcp::VisibleTools(false, false);
-    EXPECT_EQ(visible.size(), 34u);
+    EXPECT_EQ(visible.size(), 35u);
     const std::set<std::string> gated = {"fpga_flow_run",   "fpga_flow_cancel", "fpga_analysis_run",
                                          "fpga_job_cancel",
                                          "fpga_strategy_compare", "fpga_project_update",
@@ -237,11 +238,11 @@ TEST(McpTools, VisibleToolsDefaultHidesGatedTools) {
 }
 
 TEST(McpTools, VisibleToolsAllIncludesEverything) {
-    EXPECT_EQ(fpgalsp::mcp::VisibleTools(true, true).size(), 42u);
+    EXPECT_EQ(fpgalsp::mcp::VisibleTools(true, true).size(), 43u);
     // flow 门控 5 个（flow_run/flow_cancel/job_cancel/analysis_run/strategy_compare）
     // write 门控 3 个（project_update/project_add_source/project_rename）
-    EXPECT_EQ(fpgalsp::mcp::VisibleTools(true, false).size(), 39u);
-    EXPECT_EQ(fpgalsp::mcp::VisibleTools(false, true).size(), 37u);
+    EXPECT_EQ(fpgalsp::mcp::VisibleTools(true, false).size(), 40u);
+    EXPECT_EQ(fpgalsp::mcp::VisibleTools(false, true).size(), 38u);
 }
 
 TEST(McpTools, FindToolReturnsNullForUnknown) {
