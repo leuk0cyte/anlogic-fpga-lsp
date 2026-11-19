@@ -22,7 +22,7 @@ const { METHODS, COMMANDS, VSCodeCommands, VIEWS } = require('./src/protocol');
 const { resolveServer, resolveServerRoot: locateServerRoot } = require('./src/locateServer');
 const { resolveVerible } = require('./src/verible');
 const { VeribleDiagnosticsClient } = require('./src/veribleDiagnostics');
-const { checkPython, appendLog } = require('./src/launchCheck');
+const { checkPython, appendLog, flushLogSync } = require('./src/launchCheck');
 const {
     ModuleTreeProvider,
     resolveTarget,
@@ -118,22 +118,12 @@ function resolveLanguageServer(context) {
     });
 }
 
-function debounce(fn, delay) {
-    let timer;
-    const wrapped = (...args) => {
-        if (timer) clearTimeout(timer);
-        timer = setTimeout(() => {
-            timer = undefined;
-            fn(...args);
-        }, delay);
-        if (timer && typeof timer.unref === 'function') timer.unref();
-    };
-    wrapped.dispose = () => {
-        if (timer) clearTimeout(timer);
-        timer = undefined;
-    };
-    return wrapped;
-}
+// NOTE (F6/R1): there used to be a `debounce(fn, delay)` helper here, used only to wrap
+// `scheduleModuleRefresh()`. That wrapper stacked a second 150 ms window on top of the module
+// tree provider's own 150 ms coalescing window, so every save sat 300 ms away from its
+// `fpgaLsp/moduleTree` request (audit/2026-11-19/perf/VSCODE.md, P1). The provider's window is
+// the one that actually merges N editor events into one request, so the helper is gone: the
+// editor-event fallback calls `requestRefresh()` directly.
 
 function activeDocumentUri() {
     const editor = vscode.window.activeTextEditor;
@@ -1419,12 +1409,18 @@ function activate(context) {
 
     // ------------------------------------------------------------ refresh triggers
 
-    // ------------------------------------------------------- refresh triggers (A4)
+    // ------------------------------------------------------- refresh triggers (A4 + F6/R1)
     //
     // The tree is refreshed **event first**: `fpgaLsp/indexChanged` (pushed by the server after
-    // it re-indexed) drives targeted updates. The editor events below are only the fallback for
-    // servers that do not push that event; they are debounced (150 ms), cancelled when a newer
-    // one arrives, and ignored when the file is not part of the project currently displayed.
+    // it re-indexed) drives an immediate, targeted update (moduleTree.js::applyIndexChanged).
+    // The editor events below are only the fallback for servers that do not push that event;
+    // they go through the provider's own 150 ms coalescing window (`requestRefresh`) and are
+    // ignored when the file is not part of the project currently displayed.
+    //
+    // F6/R1: this layer used to add a *second* 150 ms debounce on top of the provider's one, so
+    // a save reached its `fpgaLsp/moduleTree` request only after ~300 ms
+    // (audit/2026-11-19/perf/VSCODE.md §P1). The provider's window is the one that merges N
+    // editor events into one request, so only that one is kept here.
 
     const ownsActiveFile = (uri) => {
         if (!uri || !moduleProvider) return false;
@@ -1433,7 +1429,7 @@ function activate(context) {
         return moduleProvider.ownsFile(file);
     };
 
-    const scheduleModuleRefresh = debounce((reason, uri) => {
+    const scheduleModuleRefresh = (reason, uri) => {
         if (!serverReady()) return;
         const target = uri || activeDocumentUri();
         // Only refresh when the document belongs to the project the tree is showing; a file from
@@ -1444,7 +1440,7 @@ function activate(context) {
             return;
         }
         moduleProvider.requestRefresh(target, { reason });
-    }, 150);
+    };
 
     context.subscriptions.push(vscode.window.onDidChangeActiveTextEditor((editor) => {
         scheduleModuleRefresh('active-editor', editor && editor.document && editor.document.uri);
@@ -1454,7 +1450,6 @@ function activate(context) {
         if (!document || !ownsActiveFile(document.uri)) return;
         scheduleModuleRefresh('saved', document.uri);
     }));
-    context.subscriptions.push({ dispose: () => scheduleModuleRefresh.dispose && scheduleModuleRefresh.dispose() });
     if (typeof vscode.workspace.onDidChangeWorkspaceFolders === 'function') {
         context.subscriptions.push(vscode.workspace.onDidChangeWorkspaceFolders(() => {
             scheduleModuleRefresh('workspace-folders');
@@ -1470,16 +1465,25 @@ function activate(context) {
                 if (flowController) flowController.onFlowEvent(event);
             });
             // Phase 2: the server tells us when its HDL index changed. Targeted updates first;
-            // an unknown/newer payload shape degrades to the debounced full refresh.
+            // an unknown/newer payload shape degrades to an immediate full refresh.
+            //
+            // F6/R8: the per-event log line was a synchronous `mkdirSync + appendFileSync` on the
+            // project volume (6-7 ms on Y:, paid even for ignored events). It is sampled now and
+            // ignored events are never written; `appendLog()` itself is asynchronous as well.
+            let indexEventCount = 0;
             client.onNotification(METHODS.indexChanged, (event) => {
                 if (!moduleProvider) return;
+                indexEventCount += 1;
                 let outcome = 'ignored';
                 try {
                     outcome = moduleProvider.applyIndexChanged(event);
                 } catch (err) {
                     diag('indexChanged failed: ' + ((err && err.message) || err));
+                    return;
                 }
-                diag(`indexChanged -> ${outcome}`);
+                if (outcome !== 'ignored' && (indexEventCount <= 5 || indexEventCount % 50 === 0)) {
+                    diag(`indexChanged -> ${outcome} (#${indexEventCount})`);
+                }
             });
         } catch (err) {
             // Older clients: no custom notifications at all -> the editor events still refresh.
@@ -1534,6 +1538,11 @@ function deactivate() {
         veribleDiag.dispose();
         veribleDiag = undefined;
     }
+    // F6/R8: the log is buffered now, so flush whatever is still in memory before the extension
+    // host goes away (shutdown is the one moment a lost tail would be hard to explain).
+    try {
+        flushLogSync();
+    } catch (_) { /* logging must never break deactivation */ }
     if (!client) return undefined;
     const instance = client;
     client = undefined;

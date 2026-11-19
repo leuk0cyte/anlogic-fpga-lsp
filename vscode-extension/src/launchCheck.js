@@ -64,13 +64,70 @@ async function checkPython(options) {
     return { ok: true, python, executable: lines[0], version: lines[1] };
 }
 
-/** Append a line to a log file, creating parent dirs; silently tolerate failures. */
+// ---------------------------------------------------------------- logging
+//
+// F6/R8: `appendLog()` used to do `mkdirSync` + `appendFileSync` on every call. The extension
+// logs from *event handlers* (`fpgaLsp/indexChanged` fires once per save), and on a project
+// volume that append measured 6-7 ms of blocked extension-host time per event
+// (audit/2026-11-19/perf/VSCODE.md §P2). Writes are now buffered per file and performed
+// asynchronously on the next tick; ordering inside a batch is preserved.
+//
+// Callers that must not lose their message (shutdown, fatal errors) can call `flushLogSync()`.
+
+const pendingLines = new Map();   // filePath -> string[]
+const MAX_PENDING_LINES = 4096;   // a log that cannot keep up must not grow without bound
+let flushScheduled = false;
+
+function scheduleFlush() {
+    if (flushScheduled) return;
+    flushScheduled = true;
+    // No timer/polling: one flush attempt per macrotask that produced log lines.
+    setImmediate(() => {
+        flushScheduled = false;
+        flushPending();
+    });
+}
+
+function flushPending() {
+    for (const [filePath, lines] of pendingLines) {
+        if (!lines.length) continue;
+        const chunk = lines.join('');
+        lines.length = 0;
+        fs.mkdir(path.dirname(filePath), { recursive: true }, (dirError) => {
+            if (dirError) return;
+            fs.appendFile(filePath, chunk, () => { /* best effort: logging never throws */ });
+        });
+    }
+}
+
+/** Append a line to a log file (buffered, asynchronous), creating parent dirs; never throws. */
 function appendLog(filePath, message) {
-    try {
-        fs.mkdirSync(path.dirname(filePath), { recursive: true });
-        fs.appendFileSync(filePath, `[${new Date().toISOString()}] ${message}\n`, 'utf8');
-    } catch (_) { /* read-only workspace etc. */ }
+    if (!filePath) return;
+    let lines = pendingLines.get(filePath);
+    if (!lines) {
+        lines = [];
+        pendingLines.set(filePath, lines);
+    }
+    lines.push(`[${new Date().toISOString()}] ${message}\n`);
+    if (lines.length > MAX_PENDING_LINES) lines.splice(0, lines.length - MAX_PENDING_LINES);
+    scheduleFlush();
     try { console.log(message); } catch (_) { /* ignore */ }
 }
 
-module.exports = { checkPython, appendLog, run };
+/**
+ * Write everything still buffered, synchronously. Only for shutdown / fatal paths -- the normal
+ * path must stay asynchronous (see the note above).
+ */
+function flushLogSync() {
+    for (const [filePath, lines] of pendingLines) {
+        if (!lines.length) continue;
+        const chunk = lines.join('');
+        lines.length = 0;
+        try {
+            fs.mkdirSync(path.dirname(filePath), { recursive: true });
+            fs.appendFileSync(filePath, chunk, 'utf8');
+        } catch (_) { /* read-only workspace etc. */ }
+    }
+}
+
+module.exports = { checkPython, appendLog, flushLogSync, run };

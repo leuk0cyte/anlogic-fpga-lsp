@@ -194,7 +194,9 @@ class ModuleTreeProvider {
      * Apply a pushed `fpgaLsp/indexChanged` event (Phase 2).
      *
      * Returns 'ignored' | 'in-place' | 'refresh' so callers/tests can assert the targeted path.
-     * Falls back to a debounced full refresh when the event carries nothing we can patch in.
+     * When the event carries nothing we can patch in, the tree refreshes **immediately** (F6/R1):
+     * the server only pushes after it re-indexed, so a second coalescing window would only add
+     * latency. `refresh()` cancels any pending debounced fallback so it cannot fire twice.
      */
     applyIndexChanged(event) {
         if (!event || typeof event !== 'object') return 'ignored';
@@ -224,7 +226,11 @@ class ModuleTreeProvider {
             return 'in-place';
         }
 
-        this.requestRefresh(event.uri || undefined, { reason: 'indexChanged' });
+        // F6/R1: the server only pushes this notification *after* it re-indexed, so waiting for
+        // another coalescing window just adds latency (it used to double the end-to-end time:
+        // 150 ms here + 150 ms in extension.js). Refresh now; `refresh()` clears a pending
+        // debounced fallback so the save-triggered timer cannot fire a duplicate request.
+        this.refresh(event.uri || undefined, { reason: 'indexChanged' }).catch(() => undefined);
         return 'refresh';
     }
 
@@ -314,6 +320,12 @@ class ModuleTreeProvider {
      */
     async refresh(uri, options) {
         void options;
+        // A direct (event-driven) refresh supersedes a pending debounced fallback: without this
+        // the fallback timer would fire ~150 ms later and send the same request twice.
+        if (this._debounce) {
+            clearTimeout(this._debounce);
+            this._debounce = undefined;
+        }
         const seq = ++this._seq;
         this.loading = true;
         this._syncMessage();

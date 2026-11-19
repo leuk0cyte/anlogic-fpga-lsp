@@ -72,6 +72,8 @@ const { FALLBACK_POLL_MS } = require('../src/flowController');
 const { ReportsService, CancelledError } = require('../src/reportsService');
 const { renderReportsHtml } = require('../src/reportsHtml');
 const { ReportsPanel } = require('../src/reportsPanel');
+const { VeribleDiagnosticsClient } = require('../src/veribleDiagnostics');
+const { appendLog, flushLogSync } = require('../src/launchCheck');
 
 // ------------------------------------------------------------------ tiny test harness
 
@@ -889,7 +891,11 @@ test('module tree: indexChanged ignores files of another project', async () => {
     eq(provider.stats.ignored, 2);
 });
 
-test('module tree: indexChanged without a patchable module debounces one refresh', async () => {
+// F6/R1: a pushed `indexChanged` is already "the server finished re-indexing", so the provider
+// refreshes **immediately** now (it used to re-arm a 150 ms window, which stacked with the
+// extension-side debounce and made every save take ~300 ms -- see
+// audit/2026-11-19/perf/VSCODE.md §P1). This test used to assert the debounced behaviour.
+test('module tree: indexChanged without a patchable module refreshes immediately', async () => {
     const requested = [];
     const provider = new ModuleTreeProvider({
         request: async (method, params) => { requested.push(params); return sampleModuleTree(); },
@@ -897,14 +903,91 @@ test('module tree: indexChanged without a patchable module debounces one refresh
     await provider.refresh();
     const outcome = provider.applyIndexChanged({ paths: ['%WORKSPACE%/CorpusAlpha/src/system/pwm_gen.v'] });
     eq(outcome, 'refresh', 'unknown effect -> refresh');
-    eq(requested.length, 1, 'still debounced (nothing sent synchronously)');
-    await new Promise((resolve) => setTimeout(resolve, 220));
-    eq(requested.length, 2, 'exactly one debounced refresh after 150 ms');
-    // Several events inside the window collapse into one refresh.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    eq(requested.length, 2, 'F6/R1: the refresh request goes out at once (no 150 ms wait)');
+
+    // Each push is one server-side re-index, so each gets its own request; a slow older response
+    // can never win because refresh() cancels the in-flight one and `_seq` drops stale results.
     provider.applyIndexChanged({ paths: ['%WORKSPACE%/CorpusAlpha/src/a.v'] });
     provider.applyIndexChanged({ paths: ['%WORKSPACE%/CorpusAlpha/src/b.v'] });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    eq(requested.length, 4, 'two pushes -> two requests (superseded responses are dropped)');
+
+    // A pending debounced fallback must be cancelled by the pushed refresh, otherwise the save
+    // handler would fire the same request again 150 ms later.
+    const before = requested.length;
+    provider.requestRefresh('%WORKSPACE%/CorpusAlpha/src/top.v', { reason: 'saved' });
+    provider.applyIndexChanged({ paths: ['%WORKSPACE%/CorpusAlpha/src/c.v'] });
     await new Promise((resolve) => setTimeout(resolve, 220));
-    eq(requested.length, 3, 'two events -> one refresh');
+    eq(requested.length, before + 1, 'the pushed refresh cancelled the pending fallback timer');
+});
+
+// F6/R4: `_publish()` used to re-split the whole document once per diagnostic to decide whether
+// a `no-tabs` finding sits in a comment (50 findings on 1 MB = 405 ms). It now builds one comment
+// index per publish; these cases pin the *behaviour* so the optimisation cannot silently change
+// which diagnostics are suppressed.
+test('verible diagnostics: tabs in comments are suppressed, tabs in code survive', async () => {
+    const captured = [];
+    const client = new VeribleDiagnosticsClient({
+        exe: 'verible-verilog-ls', args: [], cwd: '.', env: {}, log: () => undefined,
+    });
+    // The mock's diagnostic collection swallows writes; capture them instead.
+    client.collection = {
+        set(uri, list) { captured.push({ uri, list }); },
+        delete() {}, clear() {}, dispose() {},
+    };
+    const text = [
+        'module m;',                            // 0
+        '\twire a;',                            // 1  code tab          -> kept
+        '    //\tcomment tab',                  // 2  line-comment tab   -> suppressed
+        '    /*\tblock comment tab */',         // 3  block-comment tab  -> suppressed
+        '    wire b;\t // trailing code tab',   // 4  code tab          -> kept
+        '    /* multi',                         // 5  block comment opens here ...
+        '\tline block */',                      // 6  ... tab on the next line -> suppressed
+        '    if (a == "x//y")\t;',              // 7  "//" inside a string is not a comment -> kept
+        'endmodule',                            // 8
+    ].join('\n');
+    client.texts.set('file:///f6.v', text);
+    const at = (line, character) => ({
+        start: { line, character }, end: { line, character: character + 1 },
+    });
+    const tabs = (line, character) => ({
+        range: at(line, character), message: 'Use spaces, not tabs.', severity: 2, code: 'no-tabs',
+    });
+    client._publish({
+        uri: 'file:///f6.v',
+        diagnostics: [
+            tabs(1, 0), tabs(2, 6), tabs(3, 6), tabs(4, 11), tabs(6, 0), tabs(7, 20),
+            // a non-tab diagnostic must never be filtered by the comment index
+            { range: at(1, 0), message: 'Line too long.', severity: 2, code: 'line-length' },
+        ],
+    });
+    eq(captured.length, 1, 'one diagnostic collection update per publish');
+    eq(captured[0].list.length, 4,
+        'kept: 3 code tabs + the line-length finding; dropped: 3 comment tabs');
+});
+
+// F6/R8: `appendLog()` is called from event handlers, so it must never do synchronous disk I/O.
+test('launch log: appendLog is buffered and flushes asynchronously', async () => {
+    const fs = require('fs');
+    const os = require('os');
+    const path = require('path');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fpgal-log-'));
+    try {
+        const file = path.join(dir, 'nested', 'extension.log');
+        appendLog(file, 'first line');
+        eq(fs.existsSync(file), false, 'no synchronous write from the caller');
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        eq(fs.existsSync(file), true, 'flushed on a later tick');
+        includes(fs.readFileSync(file, 'utf8'), 'first line');
+
+        // flushLogSync() drains the tail (shutdown / fatal path).
+        appendLog(file, 'tail line');
+        flushLogSync();
+        includes(fs.readFileSync(file, 'utf8'), 'tail line');
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
 });
 
 test('reports panel: first paint is a full render, later refreshes patch sections', async () => {
