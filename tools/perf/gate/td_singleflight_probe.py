@@ -63,6 +63,10 @@ def run_once(tag, spec, args, initial_save=True):
     log_path = os.path.join(bs.LOG_DIR, "td-%s.log" % tag)
     os.environ.pop("FPGALSP_STATE_DIR", None)
     pids_before = td_pids()
+    run_dir = os.path.join(spec["dir"], ".fpgalsp", "run")
+    logs_before = set()
+    if os.path.isdir(run_dir):
+        logs_before = {name for name in os.listdir(run_dir) if name.endswith(".log")}
     client = NativeLspClient(spec["dir"], log_path, extra_args=[])
     result = {"tag": tag}
     samples = []
@@ -113,6 +117,21 @@ def run_once(tag, spec, args, initial_save=True):
                     break
             time.sleep(args.sample_ms / 1000.0)
         result["total_ms"] = round((time.perf_counter() - t_start) * 1000.0, 1)
+        # 更可靠的"轮数"口径：TD 每个会话写一个 td_*.log；read_hdl 每次会话 1 次
+        new_logs = []
+        if os.path.isdir(run_dir):
+            new_logs = sorted(name for name in os.listdir(run_dir)
+                              if name.endswith(".log") and name not in logs_before)
+        result["td_sessions"] = len(new_logs)
+        result["td_session_logs"] = new_logs[-6:]
+        read_hdl = 0
+        for name in new_logs:
+            try:
+                with open(os.path.join(run_dir, name), encoding="utf-8", errors="replace") as fh:
+                    read_hdl += sum(1 for line in fh if "read_hdl" in line)
+            except OSError:
+                pass
+        result["read_hdl_count"] = read_hdl
         result["td_rounds_distinct_pids"] = len(seen_pids)
         result["sampled_max_concurrent"] = max((n for _t, n in samples), default=0)
     except Exception:                              # noqa: BLE001
@@ -155,12 +174,17 @@ def main(argv=None):
               flush=True)
     load.stop()
     report["cpu_busy"] = load.busy_fraction()
-    rounds = [row.get("td_rounds_distinct_pids") for row in report["runs"]
-              if row.get("td_rounds_distinct_pids") is not None]
+    rounds = [row.get("td_sessions") for row in report["runs"]
+              if row.get("td_sessions") is not None]
+    if not rounds:  # 回退到 PID 口径
+        rounds = [row.get("td_rounds_distinct_pids") for row in report["runs"]
+                  if row.get("td_rounds_distinct_pids") is not None]
     totals = [row.get("total_ms") for row in report["runs"] if row.get("total_ms")]
     residuals = [row.get("residual_count") for row in report["runs"]]
     report["verdict"] = {
         "runs": len(report["runs"]),
+        "td_rounds_by_session": [row.get("td_sessions") for row in report["runs"]],
+        "td_rounds_by_pid": [row.get("td_rounds_distinct_pids") for row in report["runs"]],
         "td_rounds": rounds,
         "max_rounds": max(rounds) if rounds else None,
         "total_ms_median": (sorted(totals)[len(totals) // 2] if totals else None),

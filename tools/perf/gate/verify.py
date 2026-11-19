@@ -446,6 +446,7 @@ def main(argv=None):
     before = {}
     before.update(metrics_from_latency(load_json(os.path.join(args.baseline_dir, "latency.json"))))
     before.update(metrics_from_phase2(load_json(os.path.join(args.baseline_dir, "phase2.json"))))
+    before.update(metrics_from_reports(os.path.join(args.baseline_dir, "reports.json")))
     before.update(metrics_from_index(os.path.join(args.baseline_dir, "perf_index.txt")))
 
     rows = []
