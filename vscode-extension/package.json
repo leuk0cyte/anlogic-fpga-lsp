@@ -2,7 +2,7 @@
   "name": "fpga-lsp-anlogic",
   "displayName": "Anlogic FPGA LSP (TangDynasty)",
   "description": "Language support and IDE views for Anlogic TD FPGA projects: ADC pin constraints, SDC, project .al, Verilog index, TD-backed diagnostics, module hierarchy, syn/phy flow control and QoR/timing/area reports.",
-  "version": "0.11.1",
+  "version": "0.13.0",
   "publisher": "fpga-lsp",
   "license": "AGPL-3.0-or-later",
   "engines": {
@@ -254,6 +254,11 @@
           "type": "boolean",
           "default": false,
           "description": "Expose MCP project write tools (update/add source/rename .al)."
+        },
+        "fpgaLsp.mcp.attachOnStart": {
+          "type": "boolean",
+          "default": true,
+          "description": "Phase 2 client-side attach switch: when false the extension skips MCP server attach/registration entirely (feature-detected; the real attach lands in B4)."
         },
         "fpgaLsp.mcp.dynamicProvider": {
           "type": "boolean",
@@ -811,3 +816,4 @@
     "size": 6287636
   }
 }
+

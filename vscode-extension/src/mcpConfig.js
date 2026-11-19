@@ -20,6 +20,10 @@ function pythonPathValue(serverRoot, existing) {
  */
 function nativeArgs(options) {
     const opts = options || {};
+    // Phase 2 / B1：attach 模式只做 stdio <-> loopback 字节泵，engine 在 LSP 进程里。
+    if (opts.attachPort) {
+        return ['--mcp', '--attach-port', String(opts.attachPort)];
+    }
     const args = ['--mcp'];
     if (opts.root) args.push('--root', opts.root);
     if (opts.project) args.push('--project', opts.project);
@@ -53,6 +57,7 @@ function buildMcpServerOptions(options) {
                 logFile: opts.logFile || path.join(opts.root, '.fpgalsp', 'logs', 'mcp.log'),
                 allowFlow: opts.allowFlow,
                 allowWrite: opts.allowWrite,
+                attachPort: opts.attachPort,
             }),
             cwd: opts.root,
             env: {},

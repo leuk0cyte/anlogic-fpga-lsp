@@ -1,6 +1,10 @@
-// Runs TangDynasty flows through `workspace/executeCommand` / `fpgalsp.runFlow`, tracks them
-// with the pushed `fpgaLsp/flowEvent` notifications *and* a 2 s `fpgaLsp/flowStatus` poll while
-// a flow is active (PROTOCOL-V2.md §3-§5). No polling happens while idle.
+// Runs TangDynasty flows through `workspace/executeCommand` / `fpgalsp.runFlow` and tracks them
+// with the pushed `fpgaLsp/flowEvent` notifications (PROTOCOL-V2.md §3-§5).
+//
+// Phase 2 (A4): the old 2 s `fpgaLsp/flowStatus` poll is gone -- it hammered the server for data
+// that `fpgaLsp/flowEvent` already pushes. What is left is a **10 s fallback** that only runs
+// while a flow is active, for the case where the server never sends an event (old build, dropped
+// notification). When the flow finishes the timer stops.
 //
 // Depends only on `vscode`; the tree providers and the reports panel are injected.
 
@@ -10,7 +14,8 @@ const vscode = require('vscode');
 const { METHODS, COMMANDS } = require('./protocol');
 const { parseFlowIssue, resolveFlowFile } = require('./flowDiagnostics');
 
-const POLL_INTERVAL_MS = 2000;
+// Only a safety net: the primary signal is `fpgaLsp/flowEvent`.
+const FALLBACK_POLL_MS = 10000;
 const FINISH_GRACE_MS = 4000;
 
 function nowText() {
@@ -317,11 +322,12 @@ class FlowController {
 
     // ------------------------------------------------------------------ polling
 
+    /** Start the 10 s safety-net poll (only while a flow is active). */
     startPolling() {
         this.stopPolling();
         this.poller = setInterval(() => {
             this.pollOnce().catch(() => undefined);
-        }, POLL_INTERVAL_MS);
+        }, FALLBACK_POLL_MS);
         // Do not keep a test runner / extension host alive just for the poll timer.
         if (this.poller && typeof this.poller.unref === 'function') this.poller.unref();
     }
@@ -436,4 +442,12 @@ class FlowController {
     }
 }
 
-module.exports = { FlowController, flowLabel, readFlowJobs, fmtElapsed, POLL_INTERVAL_MS };
+module.exports = {
+    FlowController,
+    flowLabel,
+    readFlowJobs,
+    fmtElapsed,
+    FALLBACK_POLL_MS,
+    // Kept for older callers/tests: the value now is the 10 s fallback interval.
+    POLL_INTERVAL_MS: FALLBACK_POLL_MS,
+};

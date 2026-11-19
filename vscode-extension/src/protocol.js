@@ -10,6 +10,20 @@ const METHODS = Object.freeze({
     reports: 'fpgaLsp/reports',
     flowStatus: 'fpgaLsp/flowStatus',
     flowEvent: 'fpgaLsp/flowEvent',
+    // Phase 2: pushed by the server when its HDL index changed (file saved / added / removed).
+    // Payload (all fields optional, see A4-REPORT.md §2):
+    //   { al?, project?, paths?: string[], modules?: string[], full?: boolean, generation? }
+    // Older servers never send it -> the client degrades to a debounced full refresh.
+    indexChanged: 'fpgaLsp/indexChanged',
+});
+
+// `fpgaLsp/reports` section hints (Phase 2). The server may ignore them (older builds) --
+// the client then falls back to one full request and slices locally.
+const REPORT_SECTIONS = Object.freeze({
+    summary: 'summary',
+    timing: 'timing',
+    area: 'area',
+    qor: 'qor',
 });
 
 // Commands executed through the standard `workspace/executeCommand` request.
@@ -102,4 +116,4 @@ const VIEWS = Object.freeze({
     reports: 'fpgaLsp.reportsView',
 });
 
-module.exports = { METHODS, COMMANDS, VSCodeCommands, VIEWS };
+module.exports = { METHODS, COMMANDS, VSCodeCommands, VIEWS, REPORT_SECTIONS };

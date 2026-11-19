@@ -68,6 +68,8 @@ const { ReportsTreeProvider } = require('../src/reportsTree');
 const mcpConfig = require('../src/mcpConfig');
 const { parseFlowIssue } = require('../src/flowDiagnostics');
 const { FlowController } = require('../src/flowController');
+const { FALLBACK_POLL_MS } = require('../src/flowController');
+const { ReportsService, CancelledError } = require('../src/reportsService');
 const { renderReportsHtml } = require('../src/reportsHtml');
 const { ReportsPanel } = require('../src/reportsPanel');
 
@@ -429,6 +431,7 @@ test('reports panel: single reusable "FPGA Reports" panel with working buttons',
     includes(created.webview.html, 'QOR-1302');
     eq(created.webview.options.enableScripts, true);
     eq(created.webview.options.enableCommandUris, true);
+    eq(created.webview.options.retainContextWhenHidden, true, 'webview context is retained');
 
     created.webview.__receive({ type: 'run', stages: ['syn'] });
     eq(runs.length, 1);
@@ -608,6 +611,25 @@ test('extension: activation wires views, commands, reports panel and flow events
     await runPromise;
     await new Promise((resolve) => setTimeout(resolve, 20));
 
+    // Phase 2: the index-changed notification drives a targeted in-place tree update.
+    const indexHandler = clientInstance.notificationHandlers['fpgaLsp/indexChanged'];
+    ok(indexHandler, 'indexChanged handler registered');
+    const beforeRequests = FakeLanguageClient.requests.filter((entry) => entry.method === 'fpgaLsp/moduleTree').length;
+    indexHandler({
+        al: '%WORKSPACE%/CorpusAlpha/demo_project.al',
+        paths: ['%WORKSPACE%/CorpusAlpha/src/top.v'],
+        modules: [{ module: 'pll_gen', portCount: 9 }],
+    });
+    const afterRequests = FakeLanguageClient.requests.filter((entry) => entry.method === 'fpgaLsp/moduleTree').length;
+    eq(afterRequests, beforeRequests, 'in-place index update does not re-request the tree');
+    eq(moduleProvider.getChildren(moduleProvider.getChildren()[0])
+        .find((node) => node.raw.module === 'pll_gen').raw.portCount, 9, 'tree node patched in place');
+    // A foreign-project event is ignored (no refresh, no request).
+    indexHandler({ paths: ['X:/elsewhere/src/top.v'] });
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    eq(FakeLanguageClient.requests.filter((entry) => entry.method === 'fpgaLsp/moduleTree').length,
+        afterRequests, 'foreign event ignored');
+
     const flowChannel = mock.__state.outputChannels.find((channel) => channel.name === 'FPGA Flow');
     ok(flowChannel, 'FPGA Flow output channel exists');
     ok(flowChannel.lines.some((line) => line.includes('done')), 'flow done logged');
@@ -769,7 +791,192 @@ const protocol = require('../src/protocol');
     }
 });
 
+// ------------------------------------------------------------------ A4: event-driven refresh
+
+test('reports service: concurrent callers share one in-flight request (single flight)', async () => {
+    const calls = [];
+    let release;
+    const service = new ReportsService({
+        request: (method, params) => {
+            calls.push({ method, params });
+            return new Promise((resolve) => { release = () => resolve({ ok: true, section: 'summary', flow: {} }); });
+        },
+    });
+    const first = service.getSummary();
+    const second = service.getSummary();
+    eq(calls.length, 1, 'only one fpgaLsp/reports request for two concurrent callers');
+    release();
+    const [a, b] = await Promise.all([first, second]);
+    ok(a && a.ok === true, 'first caller got the payload');
+    ok(a === b, 'both callers share the same payload object');
+    eq(service.requests, 1, 'request counter');
+});
+
+test('reports service: falls back to the full payload when the server ignores "section"', async () => {
+    const calls = [];
+    const service = new ReportsService({
+        request: async (method, params) => {
+            calls.push({ method, params });
+            // An older server ignores the unknown parameter and returns the full report.
+            return sampleReports();
+        },
+    });
+    const payload = await service.getSummary();
+    ok(payload && payload.ok === true, 'payload returned');
+    eq(service.sectionSupport, 'unsupported', 'section support detected as unsupported');
+    eq(calls.length, 1, 'the ignored-parameter reply IS the full report: no second request');
+    eq(calls[0].params.section, 'summary', 'first request asked for the summary');
+
+    // Subsequent section requests must not try `section` again, and reuse the full payload.
+    const timing = await service.getSection('timing');
+    ok(timing.ok === true, 'timing payload');
+    eq(calls.length, 1, 'cached full payload reused (no extra request)');
+    eq(Object.keys(calls[0].params).length, 1, 'only the first request carried a hint');
+});
+
+test('reports service: echoes section when supported and caches per section', async () => {
+    const calls = [];
+    const service = new ReportsService({
+        request: async (method, params) => {
+            calls.push(params);
+            return { ok: true, section: params.section || '', qor: {} };
+        },
+    });
+    await service.getSummary();
+    eq(service.sectionSupport, 'supported');
+    eq(calls.length, 1);
+    await service.getSummary();
+    eq(calls.length, 1, 'cached within the TTL');
+    await service.getSection('area');
+    eq(calls.length, 2, 'different section -> different request');
+    service.invalidate();
+    await service.getSection('area');
+    eq(calls.length, 3, 'invalidate drops the cache');
+});
+
+test('module tree: indexChanged patches the affected module in place', async () => {
+    const requested = [];
+    const provider = new ModuleTreeProvider({
+        request: async (method, params) => { requested.push(params); return sampleModuleTree(); },
+    });
+    await provider.refresh();
+    eq(requested.length, 1, 'initial refresh');
+    const root = provider.getChildren()[0];
+    const pll = provider.getChildren(root).find((node) => node.raw.module === 'pll_gen');
+    ok(pll, 'pll_gen node exists');
+    eq(pll.raw.portCount, 0, 'portCount before');
+
+    const outcome = provider.applyIndexChanged({
+        al: '%WORKSPACE%/CorpusAlpha/demo_project.al',
+        paths: ['%WORKSPACE%/CorpusAlpha/src/top.v'],
+        modules: [{ module: 'pll_gen', portCount: 7 }],
+    });
+    eq(outcome, 'in-place', 'module-level event patches without a request');
+    eq(pll.raw.portCount, 7, 'node payload updated');
+    eq(requested.length, 1, 'no extra fpgaLsp/moduleTree request');
+    eq(provider.stats.inPlace, 1);
+});
+
+test('module tree: indexChanged ignores files of another project', async () => {
+    const requested = [];
+    const provider = new ModuleTreeProvider({
+        request: async (method, params) => { requested.push(params); return sampleModuleTree(); },
+    });
+    await provider.refresh();
+    eq(provider.applyIndexChanged({ paths: ['X:/other_project/src/top.v'] }), 'ignored');
+    eq(provider.applyIndexChanged({ al: 'X:/other_project/other.al' }), 'ignored');
+    eq(requested.length, 1, 'no request for a foreign project');
+    eq(provider.stats.ignored, 2);
+});
+
+test('module tree: indexChanged without a patchable module debounces one refresh', async () => {
+    const requested = [];
+    const provider = new ModuleTreeProvider({
+        request: async (method, params) => { requested.push(params); return sampleModuleTree(); },
+    });
+    await provider.refresh();
+    const outcome = provider.applyIndexChanged({ paths: ['%WORKSPACE%/CorpusAlpha/src/system/pwm_gen.v'] });
+    eq(outcome, 'refresh', 'unknown effect -> refresh');
+    eq(requested.length, 1, 'still debounced (nothing sent synchronously)');
+    await new Promise((resolve) => setTimeout(resolve, 220));
+    eq(requested.length, 2, 'exactly one debounced refresh after 150 ms');
+    // Several events inside the window collapse into one refresh.
+    provider.applyIndexChanged({ paths: ['%WORKSPACE%/CorpusAlpha/src/a.v'] });
+    provider.applyIndexChanged({ paths: ['%WORKSPACE%/CorpusAlpha/src/b.v'] });
+    await new Promise((resolve) => setTimeout(resolve, 220));
+    eq(requested.length, 3, 'two events -> one refresh');
+});
+
+test('reports panel: first paint is a full render, later refreshes patch sections', async () => {
+    const requests = [];
+    const service = new ReportsService({
+        request: async (method, params) => { requests.push(params); return sampleReports(); },
+    });
+    const panel = new ReportsPanel({ rpc: { request: async () => sampleReports() }, reportsService: service });
+    await panel.show();
+    const created = mock.__state.webviewPanels[0];
+    ok(created.webview.html.includes('Setup WNS'), 'first paint rendered the report');
+    eq(panel.stats.html, 1, 'one full render');
+    eq(panel.stats.patch, 0, 'no patch yet');
+
+    await panel.refresh();
+    eq(panel.stats.html, 1, 'no full re-render on refresh');
+    eq(panel.stats.patch, 1, 'one section patch');
+    eq(mock.__state.webviewPanels[0].webview.html, created.webview.html, 'webview.html untouched');
+    const patch = mock.__state.webviewMessages.filter((message) => message.type === 'patch').pop();
+    ok(patch, 'patch message posted');
+    ok(patch.sections && patch.sections.dashboard, 'dashboard section patched');
+    ok(patch.sections.qor && patch.sections.timing, 'qor + timing patched');
+    includes(patch.sections.qor, 'QOR-1302', 'patched QoR keeps its content');
+    ok(typeof patch.meta === 'string', 'meta line included');
+    panel.dispose();
+});
+
+test('reports panel: a newer refresh cancels the older request', async () => {
+    let release;
+    // Echo `section` so the service treats the server as section-capable (no fallback request);
+    // the point of this case is cancellation, not section detection.
+    const service = new ReportsService({
+        request: () => new Promise((resolve) => {
+            release = () => resolve(Object.assign(sampleReports(), { section: 'summary' }));
+        }),
+    });
+    const panel = new ReportsPanel({ rpc: { request: async () => sampleReports() }, reportsService: service });
+    const pendingShow = panel.show(); // paints the loading page, then awaits reports
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const slow = panel.refresh(); // supersedes the show() refresh
+    const newest = panel.refresh(); // supersedes `slow`
+    release();
+    await Promise.allSettled([pendingShow, slow, newest]);
+    ok(panel.stats.cancelled >= 1, `older refresh cancelled (got ${panel.stats.cancelled})`);
+    eq(panel.stats.html + panel.stats.patch, 1, 'only the newest refresh repaints');
+    panel.dispose();
+});
+
+test('flow controller: 10 s fallback poll only, and it stops when the flow finishes', async () => {
+    eq(FALLBACK_POLL_MS, 10000, 'fallback interval is 10 s (the 2 s poll is gone)');
+    const polled = [];
+    const controller = new FlowController({
+        rpc: {
+            request: async (method) => { polled.push(method); return { ok: true, flow: { running: true, stage: 'syn' } }; },
+            execute: async () => ({ ok: true, runId: 'r9' }),
+        },
+        getProjectInfo: async () => ({ al: 'Y:/p/demo.al' }),
+    });
+    const running = controller.run(['syn']);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    ok(controller.poller, 'fallback timer armed while running');
+    eq(controller.poller._idleTimeout, FALLBACK_POLL_MS, 'timer period');
+    eq(polled.filter((method) => method === 'fpgaLsp/flowStatus').length, 0, 'no immediate flowStatus poll');
+    controller.onFlowEvent({ runId: 'r9', type: 'done', ok: true, stage: 'syn' });
+    await running;
+    eq(controller.poller, undefined, 'poll stopped after done');
+    controller.dispose();
+});
+
 // ------------------------------------------------------------------ run
+
+const TEST_TIMEOUT_MS = 5000;
 
 (async () => {
     let passed = 0;
@@ -779,14 +986,24 @@ const protocol = require('../src/protocol');
         FakeLanguageClient.responses = {};
         FakeLanguageClient.requests.length = 0;
         FakeLanguageClient.instance = undefined;
+        let timer;
         try {
-            await entry.fn();
+            // A test that awaits a promise nobody settles would otherwise let the event loop
+            // drain and exit the runner *silently*. Fail loudly instead.
+            await Promise.race([
+                entry.fn(),
+                new Promise((resolve, reject) => {
+                    timer = setTimeout(() => reject(new Error(`timeout after ${TEST_TIMEOUT_MS} ms`)), TEST_TIMEOUT_MS);
+                }),
+            ]);
             passed += 1;
             console.log(`PASS  ${entry.name}`);
         } catch (err) {
             failed += 1;
             console.error(`FAIL  ${entry.name}`);
             console.error(`      ${err && err.message ? err.message : err}`);
+        } finally {
+            if (timer) clearTimeout(timer);
         }
     }
     console.log('');

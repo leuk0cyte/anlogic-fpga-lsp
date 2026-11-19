@@ -93,10 +93,13 @@ class FlowTreeProvider {
     /**
      * @param {{request: Function}} rpc
      * @param {() => Promise<any>} [getInfo] fetch `fpgalsp.info` for the project summary.
+     * @param {{fetch: Function}} [reportsService] shared, single-flight reports cache (Phase 2).
      */
-    constructor(rpc, getInfo) {
+    constructor(rpc, getInfo, reportsService) {
         this.rpc = rpc;
         this.getInfo = typeof getInfo === 'function' ? getInfo : async () => undefined;
+        this.reportsService = reportsService && typeof reportsService.fetch === 'function'
+            ? reportsService : undefined;
         this.reports = undefined;
         this.info = undefined;
         this.flow = { running: false, stage: 'idle', elapsed: 0, lastMessage: '' };
@@ -144,12 +147,23 @@ class FlowTreeProvider {
         this.view.message = undefined;
     }
 
-    async refresh() {
+    /**
+     * Pull the report payload (shared with the reports panel when a ReportsService is injected)
+     * plus `fpgalsp.info`, then rebuild the tree.
+     * @param {{force?: boolean}} [options]
+     */
+    async refresh(options) {
+        const opts = options || {};
         const seq = ++this._seq;
         this.loading = true;
         this._syncMessage();
+        // One shared request: the reports panel uses the same service, so opening both views
+        // costs a single `fpgaLsp/reports` round trip (Phase 2 single-flight).
+        const reportsPromise = this.reportsService
+            ? this.reportsService.fetch({ section: 'summary', force: opts.force === true })
+            : this.rpc.request(METHODS.reports, {});
         const [reportsResult, infoResult] = await Promise.allSettled([
-            this.rpc.request(METHODS.reports, {}),
+            reportsPromise,
             this.getInfo(),
         ]);
         if (seq !== this._seq) return this.reports;

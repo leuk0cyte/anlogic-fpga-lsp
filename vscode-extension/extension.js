@@ -12,6 +12,7 @@
 
 'use strict';
 
+const net = require('net');
 const path = require('path');
 const fs = require('fs');
 const vscode = require('vscode');
@@ -31,6 +32,7 @@ const {
 const { FlowTreeProvider } = require('./src/flowTree');
 const { FlowController } = require('./src/flowController');
 const { ReportsPanel } = require('./src/reportsPanel');
+const { ReportsService } = require('./src/reportsService');
 const { ReportsTreeProvider } = require('./src/reportsTree');
 const {
     buildMcpServerOptions,
@@ -59,6 +61,33 @@ function workspaceFolder() {
         if (fs.existsSync(folder.uri.fsPath)) return folder.uri.fsPath;
     }
     return folders[0].uri.fsPath;
+}
+
+// Phase 2 / B1：loopback MCP 端口按工作区派生（FNV-1a），同一工作区稳定。
+function mcpPortForWorkspace(root) {
+    let hash = 2166136261;
+    for (let i = 0; i < root.length; i += 1) {
+        hash = Math.imul(hash ^ root.charCodeAt(i), 16777619);
+    }
+    return 45000 + (Math.abs(hash) % 1000);
+}
+
+// 探测 LSP 进程的 loopback MCP 是否已就绪；失败则 MCP 定义回退独立进程。
+function mcpPortOpen(port, timeoutMs = 300) {
+    return new Promise((resolve) => {
+        if (!port) return resolve(false);
+        const socket = net.connect({ host: '127.0.0.1', port });
+        let settled = false;
+        const finish = (value) => {
+            if (settled) return;
+            settled = true;
+            socket.destroy();
+            resolve(value);
+        };
+        socket.once('connect', () => finish(true));
+        socket.once('error', () => finish(false));
+        socket.setTimeout(timeoutMs, () => finish(false));
+    });
 }
 
 function resolveServerRoot(context) {
@@ -198,6 +227,13 @@ function activate(context) {
     //   python: python -m fpgalsp --stdio [--td <root>] --log <file>
     const args = ['--stdio'];
     if (tdPath) args.push('--td', tdPath);
+    // Phase 2 / B1：LSP 进程内 loopback MCP；MCP provider 用 --attach-port 接入。
+    const mcpPort = isNative ? mcpPortForWorkspace(cwd) : 0;
+    if (isNative && mcpPort) {
+        args.push('--mcp-port', String(mcpPort));
+        if (config().get('mcp.allowFlow') === true) args.push('--allow-flow');
+        if (config().get('mcp.allowWrite') === true) args.push('--allow-write');
+    }
     args.push('--log', logFile);
 
     const serverOptions = {
@@ -279,9 +315,11 @@ function activate(context) {
     // -------------------------------------------------------------- rpc adapter
 
     const rpc = {
-        request: (method, params) => {
+        request: (method, params, token) => {
             if (!client) return Promise.reject(new Error('fpga-lsp is not running yet'));
-            return client.sendRequest(method, params === undefined ? {} : params);
+            // The 3rd argument is a vscode.CancellationToken: cancellation is advisory for
+            // older servers (they still answer), but the client-side request is dropped.
+            return client.sendRequest(method, params === undefined ? {} : params, token);
         },
         execute: (command, commandArgs) => {
             if (!client) return Promise.reject(new Error('fpga-lsp is not running yet'));
@@ -289,6 +327,9 @@ function activate(context) {
         },
         onNotification: (method, handler) => client.onNotification(method, handler),
     };
+
+    // Phase 2: one shared reports cache for the flow tree + reports panel (single-flight).
+    const reportsService = new ReportsService(rpc);
 
     const getProjectInfo = async () => {
         try {
@@ -320,6 +361,7 @@ function activate(context) {
             allowWrite: config().get('mcp.allowWrite') === true,
             version: context.extension.packageJSON.version,
             existingPythonPath: process.env.PYTHONPATH,
+            attachPort: (mcpPort && await mcpPortOpen(mcpPort)) ? mcpPort : 0,
         });
     };
     const registerMcpProvider = () => {
@@ -369,7 +411,21 @@ function activate(context) {
             mcpEmitter = undefined;
         }
     };
-    if (config().get('mcp.dynamicProvider') === true) {
+    // Phase 2/A4: client-side attach switch. "Attach" (auto-starting the MCP server for the
+    // workspace) is B4 work; here we only keep the knob + feature detection so the behaviour can
+    // be turned off without touching the dynamic-provider code path.
+    const mcpAttachOnStart = () => {
+        try {
+            return config().get('mcp.attachOnStart') !== false;
+        } catch (_) {
+            return true;
+        }
+    };
+    if (!mcpAttachOnStart()) {
+        mcpProviderRegistered = false;
+        mcpProviderError = 'disabled by fpgaLsp.mcp.attachOnStart';
+        diag('MCP attach disabled (fpgaLsp.mcp.attachOnStart = false)');
+    } else if (config().get('mcp.dynamicProvider') === true) {
         registerMcpProvider();
     } else {
         mcpProviderRegistered = false;
@@ -417,11 +473,14 @@ function activate(context) {
     // ------------------------------------------------------------ tree + panel
 
     moduleProvider = new ModuleTreeProvider(rpc);
-    flowProvider = new FlowTreeProvider(rpc, getProjectInfo);
-    reportsTreeProvider = new ReportsTreeProvider(rpc);
+    flowProvider = new FlowTreeProvider(rpc, getProjectInfo, reportsService);
+    reportsTreeProvider = new ReportsTreeProvider(rpc, reportsService);
     const panelOptions = (stage) => ({
         stage,
         rpc,
+        // Shared, single-flight reports cache: opening the panel does not re-request what the
+        // flow tree just fetched (Phase 2/A4).
+        reportsService,
         onRunFlow: (stages) => {
             if (flowController) flowController.run(stages);
         },
@@ -1360,15 +1419,46 @@ function activate(context) {
 
     // ------------------------------------------------------------ refresh triggers
 
-    const scheduleModuleRefresh = debounce(() => {
+    // ------------------------------------------------------- refresh triggers (A4)
+    //
+    // The tree is refreshed **event first**: `fpgaLsp/indexChanged` (pushed by the server after
+    // it re-indexed) drives targeted updates. The editor events below are only the fallback for
+    // servers that do not push that event; they are debounced (150 ms), cancelled when a newer
+    // one arrives, and ignored when the file is not part of the project currently displayed.
+
+    const ownsActiveFile = (uri) => {
+        if (!uri || !moduleProvider) return false;
+        const text = String(uri);
+        const file = text.startsWith('file:') ? decodeURIComponent(text.replace(/^file:\/\/\/?/, '')) : text;
+        return moduleProvider.ownsFile(file);
+    };
+
+    const scheduleModuleRefresh = debounce((reason, uri) => {
         if (!serverReady()) return;
-        moduleProvider.refresh(activeDocumentUri());
-    }, 350);
-    context.subscriptions.push(vscode.window.onDidChangeActiveTextEditor(() => scheduleModuleRefresh()));
-    context.subscriptions.push(vscode.workspace.onDidSaveTextDocument(() => scheduleModuleRefresh()));
-    context.subscriptions.push({ dispose: () => scheduleModuleRefresh.dispose() });
+        const target = uri || activeDocumentUri();
+        // Only refresh when the document belongs to the project the tree is showing; a file from
+        // another project must not trigger a tree rebuild.
+        if (target && moduleProvider && !moduleProvider.ownsFile(String(target).startsWith('file:')
+            ? decodeURIComponent(String(target).replace(/^file:\/\/\/?/, '')) : target)) {
+            diag(`module refresh skipped (not in project): ${target}`);
+            return;
+        }
+        moduleProvider.requestRefresh(target, { reason });
+    }, 150);
+
+    context.subscriptions.push(vscode.window.onDidChangeActiveTextEditor((editor) => {
+        scheduleModuleRefresh('active-editor', editor && editor.document && editor.document.uri);
+    }));
+    context.subscriptions.push(vscode.workspace.onDidSaveTextDocument((document) => {
+        // Saving an unrelated file (another project, a .md, ...) must not rebuild the tree.
+        if (!document || !ownsActiveFile(document.uri)) return;
+        scheduleModuleRefresh('saved', document.uri);
+    }));
+    context.subscriptions.push({ dispose: () => scheduleModuleRefresh.dispose && scheduleModuleRefresh.dispose() });
     if (typeof vscode.workspace.onDidChangeWorkspaceFolders === 'function') {
-        context.subscriptions.push(vscode.workspace.onDidChangeWorkspaceFolders(() => scheduleModuleRefresh()));
+        context.subscriptions.push(vscode.workspace.onDidChangeWorkspaceFolders(() => {
+            scheduleModuleRefresh('workspace-folders');
+        }));
     }
 
     // ------------------------------------------------------------------- startup
@@ -1379,10 +1469,22 @@ function activate(context) {
             client.onNotification(METHODS.flowEvent, (event) => {
                 if (flowController) flowController.onFlowEvent(event);
             });
+            // Phase 2: the server tells us when its HDL index changed. Targeted updates first;
+            // an unknown/newer payload shape degrades to the debounced full refresh.
+            client.onNotification(METHODS.indexChanged, (event) => {
+                if (!moduleProvider) return;
+                let outcome = 'ignored';
+                try {
+                    outcome = moduleProvider.applyIndexChanged(event);
+                } catch (err) {
+                    diag('indexChanged failed: ' + ((err && err.message) || err));
+                }
+                diag(`indexChanged -> ${outcome}`);
+            });
         } catch (err) {
-            // Older clients: fall back to the 2 s flowStatus poll, which is enough.
+            // Older clients: no custom notifications at all -> the editor events still refresh.
             vscode.window.showWarningMessage(
-                `FPGA: could not listen for flow events (${(err && err.message) || err}); falling back to polling.`
+                `FPGA: could not listen for server events (${(err && err.message) || err}); falling back to save-triggered refresh.`
             );
         }
         await Promise.allSettled([

@@ -84,6 +84,8 @@ class CancellationTokenSource {
     }
 
     cancel() {
+        // Faithful to the real API: the flag flips on cancel even when nobody subscribed.
+        this.token.isCancellationRequested = true;
         this._emitter.fire(undefined);
     }
 

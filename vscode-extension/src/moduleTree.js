@@ -11,6 +11,28 @@ const { METHODS, VSCodeCommands } = require('./protocol');
 
 const VIEW_ID = 'fpgaLsp.modulesView';
 
+// Phase 2 (A4): every index-changing event is coalesced for this long before the tree asks the
+// server again. Short enough to feel instant, long enough that "save while typing" collapses.
+const INDEX_DEBOUNCE_MS = 150;
+
+function normalizePath(value) {
+    return String(value || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+}
+
+function dirOf(path) {
+    const text = String(path || '').replace(/\\/g, '/');
+    const at = text.lastIndexOf('/');
+    return at > 0 ? text.slice(0, at) : '';
+}
+
+/** True when `file` lives inside `dir` (case-insensitive, Windows-friendly). */
+function isInsideDir(file, dir) {
+    const target = normalizePath(file);
+    const base = normalizePath(dir);
+    if (!target || !base) return false;
+    return target === base || target.startsWith(`${base}/`);
+}
+
 // TangDynasty primitive families. PROTOCOL-V2 has no dedicated "primitive" flag, so we use
 // this heuristic for the icon only; everything undefined-but-not-blackbox still opens usedAt.
 const PRIMITIVE_PREFIXES = ['EF2', 'EF3', 'EG4', 'EL3', 'PH1A', 'AL3', 'SL2'];
@@ -123,12 +145,129 @@ class ModuleTreeProvider {
         this.view = undefined;
         this._rootExpanded = false;
         this._seq = 0;
+        this._debounce = undefined;
+        this._cancellation = undefined;
+        /** @type {{requests:number, debounced:number, ignored:number, inPlace:number}} */
+        this.stats = { requests: 0, debounced: 0, ignored: 0, inPlace: 0 };
         this._onDidChangeTreeData = new vscode.EventEmitter();
         this.onDidChangeTreeData = this._onDidChangeTreeData.event;
     }
 
     dispose() {
+        if (this._debounce) {
+            clearTimeout(this._debounce);
+            this._debounce = undefined;
+        }
+        this._cancelInflight();
         this._onDidChangeTreeData.dispose();
+    }
+
+    /** Project root directory of the currently loaded tree ('' when nothing is loaded). */
+    projectDir() {
+        const al = this.payload && this.payload.al;
+        return al ? dirOf(al) : '';
+    }
+
+    /** True when `file` belongs to the project currently shown in the tree. */
+    ownsFile(file) {
+        const dir = this.projectDir();
+        return !!dir && isInsideDir(file, dir);
+    }
+
+    /**
+     * Debounced refresh (150 ms). The last call within the window wins.
+     * @param {string} [uri]
+     * @param {{reason?: string}} [options]
+     */
+    requestRefresh(uri, options) {
+        const opts = options || {};
+        this.stats.debounced += 1;
+        if (this._debounce) clearTimeout(this._debounce);
+        this._debounce = setTimeout(() => {
+            this._debounce = undefined;
+            this.refresh(uri, { reason: opts.reason }).catch(() => undefined);
+        }, INDEX_DEBOUNCE_MS);
+        if (this._debounce && typeof this._debounce.unref === 'function') this._debounce.unref();
+    }
+
+    /**
+     * Apply a pushed `fpgaLsp/indexChanged` event (Phase 2).
+     *
+     * Returns 'ignored' | 'in-place' | 'refresh' so callers/tests can assert the targeted path.
+     * Falls back to a debounced full refresh when the event carries nothing we can patch in.
+     */
+    applyIndexChanged(event) {
+        if (!event || typeof event !== 'object') return 'ignored';
+
+        // Another project changed -> nothing to do (the tree still shows the current project).
+        const ownAl = normalizePath(this.payload && this.payload.al);
+        const eventAl = normalizePath(event.al || '');
+        if (eventAl && ownAl && eventAl !== ownAl) {
+            this.stats.ignored += 1;
+            return 'ignored';
+        }
+
+        const paths = Array.isArray(event.paths) ? event.paths.filter(Boolean) : [];
+        if (paths.length) {
+            const dir = this.projectDir();
+            if (dir && !paths.some((path) => isInsideDir(path, dir))) {
+                this.stats.ignored += 1;
+                return 'ignored';
+            }
+        }
+
+        const modules = Array.isArray(event.modules) ? event.modules : [];
+        if (event.full !== true && modules.length && this._applyModuleUpdates(modules)) {
+            this.stats.inPlace += 1;
+            this._syncMessage();
+            this._onDidChangeTreeData.fire(undefined);
+            return 'in-place';
+        }
+
+        this.requestRefresh(event.uri || undefined, { reason: 'indexChanged' });
+        return 'refresh';
+    }
+
+    /** Patch node payloads in place for module-level events; true when at least one matched. */
+    _applyModuleUpdates(modules) {
+        if (!this.rootNode) return false;
+        let changed = false;
+        for (const entry of modules) {
+            const name = typeof entry === 'string' ? entry : (entry && entry.module ? entry.module : '');
+            if (!name) continue;
+            const node = this._findNodeByName(name);
+            if (!node) continue;
+            if (entry && typeof entry === 'object') {
+                const raw = node.raw || {};
+                if (Number.isFinite(Number(entry.portCount))) raw.portCount = Number(entry.portCount);
+                if (typeof entry.defined === 'boolean') raw.defined = entry.defined;
+                node.raw = raw;
+            }
+            changed = true;
+        }
+        return changed;
+    }
+
+    _findNodeByName(name) {
+        if (!this.rootNode) return undefined;
+        const stack = [this.rootNode];
+        while (stack.length) {
+            const node = stack.pop();
+            if (node.raw && node.raw.module === name) return node;
+            for (const child of this._childrenOf(node)) stack.push(child);
+        }
+        return undefined;
+    }
+
+    _cancelInflight() {
+        const source = this._cancellation;
+        this._cancellation = undefined;
+        if (source && typeof source.cancel === 'function') {
+            try { source.cancel(); } catch (_) { /* already cancelled */ }
+        }
+        if (source && typeof source.dispose === 'function') {
+            try { source.dispose(); } catch (_) { /* ignore */ }
+        }
     }
 
     /** Give the provider a TreeView so it can show `message` empty/loading states. */
@@ -171,16 +310,25 @@ class ModuleTreeProvider {
     /**
      * Fetch `fpgaLsp/moduleTree` and rebuild the tree.
      * @param {string} [uri] optional document URI that decides which project is used.
+     * @param {{reason?: string}} [options]
      */
-    async refresh(uri) {
+    async refresh(uri, options) {
+        void options;
         const seq = ++this._seq;
         this.loading = true;
         this._syncMessage();
+        this._cancelInflight();
+        const source = typeof vscode.CancellationTokenSource === 'function'
+            ? new vscode.CancellationTokenSource() : undefined;
+        this._cancellation = source;
         let result;
         try {
             const params = uri ? { uri: String(uri) } : {};
-            result = await this.rpc.request(METHODS.moduleTree, params);
+            this.stats.requests += 1;
+            result = await this.rpc.request(METHODS.moduleTree, params,
+                source ? source.token : undefined);
         } catch (err) {
+            if (seq !== this._seq) return this.payload; // superseded: a newer refresh is running
             result = { ok: false, error: err && err.message ? err.message : String(err) };
         }
         if (seq !== this._seq) return this.payload; // a newer refresh superseded this one
@@ -303,5 +451,7 @@ module.exports = {
     contextValueFor,
     toRange,
     fileLine,
+    isInsideDir,
+    INDEX_DEBOUNCE_MS,
     VIEW_ID,
 };

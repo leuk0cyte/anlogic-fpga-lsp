@@ -9,8 +9,14 @@ const vscode = require('vscode');
 const { METHODS, VSCodeCommands } = require('./protocol');
 
 class ReportsTreeProvider {
-    constructor(rpc) {
+    /**
+     * @param {{request: Function}} rpc
+     * @param {{fetch: Function}} [reportsService] shared single-flight reports cache (Phase 2/A4).
+     */
+    constructor(rpc, reportsService) {
         this.rpc = rpc;
+        this.reportsService = reportsService && typeof reportsService.fetch === 'function'
+            ? reportsService : undefined;
         this.reports = undefined;
         this._onDidChangeTreeData = new vscode.EventEmitter();
         this.onDidChangeTreeData = this._onDidChangeTreeData.event;
@@ -26,9 +32,12 @@ class ReportsTreeProvider {
         this._view = undefined;
     }
 
-    async refresh() {
+    async refresh(options) {
+        const opts = options || {};
         try {
-            this.reports = await this.rpc.request(METHODS.reports, {});
+            this.reports = this.reportsService
+                ? await this.reportsService.fetch({ section: 'summary', force: opts.force === true })
+                : await this.rpc.request(METHODS.reports, {});
         } catch (err) {
             this.reports = { ok: false, error: err && err.message ? err.message : String(err) };
         }

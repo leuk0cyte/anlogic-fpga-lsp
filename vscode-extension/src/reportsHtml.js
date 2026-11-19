@@ -584,49 +584,122 @@ function dashboardTab(reports) {
 </section>`;
 }
 
+/**
+ * Normalise `reports` + `stage` into the single `view` object every section renderer uses.
+ * (Extracted in Phase 2 so the panel can re-render **one section** without rebuilding the page.)
+ */
+function buildReportView(reports, stage) {
+    const stageData = stage ? (reports[stage] || {}) : undefined;
+    const stageLabel = stage === 'syn' ? 'Synthesis' : (stage === 'phy' ? 'Place & Route' : '');
+    if (!stage) return reports;
+    return Object.assign({}, reports, stageData || {}, {
+        ok: reports.ok === true && !!stageData && stageData.ok !== false,
+        label: stageLabel,
+        stage,
+        // stage data wins, but keep the full-report fields the stage file does not carry
+        qor: Object.assign({}, reports.qor || {}, (stageData && stageData.qor) || {}),
+        timing: Object.assign({}, reports.timing || {}, (stageData && stageData.timing) || {}),
+        area: Object.assign({}, reports.area || {}, (stageData && stageData.area) || {}),
+        flowStatus: (stageData && stageData.flowStatus) || reports.flowStatus,
+        files: Object.assign({}, reports.files || {}, (stageData && stageData.files) || {}),
+    });
+}
+
+/** Ordered section ids for one `view` (empty when the report has no data). */
+function reportSectionIds(view, stage) {
+    if (!view || view.ok !== true) return [];
+    const ids = ['dashboard'];
+    if (!stage) ids.push('synthesis', 'place-route');
+    ids.push('qor', 'timing', 'area', 'flow', 'drc-cdc', 'compare');
+    return ids;
+}
+
+/**
+ * HTML of **one** `<section id="tab-…">` block. Used both by the full-page renderer and by the
+ * webview's incremental `patch` messages.
+ * @param {object} view   result of `buildReportView`
+ * @param {object} reports full reports payload (needed for the per-stage tabs)
+ * @param {string} id     'dashboard' | 'qor' | 'timing' | 'area' | 'flow' | 'drc-cdc' |
+ *                        'compare' | 'synthesis' | 'place-route'
+ * @param {{html:string, css:string}} [area] cached `areaTab(view.area)` result
+ */
+function reportSectionHtml(view, reports, id, area) {
+    const areaBlock = area || areaTab(view.area);
+    let html;
+    switch (id) {
+        case 'dashboard':
+            html = dashboardTab(view);
+            break;
+        case 'qor':
+            html = qorTab(view.qor);
+            break;
+        case 'timing':
+            html = timingTab(view.timing);
+            break;
+        case 'area':
+            html = areaBlock.html;
+            break;
+        case 'flow':
+            html = flowTab(view);
+            break;
+        case 'drc-cdc':
+            html = drcCdcTab(view);
+            break;
+        case 'compare':
+            html = compareTab(view);
+            break;
+        case 'synthesis':
+            html = stageTab(reports ? reports.syn : undefined, 'tab-synthesis', 'Synthesis');
+            break;
+        case 'place-route':
+            html = stageTab(reports ? reports.phy : undefined, 'tab-place-route', 'Place & Route');
+            break;
+        default:
+            return '';
+    }
+    if (id !== 'dashboard') {
+        // only the dashboard may start "active" (the others are legacy tabs that mark themselves)
+        html = html.replace(/class="tab-panel active"/g, 'class="tab-panel"');
+    }
+    return html;
+}
+
+/** One-line header meta (`Synthesis stage · Generated … · stage phy · flow running`). */
+function reportMeta(reports, stage) {
+    const safe = reports && typeof reports === 'object' ? reports : { ok: false };
+    const stageKey = stage === 'syn' || stage === 'phy' ? stage : '';
+    const view = buildReportView(safe, stageKey);
+    const stageLabel = stageKey === 'syn' ? 'Synthesis' : (stageKey === 'phy' ? 'Place & Route' : '');
+    const generated = view.generatedAt ? fmtDate(view.generatedAt) : '';
+    const flow = view.flow || {};
+    return [
+        stageKey ? `${stageLabel} stage` : '',
+        generated ? `Generated ${generated}` : '',
+        flow.stage ? `stage ${flow.stage}` : '',
+        flow.running ? 'flow running' : '',
+    ].filter(Boolean).join(' · ');
+}
+
 function renderReportsHtml(options) {
     const opts = options || {};
     const reports = opts.reports && typeof opts.reports === 'object' ? opts.reports : { ok: false };
     const nonce = sanitizeNonce(opts.nonce);
     const stage = opts.stage === 'syn' || opts.stage === 'phy' ? opts.stage : '';
-    const stageLabel = stage === 'syn' ? 'Synthesis' : (stage === 'phy' ? 'Place & Route' : '');
-    const stageData = stage ? (reports[stage] || {}) : undefined;
-    const view = stage
-        ? Object.assign({}, reports, stageData || {}, {
-            ok: reports.ok === true && !!stageData && stageData.ok !== false,
-            label: stageLabel,
-            stage,
-            // stage data wins, but keep the full-report fields the stage file does not carry
-            qor: Object.assign({}, reports.qor || {}, (stageData && stageData.qor) || {}),
-            timing: Object.assign({}, reports.timing || {}, (stageData && stageData.timing) || {}),
-            area: Object.assign({}, reports.area || {}, (stageData && stageData.area) || {}),
-            flowStatus: (stageData && stageData.flowStatus) || reports.flowStatus,
-            files: Object.assign({}, reports.files || {}, (stageData && stageData.files) || {}),
-        })
-        : reports;
+    const view = buildReportView(reports, stage);
     const ok = view.ok === true;
+    const stageLabel = stage === 'syn' ? 'Synthesis' : (stage === 'phy' ? 'Place & Route' : '');
     const title = stage ? `${stageLabel} Reports` : 'FPGA Reports';
 
-    const generated = view.generatedAt ? fmtDate(view.generatedAt) : '';
-    const flow = view.flow || {};
-    const meta = [
-        stage ? `${stageLabel} stage` : '',
-        generated ? `Generated ${generated}` : '',
-        flow.stage ? `stage ${flow.stage}` : '',
-        flow.running ? 'flow running' : '',
-    ].filter(Boolean).join(' · ');
+    const meta = reportMeta(reports, stage);
 
     const area = areaTab(view.area);
-    let body = ok
-        ? qorTab(view.qor) + timingTab(view.timing) + area.html + flowTab(view) + drcCdcTab(view) + compareTab(view)
-        : emptyStateHtml(view);
+    let body;
     if (ok) {
-        // the legacy tabs mark themselves "active"; only the dashboard may start active
-        body = body.replace(/class="tab-panel active"/g, 'class="tab-panel"');
-        body = dashboardTab(view)
-            + (stage ? '' : stageTab(reports.syn, 'tab-synthesis', 'Synthesis')
-                + stageTab(reports.phy, 'tab-place-route', 'Place & Route'))
-            + body;
+        body = reportSectionIds(view, stage)
+            .map((id) => reportSectionHtml(view, reports, id, area))
+            .join('');
+    } else {
+        body = emptyStateHtml(view);
     }
 
     const tabs = ok
@@ -759,6 +832,33 @@ ${area.css}`;
       if (action === 'compare') api.postMessage({ type: 'compare' });
     });
   });
+  // Phase 2: incremental section patch (the host replaces one <section> instead of the whole
+  // document, so scroll position / search box / active tab survive a refresh).
+  window.addEventListener('message', function (event) {
+    const message = event.data;
+    if (!message || message.type !== 'patch' || !message.sections) return;
+    Object.keys(message.sections).forEach(function (id) {
+      const target = document.getElementById('tab-' + id);
+      if (!target) return;
+      const wasActive = target.classList.contains('active');
+      target.outerHTML = message.sections[id];
+      const next = document.getElementById('tab-' + id);
+      if (next && wasActive) next.classList.add('active');
+    });
+    if (typeof message.meta === 'string') {
+      const meta = document.querySelector('.meta');
+      if (meta) meta.textContent = message.meta;
+    }
+    if (Array.isArray(message.tabs)) {
+      const nav = document.querySelector('nav.tabs');
+      if (nav) {
+        nav.innerHTML = message.tabs.map(function (tab, index) {
+          return '<button data-tab="' + tab.id + '"' + (index === 0 ? ' class="active"' : '') + '>'
+            + tab.label + '</button>';
+        }).join('');
+      }
+    }
+  });
 }());`;
 
     return `<!DOCTYPE html>
@@ -799,6 +899,13 @@ ${body}
 
 module.exports = {
     renderReportsHtml,
+    renderReportSection,
+    buildReportView,
+    reportSectionIds,
+    reportMeta,
+    REPORT_TABS,
+    STAGE_TABS,
+    tabId,
     esc,
     highlightQor,
     commandHref,
@@ -807,3 +914,13 @@ module.exports = {
     fmtTime: fmtMtime,
     fmtElapsed,
 };
+
+/** Full-page section list + HTML map for one payload (used by the panel's patch path). */
+function renderReportSection(options, id) {
+    const opts = options || {};
+    const reports = opts.reports && typeof opts.reports === 'object' ? opts.reports : { ok: false };
+    const stage = opts.stage === 'syn' || opts.stage === 'phy' ? opts.stage : '';
+    const view = buildReportView(reports, stage);
+    if (view.ok !== true) return '';
+    return reportSectionHtml(view, reports, id);
+}
