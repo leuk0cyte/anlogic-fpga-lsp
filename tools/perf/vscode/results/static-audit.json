@@ -1,5 +1,5 @@
 {
- "generatedAt": "2026-11-19T02:17:15.995Z",
+ "generatedAt": "2026-11-19T03:38:37.029Z",
  "scannedFiles": [
   "vscode-extension/extension.js",
   "vscode-extension/scripts/bundle-server.js",
@@ -21,10 +21,10 @@
  "counts": {
   "syncIo": 22,
   "timeout": 8,
-  "refresh": 41,
+  "refresh": 45,
   "jsonStringify": 12,
   "eventSub": 12,
-  "notification": 3,
+  "notification": 4,
   "jsonParse": 3,
   "timer": 1,
   "clearTimer": 11,
@@ -117,350 +117,378 @@
   },
   {
    "file": "vscode-extension/extension.js",
-   "line": 578,
+   "line": 495,
+   "key": "refresh",
+   "note": "refresh entry point",
+   "text": "requestRefresh(options) {"
+  },
+  {
+   "file": "vscode-extension/extension.js",
+   "line": 497,
+   "key": "refresh",
+   "note": "refresh entry point",
+   "text": "if (panel.visible) panel.requestRefresh(options);"
+  },
+  {
+   "file": "vscode-extension/extension.js",
+   "line": 584,
    "key": "jsonStringify",
    "note": "JSON stringify (main thread)",
    "text": "`file associations: ${JSON.stringify(vscode.workspace.getConfiguration('files').get('associations') || {})}`,"
   },
   {
    "file": "vscode-extension/extension.js",
-   "line": 579,
+   "line": 585,
    "key": "jsonStringify",
    "note": "JSON stringify (main thread)",
    "text": "`grammars         : ${JSON.stringify(((extension && extension.packageJSON.contributes.grammars) || []).map((item) => item.language))}`,"
   },
   {
    "file": "vscode-extension/extension.js",
-   "line": 580,
+   "line": 586,
    "key": "jsonStringify",
    "note": "JSON stringify (main thread)",
    "text": "`semanticTokenScopes: ${JSON.stringify(((extension && extension.packageJSON.contributes.semanticTokenScopes) || []).map((item) => item.language))}`,"
   },
   {
    "file": "vscode-extension/extension.js",
-   "line": 583,
+   "line": 589,
    "key": "jsonStringify",
    "note": "JSON stringify (main thread)",
    "text": "`semantic tokens  : ${(highlight && highlight.tokens) || 0}  ${JSON.stringify((highlight && highlight.counts) || {})}`,"
   },
   {
    "file": "vscode-extension/extension.js",
-   "line": 590,
+   "line": 596,
    "key": "syncIo",
    "note": "synchronous fs",
    "text": "fs.mkdirSync(dir, { recursive: true });"
   },
   {
    "file": "vscode-extension/extension.js",
-   "line": 591,
+   "line": 597,
    "key": "syncIo",
    "note": "synchronous fs",
    "text": "fs.writeFileSync(path.join(dir, 'highlight.txt'), report);"
   },
   {
    "file": "vscode-extension/extension.js",
-   "line": 599,
+   "line": 605,
    "key": "eventSub",
    "note": "vscode event subscription",
    "text": "context.subscriptions.push(vscode.workspace.onDidOpenTextDocument((document) => {"
   },
   {
    "file": "vscode-extension/extension.js",
-   "line": 601,
+   "line": 607,
    "key": "timeout",
    "note": "one-shot timer / debounce",
    "text": "setTimeout(() => writeHighlightReport(document).catch(() => undefined), 2500);"
   },
   {
    "file": "vscode-extension/extension.js",
-   "line": 694,
+   "line": 700,
    "key": "jsonStringify",
    "note": "JSON stringify (main thread)",
    "text": "await vscode.env.clipboard.writeText(JSON.stringify(picked.value, null, 2));"
   },
   {
    "file": "vscode-extension/extension.js",
-   "line": 734,
+   "line": 740,
    "key": "syncIo",
    "note": "synchronous fs",
    "text": "if (fs.existsSync(target)) {"
   },
   {
    "file": "vscode-extension/extension.js",
-   "line": 736,
+   "line": 742,
    "key": "jsonParse",
    "note": "JSON parse (main thread)",
    "text": "mcpData = JSON.parse(fs.readFileSync(target, 'utf8'));"
   },
   {
    "file": "vscode-extension/extension.js",
-   "line": 736,
+   "line": 742,
    "key": "syncIo",
    "note": "synchronous fs",
    "text": "mcpData = JSON.parse(fs.readFileSync(target, 'utf8'));"
   },
   {
    "file": "vscode-extension/extension.js",
-   "line": 750,
+   "line": 756,
    "key": "syncIo",
    "note": "synchronous fs",
    "text": "fs.mkdirSync(path.dirname(target), { recursive: true });"
   },
   {
    "file": "vscode-extension/extension.js",
-   "line": 751,
+   "line": 757,
    "key": "jsonStringify",
    "note": "JSON stringify (main thread)",
    "text": "fs.writeFileSync(target, JSON.stringify(mcpData, null, 2) + '\\n', 'utf8');"
   },
   {
    "file": "vscode-extension/extension.js",
-   "line": 751,
+   "line": 757,
    "key": "syncIo",
    "note": "synchronous fs",
    "text": "fs.writeFileSync(target, JSON.stringify(mcpData, null, 2) + '\\n', 'utf8');"
   },
   {
    "file": "vscode-extension/extension.js",
-   "line": 798,
+   "line": 804,
    "key": "refresh",
    "note": "refresh entry point",
    "text": "await Promise.allSettled([moduleProvider.refresh(activeDocumentUri()), flowProvider.refresh()]);"
   },
   {
    "file": "vscode-extension/extension.js",
-   "line": 876,
+   "line": 882,
    "key": "refresh",
    "note": "refresh entry point",
    "text": "await Promise.allSettled([moduleProvider.refresh(activeDocumentUri()), flowProvider.refresh()]);"
   },
   {
    "file": "vscode-extension/extension.js",
-   "line": 886,
+   "line": 892,
    "key": "refresh",
    "note": "refresh entry point",
    "text": "await Promise.allSettled([moduleProvider.refresh(activeDocumentUri()), flowProvider.refresh()]);"
   },
   {
    "file": "vscode-extension/extension.js",
-   "line": 933,
+   "line": 939,
    "key": "refresh",
    "note": "refresh entry point",
    "text": "await moduleProvider.refresh(activeDocumentUri());"
   },
   {
    "file": "vscode-extension/extension.js",
-   "line": 941,
+   "line": 947,
    "key": "refresh",
    "note": "refresh entry point",
    "text": "register(VSCodeCommands.refreshFlow, () => flowProvider.refresh());"
   },
   {
    "file": "vscode-extension/extension.js",
-   "line": 949,
+   "line": 955,
    "key": "refresh",
    "note": "refresh entry point",
    "text": "reportsPanel.refresh(),"
   },
   {
    "file": "vscode-extension/extension.js",
-   "line": 950,
+   "line": 956,
    "key": "refresh",
    "note": "refresh entry point",
    "text": "reportsTreeProvider.refresh(),"
-  },
-  {
-   "file": "vscode-extension/extension.js",
-   "line": 971,
-   "key": "jsonStringify",
-   "note": "JSON stringify (main thread)",
-   "text": "result && result.ok ? `TD check queued for ${result.project}` : `TD check failed: ${JSON.stringify(result)}`"
   },
   {
    "file": "vscode-extension/extension.js",
    "line": 977,
    "key": "jsonStringify",
    "note": "JSON stringify (main thread)",
+   "text": "result && result.ok ? `TD check queued for ${result.project}` : `TD check failed: ${JSON.stringify(result)}`"
+  },
+  {
+   "file": "vscode-extension/extension.js",
+   "line": 983,
+   "key": "jsonStringify",
+   "note": "JSON stringify (main thread)",
    "text": "vscode.window.showWarningMessage(`No Anlogic project found: ${JSON.stringify(info)}`);"
   },
   {
    "file": "vscode-extension/extension.js",
-   "line": 1010,
+   "line": 1016,
    "key": "jsonStringify",
    "note": "JSON stringify (main thread)",
    "text": "diag(`verible diagnostics: exe=${lsCommand} args=${JSON.stringify(lsArgs)} cwd=${cwd}`);"
   },
   {
    "file": "vscode-extension/extension.js",
-   "line": 1024,
+   "line": 1030,
    "key": "eventSub",
    "note": "vscode event subscription",
    "text": "vscode.workspace.onDidOpenTextDocument((document) => {"
   },
   {
    "file": "vscode-extension/extension.js",
-   "line": 1027,
+   "line": 1033,
    "key": "eventSub",
    "note": "vscode event subscription",
    "text": "vscode.workspace.onDidChangeTextDocument((event) => {"
   },
   {
    "file": "vscode-extension/extension.js",
-   "line": 1030,
+   "line": 1036,
    "key": "eventSub",
    "note": "vscode event subscription",
    "text": "vscode.workspace.onDidCloseTextDocument((document) => {"
   },
   {
    "file": "vscode-extension/extension.js",
-   "line": 1059,
+   "line": 1065,
    "key": "refresh",
    "note": "refresh entry point",
    "text": "await Promise.allSettled([moduleProvider.refresh(activeDocumentUri()), flowProvider.refresh()]);"
   },
   {
    "file": "vscode-extension/extension.js",
-   "line": 1188,
+   "line": 1194,
    "key": "refresh",
    "note": "refresh entry point",
    "text": "reportsPanel.refresh().catch(() => undefined);"
   },
   {
    "file": "vscode-extension/extension.js",
-   "line": 1189,
+   "line": 1195,
    "key": "refresh",
    "note": "refresh entry point",
    "text": "reportsTreeProvider.refresh().catch(() => undefined);"
   },
   {
    "file": "vscode-extension/extension.js",
-   "line": 1213,
+   "line": 1219,
    "key": "syncIo",
    "note": "synchronous fs",
    "text": "if (!filePath || !fs.existsSync(filePath)) return `${filePath || '(unknown)'} (missing)`;"
   },
   {
    "file": "vscode-extension/extension.js",
-   "line": 1215,
+   "line": 1221,
    "key": "jsonParse",
    "note": "JSON parse (main thread)",
    "text": "const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));"
   },
   {
    "file": "vscode-extension/extension.js",
-   "line": 1215,
+   "line": 1221,
    "key": "syncIo",
    "note": "synchronous fs",
    "text": "const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));"
   },
   {
    "file": "vscode-extension/extension.js",
-   "line": 1323,
+   "line": 1329,
    "key": "refresh",
    "note": "refresh entry point",
    "text": "reportsPanel.show().then(() => Promise.allSettled([reportsPanel.refresh(), reportsTreeProvider.refresh()]));"
   },
   {
    "file": "vscode-extension/extension.js",
-   "line": 1355,
+   "line": 1361,
    "key": "refresh",
    "note": "refresh entry point",
    "text": "reportsPanel.show().then(() => Promise.allSettled([reportsPanel.refresh(), reportsTreeProvider.refresh()]));"
   },
   {
    "file": "vscode-extension/extension.js",
-   "line": 1398,
+   "line": 1404,
    "key": "syncIo",
    "note": "synchronous fs",
    "text": "if (!fs.existsSync(extLog)) {"
   },
   {
    "file": "vscode-extension/extension.js",
-   "line": 1442,
+   "line": 1448,
    "key": "refresh",
    "note": "refresh entry point",
    "text": "moduleProvider.requestRefresh(target, { reason });"
   },
   {
    "file": "vscode-extension/extension.js",
-   "line": 1445,
+   "line": 1451,
    "key": "eventSub",
    "note": "vscode event subscription",
    "text": "context.subscriptions.push(vscode.window.onDidChangeActiveTextEditor((editor) => {"
   },
   {
    "file": "vscode-extension/extension.js",
-   "line": 1446,
+   "line": 1452,
    "key": "refresh",
    "note": "refresh entry point",
    "text": "scheduleModuleRefresh('active-editor', editor && editor.document && editor.document.uri);"
   },
   {
    "file": "vscode-extension/extension.js",
-   "line": 1448,
+   "line": 1454,
    "key": "eventSub",
    "note": "vscode event subscription",
    "text": "context.subscriptions.push(vscode.workspace.onDidSaveTextDocument((document) => {"
   },
   {
    "file": "vscode-extension/extension.js",
-   "line": 1451,
+   "line": 1457,
    "key": "refresh",
    "note": "refresh entry point",
    "text": "scheduleModuleRefresh('saved', document.uri);"
   },
   {
    "file": "vscode-extension/extension.js",
-   "line": 1454,
+   "line": 1460,
    "key": "eventSub",
    "note": "vscode event subscription",
    "text": "context.subscriptions.push(vscode.workspace.onDidChangeWorkspaceFolders(() => {"
   },
   {
    "file": "vscode-extension/extension.js",
-   "line": 1455,
+   "line": 1461,
    "key": "refresh",
    "note": "refresh entry point",
    "text": "scheduleModuleRefresh('workspace-folders');"
   },
   {
    "file": "vscode-extension/extension.js",
-   "line": 1464,
+   "line": 1470,
    "key": "notification",
    "note": "server notification handler",
    "text": "client.onNotification(METHODS.flowEvent, (event) => {"
   },
   {
    "file": "vscode-extension/extension.js",
-   "line": 1474,
+   "line": 1478,
+   "key": "notification",
+   "note": "server notification handler",
+   "text": "client.onNotification(METHODS.reportsChanged, () => {"
+  },
+  {
+   "file": "vscode-extension/extension.js",
+   "line": 1482,
+   "key": "refresh",
+   "note": "refresh entry point",
+   "text": "reportsPanel.requestRefresh({ force: true });"
+  },
+  {
+   "file": "vscode-extension/extension.js",
+   "line": 1495,
    "key": "notification",
    "note": "server notification handler",
    "text": "client.onNotification(METHODS.indexChanged, (event) => {"
   },
   {
    "file": "vscode-extension/extension.js",
-   "line": 1495,
+   "line": 1516,
    "key": "refresh",
    "note": "refresh entry point",
    "text": "moduleProvider.refresh(activeDocumentUri()),"
   },
   {
    "file": "vscode-extension/extension.js",
-   "line": 1496,
+   "line": 1517,
    "key": "refresh",
    "note": "refresh entry point",
    "text": "flowProvider.refresh(),"
   },
   {
    "file": "vscode-extension/extension.js",
-   "line": 1497,
+   "line": 1518,
    "key": "refresh",
    "note": "refresh entry point",
    "text": "reportsTreeProvider.refresh(),"
   },
   {
    "file": "vscode-extension/extension.js",
-   "line": 1506,
+   "line": 1527,
    "key": "refresh",
    "note": "refresh entry point",
    "text": "flowProvider.refresh().catch(() => undefined);"
@@ -656,56 +684,63 @@
   },
   {
    "file": "vscode-extension/src/moduleTree.js",
-   "line": 223,
-   "key": "fireTree",
-   "note": "tree invalidation (full re-query)",
-   "text": "this._onDidChangeTreeData.fire(undefined);"
+   "line": 199,
+   "key": "refresh",
+   "note": "refresh entry point",
+   "text": "* latency. `refresh()` cancels any pending debounced fallback so it cannot fire twice."
   },
   {
    "file": "vscode-extension/src/moduleTree.js",
-   "line": 229,
-   "key": "refresh",
-   "note": "refresh entry point",
-   "text": "// 150 ms here + 150 ms in extension.js). Refresh now; `refresh()` clears a pending"
+   "line": 225,
+   "key": "fireTree",
+   "note": "tree invalidation (full re-query)",
+   "text": "this._onDidChangeTreeData.fire(undefined);"
   },
   {
    "file": "vscode-extension/src/moduleTree.js",
    "line": 231,
    "key": "refresh",
    "note": "refresh entry point",
+   "text": "// 150 ms here + 150 ms in extension.js). Refresh now; `refresh()` clears a pending"
+  },
+  {
+   "file": "vscode-extension/src/moduleTree.js",
+   "line": 233,
+   "key": "refresh",
+   "note": "refresh entry point",
    "text": "this.refresh(event.uri || undefined, { reason: 'indexChanged' }).catch(() => undefined);"
   },
   {
    "file": "vscode-extension/src/moduleTree.js",
-   "line": 284,
+   "line": 286,
    "key": "fireTree",
    "note": "tree invalidation (full re-query)",
    "text": "this._onDidChangeTreeData.fire(undefined);"
   },
   {
    "file": "vscode-extension/src/moduleTree.js",
-   "line": 319,
+   "line": 321,
    "key": "refresh",
    "note": "refresh entry point",
    "text": "async refresh(uri, options) {"
   },
   {
    "file": "vscode-extension/src/moduleTree.js",
-   "line": 324,
+   "line": 326,
    "key": "clearTimer",
    "note": "timer cleanup",
    "text": "clearTimeout(this._debounce);"
   },
   {
    "file": "vscode-extension/src/moduleTree.js",
-   "line": 355,
+   "line": 357,
    "key": "fireTree",
    "note": "tree invalidation (full re-query)",
    "text": "this._onDidChangeTreeData.fire(undefined);"
   },
   {
    "file": "vscode-extension/src/moduleTree.js",
-   "line": 366,
+   "line": 368,
    "key": "fireTree",
    "note": "tree invalidation (full re-query)",
    "text": "this._onDidChangeTreeData.fire(undefined);"
@@ -719,77 +754,77 @@
   },
   {
    "file": "vscode-extension/src/reportsPanel.js",
-   "line": 70,
+   "line": 92,
    "key": "refresh",
    "note": "refresh entry point",
    "text": "return this.refresh({ force: true });"
   },
   {
    "file": "vscode-extension/src/reportsPanel.js",
-   "line": 88,
+   "line": 110,
    "key": "eventSub",
    "note": "vscode event subscription",
    "text": "this._disposables.push(panel.webview.onDidReceiveMessage((message) => this._onMessage(message)));"
   },
   {
    "file": "vscode-extension/src/reportsPanel.js",
-   "line": 89,
+   "line": 111,
    "key": "eventSub",
    "note": "vscode event subscription",
    "text": "this._disposables.push(panel.onDidDispose(() => {"
   },
   {
    "file": "vscode-extension/src/reportsPanel.js",
-   "line": 94,
+   "line": 117,
    "key": "refresh",
    "note": "refresh entry point",
    "text": "return this.refresh({ force: true });"
   },
   {
    "file": "vscode-extension/src/reportsPanel.js",
-   "line": 98,
+   "line": 121,
    "key": "refresh",
    "note": "refresh entry point",
    "text": "requestRefresh(options) {"
   },
   {
    "file": "vscode-extension/src/reportsPanel.js",
-   "line": 99,
+   "line": 122,
    "key": "clearTimer",
    "note": "timer cleanup",
    "text": "if (this._debounce) clearTimeout(this._debounce);"
   },
   {
    "file": "vscode-extension/src/reportsPanel.js",
-   "line": 100,
+   "line": 123,
    "key": "timeout",
    "note": "one-shot timer / debounce",
    "text": "this._debounce = setTimeout(() => {"
   },
   {
    "file": "vscode-extension/src/reportsPanel.js",
-   "line": 102,
+   "line": 125,
    "key": "refresh",
    "note": "refresh entry point",
    "text": "this.refresh(options).catch(() => undefined);"
   },
   {
    "file": "vscode-extension/src/reportsPanel.js",
-   "line": 111,
+   "line": 137,
    "key": "refresh",
    "note": "refresh entry point",
    "text": "async refresh(options) {"
   },
   {
    "file": "vscode-extension/src/reportsPanel.js",
-   "line": 214,
+   "line": 315,
    "key": "refresh",
    "note": "refresh entry point",
    "text": "this.requestRefresh({ force: true });"
   },
   {
    "file": "vscode-extension/src/reportsPanel.js",
-   "line": 239,
+   "line": 344,
    "key": "clearTimer",
    "note": "timer cleanup",
    "text": "clearTimeout(this._debounce);"
@@ -901,57 +936,58 @@
   },
   {
    "file": "vscode-extension/extension.js",
-   "line": 511,
+   "line": 517,
    "text": "context.subscriptions.push(modulesView);"
   },
   {
    "file": "vscode-extension/extension.js",
-   "line": 518,
+   "line": 524,
    "text": "context.subscriptions.push(flowView);"
   },
   {
    "file": "vscode-extension/extension.js",
-   "line": 525,
+   "line": 531,
    "text": "context.subscriptions.push(reportsView);"
   },
   {
    "file": "vscode-extension/extension.js",
-   "line": 530,
+   "line": 536,
    "text": "context.subscriptions.push(vscode.commands.registerCommand(id, async (...commandArgs) => {"
   },
   {
    "file": "vscode-extension/extension.js",
-   "line": 599,
+   "line": 605,
    "text": "context.subscriptions.push(vscode.workspace.onDidOpenTextDocument((document) => {"
   },
   {
    "file": "vscode-extension/extension.js",
-   "line": 1023,
+   "line": 1029,
    "text": "context.subscriptions.push("
   },
   {
    "file": "vscode-extension/extension.js",
-   "line": 1445,
+   "line": 1451,
    "text": "context.subscriptions.push(vscode.window.onDidChangeActiveTextEditor((editor) => {"
   },
   {
    "file": "vscode-extension/extension.js",
-   "line": 1448,
+   "line": 1454,
    "text": "context.subscriptions.push(vscode.workspace.onDidSaveTextDocument((document) => {"
   },
   {
    "file": "vscode-extension/extension.js",
-   "line": 1454,
+   "line": 1460,
    "text": "context.subscriptions.push(vscode.workspace.onDidChangeWorkspaceFolders(() => {"
   },
   {
    "file": "vscode-extension/extension.js",
-   "line": 1512,
+   "line": 1533,
    "text": "context.subscriptions.push({ dispose: () => client && client.stop() });"
   }
  ],
  "notificationRegistrations": {
   "flowEvent": 1,
+  "reportsChanged": 1,
   "indexChanged": 1
  }
 }
