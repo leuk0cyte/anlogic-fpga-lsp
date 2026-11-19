@@ -58,6 +58,12 @@ desktop.ini
 # 临时验证台
 scratch/
 
+# ---- 审计中间产物（探针 raw 转储，只保留每侧最终一轮 final2-raw.json）----
+audit/**/raw.json
+audit/**/raw-*.json
+audit/**/final-raw.json
+audit/_db/
+
 # ---- VS Code 扩展 ----
 vscode-extension/node_modules/
 *.vsix

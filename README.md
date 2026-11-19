@@ -278,22 +278,46 @@ python tests\run_gates.py --json build\gates.json
 ```
 ---
 
-## 交付状态（2026-11-18）
+## 交付状态（2026-11-18，Phase B 后）
 
 ### 已通过验证
 
 | 项目 | 数据 |
 | --- | --- |
 | **三条 Verible 门禁** | 解析 token/CST 102/102、lint 规则 61-42 + 诊断 398 条、formatter 全文档 102/102 + 局部 194/194 区间 |
-| **`ctest` 全量** | **47/47 通过**（`gate` `lintgate` `formatgate` `generator` `mcp` `unit` `td` `e2e`） |
-| **功能模块** | LSP（28 方法）/ MCP（34 个真实工具）/ TD 会话与诊断 / Flow + BitWizard / 报告解析 / ADC+SDC / HDL 索引（与 Python 1214 项 0 差异） |
-| **原生产物** | `build/bin/fpgalsp-native.exe`（4.0 MB），已打进 VSIX 并验证可用 |
+| **`ctest` 全量** | **53/53 通过**（`gate` `lintgate` `formatgate` `generator` `mcp` `unit` `td` `e2e`；含 Phase B 新增的语义/代码动作/rename/call hierarchy/analysis/约束符号 6 个 target） |
+| **功能模块** | LSP 全能力（25 方法，含语义高亮/折叠/代码动作/rename/callHierarchy/rangeFormatting/reports）/ MCP **39 个工具全部真实实现（0 占位）** / TD 会话与诊断 / Flow + BitWizard / 报告解析 / ADC+SDC 符号 / HDL 索引（与 Python 1214 项 0 差异） |
+| **原生产物** | `build/bin/fpgalsp-native.exe`（5,945,344 B，SHA256 `7EDC9A67…32B03`；单一静态 exe，内嵌 Verible 解析/lint/格式化） |
+
+### Phase B 关闭的 S0/S1（详见 `audit/2026-11-18/FIX-REPORT.md`）
+
+- LSP：semanticTokens（2094 token 逐元素一致）、foldingRange（24）、codeAction（实例化 + 内嵌 lint autofix）、
+  prepareRename/rename（4 处编辑逐字段一致）、callHierarchy in/out（1/12 逐字段一致）、rangeFormatting、
+  `fpgaLsp/reports`（真实报告 + strategies/routed_db）
+- executeCommand：instantiate / copyInstantiation / symbolPath / duplicateModules / searchHierarchy /
+  debugHighlight / addSourceFile / setProjectName / runAnalysis / updateProject 全部真实实现
+- MCP：format / code_actions / rename_edits / analysis_run / project_update 全部真实实现；pins 大小写与键集合对齐
+- ADC/SDC：documentSymbol 47/2、hover、completion 逐字段一致
+- completion：814 → **814**（21 模块 + 745 器件原语 + 48 关键字）
+- moduleTree：`includePrimitives=false` 时 34 节点、0 黑盒
+- 性能：200 文件 documentSymbol 29.5 → **0.84 ms**；project_structure 0.87× → **1.73×**；峰值内存 −23.7%
+
+### 已知差异（有意保留 / 版本基线）
+
+1. **Verible 版本基线**：内嵌 `c6b29d62` vs Python 侧外部 `0.0-4296`。`formatting`/`rangeFormatting` 字节与
+   autofix `no-trailing-spaces` 一行差异属此族（LSP-18）；单一静态 exe 优先，不为对齐外部版本改内嵌规则。
+2. **`ifdef` 语义**：C++ 只索引活动分支，Python 两分支都收（LSP-14，`COMMANDS.md` 已登记为有意差异）。
+3. **inlayHint additive**：C++ 比 Python 多 8 条实例类型提示（Python 是 C++ 的真子集）。
+4. **非 BMP 列**：Python 语义高亮用码点列（其 docstring 写 UTF-16 但实现不是），C++ 按协议用 UTF-16；
+   仅合成 emoji 语料有 7/102 token 差异，真实 HDL 零差异。
+5. **Python 格式 fallback**：`format_fallback.py` 未移植；C++ 始终有内嵌 Verible，不需要 fallback。
+6. **Python 参考实现的 28 条缺陷**：见 `tests/PYTHON-BUGS.md`，除安全 High（B7 已修）外保持"忠实复现 + 登记"。
 
 ### VS Code 扩展（已打包并在本机安装验证）
 
 ```
-Y:\fpga-lsp\vscode-extension\fpga-lsp-anlogic-0.10.32.vsix   59 files / 1.93 MB
-  └─ extension/server/bin/fpgalsp-native.exe                 4,038,144 B
+Y:\fpga-lsp-cpp\vscode-extension\fpga-lsp-anlogic-0.13.0.vsix   225 files / 2.75 MB
+  └─ extension/server/bin/fpgalsp-native.exe                 5,945,344 B（SHA256 7EDC9A67…32B03）
 ```
 
 安装后 `resolveServer()` 返回 `{kind:"native", source:"bundled", exe:"<ext>/server/bin/fpgalsp-native.exe"}`。
@@ -314,12 +338,17 @@ exit            : 0，无残留 td_commands_prompt.exe
 > 仍未由人眼确认的：GUI 内的渲染（Problems 波浪线、大纲树、InlayHint 显示）。
 > 服务端协议层已逐项验证。
 
-### 已知空白（有意保留，不假装完成）
+### 仍未验证 / 有意保留
 
-1. **`FormatVerilogRange` API** —— 只输出区间那一段、不做收敛性检验。CLI `--lines` 语义已验证，这个 API 未验证。见 `tests/FORMAT-GATE-REPORT.md` §8。
-2. **MCP 5 个占位** —— `analysis_run` / `project_update` / `code_actions` / `rename_edits` / `format`，都卡在"能力本身未实现"。
-3. **golden 快照** —— `tests/golden/snapshots/` 是沙箱隔离改造（16:15）之前采集的，需用新版重跑。
-4. **Python 参考实现的 28 条缺陷** —— 见 `tests/PYTHON-BUGS.md`，全部"忠实复现 + 登记 + 测试钉死"，未修。
+1. **真实 DRC/CDC 端到端**：本机语料没有 `*_Runs/phy_1/*_pr.db`，`runAnalysis` 只验证了
+   "无布线产物"降级路径与解析层单测；有 db 时的 `report_drc`/`check_cdc` 需要真实布线结果才能复跑。
+2. **GUI 渲染**：Problems 波浪线、大纲树、InlayHint、reports webview 未由人眼确认；
+   服务端协议层已逐项验证（`e2e.lsp_smoke` + `tools/audit/probe_lsp.py`）。
+3. **`ifdef` / inlayHint / 非 BMP 列**：见上节"已知差异"，均为有意差异或版本基线。
+4. **`tests/golden/snapshots/`**：仓库内快照保留为历史基线；Phase B 的等价性证据在
+   `audit/2026-11-18/golden-final/`（Python/native 双采 + compare）。
+5. **Python 参考实现的 28 条缺陷**：见 `tests/PYTHON-BUGS.md`，除安全 High（B7 已修）外保持
+   "忠实复现 + 登记 + 测试钉死"。
 
 ### 参考实现缺陷里最该知道的两条
 
