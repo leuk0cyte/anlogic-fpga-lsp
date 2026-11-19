@@ -60,9 +60,32 @@ let reportsPanel;
 function workspaceFolder() {
     const folders = vscode.workspace.workspaceFolders;
     if (!folders || !folders.length) return undefined;
-    // prefer the folder that actually contains a .al project
+    // S8: `fs.existsSync(folder)` is true for every workspace folder, so the old loop always
+    // returned the **first** folder -- a multi-root workspace therefore pointed the server,
+    // the state dir and the MCP endpoint at the wrong project.
+    // Prefer a folder that actually contains an .al project (root or one level down).
+    const hasProject = (dir) => {
+        const candidates = [dir];
+        try {
+            for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+                if (entry.isDirectory() && entry.name !== '.git' && entry.name !== 'node_modules') {
+                    candidates.push(path.join(dir, entry.name));
+                }
+            }
+        } catch (_) {
+            return false;
+        }
+        for (const candidate of candidates) {
+            try {
+                const names = fs.readdirSync(candidate);
+                if (names.some((name) => name.toLowerCase().endsWith('.al'))) return true;
+            } catch (_) { /* unreadable: skip */ }
+        }
+        return false;
+    };
     for (const folder of folders) {
-        if (fs.existsSync(folder.uri.fsPath)) return folder.uri.fsPath;
+        if (folder.uri.scheme !== 'file') continue;
+        if (hasProject(folder.uri.fsPath)) return folder.uri.fsPath;
     }
     return folders[0].uri.fsPath;
 }
@@ -384,6 +407,28 @@ function activate(context) {
             ? `Project: ${statusState.project}${statusState.device ? `\nDevice: ${statusState.device}` : ''}`
             : 'No Anlogic .al project found in this workspace';
     };
+    // S7: make agent permissions visible. allowWrite/allowFlow silently become command line
+    // flags; the user had no way to see that an agent may now modify the project or start TD.
+    const agentItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 99);
+    agentItem.command = 'workbench.action.openSettings';
+    agentItem.tooltip = 'MCP agent permissions (fpgaLsp.mcp.allowFlow / allowWrite)';
+    context.subscriptions.push(agentItem);
+    const renderAgentBadge = () => {
+        const flow = config().get('mcp.allowFlow') === true;
+        const write = config().get('mcp.allowWrite') === true;
+        if (!flow && !write) {
+            agentItem.hide();
+            return;
+        }
+        const parts = [];
+        if (write) parts.push('write');
+        if (flow) parts.push('flow');
+        agentItem.text = `$(shield) agent: ${parts.join('+')}`;
+        agentItem.tooltip = `MCP agents may ${parts.join(' and ')}. Click to change fpgaLsp.mcp settings.`;
+        agentItem.show();
+    };
+    renderAgentBadge();
+
     const refreshStatus = async () => {
         try {
             const info = await getProjectInfo();
@@ -528,6 +573,7 @@ function activate(context) {
             || event.affectsConfiguration('fpgaLsp.mcp.allowWrite')) {
             mcpEmitter.fire();
         }
+        renderAgentBadge();
     }));
 
     // ------------------------------------------------------------ hints
@@ -621,7 +667,18 @@ function activate(context) {
             try {
                 return await handler(...commandArgs);
             } catch (err) {
-                vscode.window.showErrorMessage(`FPGA: ${(err && err.message) || err}`);
+                // S2: one friendly sentence + an action, instead of a raw exception string.
+                const message = String((err && err.message) || err);
+                const friendly = /ENOENT|not found|cannot find/i.test(message)
+                    ? 'the language server could not be found (check fpgaLsp.serverPath)'
+                    : /ECONNREFUSED|socket hang up|EPIPE/i.test(message)
+                        ? 'the language server connection dropped (it may be restarting)'
+                        : message;
+                const choice = await vscode.window.showErrorMessage(
+                    `FPGA: ${friendly}`, 'Show Logs');
+                if (choice === 'Show Logs') {
+                    await vscode.commands.executeCommand(VSCodeCommands.showLogs);
+                }
                 return undefined;
             }
         }));

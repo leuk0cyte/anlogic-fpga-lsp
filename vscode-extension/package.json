@@ -206,6 +206,27 @@
                     ],
                     "description": "Extra arguments for verible-verilog-format. Defaults follow the team's alignment style."
                 },
+                "fpgaLsp.serverRoot": {
+                    "type": "string",
+                    "default": "",
+                    "description": "（兼容旧版）语言服务器所在目录。原生版已不需要：留空即可，用 fpgaLsp.serverPath 指定 exe。"
+                },
+                "fpgaLsp.verible.path": {
+                    "type": "string",
+                    "default": "",
+                    "description": "（兼容）外部 verible-verilog-format 路径。留空 = 用内嵌 Verible。"
+                },
+                "fpgaLsp.verible.lintArgs": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "default": [],
+                    "description": "（兼容）追加给内嵌 lint 的参数。"
+                },
+                "fpgaLsp.verible.highlight": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "（兼容）是否发布 Verible 诊断；关掉只保留 TD/约束诊断。"
+                },
                 "fpgaLsp.verible.autofix": {
                     "type": "boolean",
                     "default": true,
