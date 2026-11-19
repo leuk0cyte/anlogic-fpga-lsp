@@ -369,6 +369,125 @@ add_custom_command(
     VERBATIM
 )
 
+# =============================================================================
+#  配置期预生成 —— 修复「全新构建目录首次 configure 挂不上生成物」
+# =============================================================================
+# 背景（实测，见 audit/2026-11-19/static/LTCG.md §3）：
+#   cmake/Verible.cmake 的 verible_mount_generated_sources() 只在 configure 期
+#   用 EXISTS 判断生成物是否就绪，就绪才 target_sources() 挂到库上。而 G1–G6b
+#   这些规则是**构建期** add_custom_command，首次 configure 时产物还不存在
+#   → 挂接被跳过 → verilog-lexer / verilog-y-cc 两个库只含空占位源
+#   （实测 verilog-y-cc.lib 只有 1 KB，正常约 2 MB）→ 链接期缺 35 个符号：
+#     verilogFlexLexer::* / veribleCommandFileFlexLexer::*
+#     verilog_parse / verilog_debug / verilog_symbol_name
+#   这个缺陷与 LTO 无关：不开 LTO 的全新目录构建同样失败。
+#
+# 修法：在 configure 期就把**缺失的**产物补出来（已存在则完全跳过，不增加开销），
+#   这样同一次 configure 里 verible_mount_generated_sources() 就能挂上，
+#   `cmake --preset ... && cmake --build ...` 一条链即可成功。
+#
+# 命令与下面的 G1–G6b 自定义命令**逐字一致**（同样的工具、同样的参数、同样的
+#   依赖顺序）；这里是"配置期补跑"，add_custom_command 仍是"构建期增量"的权威。
+#   两者产出同名文件，Ninja 看到产物已是最新就不再重跑。
+# =============================================================================
+option(VERIBLE_PREGENERATE_AT_CONFIGURE
+       "configure 期补生成缺失的 flex/bison 产物（全新构建目录必需）" ON)
+
+if(VERIBLE_PREGENERATE_AT_CONFIGURE)
+    set(_vg_missing FALSE)
+    foreach(_f IN ITEMS
+            "${VG_VERILOG_YY_CC}" "${VG_VERILOG_TAB_HH}" "${VG_VERILOG_TAB_CC}"
+            "${VG_TOKEN_ENUM_H}" "${VG_PARSE_INTERFACE_H}"
+            "${VG_FINAL_TAB_CC}" "${VG_COMMAND_FILE_YY_CC}")
+        if(NOT EXISTS "${_f}")
+            set(_vg_missing TRUE)
+        endif()
+    endforeach()
+
+    if(_vg_missing)
+        message(STATUS "Verible: 配置期补生成缺失的 flex/bison 产物（首次 configure 必要步骤）")
+
+        # 宏而不是函数：需要在当前作用域里累计失败标记。
+        macro(_vg_pregen_run _vg_what)
+            execute_process(COMMAND ${ARGN}
+                            RESULT_VARIABLE _vg_rc
+                            OUTPUT_VARIABLE _vg_out
+                            ERROR_VARIABLE _vg_err)
+            if(NOT _vg_rc EQUAL 0)
+                set(_vg_pregen_failed TRUE)
+                message(WARNING
+                    "Verible 预生成失败：${_vg_what}（rc=${_vg_rc}）\n${_vg_err}")
+            else()
+                message(STATUS "  · ${_vg_what}")
+            endif()
+        endmacro()
+
+        set(_vg_pregen_failed FALSE)
+        file(MAKE_DIRECTORY "${_gp}" "${_ga}")
+
+        # G1
+        if(NOT EXISTS "${VG_VERILOG_YY_CC}")
+            _vg_pregen_run("G1 win_flex verilog.lex -> verilog.yy.cc"
+                "${WIN_FLEX}" "--outfile=${VG_VERILOG_YY_CC}"
+                "${VERIBLE_SRC_DIR}/verible/verilog/parser/verilog.lex")
+        endif()
+
+        # G2（一次产出 .tab.hh/.tab.cc/.output/.dot，四个缺一不可升级）
+        if(NOT EXISTS "${VG_VERILOG_TAB_HH}" OR NOT EXISTS "${VG_VERILOG_TAB_CC}")
+            _vg_pregen_run("G2 win_bison verilog.y -> verilog.tab.hh/.cc"
+                "${WIN_BISON}"
+                "--defines=${VG_VERILOG_TAB_HH}"
+                "--output-file=${VG_VERILOG_TAB_CC}"
+                "--report-file=${VG_VERILOG_OUTPUT}"
+                "--graph=${VG_VERILOG_DOT}"
+                "${VERIBLE_SRC_DIR}/verible/verilog/parser/verilog.y")
+        endif()
+
+        # G3
+        if(NOT EXISTS "${VG_COMMAND_FILE_YY_CC}")
+            _vg_pregen_run("G3 win_flex command_file.lex -> command-file.yy.cc"
+                "${WIN_FLEX}" "--outfile=${VG_COMMAND_FILE_YY_CC}"
+                "${VERIBLE_SRC_DIR}/verible/common/analysis/command_file.lex")
+        endif()
+
+        # G4 / G5（依赖 G2 的头文件）
+        if(NOT EXISTS "${VG_TOKEN_ENUM_H}")
+            _vg_pregen_run("G4 token 枚举 -> verilog-token-enum.h"
+                "${CMAKE_COMMAND}" -DMODE=g4
+                "-DIN=${VG_VERILOG_TAB_HH}" "-DOUT=${VG_TOKEN_ENUM_H}"
+                -P "${_patch_script}")
+        endif()
+        if(NOT EXISTS "${VG_PARSE_INTERFACE_H}")
+            _vg_pregen_run("G5 剥离枚举段 -> verilog-parse-interface.h"
+                "${CMAKE_COMMAND}" -DMODE=g5
+                "-DIN=${VG_VERILOG_TAB_HH}" "-DOUT=${VG_PARSE_INTERFACE_H}"
+                -P "${_patch_script}")
+        endif()
+
+        # G6a / G6b（G6b 必须吃 G6a 的产物，不是 .tab.cc —— 见上文 ★ 注释）
+        if(NOT EXISTS "${VG_MOVED_TAB_CC}")
+            _vg_pregen_run("G6a std::move 补丁 -> verilog-moved.tab.cc"
+                "${CMAKE_COMMAND}" -DMODE=g6a
+                "-DIN=${VG_VERILOG_TAB_CC}" "-DOUT=${VG_MOVED_TAB_CC}"
+                -P "${_patch_script}")
+        endif()
+        if(NOT EXISTS "${VG_FINAL_TAB_CC}")
+            _vg_pregen_run("G6b RecordSyntaxError 补丁 -> verilog-final.tab.cc"
+                "${CMAKE_COMMAND}" -DMODE=g6b
+                "-DIN=${VG_MOVED_TAB_CC}" "-DOUT=${VG_FINAL_TAB_CC}"
+                -P "${_patch_script}")
+        endif()
+
+        if(_vg_pregen_failed)
+            message(FATAL_ERROR
+                "Verible: 配置期预生成失败。请先 `cmake --build . --target verible_generated`，"
+                "再重新 configure；若仍失败，检查 winflexbison 安装与 "
+                "cmake/scripts/verible-gen-baseline.cmake 的版本基线。")
+        endif()
+        message(STATUS "Verible: 配置期预生成完成，生成物将在本次 configure 内挂接到 target")
+    endif()
+endif()
+
 # -----------------------------------------------------------------------------
 # 汇总 target：让 `cmake --build . --target verible_generated` 一次产出全部
 # -----------------------------------------------------------------------------

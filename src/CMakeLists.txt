@@ -35,6 +35,34 @@ endif()
 message(STATUS "src/: 目标骨架已就位")
 
 # -----------------------------------------------------------------------------
+#  可选的 LTO（/GL + /LTCG）—— 只作用于**本项目自有代码**，不动 thirdparty
+# -----------------------------------------------------------------------------
+#  为什么不是直接用 CMAKE_INTERPROCEDURAL_OPTIMIZATION：那样连 Verible 的
+#  flex 生成 lexer 一起进 /GL，链接期会稳定失败 35 个未解析符号
+#  （verilogFlexLexer::* / veribleCommandFileFlexLexer::* / verilog_parse /
+#   verilog_debug / verilog_symbol_name），/WHOLEARCHIVE 也救不回。
+#  复现记录见 audit/2026-11-19/static/LTCG.md 与
+#  audit/2026-11-18/phase2/B2-B3-REPORT.md（两次历史尝试）。
+#
+#  这里的做法：只给 src/ 子树（自有代码）加 /GL，thirdparty 保持原生机器码，
+#  链接期再加 /LTCG。MSVC 支持 /GL 对象与原生对象混合链接，第三方目标不进
+#  LTO 图，因此无需改造 cmake/Verible.cmake 的生成物。
+#
+#  默认 OFF：这是可选优化，不是构建正确性的必需项。
+option(FPGA_LSP_LTO_OWN_CODE "只对本项目自有代码启用 LTO（/GL + /LTCG）" OFF)
+if(FPGA_LSP_LTO_OWN_CODE AND MSVC)
+    add_compile_options($<$<CONFIG:Release>:/GL>)
+    add_link_options(
+        $<$<CONFIG:Release>:/LTCG>
+        $<$<CONFIG:Release>:/OPT:REF>
+        $<$<CONFIG:Release>:/OPT:ICF>
+    )
+    # /GL 会写 IL 而非机器码，目标文件变大、链接变慢，但跨 TU 内联/去虚化有机会
+    # 抵消。是否值得由构建耗时与二进制体积的 A/B 决定（见 LTCG.md 的实测表）。
+    message(STATUS "src/: LTO 仅对自有代码启用（/GL + /LTCG，thirdparty 保持原生）")
+endif()
+
+# -----------------------------------------------------------------------------
 # 已接入的子目录
 # -----------------------------------------------------------------------------
 # 阶段 2-α：平台层 + JSON-RPC 传输层（不依赖 Verible）

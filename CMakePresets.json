@@ -38,27 +38,31 @@
     },
     {
       "name": "windows-msvc-release",
-      "displayName": "Windows / MSVC Release",
-      "description": "发布构建：/MT + /O2（默认）",
+      "displayName": "Windows / MSVC Release（全量 LTO）",
+      "description": "发布构建：/MT + /O2 + 全量 LTO（自有代码与 Verible 都参与 /GL，链接期 /LTCG）。实测：体积 -1.9%、lint 规则层 CPU -11.9%、解析层基本不变、重链约 48 s。输出到 build/。",
       "inherits": "windows-msvc-base",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_INTERPROCEDURAL_OPTIMIZATION": "ON",
+        "FPGA_LSP_VERIBLE_ALLOW_LTO": "ON"
+      }
     },
     {
       "name": "windows-msvc-relwithdebinfo",
       "displayName": "Windows / MSVC RelWithDebInfo",
-      "description": "带调试信息的发布构建：/MT + /O2 + PDB",
+      "description": "带调试信息的发布构建：/MT + /O2 + PDB，**不开 LTO**（保留可调试性与快速迭代）",
       "inherits": "windows-msvc-base",
       "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" }
     },
     {
       "name": "windows-msvc-release-lto",
-      "displayName": "Windows / MSVC Release + LTO",
-      "description": "Phase 2 / B3：在 Release 基础上加全程序优化与函数/数据折叠（独立 preset，默认不切换）",
+      "displayName": "Windows / MSVC Release + 全量 LTO（独立目录）",
+      "description": "与 windows-msvc-release 相同的 LTO 配置，但输出到 build-lto/，用于与普通 build/ 做 A/B 对照（保留兼容）。",
       "inherits": "windows-msvc-release",
+      "binaryDir": "${sourceDir}/build-lto",
       "cacheVariables": {
         "CMAKE_INTERPROCEDURAL_OPTIMIZATION": "ON",
-        "CMAKE_CXX_FLAGS_RELEASE": "/O2 /Ob2 /DNDEBUG /GL /Gw /Gy",
-        "CMAKE_EXE_LINKER_FLAGS_RELEASE": "/LTCG /OPT:REF /OPT:ICF"
+        "FPGA_LSP_VERIBLE_ALLOW_LTO": "ON"
       }
     },
     {

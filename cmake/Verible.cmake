@@ -232,10 +232,17 @@ foreach(_pkg IN LISTS _VERIBLE_PACKAGES)
         # 二进制目录与源码目录分离，保持源码树干净
         add_subdirectory("${FPGA_LSP_VERIBLE_DIR}/${_pkg}"
                          "${CMAKE_BINARY_DIR}/verible/${_pkg}")
-        # B3 / LTO：Verible 的 flex/bison 生成 TU 在 `/GL` 下会把 Parser 符号
-        # 在 LTCG 阶段丢弃（/WHOLEARCHIVE 也救不回）。第三方代码不做 LTO，
-        # 只让本项目自有代码参与全程序优化，同时避免生成物与 LTO 的兼容问题。
-        if(CMAKE_INTERPROCEDURAL_OPTIMIZATION)
+        # 是否让 Verible 也参与 LTO（/GL）。
+        #
+        # 历史：B3 曾把「链接期 35 个 Verible 符号未解析」归因为「flex/bison 生成 TU
+        # 在 /GL 下会被 LTCG 丢弃」，于是这里无条件强制 OFF。该归因**已被推翻**：
+        # 真正原因是「全新 configure 时生成 TU 还没产出，verible_mount_generated_sources()
+        # 挂接被跳过」，库建出来缺 lexer/parser 源 —— 与 /GL 无关，不加 LTO 的干净
+        # 构建同样失败（见 audit/2026-11-19/static/LTCG.md 的 E5 对照）。
+        #
+        # 因此这里改为可配置：默认仍 OFF（保持现有构建行为与构建耗时不变），
+        # 设 -DFPGA_LSP_VERIBLE_ALLOW_LTO=ON 可让 Verible 真正进入 LTO 图。
+        if(CMAKE_INTERPROCEDURAL_OPTIMIZATION AND NOT FPGA_LSP_VERIBLE_ALLOW_LTO)
             get_property(_verible_targets DIRECTORY "${FPGA_LSP_VERIBLE_DIR}/${_pkg}"
                          PROPERTY BUILDSYSTEM_TARGETS)
             foreach(_verible_target IN LISTS _verible_targets)
