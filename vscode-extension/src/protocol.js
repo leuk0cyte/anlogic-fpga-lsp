@@ -15,6 +15,9 @@ const METHODS = Object.freeze({
     //   { al?, project?, paths?: string[], modules?: string[], full?: boolean, generation? }
     // Older servers never send it -> the client degrades to a debounced full refresh.
     indexChanged: 'fpgaLsp/indexChanged',
+    // Server -> client notification: the parsed report store changed (flow wrote new reports,
+    // a watched file was touched, ...). Payload: { stage?, sections?: string[], generatedAt? }.
+    reportsChanged: 'fpgaLsp/reportsChanged',
 });
 
 // `fpgaLsp/reports` section hints (Phase 2). The server may ignore them (older builds) --

@@ -632,6 +632,28 @@ test('extension: activation wires views, commands, reports panel and flow events
     eq(FakeLanguageClient.requests.filter((entry) => entry.method === 'fpgaLsp/moduleTree').length,
         afterRequests, 'foreign event ignored');
 
+    // D2: `fpgaLsp/reportsChanged` must repaint only a *visible* panel, and only once per burst.
+    const reportsHandler = clientInstance.notificationHandlers['fpgaLsp/reportsChanged'];
+    ok(reportsHandler, 'reportsChanged handler registered');
+    const countReports = () => FakeLanguageClient.requests
+        .filter((entry) => entry.method === 'fpgaLsp/reports').length;
+    const visibleBefore = countReports();
+    reportsHandler({ stage: 'all', sections: ['qor'] });
+    reportsHandler({ stage: 'all', sections: ['qor'] });
+    reportsHandler({ stage: 'all', sections: ['qor'] });
+    await new Promise((resolve) => setTimeout(resolve, 300));  // > panel debounce (150 ms)
+    const visibleDelta = countReports() - visibleBefore;
+    ok(visibleDelta >= 1, `visible panel refreshed (${visibleDelta} request(s))`);
+    ok(visibleDelta <= 2, `one debounced refresh, not three (${visibleDelta} request(s))`);
+
+    // With no visible panel the event must not touch the network at all (cache is still dropped).
+    for (const webviewPanel of mock.__state.webviewPanels) webviewPanel.dispose();
+    const hiddenBefore = countReports();
+    reportsHandler({ stage: 'all', sections: ['qor'] });
+    reportsHandler({});
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    eq(countReports(), hiddenBefore, 'no refresh when no reports panel is visible');
+
     const flowChannel = mock.__state.outputChannels.find((channel) => channel.name === 'FPGA Flow');
     ok(flowChannel, 'FPGA Flow output channel exists');
     ok(flowChannel.lines.some((line) => line.includes('done')), 'flow done logged');
@@ -999,12 +1021,16 @@ test('reports panel: first paint is a full render, later refreshes patch section
     await panel.show();
     const created = mock.__state.webviewPanels[0];
     ok(created.webview.html.includes('Setup WNS'), 'first paint rendered the report');
-    eq(panel.stats.html, 1, 'one full render');
-    eq(panel.stats.patch, 0, 'no patch yet');
+    eq(panel.stats.html, 1, 'one full render (the summary skeleton)');
+    // D1: the table sections are pulled afterwards and patched in -- for a server that ignores
+    // `section` (this fake) the service answers from the full payload it already has, so the
+    // whole open costs exactly one request.
+    eq(panel.stats.patch, 1, 'sections patched in right after the skeleton');
+    eq(requests.length, 1, 'no extra round trip when the server ignores `section`');
 
     await panel.refresh();
     eq(panel.stats.html, 1, 'no full re-render on refresh');
-    eq(panel.stats.patch, 1, 'one section patch');
+    eq(panel.stats.patch, 2, 'one section patch');
     eq(mock.__state.webviewPanels[0].webview.html, created.webview.html, 'webview.html untouched');
     const patch = mock.__state.webviewMessages.filter((message) => message.type === 'patch').pop();
     ok(patch, 'patch message posted');
@@ -1017,12 +1043,18 @@ test('reports panel: first paint is a full render, later refreshes patch section
 
 test('reports panel: a newer refresh cancels the older request', async () => {
     let release;
-    // Echo `section` so the service treats the server as section-capable (no fallback request);
-    // the point of this case is cancellation, not section detection.
+    // The *summary* request is the one held open; section requests resolve at once so the test
+    // stays about cancellation (D1 added section fetches behind the summary fetch).
     const service = new ReportsService({
-        request: () => new Promise((resolve) => {
-            release = () => resolve(Object.assign(sampleReports(), { section: 'summary' }));
-        }),
+        request: (method, params) => {
+            const section = (params && params.section) || 'summary';
+            if (section === 'summary') {
+                return new Promise((resolve) => {
+                    release = () => resolve(Object.assign(sampleReports(), { section: 'summary' }));
+                });
+            }
+            return Promise.resolve(Object.assign(sampleReports(), { section }));
+        },
     });
     const panel = new ReportsPanel({ rpc: { request: async () => sampleReports() }, reportsService: service });
     const pendingShow = panel.show(); // paints the loading page, then awaits reports
@@ -1032,7 +1064,82 @@ test('reports panel: a newer refresh cancels the older request', async () => {
     release();
     await Promise.allSettled([pendingShow, slow, newest]);
     ok(panel.stats.cancelled >= 1, `older refresh cancelled (got ${panel.stats.cancelled})`);
-    eq(panel.stats.html + panel.stats.patch, 1, 'only the newest refresh repaints');
+    eq(panel.stats.html, 1, 'only the newest refresh paints the page');
+    eq(panel.stats.patch, 1, 'only the newest refresh patches the sections');
+    panel.dispose();
+});
+
+// D1 (wave 2): the panel used to request only `{section:'summary'}`, and a section-capable
+// server answers that with files+artifacts only -- so QoR / Timing / Area were always empty.
+// The panel now paints the summary skeleton and then pulls the table sections on demand.
+test('reports panel: QoR / Timing / Area are loaded on demand and are non-empty', async () => {
+    const requests = [];
+    const payloads = {
+        summary: {
+            ok: true, section: 'summary',
+            files: { qor: 'Y:/p/route.qor', timing: 'Y:/p/final.rpt', area: 'Y:/p/route.area' },
+            artifacts: { bit: null, runs: [] },
+            flow: { running: false, stage: 'idle', elapsed: 0, lastMessage: '' },
+        },
+        qor: { ok: true, section: 'qor', qor: { step: 'route', metrics: { 'Setup WNS': '4388' }, suggestions: [] } },
+        area: {
+            ok: true, section: 'area',
+            area: { rows: [{ resource: '#lut6', used: 1234, total: 45000, utilization: '2.7%' }] },
+        },
+        timing: {
+            ok: true, section: 'timing',
+            timing: {
+                summary: { SWNS: 4.388, STNS: 0, HWNS: 1.2, HTNS: 0, status: 'Met' },
+                groups: [{ name: 'clk_50M', paths: [{ slack: 1.25, begin: 'ff_a/Q', end: 'ff_b/D', check: 'Setup' }] }],
+            },
+        },
+    };
+    const service = new ReportsService({
+        request: async (method, params) => {
+            const section = (params && params.section) || 'summary';
+            requests.push(section);
+            return JSON.parse(JSON.stringify(payloads[section]));
+        },
+    });
+    const panelsBefore = mock.__state.webviewPanels.length;
+    const messagesBefore = mock.__state.webviewMessages.length;
+    const panel = new ReportsPanel({ rpc: { request: async () => payloads.summary }, reportsService: service });
+
+    await panel.show();
+    const created = mock.__state.webviewPanels[panelsBefore];
+    ok(created, 'panel created');
+    // summary -> skeleton, then qor + area (the Dashboard tab needs both). Timing is NOT fetched
+    // until its tab is opened: it can be megabytes of path data.
+    eq(requests.join(','), 'summary,qor,area', 'eager: summary + qor + area, timing stays lazy');
+    eq(panel.stats.html, 1, 'skeleton painted once');
+    eq(panel.stats.patch, 1, 'sections patched in after the skeleton');
+    const firstPatch = mock.__state.webviewMessages.slice(messagesBefore).filter((m) => m.type === 'patch').pop();
+    ok(firstPatch, 'patch posted');
+    includes(firstPatch.sections.qor, 'Setup WNS', 'QoR tab is non-empty');
+    includes(firstPatch.sections.area, '#lut6', 'Area tab is non-empty');
+    includes(firstPatch.sections.dashboard, '#lut6', 'dashboard pulls the loaded sections too');
+    includes(firstPatch.sections.timing, 'No path groups.', 'Timing stays empty until opened');
+
+    // Opening the Timing tab fetches exactly that section and patches just it (+dashboard).
+    created.webview.__receive({ type: 'tab', id: 'timing' });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    eq(requests.filter((name) => name === 'timing').length, 1, 'timing fetched exactly once');
+    const timingPatch = mock.__state.webviewMessages.slice(messagesBefore)
+        .filter((m) => m.type === 'patch' && m.sections && m.sections.timing).pop();
+    ok(timingPatch, 'timing section patch posted');
+    includes(timingPatch.sections.timing, 'ff_a/Q', 'Timing tab is non-empty (real path data)');
+    includes(timingPatch.sections.dashboard, '4.388', 'dashboard WNS card filled from the timing section');
+
+    // Re-visiting the tab must not fetch again (the section payload is kept).
+    created.webview.__receive({ type: 'tab', id: 'timing' });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    eq(requests.filter((name) => name === 'timing').length, 1, 'no duplicate fetch when the tab is revisited');
+
+    // All three tables are now non-empty in one merged view (what the webview would show).
+    const merged = panel.reports;
+    ok(merged.qor && merged.qor.metrics['Setup WNS'] === '4388', 'qor merged');
+    ok(merged.area && merged.area.rows.length === 1, 'area merged');
+    ok(merged.timing && merged.timing.groups.length === 1, 'timing merged');
     panel.dispose();
 });
 

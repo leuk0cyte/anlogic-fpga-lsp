@@ -491,6 +491,12 @@ function activate(context) {
         refresh() {
             return Promise.allSettled(Object.values(reportsPanels).map((panel) => panel.refresh()));
         },
+        // D2: `fpgaLsp/reportsChanged` repaints only what the user can see, debounced per panel.
+        requestRefresh(options) {
+            for (const panel of Object.values(reportsPanels)) {
+                if (panel.visible) panel.requestRefresh(options);
+            }
+        },
         dispose() {
             Object.values(reportsPanels).forEach((panel) => panel.dispose());
         },
@@ -1463,6 +1469,21 @@ function activate(context) {
             // Register after the connection is up so no custom notification is missed.
             client.onNotification(METHODS.flowEvent, (event) => {
                 if (flowController) flowController.onFlowEvent(event);
+            });
+            // D2: the server's report store changed (flow wrote new reports / a watched report
+            // file was touched). Drop the cached payloads so the next fetch is fresh, and repaint
+            // **only a visible panel** -- and only once per burst (the panel debounces 150 ms).
+            // Hidden panels re-read when they are opened, so there is nothing to do for them.
+            let reportsChangedCount = 0;
+            client.onNotification(METHODS.reportsChanged, () => {
+                reportsChangedCount += 1;
+                reportsService.invalidate();
+                if (reportsPanel && reportsPanel.visible) {
+                    reportsPanel.requestRefresh({ force: true });
+                }
+                if (reportsChangedCount <= 3 || reportsChangedCount % 20 === 0) {
+                    diag(`reportsChanged (#${reportsChangedCount})`);
+                }
             });
             // Phase 2: the server tells us when its HDL index changed. Targeted updates first;
             // an unknown/newer payload shape degrades to an immediate full refresh.

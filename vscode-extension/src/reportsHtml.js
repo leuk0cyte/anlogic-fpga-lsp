@@ -820,6 +820,9 @@ ${area.css}`;
       document.querySelectorAll('.tab-panel').forEach(function (panel) {
         panel.classList.toggle('active', panel.id === 'tab-' + button.dataset.tab);
       });
+      // D1: tell the host which tab became visible so it can fetch that report section on
+      // demand (QoR / Timing / Area are no longer part of the lightweight "summary" payload).
+      api.postMessage({ type: 'tab', id: button.dataset.tab });
     });
   });
   document.querySelectorAll('[data-action]').forEach(function (button) {
@@ -903,6 +906,8 @@ module.exports = {
     buildReportView,
     reportSectionIds,
     reportMeta,
+    // D1: the panel patches single sections, so it computes the area block once and reuses it.
+    areaTab,
     REPORT_TABS,
     STAGE_TABS,
     tabId,
@@ -915,12 +920,19 @@ module.exports = {
     fmtElapsed,
 };
 
-/** Full-page section list + HTML map for one payload (used by the panel's patch path). */
-function renderReportSection(options, id) {
+/**
+ * Full-page section list + HTML map for one payload (used by the panel's patch path).
+ * @param {{reports: any, stage?: string}} options
+ * @param {string} id section id
+ * @param {{html: string, css: string}} [area] optional cached `areaTab(view.area)` result (D1:
+ *   the panel now re-renders a single section, and recomputing the area table for every section
+ *   was the most expensive part of a patch).
+ */
+function renderReportSection(options, id, area) {
     const opts = options || {};
     const reports = opts.reports && typeof opts.reports === 'object' ? opts.reports : { ok: false };
     const stage = opts.stage === 'syn' || opts.stage === 'phy' ? opts.stage : '';
     const view = buildReportView(reports, stage);
     if (view.ok !== true) return '';
-    return reportSectionHtml(view, reports, id);
+    return reportSectionHtml(view, reports, id, area);
 }
