@@ -27,6 +27,9 @@ param(
     # 允许 -Only latency,protocol：pwsh -File 会把它合成一个字符串，下面统一拆分校验
     [string[]]$Only = @("all"),
     [string]$Exe = "",
+    # 对比基线目录。wave1 = audit\2026-11-19\fix\baseline（改动前原始基线）；
+    # wave2 起 = audit\2026-11-19\fix\baseline-wave2（wave1 收口后形态）。
+    [string]$Baseline = "audit\2026-11-19\fix\baseline",
     [int]$ReportMb = 10,
     [switch]$WithVscode,
     [switch]$NoProtocol,
@@ -56,7 +59,15 @@ foreach ($stage in $Only) {
 
 $resultsDir = Join-Path $repo "audit\2026-11-19\fix\results"
 $tagDir = Join-Path $resultsDir $Tag
-$baselineDir = Join-Path $repo "audit\2026-11-19\fix\baseline"
+# 对比基线目录。wave1 用 fix/baseline（改动前原始基线）；wave2 起用 fix/baseline-wave2
+# （= wave1 收口后的形态），否则所有 tag 都会被拿去和"修复前"比、看起来全是改善。
+$baselineDir = if ($Baseline -and [System.IO.Path]::IsPathRooted($Baseline)) {
+    $Baseline
+} elseif ($Baseline) {
+    Join-Path $repo $Baseline
+} else {
+    Join-Path $repo "audit\2026-11-19\fix\baseline"
+}
 New-Item -ItemType Directory -Force -Path $resultsDir, $tagDir | Out-Null
 
 function Want([string]$stage) {
