@@ -76,3 +76,7 @@ __pycache__/
 # ---- 修复阶段的中间产物（每个 tag 的协议原始转储，可重跑生成；只留 baseline 与 wave1-final）----
 audit/2026-11-19/fix/results/*/lsp-raw*.json
 audit/2026-11-19/fix/results/*/mcp-raw*.json
+
+# ---- 审计原始工具输出（体积大且可用 tools/audit/run_audit.ps1 重跑生成；只提交报告本身）----
+audit/**/clang-tidy.json
+audit/**/clang-tidy.txt

@@ -37,7 +37,11 @@ import time
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 DB = os.path.join(PROJECT_ROOT, "audit", "_db", "compile_commands.json")
-AUDIT_DIR = os.path.join(PROJECT_ROOT, "audit", "2026-11-18", "static")
+# Overridable so a fresh audit run does not overwrite a previous one:
+#   set FPGA_LSP_AUDIT_DIR=audit\2026-11-19\static
+AUDIT_DIR = os.environ.get("FPGA_LSP_AUDIT_DIR") or os.path.join(
+    PROJECT_ROOT, "audit", "2026-11-18", "static"
+)
 LOGS_DIR = os.path.join(PROJECT_ROOT, "audit", "_db", "tidy-logs")
 OUT_TXT = os.path.join(AUDIT_DIR, "clang-tidy.txt")
 OUT_JSON = os.path.join(AUDIT_DIR, "clang-tidy.json")
@@ -85,7 +89,14 @@ def clang_tidy_exe() -> str:
 def tool_version(exe: str) -> str:
     try:
         p = subprocess.run([exe, "--version"], capture_output=True, text=True, errors="replace", timeout=120)
-        return p.stdout.strip().splitlines()[0] if p.stdout.strip() else "unknown"
+        lines = [ln.strip() for ln in p.stdout.splitlines() if ln.strip()]
+        # `clang-tidy --version` prints "LLVM (http://llvm.org/):" on line 1 and
+        # "  LLVM version 23.1.5" on line 2 -- recording line 1 alone loses the
+        # only part that matters for reproducibility.
+        for ln in lines:
+            if "version" in ln.lower():
+                return ln.replace("LLVM version", "LLVM").strip()
+        return lines[0] if lines else "unknown"
     except Exception as exc:  # noqa: BLE001
         return f"unavailable ({exc})"
 
