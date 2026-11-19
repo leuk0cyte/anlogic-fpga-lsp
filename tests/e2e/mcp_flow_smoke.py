@@ -97,8 +97,28 @@ def check(condition: bool, message: str) -> None:
 
 
 def structured(result: dict) -> dict:
-    check("structuredContent" in result, "缺少 structuredContent：%s" % list(result))
-    return result["structuredContent"]
+    """取结果里的结构化对象。
+
+    P-B1 起服务端有两种档位，客户端必须都能读：
+      * 默认档（未声明 capabilities.experimental.structuredContent）：
+        只有 content[0].text，内容是**紧凑 JSON**（不再重复发 structuredContent）；
+      * 协商档：structuredContent + 一行摘要 text。
+    以前两档都发全量，实测占响应 58–64%（doc/design/protocol-optimization.md §B1）。
+    """
+    if "structuredContent" in result:
+        payload = result["structuredContent"]
+        check(isinstance(payload, dict), "structuredContent 必须是对象：%s" % type(payload))
+        return payload
+    items = result.get("content") or []
+    check(bool(items) and items[0].get("type") == "text",
+          "结果既无 structuredContent 也无 text：%s" % list(result))
+    try:
+        payload = json.loads(items[0].get("text", ""))
+    except ValueError as exc:
+        check(False, "content[0].text 不是 JSON：%s / %r" % (exc, items[0].get("text", "")[:200]))
+        return {}
+    check(isinstance(payload, dict), "content[0].text 解析后必须是对象：%s" % type(payload))
+    return payload
 
 
 def corpus_is_clean() -> tuple[bool, str]:

@@ -69,6 +69,26 @@ bool VersionSupported(const std::string& version) {
     return false;
 }
 
+// P-B1：协商档下 text 只留一行摘要，数据在 structuredContent 里。
+// 摘要必须能区分"成功"与"工具自己报告的失败"（后者 isError 仍为 false）。
+std::string SummaryOf(const Json& value) {
+    if (value.is_object()) {
+        const auto ok = value.find("ok");
+        if (ok != value.end() && ok->is_boolean() && !ok->get<bool>()) {
+            const auto error = value.find("error");
+            if (error != value.end() && error->is_string()) {
+                return "failed: " + error->get<std::string>();
+            }
+            return "failed";
+        }
+        return "ok";
+    }
+    if (value.is_array()) {
+        return "ok: " + std::to_string(value.size()) + " items";
+    }
+    return "ok";
+}
+
 // Python: `arguments[key] in (None, "")`
 bool MissingRequired(const Json* value) {
     if (value == nullptr) return true;
@@ -114,15 +134,24 @@ Json McpServer::WrapToolResult(const Json& value_in) const {
         value = std::move(wrapped);
     }
 
-    // Python json.dumps(..., indent=1)；键序按 nlohmann 的 map 排序（语义等价）
-    std::string text = value.dump(1, ' ', false, Json::error_handler_t::replace);
-    if (text.size() > kMaxToolResultBytes) {
+    // P-B1：只发一份数据。
+    //   默认档：紧凑 JSON 放进 text（旧客户端照旧读 text；JSON 空白无语义）。
+    //   协商档：**对象**结果进 structuredContent，text 只留一行摘要。
+    //   数组结果在任何档位都只能走 text（structuredContent 我们的约束是对象），
+    //   否则它会变成一句 "ok: N items" 而数据丢失。
+    // 以前的实现两档都发全量 → 实测占响应 58–64%。
+    const std::string compact = value.dump(-1, ' ', false, Json::error_handler_t::replace);
+    const bool structured_payload = options_.client_supports_structured && value.is_object();
+    std::string text = structured_payload ? SummaryOf(value) : compact;
+    // 上限按**载荷**算，不能按 text 算：协商档的 text 是一行摘要，
+    // 按它算会让超大 structuredContent 直接漏过去（客户端解析器会崩）。
+    if (compact.size() > kMaxToolResultBytes) {
         Json too_large = Json::object();
         too_large["ok"] = false;
         too_large["error"] = "Tool result too large; pass a smaller limit";
         too_large["truncated"] = true;
         value = std::move(too_large);
-        text = value.dump(1, ' ', false, Json::error_handler_t::replace);
+        text = value.dump(-1, ' ', false, Json::error_handler_t::replace);
     }
 
     Json content = Json::array();
@@ -134,7 +163,9 @@ Json McpServer::WrapToolResult(const Json& value_in) const {
     Json out = Json::object();
     out["content"] = std::move(content);
     out["isError"] = false;
-    if (value.is_object()) out["structuredContent"] = value;
+    if (structured_payload && value.is_object()) {
+        out["structuredContent"] = std::move(value);
+    }
     return out;
 }
 
@@ -272,6 +303,16 @@ std::optional<Json> McpServer::HandleSingle(const Json& message) {
         result["capabilities"] = std::move(capabilities);
         result["serverInfo"] = std::move(server_info);
         result["instructions"] = kInstructions;
+
+        // P-B1：只有客户端显式声明才走 structuredContent 档。
+        // 不按协议版本自动开启 —— 说 2025-06-18 但不声明能力的客户端仍然只读 text。
+        const Json* client_caps = GetMember(params, "capabilities");
+        const Json* experimental =
+            client_caps != nullptr ? GetMember(*client_caps, "experimental") : nullptr;
+        const Json* structured =
+            experimental != nullptr ? GetMember(*experimental, "structuredContent") : nullptr;
+        options_.client_supports_structured =
+            structured != nullptr && structured->is_boolean() && structured->get<bool>();
         return Response(id, std::move(result));
     }
 

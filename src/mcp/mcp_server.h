@@ -64,6 +64,13 @@ struct McpServerOptions {
     bool allow_flow = false;
     bool allow_write = false;
     std::string server_version = "0.1.0";
+    // P-B1：结果表示协商。
+    //   false（默认）= 只发 `content[0].text`，且是**紧凑** JSON（无缩进）——
+    //                  对未知客户端零回归，同时省掉 structuredContent 那一份。
+    //   true          = 发 `structuredContent` + 一行摘要 text（由
+    //                  initialize.params.capabilities.experimental.structuredContent 打开）。
+    // 两种档位都不会把同一份数据发两遍。
+    bool client_supports_structured = false;
 };
 
 class McpServer {
@@ -89,6 +96,9 @@ class McpServer {
     // 结果包装（供单测直接验证截断/错误语义）
     Json WrapToolResult(const Json& value) const;
     static Json WrapToolError(const std::string& message);
+
+    // 协商档是否开启（单测/诊断用）
+    bool structured_results() const { return options_.client_supports_structured; }
 
   private:
     std::optional<Json> HandleSingle(const Json& message);

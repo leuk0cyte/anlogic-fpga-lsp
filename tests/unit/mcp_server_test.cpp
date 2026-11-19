@@ -91,6 +91,9 @@ struct McpServerTest : public ::testing::Test {
     void SetUp() override {
         options.allow_flow = true;
         options.allow_write = true;
+        // P-B1：这些用例验的是"结构化结果"这条路径（旧行为），所以显式打开协商档；
+        // 默认档（只发紧凑 text）由下面 DefaultTier* 三个用例单独覆盖。
+        options.client_supports_structured = true;
         server = std::make_unique<McpServer>(dispatcher, options);
     }
 
@@ -411,4 +414,84 @@ TEST_F(McpServerTest, ErrorResultTextCarriesMessage) {
     const Json result = McpServer::WrapToolError("disk full");
     EXPECT_EQ(result.at("content").at(0).at("type").get<std::string>(), "text");
     EXPECT_EQ(result.at("content").at(0).at("text").get<std::string>(), "Error: disk full");
+}
+// ------------------------------------------------- P-B1：结果表示协商（单表示）
+
+// 默认档：不发 structuredContent，text 是**紧凑** JSON（无缩进、无换行）。
+// 这是绝大多数客户端的路径；旧实现会把同一份数据同时写进 text 与 structuredContent，
+// 实测占响应 58–64%（doc/design/protocol-optimization.md §B1）。
+TEST(McpResultRepresentationTest, DefaultTierIsCompactTextOnly) {
+    FakeDispatcher dispatcher;
+    McpServerOptions options;  // client_supports_structured = false
+    options.allow_flow = true;
+    McpServer server(dispatcher, options);
+
+    const auto response = server.Handle(CallRequest("fpga_project_list", Json::object()));
+    ASSERT_TRUE(response.has_value());
+    const Json& result = response->at("result");
+    EXPECT_FALSE(result.contains("structuredContent")) << "默认档不能重复发一份";
+
+    const Json parsed = Json::parse(result.at("content").at(0).at("text").get<std::string>());
+    EXPECT_TRUE(parsed.at("ok").get<bool>());
+    EXPECT_TRUE(parsed.contains("projects"));
+
+    // 紧凑：除字符串内容外不应出现格式化换行/缩进
+    const std::string text = result.at("content").at(0).at("text").get<std::string>();
+    EXPECT_EQ(text.find('\n'), std::string::npos);
+    EXPECT_EQ(text.find("\n "), std::string::npos);
+}
+
+// 协商档：数据进 structuredContent，text 只留一行摘要（不重复数据）。
+TEST(McpResultRepresentationTest, StructuredTierSendsSummaryText) {
+    FakeDispatcher dispatcher;
+    McpServerOptions options;
+    options.allow_flow = true;
+    options.client_supports_structured = true;
+    McpServer server(dispatcher, options);
+
+    const auto response = server.Handle(CallRequest("fpga_project_list", Json::object()));
+    ASSERT_TRUE(response.has_value());
+    const Json& result = response->at("result");
+    ASSERT_TRUE(result.contains("structuredContent"));
+    EXPECT_TRUE(result.at("structuredContent").at("ok").get<bool>());
+    EXPECT_EQ(result.at("content").at(0).at("text").get<std::string>(), "ok");
+}
+
+// initialize 里声明的能力决定档位；没声明（或声明 false）就保持默认档。
+TEST(McpResultRepresentationTest, InitializeNegotiatesStructuredCapability) {
+    FakeDispatcher dispatcher;
+    McpServerOptions options;
+    options.allow_flow = true;
+    McpServer server(dispatcher, options);
+
+    Json params = Json::object();
+    params["protocolVersion"] = "2025-06-18";
+    Json capabilities = Json::object();
+    Json experimental = Json::object();
+    experimental["structuredContent"] = true;
+    capabilities["experimental"] = experimental;
+    params["capabilities"] = capabilities;
+
+    EXPECT_TRUE(server.Handle(Request("initialize", params)).has_value());
+    EXPECT_TRUE(server.structured_results());
+
+    // 同一连接后续调用走结构化档
+    const auto response = server.Handle(CallRequest("fpga_project_list", Json::object()));
+    ASSERT_TRUE(response.has_value());
+    EXPECT_TRUE(response->at("result").contains("structuredContent"));
+}
+
+TEST(McpResultRepresentationTest, InitializeWithoutCapabilityKeepsCompactTier) {
+    FakeDispatcher dispatcher;
+    McpServerOptions options;
+    options.allow_flow = true;
+    options.client_supports_structured = true;  // 先打开，验证 initialize 会按声明重置
+    McpServer server(dispatcher, options);
+
+    Json params = Json::object();
+    params["protocolVersion"] = "2025-06-18";
+    params["capabilities"] = Json::object();
+
+    EXPECT_TRUE(server.Handle(Request("initialize", params)).has_value());
+    EXPECT_FALSE(server.structured_results());
 }
