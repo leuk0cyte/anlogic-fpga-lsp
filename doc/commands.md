@@ -231,12 +231,16 @@ src/server/lsp_server.cpp     LSP 传输/线程/缓存；handler 只解包 param
 | `foldingRangeProvider` | `true` | v5 |
 | `inlayHintProvider` | `true` | v5 |
 | `positionEncoding` | `"utf-16"` | LSP 3.17（本项目位置换算口径） |
+| `executeCommandProvider` | `{commands:[…22 条…]}` | **B-A2 起声明**（见下） |
 | `serverInfo` | `{name:"fpga-lsp", version:"0.1.0"}` | — |
 
-**故意不声明 `executeCommandProvider`**（与 Python 一致）：vscode-languageclient 会把
-每个声明的命令注册成 VS Code 命令，与扩展自己 `contributes.commands` 冲突，
-导致 initialize 阶段抛 `command 'fpgalsp.check' already exists` 并断开连接。
-客户端通过 `workspace/executeCommand` 直接调用，不需要该能力。
+**`executeCommandProvider` 为什么是"全表减 3 条"**：vscode-languageclient 会把
+`commands` 里的**每一条**都注册成 VS Code 命令；扩展的 `contributes.commands` 已经
+占了 `fpgalsp.check` / `fpgalsp.info` / `fpgalsp.restart`，重复注册会让 initialize 抛
+`command 'fpgalsp.check' already exists` 并断开连接。
+因此 `ExecuteCommandNames()`（25 条，分发表的唯一来源）减去这 3 条得到
+`AdvertisedCommandNames()`（22 条）用于广播；那 3 条仍可被 `workspace/executeCommand`
+直接调用，只是不对外广告。`unit.commands` 会断言这个子集关系。
 
 ---
 

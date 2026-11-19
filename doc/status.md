@@ -17,6 +17,21 @@
 | MCP | **39 个工具全部真实实现（0 占位）**；默认只读，flow / 写操作需显式开启 |
 | TD 集成 | 会话与诊断、Flow + BitWizard、报告解析、ADC + SDC 符号、HDL 索引 |
 
+## M1 协议层减法（已落地，2026-11-19）
+
+> 计划见 [doc/design/README.md](design/README.md) §3；本节只记实测结果。
+
+| 项 | 改动 | 实测 |
+| --- | --- | --- |
+| P-B1 | 工具结果只发一份表示：默认紧凑 JSON 文本；声明 `experimental.structuredContent` 才走结构化档 | `fpga_project_structure` **38,393 → 16,168 B（−58%）**；`workspace_symbols` 111,545 → 47,795 B（−57%）；`project_files` 12,847 → 6,039 B（−53%） |
+| P-D9 | `reportsChanged` 不再 `Get(kAll)`，改按文件名推段名 + `revision` | IO 线程阻塞 768–784 ms（冷构建）→ µs 级；不再为 80 B 通知建 56 MB 快照 |
+| P-C1 | `indexChanged` 带 `modules[{module,portCount,defined}]` / `full`（客户端早已支持补丁） | 一次保存回传 16,426 B 全树 → ≤400 B，且 moduleTree 请求数 = 0（契约对齐 `moduleTree.js:221-255`） |
+| P-D1 | MCP 报告路径接 `ReportStore`（附着模式借用宿主实例） | 不再每次 `BuildReports`（冷 768–784 ms）；第二次起命中快照 |
+| P-C6 | `fpgaLsp/moduleTree`、`semanticTokens/full(/delta)` 进 worker 白名单 | 冷索引时不再与 `didChange` 抢 IO 线程 |
+| B-A2 | 声明 `executeCommandProvider`（广播 22 条；`check/info/restart` 因扩展已 contributes 而排除） | 第三方客户端可见；`unit.commands` 断言表/能力一致 |
+
+回归：`ctest` **59/59**（原 58 + 新增 `unit.commands`）。
+
 ## 审计 §0.2 第 1–6 条的修复（详见 [doc/audit/2026-11-19/static/FIXES.md](audit/2026-11-19/static/FIXES.md)）
 
 | 编号 | 问题 | 位置 |
