@@ -90,3 +90,23 @@ set_tests_properties(e2e.mcp_flow_smoke PROPERTIES
 )
 
 message(STATUS "tests/e2e: 已注册 e2e.mcp_flow_smoke（ctest -L e2e）")
+# =============================================================================
+#  P-A1：MCP loopback 多客户端并发
+# =============================================================================
+#  旧实现是 accept -> Serve（阻塞）-> 再 accept，第二个客户端能连上但永远没响应。
+#  这个用例用"半行不换行"把第一个连接卡住，断言第二个客户端仍能 ping 通；
+#  再用 FPGALSP_MCP_CLIENTS=1 断言超限连接收到 -32002（而不是静默挂起）。
+add_test(
+    NAME e2e.mcp_concurrency
+    COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/mcp_concurrency.py"
+            --server "$<TARGET_FILE:fpgalsp-native>"
+)
+set_tests_properties(e2e.mcp_concurrency PROPERTIES
+    LABELS "e2e"
+    TIMEOUT 120
+    # 会拉起子进程并占用 loopback 端口；与其它 e2e 一样不并行
+    RUN_SERIAL TRUE
+)
+
+message(STATUS "tests/e2e: 已注册 e2e.mcp_concurrency（ctest -L e2e）")

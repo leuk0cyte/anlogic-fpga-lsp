@@ -7,10 +7,13 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <set>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "jsonrpc/json_util.h"
 #include "jsonrpc/transport.h"
@@ -35,6 +38,13 @@ class McpTcpHost::Impl {
         root_ = root;
         allow_flow_ = allow_flow;
         allow_write_ = allow_write;
+        // P-A1：每个客户端一个会话线程；上限是为了不让"多开 agent"把 LSP 进程拖垮。
+        // 环境变量便于压测时调整（1 = 退回旧的串行行为）。
+        max_clients_ = 8;
+        if (const char* configured = std::getenv("FPGALSP_MCP_CLIENTS"); configured != nullptr) {
+            const int parsed = std::atoi(configured);
+            if (parsed >= 1 && parsed <= 64) max_clients_ = parsed;
+        }
         WSADATA data;
         if (WSAStartup(MAKEWORD(2, 2), &data) != 0) {
             if (error) *error = "WSAStartup failed";
@@ -106,6 +116,14 @@ class McpTcpHost::Impl {
 
     unsigned short actual_port() const { return actual_port_; }
 
+    // 兜底：main 一定会调 Shutdown()；万一没有，别让 joinable thread 在析构里 terminate。
+    ~Impl() {
+        if (thread_.joinable()) thread_.detach();
+        for (std::thread& worker : sessions_) {
+            if (worker.joinable()) worker.detach();
+        }
+    }
+
     void Shutdown() {
 #ifdef _WIN32
         stop_.store(true);
@@ -120,11 +138,23 @@ class McpTcpHost::Impl {
             closesocket(wake_);
             wake_ = INVALID_SOCKET;
         }
-        if (thread_.joinable()) {
-            // 若线程正在 Serve() 里阻塞 recv（有客户端连着），join 会一直等；
-            // accept 循环本身已经能立刻看到 stop_，所以这里仍 detach 让进程正常退出。
-            thread_.detach();
+        // P-A1：会话线程可能正阻塞在 recv 上 —— 必须 shutdown 对端 socket 才能唤醒。
+        // （只 closesocket 不够：另一个线程阻塞在 recv 时，close 的语义是未定义的。）
+        {
+            std::lock_guard<std::mutex> lock(sessions_mutex_);
+            for (SOCKET client : clients_) {
+                ::shutdown(client, SD_BOTH);
+            }
         }
+        std::vector<std::thread> pending;
+        {
+            std::lock_guard<std::mutex> lock(sessions_mutex_);
+            pending.swap(sessions_);
+        }
+        for (std::thread& worker : pending) {
+            if (worker.joinable()) worker.join();
+        }
+        if (thread_.joinable()) thread_.join();  // accept 循环：listen 已关 + Wake 过，会正常退出
         WSACleanup();
 #endif
     }
@@ -166,10 +196,45 @@ class McpTcpHost::Impl {
                 if (!stop_.load()) platform::default_logger().warn("mcp-tcp: accept failed");
                 return;
             }
+            // P-A1：以前是"accept -> Serve（阻塞到客户端断开）-> 再 accept"，
+            // 第二个 MCP 客户端根本连不上（connect 成功但永远没响应）。
+            // 现在每连接一个会话线程，共享同一个 Engine。
+            if (active_.load() >= max_clients_) {
+                // 先回一条明确的 JSON-RPC error，再干净地收尾。
+                // ⚠ 不能 SendAll 完立刻 closesocket：对端可能已经发来 initialize
+                // 而我们没读 —— 关闭带未读数据的 socket 会发 RST，客户端看到的是
+                // "连接被中止"(10053) 而不是我们刚写的错误。
+                // 正确顺序：shutdown(SD_SEND) -> 排空接收缓冲 -> closesocket。
+                const std::string error = jsonrpc::Serialize(
+                    jsonrpc::MakeError(std::string(), -32002, "Too many MCP clients"),
+                    true);
+                SendAll(client, error + "\n");
+                ::shutdown(client, SD_SEND);
+                DWORD timeout_ms = 500;
+                setsockopt(client, SOL_SOCKET, SO_RCVTIMEO,
+                           reinterpret_cast<const char*>(&timeout_ms), sizeof(timeout_ms));
+                char drain[4096];
+                while (recv(client, drain, sizeof(drain), 0) > 0) {
+                }
+                closesocket(client);
+                platform::default_logger().warn("mcp-tcp: client rejected (limit=" +
+                                                std::to_string(max_clients_) + ")");
+                continue;
+            }
             platform::default_logger().info("mcp-tcp: client connected");
-            Serve(client);
-            closesocket(client);
-            platform::default_logger().info("mcp-tcp: client disconnected");
+            std::lock_guard<std::mutex> lock(sessions_mutex_);
+            sessions_.emplace_back([this, client]() {
+                Serve(client);
+                closesocket(client);
+                active_.fetch_sub(1);
+                {
+                    std::lock_guard<std::mutex> guard(sessions_mutex_);
+                    clients_.erase(client);
+                }
+                platform::default_logger().info("mcp-tcp: client disconnected");
+            });
+            clients_.insert(client);
+            active_.fetch_add(1);
         }
     }
 
@@ -269,6 +334,12 @@ class McpTcpHost::Impl {
     unsigned short actual_port_ = 0;
     std::thread thread_;
     std::atomic<bool> stop_{false};
+    // P-A1：会话（每客户端一个线程）
+    int max_clients_ = 8;
+    std::atomic<int> active_{0};
+    std::mutex sessions_mutex_;
+    std::vector<std::thread> sessions_;
+    std::set<SOCKET> clients_;
 #endif
 };
 
