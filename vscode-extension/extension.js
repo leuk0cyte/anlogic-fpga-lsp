@@ -21,6 +21,8 @@ const { LanguageClient, TransportKind } = require('vscode-languageclient/node');
 const { METHODS, COMMANDS, VSCodeCommands, VIEWS } = require('./src/protocol');
 const { resolveServer, resolveServerRoot: locateServerRoot } = require('./src/locateServer');
 const { resolveVerible } = require('./src/verible');
+// Wave 3：状态目录（原来写在工作目录的 .fpgalsp）——统一解析到系统 temp。
+const { STATE_ENV, resolveStateDir } = require('./src/stateDir');
 const { VeribleDiagnosticsClient } = require('./src/veribleDiagnostics');
 const { checkPython, appendLog, flushLogSync } = require('./src/launchCheck');
 const {
@@ -205,12 +207,15 @@ function activate(context) {
     // 原生 exe 没有"serverRoot"概念，但 MCP/日志路径仍需要一个稳定的工作目录
     const serverRoot = path.dirname(server.exe);
     const cwd = workspaceFolder() || serverRoot;
+    // Wave 3：状态目录统一到系统 temp（用户要求工作目录不再出现 .fpgalsp）。
+    const stateDir = resolveStateDir(cwd);
 
     const env = Object.assign({}, process.env);
+    env[STATE_ENV] = stateDir;  // 交给服务端决定 logs/run/cache 落哪
 
     const tdPath = config().get('tdPath') || '';
     const logFileSetting = config().get('logFile') || '';
-    const logFile = logFileSetting || path.join(cwd, '.fpgalsp', 'logs', 'server.log');
+    const logFile = logFileSetting || path.join(stateDir, 'logs', 'server.log');
 
     // 两种服务器的参数形状不同：
     //   native: fpgalsp-native.exe --stdio [--td <root>] [--log <file>]
@@ -233,9 +238,9 @@ function activate(context) {
         options: { cwd: cwd, env: env },
     };
 
-    // everything about the launch goes to <workspace>/.fpgalsp/logs/extension.log, because
+    // everything about the launch goes to <state>/logs/extension.log (state = 系统 temp), because
     // "Server process exited with code N" alone is impossible to act on.
-    const extLog = path.join(cwd, '.fpgalsp', 'logs', 'extension.log');
+    const extLog = path.join(stateDir, 'logs', 'extension.log');
     const diag = (message) => appendLog(extLog, message);
     diag(`activate ext=${context.extensionPath} kind=${server.kind} source=${server.source} ` +
         `${isNative ? 'exe=' + server.exe : 'serverRoot=' + serverRoot} cwd=${cwd}`);
@@ -346,7 +351,7 @@ function activate(context) {
             pythonPath: python(),
             nativeExe: isNative ? server.exe : '',
             tdPath: config().get('tdPath') || '',
-            logFile: path.join(root, '.fpgalsp', 'logs', 'mcp.log'),
+            logFile: path.join(resolveStateDir(root), 'logs', 'mcp.log'),
             allowFlow: config().get('mcp.allowFlow') === true,
             allowWrite: config().get('mcp.allowWrite') === true,
             version: context.extension.packageJSON.version,
@@ -592,7 +597,7 @@ function activate(context) {
                 'If semantic tokens are 0 but languageId is verilog: grammar coloring should still work;',
                 'check the theme scope colors with "Developer: Inspect Editor Tokens and Scopes".',
             ].join('\n');
-            const dir = path.join(cwd, '.fpgalsp', 'logs');
+            const dir = path.join(stateDir, 'logs');
             fs.mkdirSync(dir, { recursive: true });
             fs.writeFileSync(path.join(dir, 'highlight.txt'), report);
             diag('highlight report written: ' + path.join(dir, 'highlight.txt'));
@@ -614,7 +619,7 @@ function activate(context) {
             return;
         }
         await writeHighlightReport(editor.document);
-        const file = path.join(cwd, '.fpgalsp', 'logs', 'highlight.txt');
+        const file = path.join(stateDir, 'logs', 'highlight.txt');
         const opened = await vscode.workspace.openTextDocument(file);
         await vscode.window.showTextDocument(opened, { preview: true });
     });
@@ -1252,7 +1257,7 @@ function activate(context) {
                 `- Python: ${python()}${pythonCheck && pythonCheck.executable ? ` (${pythonCheck.executable})` : ''}`,
                 `- Python check: ${pythonCheck && pythonCheck.ok ? `OK, fpgalsp ${pythonCheck.version || '?'}` : `FAILED - ${(pythonCheck && pythonCheck.error) || 'unknown'}`}`,
                 `- Server root: ${serverRoot}`,
-                `- Server log: ${config().get('logFile') || (root ? path.join(root, '.fpgalsp', 'logs', 'server.log') : '(n/a)')}`,
+                `- Server log: ${config().get('logFile') || (root ? path.join(resolveStateDir(root), 'logs', 'server.log') : '(n/a)')}`,
                 '',
                 '## Verible',
                 `- fpgaLsp.verible.enable: ${vSettings.enabled}`,

@@ -5,6 +5,7 @@
 'use strict';
 
 const path = require('path');
+const { resolveStateDir } = require('./stateDir');
 
 const SERVER_LABEL = 'Anlogic FPGA LSP';
 const SERVER_NAME = 'fpga-lsp';
@@ -54,13 +55,13 @@ function buildMcpServerOptions(options) {
                 root: opts.root,
                 project: opts.project,
                 tdPath: opts.tdPath,
-                logFile: opts.logFile || path.join(opts.root, '.fpgalsp', 'logs', 'mcp.log'),
+                logFile: opts.logFile || path.join(resolveStateDir(opts.root), 'logs', 'mcp.log'),
                 allowFlow: opts.allowFlow,
                 allowWrite: opts.allowWrite,
                 attachPort: opts.attachPort,
             }),
             cwd: opts.root,
-            env: {},
+            env: { FPGALSP_STATE_DIR: resolveStateDir(opts.root) },
             version: opts.version || '',
         };
     }
@@ -69,7 +70,7 @@ function buildMcpServerOptions(options) {
     const args = ['-m', 'fpgalsp.mcp', '--root', opts.root];
     if (opts.project) args.push('--project', opts.project);
     if (opts.tdPath) args.push('--td', opts.tdPath);
-    const logFile = opts.logFile || path.join(opts.root, '.fpgalsp', 'logs', 'mcp.log');
+    const logFile = opts.logFile || path.join(resolveStateDir(opts.root), 'logs', 'mcp.log');
     args.push('--log', logFile);
     if (opts.allowFlow) args.push('--allow-flow');
     if (opts.allowWrite) args.push('--allow-write');
@@ -87,6 +88,9 @@ function buildMcpServerOptions(options) {
 function buildWorkspaceMcpServerOptions(options) {
     const opts = options || {};
     const root = '${workspaceFolder}';
+    // 便携 JSON 在生成期拿不到真实工程路径，只能用 VS Code 的变量替换。
+    // 用 ${env:TEMP} 而不是 ${root}/.fpgalsp：否则每装一次 MCP 就在工作目录里留下 .fpgalsp。
+    const portableState = '${env:TEMP}/fpgalsp/fpga-lsp';
 
     if (opts.nativeExe) {
         return {
@@ -95,18 +99,18 @@ function buildWorkspaceMcpServerOptions(options) {
             args: nativeArgs({
                 root,
                 tdPath: opts.tdPath,
-                logFile: `${root}/.fpgalsp/logs/mcp.log`,
+                logFile: `${portableState}/logs/mcp.log`,
                 allowFlow: opts.allowFlow,
                 allowWrite: opts.allowWrite,
             }),
-            env: {},
+            env: { FPGALSP_STATE_DIR: portableState },
             version: opts.version || '',
         };
     }
 
     if (!opts.serverRoot) throw new Error('MCP server requires the fpga-lsp server root');
     const args = ['-m', 'fpgalsp.mcp', '--root', root,
-        '--log', `${root}/.fpgalsp/logs/mcp.log`];
+        '--log', `${portableState}/logs/mcp.log`];
     if (opts.tdPath) args.push('--td', opts.tdPath);
     if (opts.allowFlow) args.push('--allow-flow');
     if (opts.allowWrite) args.push('--allow-write');
