@@ -168,6 +168,33 @@ TEST(CommentMask, VeribleNoTabsIsMaskedEndToEnd) {
     EXPECT_EQ(kept_no_tabs, 3) << "注释里的 3 个必须被丢弃";
 }
 
+TEST(LintLineLength, ThresholdMatchesOldPluginDefault160) {
+    // 旧插件设置 `fpgaLsp.verible.lintArgs` 默认是 `--rules=+line-length=length:160`
+    // （也对应本项目的格式化列宽 --column_limit=160）。服务端内嵌 lint 必须对齐：
+    // 否则真实工程里 100–160 列的行会全部变成新告警。
+    const auto count_line_length = [](const std::string& text) {
+        const auto result = fpgalsp::verible_bridge::LintText(text, "line_length.v");
+        EXPECT_TRUE(result.ok) << result.error;
+        int count = 0;
+        for (const auto& diagnostic : result.diagnostics) {
+            if (diagnostic.rule == "line-length") ++count;
+        }
+        return count;
+    };
+
+    // 120 列（< 160）：不应报
+    const std::string at_120 =
+        "module m;\n  wire " + std::string(106, 'a') + ";\nendmodule\n";
+    // 200 列（>= 160）：必须报
+    const std::string at_200 =
+        "module m;\n  wire " + std::string(186, 'b') + ";\nendmodule\n";
+
+    EXPECT_EQ(count_line_length(at_120), 0)
+        << "160 列阈值下，120 列的行不应该产生 line-length 告警";
+    EXPECT_GE(count_line_length(at_200), 1)
+        << "超过 160 列必须仍然报 line-length，别把规则整个关掉";
+}
+
 // -----------------------------------------------------------------------------
 //  3) LintService 调度语义
 // -----------------------------------------------------------------------------

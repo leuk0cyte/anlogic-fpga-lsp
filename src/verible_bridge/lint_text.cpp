@@ -55,11 +55,23 @@ struct AppliedEdit {
     std::string replacement;
 };
 
-// 与 `verible-verilog-lint`（不带参数）等价的规则配置：
-//   ruleset = default、无额外规则、**不做**向上搜索 .rules.verible_lint、
-//   无 waiver 文件。
+// 与 `verible-verilog-lint`（不带参数）等价的规则配置，**只有一处例外**：
+//   `line-length` 的行长阈值放到 160，与旧插件设置
+//   `fpgaLsp.verible.lintArgs` 的默认值 `--rules=+line-length=length:160` 对齐，
+//   也与本项目格式化默认列宽（`--column_limit=160`）一致。
+//   否则真实工程里 100–160 列的行会全部变成新告警（用户明确要求维持旧默认）。
+//
+// 其余保持 `verible-verilog-lint` 的默认语义：
+//   ruleset = default、不做向上搜索 .rules.verible_lint、无 waiver 文件。
 bool BuildDefaultConfiguration(verilog::LinterConfiguration* config, std::string* error) {
-    const verilog::RuleBundle bundle;  // 空：只用 ruleset 的默认集合
+    // 用 Verible 自己的 flag 解析器构造 bundle，避免手写 RuleSetting 的内部结构。
+    // 语义对照：`+line-length=length:160` => 启用 line-length，配置 "length:160"。
+    verilog::RuleBundle bundle;
+    std::string parse_error;
+    if (!verilog::AbslParseFlag("+line-length=length:160", &bundle, &parse_error)) {
+        if (error != nullptr) *error = parse_error;
+        return false;
+    }
     const verilog::LinterOptions options = {
         .ruleset = verilog::RuleSet::kDefault,
         .rules = bundle,
