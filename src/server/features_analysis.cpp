@@ -48,10 +48,14 @@ Json LspServer::FeatureRunAnalysis(const Json& /*params*/) {
     }
     if (project == nullptr) return ToolFailure(".al project not found");
     try {
-        return analysis::Run(*project, td_explicit_,
-                             [this](std::string_view message) {
-                                 LogMessage(3, message);  // 3 = Info（对应 Python log()）
-                             });
+        Json result = analysis::Run(*project, td_explicit_,
+                                    [this](std::string_view message) {
+                                        LogMessage(3, message);  // 3 = Info（对应 Python log()）
+                                    });
+        // B-B4：分析完成后把 DRC/CDC 违例发布成诊断（能解析到源码的带上位置）。
+        // 放在 return 之前：发布失败绝不影响 runAnalysis 本身的结果。
+        PublishAnalysisDiagnostics(*project);
+        return result;
     } catch (const std::exception& exc) {
         return ToolFailure(exc.what());
     } catch (...) {

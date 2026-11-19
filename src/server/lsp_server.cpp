@@ -1318,6 +1318,13 @@ void LspServer::PublishMergedPath(const project::Project* project, const std::st
                     td = it->second;
                 }
             }
+            // B-B4：DRC/CDC 违例（runAnalysis 的结果）
+            if (const auto table = diag_analysis_.find(project->al_path);
+                table != diag_analysis_.end()) {
+                if (const auto it = table->second.find(path); it != table->second.end()) {
+                    td.insert(td.end(), it->second.begin(), it->second.end());
+                }
+            }
         }
     }
     // B-B8：.al 本身的诊断（缺文件 / 解析告警）与 lint、TD 一起合并发布。

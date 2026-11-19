@@ -1079,3 +1079,33 @@ TEST(IndexServiceTest, ResolvesAreaModulesAgainstTheIndex) {
     EXPECT_FALSE(rows[1]["resolved"].get<bool>());
     EXPECT_EQ(rows[1]["reason"].get<std::string>(), "module-not-in-index");
 }
+
+// =============================================================================
+//  B-B4：报告里的 HDL 路径 -> 源码位置（CDC 违例跳转的基础）
+// =============================================================================
+TEST(IndexServiceTest, ResolveHdlPathHandlesInstancesSignalsAndMisses) {
+    TinyProject tiny("hdl_path");
+    IndexService service(DiskLoader);
+    service.SetProject(tiny.Parse());
+    const IndexService::Snapshot index = service.Get();
+    ASSERT_NE(index, nullptr);
+    const fpgalsp::project::Project project = tiny.Parse();
+
+    // 实例 u2 -> m2 的定义
+    const auto instance = fpgalsp::server::features::ResolveHdlPath(*index, project, "u2");
+    ASSERT_TRUE(instance.has_value());
+    EXPECT_FALSE(instance->file.empty());
+    EXPECT_EQ(instance->module, "m2");
+
+    // 实例链 + 端口：u2/clk -> m2 的 clk 端口
+    const auto port = fpgalsp::server::features::ResolveHdlPath(*index, project, "u2/clk");
+    ASSERT_TRUE(port.has_value());
+    EXPECT_EQ(port->module, "m2");
+
+    // 位选会被剥掉：u2/clk[0]
+    EXPECT_TRUE(fpgalsp::server::features::ResolveHdlPath(*index, project, "u2/clk[0]").has_value());
+
+    // 找不到就明确返回空（不猜位置）
+    EXPECT_FALSE(fpgalsp::server::features::ResolveHdlPath(*index, project, "u_missing").has_value());
+    EXPECT_FALSE(fpgalsp::server::features::ResolveHdlPath(*index, project, "u2/nope").has_value());
+}

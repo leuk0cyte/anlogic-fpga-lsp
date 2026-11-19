@@ -433,6 +433,104 @@ Json Completion(const HdlIndex& index, std::string_view path, std::string_view t
 }
 
 // -----------------------------------------------------------------------------
+//  B-B4：报告里的 HDL 路径 -> 源码位置
+// -----------------------------------------------------------------------------
+namespace {
+
+std::string StripBitIndex(std::string_view text) {
+    const std::size_t bracket = text.find('[');
+    return std::string(bracket == std::string_view::npos ? text : text.substr(0, bracket));
+}
+
+std::vector<std::string> SplitPath(std::string_view text) {
+    std::vector<std::string> parts;
+    std::size_t start = 0;
+    while (start <= text.size()) {
+        const std::size_t slash = text.find('/', start);
+        const std::string_view part =
+            (slash == std::string_view::npos) ? text.substr(start) : text.substr(start, slash - start);
+        if (!part.empty()) parts.emplace_back(part);
+        if (slash == std::string_view::npos) break;
+        start = slash + 1;
+    }
+    return parts;
+}
+
+}  // namespace
+
+std::optional<SourceLocation> ResolveHdlPath(const HdlIndex& index,
+                                             const project::Project& project,
+                                             std::string_view path) {
+    if (path.empty() || project.top.empty()) return std::nullopt;
+    std::vector<std::string> parts = SplitPath(path);
+    if (parts.empty()) return std::nullopt;
+    std::string leaf = StripBitIndex(parts.back());
+    parts.back() = leaf;
+
+    std::string module = project.top;
+    // 除最后一级外，其余当实例名逐级下钻
+    for (std::size_t i = 0; i + 1 < parts.size(); ++i) {
+        const hdl::Module* current = index.ModuleByName(module);
+        if (current == nullptr) return std::nullopt;
+        const hdl::Instance* hit = nullptr;
+        for (const hdl::Instance* instance : index.InstancesOfFile(current->file)) {
+            if (instance->line < current->line || instance->line > current->end_line) continue;
+            if (instance->name == parts[i]) {
+                hit = instance;
+                break;
+            }
+        }
+        if (hit == nullptr) {
+            if (index.ModuleByName(parts[i]) != nullptr) {
+                module = parts[i];
+                continue;
+            }
+            return std::nullopt;
+        }
+        if (hit->module.empty()) return std::nullopt;
+        module = hit->module;
+    }
+
+    const hdl::Module* definition = index.ModuleByName(module);
+    if (definition == nullptr) return std::nullopt;
+
+    // 最后一级：先当信号，再当端口，最后当实例（跳它自己的例化点）
+    for (const hdl::ModuleInfo* info : index.ModulesOfFile(definition->file)) {
+        if (info->module.name != definition->name) continue;
+        for (const hdl::Signal& signal : info->signals) {
+            if (signal.name != leaf) continue;
+            SourceLocation location;
+            location.file = platform::path_to_uri(
+                signal.file.empty() ? definition->file : signal.file);
+            location.line = signal.line;
+            location.character = signal.character;
+            location.module = module;
+            return location;
+        }
+        break;
+    }
+    for (const hdl::Port& port : definition->ports) {
+        if (port.name != leaf) continue;
+        SourceLocation location;
+        location.file = platform::path_to_uri(port.file.empty() ? definition->file : port.file);
+        location.line = port.line;
+        location.character = port.character;
+        location.module = module;
+        return location;
+    }
+    for (const hdl::Instance* instance : index.InstancesOfFile(definition->file)) {
+        if (instance->name != leaf) continue;
+        SourceLocation location;
+        location.file = platform::path_to_uri(instance->file);
+        location.line = instance->line;
+        location.character = instance->character;
+        location.module = instance->module;
+        return location;
+    }
+    return std::nullopt;
+}
+
+// -----------------------------------------------------------------------------
 //  B-B10：testbench 骨架
 // -----------------------------------------------------------------------------
 namespace {

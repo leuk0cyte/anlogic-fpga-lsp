@@ -60,6 +60,18 @@ Json Completion(const hdl::HdlIndex& index, std::string_view path, std::string_v
 // 之前 reports 层恒 resolved=false、reason="hdl-index-unavailable"（那层拿不到索引），
 // 导致插件的"时序点跳源码"是死链接。这里在服务端注入索引后重算，并把
 // timing.begin_end_resolved 的解析数一起更新。
+// B-B4：把报告里的 HDL 路径（"a/b/reg_x" 或 "u_cell"）解析成源码位置。
+// 与 B-B2 的时序端点同一套下钻规则：逐级当实例名找，最后一级当信号/端口找。
+struct SourceLocation {
+    std::string file;   // uri
+    int line = 0;
+    int character = 0;
+    std::string module;
+};
+std::optional<SourceLocation> ResolveHdlPath(const hdl::HdlIndex& index,
+                                             const project::Project& project,
+                                             std::string_view path);
+
 // B-B10：testbench 骨架。用 HDL 索引里的端口表生成可编译的 TB，
 // 并用 hdl::ParseVerilog 自检（我们的解析器内部就是 Verible 词法 + 结构识别）。
 // 返回 {ok, module, text, clock, reset, warnings[], parseErrors[]}。

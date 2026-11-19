@@ -159,6 +159,8 @@ public:
     Json FeatureTestbench(const Json& params);
     // X-B3：约束表格数据源（.adc -> 结构化行 + 诊断数）
     Json FeatureConstraintTable(const Json& params);
+    // B-B4：把分析缓存里的 DRC/CDC 违例发布成诊断（带解析到的源码位置）
+    void PublishAnalysisDiagnostics(const project::Project& project);
     // 工程摘要（与 fpgalsp.info 同一实现）
     Json FeatureInfo();
 
@@ -409,6 +411,8 @@ private:
     //   * diag_lint_: file_path -> 诊断（lint 是单文件概念，不需要工程键）
     mutable std::mutex state_mutex_;
     std::map<std::string, std::map<std::string, lsp::DiagnosticList>> diag_td_;
+    // B-B4：runAnalysis 的 DRC/CDC 违例（al_path -> (file -> 诊断)），与 TD/lint 一起发布
+    std::map<std::string, std::map<std::string, lsp::DiagnosticList>> diag_analysis_;
     std::map<std::string, lsp::DiagnosticList> diag_lint_;
     std::map<std::string, std::set<std::string>> published_;
     bool shutting_down_ = false;

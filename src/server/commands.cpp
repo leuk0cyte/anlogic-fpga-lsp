@@ -40,6 +40,7 @@
 #include "constraints/adc.h"
 #include "constraints/port.h"
 #include "server/constraints_features.h"
+#include "analysis/analysis.h"
 #include "server/lsp_server.h"
 #include "td/td_device.h"
 #include "td/td_diagnostics.h"
@@ -1002,6 +1003,71 @@ HandlerResult LspServer::HandleDidRenameFiles(const Json& params) {
 // B-B10：testbench 骨架（只生成文本，不落盘；写文件交给调用方/agent）。
 // X-B3：约束表格数据源（.adc 逐行 -> 结构化行 + 该行的诊断数）。
 // 只读：编辑交给调用方用 WorkspaceEdit 回写，服务端不直接改用户文件。
+// B-B4：把分析缓存（<state>/cache/analysis.json）里的 DRC/CDC 违例发布成诊断。
+// CDC 行的 cell 文本用 features::ResolveHdlPath 解析到源码；解析不到不发布
+// （宁可少一条波浪线，也不要把它钉到一个猜出来的位置上）。
+// DRC 明细是纯文本（没有结构化 cell），只在 .al 上给一条计数摘要。
+void LspServer::PublishAnalysisDiagnostics(const project::Project& project) {
+    std::optional<Json> cache = analysis::Cached(project);
+    if (!cache.has_value()) return;
+
+    bool truncated = false;
+    const std::shared_ptr<const hdl::HdlIndex> index =
+        IndexForProject(project, &truncated, nullptr);
+
+    std::map<std::string, lsp::DiagnosticList> table;
+    if (index != nullptr && cache->contains("cdc")) {
+        const Json& cdc = (*cache)["cdc"];
+        if (cdc.is_object() && cdc.contains("rows") && cdc["rows"].is_array()) {
+            for (const Json& row : cdc["rows"]) {
+                if (!row.is_array()) continue;
+                for (const Json& cell : row) {
+                    if (!cell.is_string()) continue;
+                    const std::string text = cell.get<std::string>();
+                    if (text.size() < 3) continue;
+                    const auto location = features::ResolveHdlPath(*index, project, text);
+                    if (!location.has_value()) continue;
+                    lsp::Diagnostic diagnostic;
+                    diagnostic.severity = lsp::kWarning;
+                    diagnostic.code = "CDC-UNSAFE";
+                    diagnostic.source = "fpga-lsp:analysis";
+                    diagnostic.message = "CDC: asynchronous crossing at " + text;
+                    diagnostic.range.start = lsp::Position{location->line, location->character};
+                    diagnostic.range.end =
+                        lsp::Position{location->line, location->character + 1};
+                    Json data = Json::object();
+                    data["origin"] = "analysis";
+                    diagnostic.data = std::move(data);
+                    table[platform::uri_to_path(location->file)].push_back(
+                        std::move(diagnostic));
+                }
+            }
+        }
+    }
+
+    if (cache->contains("drc")) {
+        const Json& drc = (*cache)["drc"];
+        const int violations = drc.is_object() ? drc.value("violations", 0) : 0;
+        if (violations > 0) {
+            lsp::Diagnostic diagnostic;
+            diagnostic.severity = lsp::kWarning;
+            diagnostic.code = "DRC-SUMMARY";
+            diagnostic.source = "fpga-lsp:analysis";
+            diagnostic.message = "DRC: " + std::to_string(violations) +
+                                 " violation(s); see the DRC report table";
+            diagnostic.range.start = lsp::Position{0, 0};
+            diagnostic.range.end = lsp::Position{0, 1};
+            table[project.al_path].push_back(std::move(diagnostic));
+        }
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        diag_analysis_[project.al_path] = std::move(table);
+    }
+    PublishMerged(project, nullptr);
+}
+
 Json LspServer::FeatureConstraintTable(const Json& params) {
     const auto project = ProjectFromParams(params);
     Json out = Json::object();
