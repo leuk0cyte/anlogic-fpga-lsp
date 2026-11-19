@@ -815,7 +815,7 @@ std::string Bridge::ResolveFile(const std::string& value, const project::Project
         }
     }
     candidate = normalize_path(candidate);
-    // SEC-02（audit/2026-11-19/static/SECURITY.md）：11 个只读工具共用这里的返回值，
+    // SEC-02（doc/audit/2026-11-19/static/SECURITY.md）：11 个只读工具共用这里的返回值，
     // 而 --root 是沙箱根（Bridge 构造时 root 不存在就直接抛错）。读文件的权利必须在这一层
     // 统一约束：逐个调用点补校验必然漏（同一权利的重复实现正是本轮漏洞的成因）。
     // 边界取「工程目录或 root_」而不是只取 proj.dir：root_ 下可能有与工程不同目录的

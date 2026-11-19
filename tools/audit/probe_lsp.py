@@ -22,7 +22,7 @@ Reproduction::
         --python-log   %TEMP%\\probe\\python.log \
         --native-exe   build/bin/fpgalsp-native.exe \
         --project      %WORKSPACE%/CorpusAlpha \
-        --out          audit/2026-11-18/parity-lsp/raw.json
+        --out          doc/audit/2026-11-18/parity-lsp/raw.json
 
 The probe is strictly read-only with respect to ``--project``: every server is
 rooted at a copy under ``--workdir`` (default ``%TEMP%\\fpgalsp-parity-lsp``).

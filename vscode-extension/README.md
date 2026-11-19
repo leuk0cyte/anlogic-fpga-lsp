@@ -168,7 +168,7 @@ FPGA: Install MCP Configuration
 - `fpgaLsp.mcp.allowFlow` 默认 `true`；`allowWrite` 默认 `false`。
 - 常用新工具：`fpga_flow_log`、`fpga_flow_issues`、`fpga_flow_wait`（带 progress 通知）、`fpga_read_file`、`fpga_search_text`、`fpga_constraint_audit`。
 - 全部 39 个工具与安全限制见仓库的 `src/mcp/tools.cpp` 与
-  `audit/2026-11-18/parity-mcp/tools-diff.md`（工具清单与 Python 侧差异对照）。
+  `doc/audit/2026-11-18/parity-mcp/tools-diff.md`（工具清单与 Python 侧差异对照）。
 
 ### ADC / SDC
 
@@ -275,24 +275,10 @@ FPGA: Install MCP Configuration
 
 ## 开发与测试
 
-```powershell
-cd Y:\fpga-lsp-cpp\vscode-extension
-npm install
-npm test
-npm run test:locate
-npm run test:integration
-npm run test:vscode
-npm run bundle:server     # 从 ../build/bin 取 fpgalsp-native.exe 放进 server/bin
-npm run package           # bundle:server + vsce package -> fpga-lsp-anlogic-<version>.vsix
-code --extensionDevelopmentPath="Y:\fpga-lsp-cpp\vscode-extension" %WORKSPACE%\CorpusAlpha
-```
+扩展的开发、测试与打包流程见 [../doc/extension-development.md](../doc/extension-development.md)。
 
-服务端定位逻辑在 `src/locateServer.js`：依次尝试 `fpgaLsp.serverPath` → 内置
-`server/bin/` → 同仓库的 `build*/bin/`。**扩展只对接原生 exe**，Python 后端属于迁移期的
-参考实现（`Y:\fpga-lsp`），不参与打包。
-
-打包前请先构建出 exe（`build/bin/fpgalsp-native.exe`，Release 默认含全量 LTCG），
-否则 `bundle-server.js` 会报错并提示先构建。
+要点：扩展只对接原生 `fpgalsp-native.exe`（由 `npm run bundle:server` 从
+`../build/bin` 塞进 `server/bin`），打包前需先构建出该 exe。
 
 ---
 

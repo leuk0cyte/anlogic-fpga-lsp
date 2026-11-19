@@ -193,7 +193,7 @@ private:
     HandlerResult HandleNoop(const Json& params);
 
     // 已声明能力对应的方法：本阶段一律返回**合法的空结果**（不返回 -32601，
-    // 否则编辑器每次悬停/补全都会在日志里刷错误）。详见 COMMANDS.md。
+    // 否则编辑器每次悬停/补全都会在日志里刷错误）。详见 doc/commands.md。
     HandlerResult HandleEmptyList(const Json& params);
     HandlerResult HandleEmptyObject(const Json& params);
     HandlerResult HandleNull(const Json& params);
@@ -212,7 +212,7 @@ private:
     //    区间格式化在 CLI 语义下是 `FormatVerilog + 非空 LineNumberSet`
     //    （同样已验证 194/194），但**编辑器的"格式化选区"用的是另一个 API**
     //    `FormatVerilogRange`（只输出区间那一段、不做收敛性检验），
-    //    该 API 尚未做等价性验证（tests/FORMAT-GATE-REPORT.md §8）。
+    //    该 API 尚未做等价性验证（doc/history/gate-reports/FORMAT-GATE-REPORT.md §8）。
     //    在没验证前不接，避免"看起来能用但输出与官方 CLI 不同"。
     HandlerResult HandleFormatting(const Json& params);
     HandlerResult HandleRangeFormatting(const Json& params);

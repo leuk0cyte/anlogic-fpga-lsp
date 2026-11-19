@@ -257,7 +257,7 @@ DocumentStore::FileStamp DocumentStore::StatFile(const std::string& path) {
 #ifdef _WIN32
     // 一次 GetFileAttributesExW 同时拿到 size 与 mtime：比
     // std::filesystem::file_size + last_write_time 少一次系统调用
-    // （本机单次 fs 调用 ~33 µs 量级，见 audit/2026-11-18 HOTSPOTS.md §0）。
+    // （本机单次 fs 调用 ~33 µs 量级，见 doc/audit/2026-11-18 HOTSPOTS.md §0）。
     const std::u16string wide16 = plat::utf8_to_utf16(path);
     if (wide16.empty()) return stamp;
     WIN32_FILE_ATTRIBUTE_DATA data{};

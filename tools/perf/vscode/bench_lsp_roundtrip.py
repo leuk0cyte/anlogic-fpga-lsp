@@ -1,6 +1,6 @@
 """Server-vs-plugin split for the interactive requests the extension sends.
 
-The perf question in audit/2026-11-19/perf/README.md is "where does the time go between a file
+The perf question in doc/audit/2026-11-19/perf/README.md is "where does the time go between a file
 change and the tree refreshing". This script measures the *wire* half (server + JSON-RPC +
 JSON parse of the response) against the production binary, so VSCODE.md can subtract the
 plugin-side numbers measured by bench_events.js / bench_activate.js.

@@ -11,7 +11,7 @@
 //  2) `ExecutionControl::max_search_states` 的**结构体默认值(10000) ≠ CLI 默认值(100000)**。
 //     必须显式赋值（这里用 100000），否则遇到需要大量搜索的换行决策会提前报
 //     "search space exceeded" —— 症状看起来像"格式化算法不同"，极难归因。
-//     （见 tests/FORMAT-GATE-REPORT.md §7 坑 2）
+//     （见 doc/history/gate-reports/FORMAT-GATE-REPORT.md §7 坑 2）
 //
 //  3) `FormatVerilog()` 的签名里 `lines` 在 `control` **之前**，且 `lines` 为空表示
 //     全文件格式化。传错位置时编译器给的是"C2665 没有重载可以转换所有参数类型"，

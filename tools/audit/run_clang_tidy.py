@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Run clang-tidy over the clang-converted compilation database, then aggregate.
 
-Input  : audit/_db/compile_commands.json  (produced by make_clang_db.py)
-Output : audit/2026-11-18/static/clang-tidy.txt   aggregated tables + raw logs
-         audit/2026-11-18/static/clang-tidy.json  machine-readable diagnostics
-         audit/_db/tidy-logs/*.log                per-TU raw output
+Input  : doc/audit/_db/compile_commands.json  (produced by make_clang_db.py)
+Output : doc/audit/2026-11-18/static/clang-tidy.txt   aggregated tables + raw logs
+         doc/audit/2026-11-18/static/clang-tidy.json  machine-readable diagnostics
+         doc/audit/_db/tidy-logs/*.log                per-TU raw output
 
 Design notes
 ------------
@@ -36,13 +36,13 @@ import sys
 import time
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-DB = os.path.join(PROJECT_ROOT, "audit", "_db", "compile_commands.json")
+DB = os.path.join(PROJECT_ROOT, "doc", "audit", "_db", "compile_commands.json")
 # Overridable so a fresh audit run does not overwrite a previous one:
-#   set FPGA_LSP_AUDIT_DIR=audit\2026-11-19\static
+#   set FPGA_LSP_AUDIT_DIR=doc\audit\2026-11-19\static
 AUDIT_DIR = os.environ.get("FPGA_LSP_AUDIT_DIR") or os.path.join(
-    PROJECT_ROOT, "audit", "2026-11-18", "static"
+    PROJECT_ROOT, "doc", "audit", "2026-11-18", "static"
 )
-LOGS_DIR = os.path.join(PROJECT_ROOT, "audit", "_db", "tidy-logs")
+LOGS_DIR = os.path.join(PROJECT_ROOT, "doc", "audit", "_db", "tidy-logs")
 OUT_TXT = os.path.join(AUDIT_DIR, "clang-tidy.txt")
 OUT_JSON = os.path.join(AUDIT_DIR, "clang-tidy.json")
 
@@ -244,7 +244,7 @@ def aggregate(tu_rows: list[dict], meta: dict) -> tuple[dict, str]:
     w("=" * 100)
     w(f"generated      : {meta['generated']}")
     w(f"tool           : {meta['tool_version']}")
-    w(f"compilation db : audit/_db/compile_commands.json ({meta['total_tus']} TUs, src/ only, cl->clang rewritten)")
+    w(f"compilation db : doc/audit/_db/compile_commands.json ({meta['total_tus']} TUs, src/ only, cl->clang rewritten)")
     w(f"checks         : {CHECKS}")
     w(f"header-filter  : {HEADER_FILTER}")
     w(f"jobs           : {meta['jobs']}, per-TU timeout: {meta['timeout']}s")

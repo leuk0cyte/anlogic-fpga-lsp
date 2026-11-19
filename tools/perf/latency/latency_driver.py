@@ -3,7 +3,7 @@
 
 回答一个问题：**用户按一个键到屏幕刷新，时间花在哪一段。**
 
-设计要点（对齐 audit/2026-11-19/perf/README.md 的纪律）：
+设计要点（对齐 doc/audit/2026-11-19/perf/README.md 的纪律）：
 
 * 每个结论 3 轮 × 20 样本，报 p50/p95/max，另记每轮的系统负载（GetSystemTimes 差分）。
 * 不修改产品代码、不动 build/bin；合成工程全部在 %TEMP%\\fpgalsp-perf\\latency。

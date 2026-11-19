@@ -5,8 +5,8 @@
 #  用途：给 F1–F6 提供统一的 before/after。**不采信 owner 自报的数字。**
 #
 #  每条命令都落一份 JSON：
-#     audit/2026-11-19/fix/results/<Tag>.json            汇总（含 vs baseline 的对比与判定）
-#     audit/2026-11-19/fix/results/<Tag>/*.json          各子测量的原始输出
+#     doc/audit/2026-11-19/fix/results/<Tag>.json            汇总（含 vs baseline 的对比与判定）
+#     doc/audit/2026-11-19/fix/results/<Tag>/*.json          各子测量的原始输出
 #
 #  用法：
 #     pwsh -File tools\perf\gate\verify.ps1 -Tag wave1-f1
@@ -14,7 +14,7 @@
 #     pwsh -File tools\perf\gate\verify.ps1 -Tag quick -Only latency        # 只跑一段
 #     pwsh -File tools\perf\gate\verify.ps1 -Tag ab -Exe <某个旧 exe 的绝对路径>
 #
-#  纪律（见 audit/2026-11-19/fix/PLAN.md）：
+#  纪律（见 doc/audit/2026-11-19/fix/PLAN.md）：
 #    * 只读 src/ 与 vscode-extension/，本脚本不构建、不改产品代码；
 #    * 不覆盖 build/bin/fpgalsp-native.exe；用 -Exe 切换二进制时走 FPGALSP_NATIVE_EXE；
 #    * 每项 ≥3 轮 × 20 样本；系统负载前后各记一次。
@@ -27,9 +27,9 @@ param(
     # 允许 -Only latency,protocol：pwsh -File 会把它合成一个字符串，下面统一拆分校验
     [string[]]$Only = @("all"),
     [string]$Exe = "",
-    # 对比基线目录。wave1 = audit\2026-11-19\fix\baseline（改动前原始基线）；
-    # wave2 起 = audit\2026-11-19\fix\baseline-wave2（wave1 收口后形态）。
-    [string]$Baseline = "audit\2026-11-19\fix\baseline",
+    # 对比基线目录。wave1 = doc\audit\2026-11-19\fix\baseline（改动前原始基线）；
+    # wave2 起 = doc\audit\2026-11-19\fix\baseline-wave2（wave1 收口后形态）。
+    [string]$Baseline = "doc\audit\2026-11-19\fix\baseline",
     [int]$ReportMb = 10,
     [switch]$WithVscode,
     [switch]$NoProtocol,
@@ -57,7 +57,7 @@ foreach ($stage in $Only) {
     if ($allowed -notcontains $stage) { throw "-Only 不支持 '$stage'（可选：$($allowed -join ' / ')）" }
 }
 
-$resultsDir = Join-Path $repo "audit\2026-11-19\fix\results"
+$resultsDir = Join-Path $repo "doc\audit\2026-11-19\fix\results"
 $tagDir = Join-Path $resultsDir $Tag
 # 对比基线目录。wave1 用 fix/baseline（改动前原始基线）；wave2 起用 fix/baseline-wave2
 # （= wave1 收口后的形态），否则所有 tag 都会被拿去和"修复前"比、看起来全是改善。
@@ -66,7 +66,7 @@ $baselineDir = if ($Baseline -and [System.IO.Path]::IsPathRooted($Baseline)) {
 } elseif ($Baseline) {
     Join-Path $repo $Baseline
 } else {
-    Join-Path $repo "audit\2026-11-19\fix\baseline"
+    Join-Path $repo "doc\audit\2026-11-19\fix\baseline"
 }
 New-Item -ItemType Directory -Force -Path $resultsDir, $tagDir | Out-Null
 

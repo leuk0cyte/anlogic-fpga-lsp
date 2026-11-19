@@ -18,7 +18,7 @@
                    directory so build/ is never touched, forcing /W4 and /analyze.
       2. compile   `cl.exe @rsp` per TU, N in parallel, per-TU timeout.
       3. aggregate `file(line,col): warning C26xx: text` -> per-code, per-file and
-                   full listing into audit/2026-11-18/static/msvc-analyze.txt.
+                   full listing into doc/audit/2026-11-18/static/msvc-analyze.txt.
 
     Note on C26xxx: those come from the C++ Core Guidelines checker, which is a
     separate plugin (CppCoreCheck.dll) shipped with an optional VS component.  If
@@ -43,7 +43,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 if (-not $CompileDb) { $CompileDb = Join-Path $root 'build\compile_commands.json' }
-if (-not $OutFile)   { $OutFile   = Join-Path $root 'audit\2026-11-18\static\msvc-analyze.txt' }
+if (-not $OutFile)   { $OutFile   = Join-Path $root 'doc\audit\2026-11-18\static\msvc-analyze.txt' }
 $tempDir = Join-Path $env:TEMP 'fpgalsp-audit-msvc'
 New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $OutFile) | Out-Null

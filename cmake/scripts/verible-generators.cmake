@@ -372,7 +372,7 @@ add_custom_command(
 # =============================================================================
 #  配置期预生成 —— 修复「全新构建目录首次 configure 挂不上生成物」
 # =============================================================================
-# 背景（实测，见 audit/2026-11-19/static/LTCG.md §3）：
+# 背景（实测，见 doc/audit/2026-11-19/static/LTCG.md §3）：
 #   cmake/Verible.cmake 的 verible_mount_generated_sources() 只在 configure 期
 #   用 EXISTS 判断生成物是否就绪，就绪才 target_sources() 挂到库上。而 G1–G6b
 #   这些规则是**构建期** add_custom_command，首次 configure 时产物还不存在

@@ -8,7 +8,7 @@
 
 用法：
     python tools/perf/gate/reports_probe.py --report-mb 10 --repeats 5 \
-        --out audit/2026-11-19/fix/results/<tag>/reports.json
+        --out doc/audit/2026-11-19/fix/results/<tag>/reports.json
 """
 
 from __future__ import annotations

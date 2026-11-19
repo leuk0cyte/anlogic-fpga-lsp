@@ -27,7 +27,7 @@
 //
 //  3. 位置：0-based 行 + **UTF-16 列**（与 LSP 一致）。
 //     Python 的 verible 换算用"码点下标"，在含非 BMP（emoji）的行上会少算 1 列；
-//     本实现按 UTF-16 换算（更正确），差异见 audit/2026-11-18/B2-REPORT.md。
+//     本实现按 UTF-16 换算（更正确），差异见 doc/audit/2026-11-18/B2-REPORT.md。
 //
 //  4. 折叠范围是纯文本算法，区间与**顺序**都与 Python `folding_ranges()` 一致。
 //

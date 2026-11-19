@@ -16,7 +16,7 @@ MSVC link/output/codegen concerns.
 
 Usage
 -----
-    python tools/audit/make_clang_db.py                 # build audit/_db/compile_commands.json
+    python tools/audit/make_clang_db.py                 # build doc/audit/_db/compile_commands.json
     python tools/audit/make_clang_db.py --list-dropped   # show which flags got dropped
     python tools/audit/make_clang_db.py --verify src/platform/path.cpp
                                                         # run `clang++ -fsyntax-only` once
@@ -37,7 +37,7 @@ import sys
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 DEFAULT_INPUT = os.path.join(PROJECT_ROOT, "build", "compile_commands.json")
-DEFAULT_OUTPUT = os.path.join(PROJECT_ROOT, "audit", "_db", "compile_commands.json")
+DEFAULT_OUTPUT = os.path.join(PROJECT_ROOT, "doc", "audit", "_db", "compile_commands.json")
 SRC_PREFIX = os.path.normcase(os.path.join(PROJECT_ROOT, "src") + os.sep)
 
 # Switches that carry no meaning for a syntax-only clang run.  Prefix match,

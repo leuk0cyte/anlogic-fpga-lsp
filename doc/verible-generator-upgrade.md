@@ -29,7 +29,7 @@
 > - **构建期**：G1–G6b 是 `add_custom_command`，`DEPENDS` 里包含 `win_flex` / `win_bison`
 >   本身。所以**原地升级工具**后，ninja 会因工具 mtime 变化而重新生成——这条路径不受影响。
 > - **配置期**：`VERIBLE_PREGENERATE_AT_CONFIGURE`（默认 ON）只在产物**缺失**时补生成，
->   用于让全新目录一次 configure 就能挂接（见 `audit/2026-11-19/static/LTCG.md` §3）。
+>   用于让全新目录一次 configure 就能挂接（见 `doc/audit/2026-11-19/static/LTCG.md` §3）。
 >   它**不会**因为工具升级而重新生成（产物已存在），所以升级后**不要**指望 configure 帮你刷新；
 >   要么让 ninja 跑（推荐），要么删掉 `build/verible/gen` 再 configure。
 >

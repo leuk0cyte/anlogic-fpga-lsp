@@ -302,7 +302,7 @@ std::string path_join(std::string_view a, std::string_view b) {
 // -----------------------------------------------------------------------------
 //  为什么需要：normalize_path 是**纯词法**的（本文件顶部 5-7 行的设计声明），
 //  因此 "工程目录内放一个指向 C:\Windows 的 junction" 在词法上完全合法，
-//  bridge 的 IsWithin 会放行。实测（audit/_db/probe_mcp_root.py 用例 A3）
+//  bridge 的 IsWithin 会放行。实测（doc/audit/_db/probe_mcp_root.py 用例 A3）
 //  fpga_read_file 能读到 C:\Windows\System32\drivers\etc\hosts。
 //
 //  weakly_canonical 与 canonical 的区别：前者只要求"最长的存在前缀"能被解析，

@@ -3,7 +3,7 @@
 
 Why this exists
 ---------------
-SEC-01 in `audit/2026-11-19/static/SECURITY.md` was not a typo: a previous fix
+SEC-01 in `doc/audit/2026-11-19/static/SECURITY.md` was not a typo: a previous fix
 introduced `src/td/tcl_quote.h` and adopted it at 21 call sites, but one
 hand-copied `import_device` loop in `commands.cpp` kept concatenating
 `<HardWare><Device>` from the `.al` straight into the command string. The

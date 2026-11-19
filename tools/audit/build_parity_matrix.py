@@ -5,7 +5,7 @@ The rows below are the cross-verified findings from A2-A5.  The script emits bot
 the report and the Phase B task list cannot drift apart.
 
 Usage:
-    python tools/audit/build_parity_matrix.py --out audit/2026-11-18
+    python tools/audit/build_parity_matrix.py --out doc/audit/2026-11-18
 """
 
 from __future__ import annotations
@@ -137,7 +137,7 @@ ROWS = [
      "SECURITY.md S-09; document in README"),
     # ---------------- engineering / inherited ----------------
     ("ENG-01", "engineering", "golden snapshots", "stale (2026-11-18 16:15)", "re-collected this audit",
-     "ENGINEERING", "S3", "B9", "S", "audit/2026-11-18/golden/*"),
+     "ENGINEERING", "S3", "B9", "S", "doc/audit/2026-11-18/golden/*"),
     ("ENG-02", "engineering", "docs drift (COMMANDS/README)", "contract", "stale placeholder tables",
      "ENGINEERING", "S3", "B9", "S", "src/server/COMMANDS.md; README delivery table"),
     ("ENG-03", "engineering", "warning/tooling gates", "/WX not default, no clang-tidy/format/CI",
@@ -214,6 +214,6 @@ def build(out_dir):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--out", default="audit/2026-11-18")
+    parser.add_argument("--out", default="doc/audit/2026-11-18")
     args = parser.parse_args()
     build(args.out)

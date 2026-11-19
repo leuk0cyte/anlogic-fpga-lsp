@@ -21,7 +21,7 @@
 
 .PARAMETER AuditDir
     Output directory for reports, relative to the repo root.
-    Default: audit/2026-11-19/static
+    Default: doc/audit/2026-11-19/static
 
 .PARAMETER Jobs
     Parallel clang-tidy processes.  Default 16.  Each TU of this project peaks
@@ -39,7 +39,7 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$AuditDir = 'audit\2026-11-19\static',
+    [string]$AuditDir = 'doc\audit\2026-11-19\static',
     [int]$Jobs = 16,
     [int]$TimeoutSec = 900,
     [switch]$SkipMsvcAnalyze,

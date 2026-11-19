@@ -4,7 +4,7 @@
 //    fpgalsp-native.exe --stdio [--td <root>]   LSP 模式（Content-Length framing）
 //                                  initialize / 文档同步 / 诊断发布 / fpgaLsp/* /
 //                                  workspace/executeCommand 全部由 server::LspServer
-//                                  注册（见 src/server/COMMANDS.md）。
+//                                  注册（见 doc/commands.md）。
 //    fpgalsp-native.exe --mcp [--root <dir>] [--project <al>] [--allow-flow] [--allow-write]
 //                                  MCP 模式（newline-delimited JSON）：39 个工具，
 //                                  协议与工具表见 src/mcp/。默认只开放只读工具。

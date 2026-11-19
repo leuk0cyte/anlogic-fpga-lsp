@@ -44,7 +44,7 @@ namespace fpgalsp::server::edit {
 // Python 侧所有文本读取都是 `open(..., encoding="utf-8")`（universal newlines），
 // 所以 Python 眼里**永远是 LF 文本**；C++ 的 LoadText 给的是原始字节（可能是 CRLF）。
 // 需要与 Python 逐字节比较的输出（codeAction 的 newText、整篇 range 的行列）都必须
-// 先过这里。参见 audit/2026-11-18/parity-lsp/PROBE.md §3.6（LSP-18 的归因）。
+// 先过这里。参见 doc/audit/2026-11-18/parity-lsp/PROBE.md §3.6（LSP-18 的归因）。
 inline std::string NormalizeNewlines(std::string_view text) {
     std::string out;
     out.reserve(text.size());

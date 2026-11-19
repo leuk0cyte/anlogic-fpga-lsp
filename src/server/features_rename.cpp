@@ -8,7 +8,7 @@
 //    Y:\fpga-lsp\fpgalsp\nav.py:16-115        prepare / rename_edits / block_scopes
 //    Y:\fpga-lsp\fpgalsp\refs.py:68-142       find / token_span（code_only 搜索）
 //
-//  契约（probe 实测，见 audit/2026-11-18/parity-lsp/PROBE.md §3.1）：
+//  契约（probe 实测，见 doc/audit/2026-11-18/parity-lsp/PROBE.md §3.1）：
 //    prepareRename(clk_50M @58:6) -> {range:58:5-58:12, placeholder:"clk_50M"}
 //    rename(clk_50M -> clk_50M_probe)
 //        -> {changes: {file:///…/top.v: [4 条 {range, newText}]}}

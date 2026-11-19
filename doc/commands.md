@@ -4,7 +4,7 @@
 > 参考实现：`Y:\fpga-lsp\fpgalsp\server.py`
 > 本文件原为 **task-14 验收项**（"已实现 / 占位两栏"）。2026-11-18 Phase B 后
 > **不再有占位命令/空实现**；本文件保留为"方法与命令的落点索引"，逐条证据见
-> `audit/2026-11-18/parity-matrix.md` 与 `audit/2026-11-18/FIX-REPORT.md`。
+> `doc/audit/2026-11-18/parity-matrix.md` 与 `doc/audit/2026-11-18/FIX-REPORT.md`。
 
 ## 铁律：占位必须显式返回
 
@@ -40,7 +40,7 @@
 ## 一、`workspace/executeCommand` —— Phase B 已全部实现（无占位）
 
 > 2026-11-18 Phase B 后：下表 11 条命令全部走 `LspServer::Feature*`（LSP 与 MCP 同一实现），
-> 不再有 `{"ok":false,"error":"not implemented"}`。逐条验收见 `audit/2026-11-18/parity-matrix.md` 的 CMD-01..CMD-10。
+> 不再有 `{"ok":false,"error":"not implemented"}`。逐条验收见 `doc/audit/2026-11-18/parity-matrix.md` 的 CMD-01..CMD-10。
 
 | command | 归属模块 | 说明 |
 | --- | --- | --- |

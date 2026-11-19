@@ -2,7 +2,7 @@
 
 用途：Lead 的验收人报"all_stage 场景缺 ok/files/runs/stage/project/error"。
 本脚本对**当前 build/bin/fpgalsp-native.exe** 直接调该工具，打印键集合，
-并与基线 `audit/2026-11-19/fix/baseline/mcp-raw.json` 的同类记录对比。
+并与基线 `doc/audit/2026-11-19/fix/baseline/mcp-raw.json` 的同类记录对比。
 
 用法：python tools/perf/reports/check_mcp_reports.py [--project DIR]
 """

@@ -18,7 +18,7 @@
 //  ⚠ 与 Python 的**已知差异**（LSP-18 同族）：
 //    内嵌规则集 c6b29d62 vs Python 外部 0.0-4296。同一输入下 autofix 的**文本结果
 //    可能不同**（规则增删、同一规则措辞/行为变化）。这是版本基线差异，不是移植缺陷；
-//    详见 audit/2026-11-18/B3-REPORT.md。
+//    详见 doc/audit/2026-11-18/B3-REPORT.md。
 //
 //  约定（与 format_text.h 一致）：
 //    * **不抛异常**、不写盘、不读全局 absl flag（不调用 InitCommandLine —— 那会

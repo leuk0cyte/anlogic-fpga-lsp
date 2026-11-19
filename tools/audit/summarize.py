@@ -23,7 +23,7 @@ Usage
 -----
     python tools/audit/summarize.py
     python tools/audit/summarize.py --json-only
-    python tools/audit/summarize.py --audit-dir audit\\2026-11-19\\static
+    python tools/audit/summarize.py --audit-dir doc\audit\2026-11-19\static
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ import sys
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 DEFAULT_DIR = os.environ.get("FPGA_LSP_AUDIT_DIR_SRC") or os.path.join(
-    PROJECT_ROOT, "audit", "2026-11-19", "static"
+    PROJECT_ROOT, "doc", "audit", "2026-11-19", "static"
 )
 
 SOURCE_EXT = (".cpp", ".cc", ".cxx", ".h", ".hpp")

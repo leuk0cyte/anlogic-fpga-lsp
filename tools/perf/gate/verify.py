@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """verify.py —— F0 验收分析器：把 verify.ps1 跑出来的原始结果与 baseline 对齐比较。
 
-输入（全部来自 audit/2026-11-19/fix/）：
+输入（全部来自 doc/audit/2026-11-19/fix/）：
     baseline/latency.json, baseline/phase2.json, baseline/perf_index.txt, baseline/lsp-raw.json, baseline/mcp-raw.json
     results/<tag>/{latency,phase2}.json, results/<tag>/perf_index.txt, results/<tag>/{lsp,mcp}-raw.json, meta.json
 
@@ -9,7 +9,7 @@
     results/<tag>.json   结构化对比（每个指标 before/after/Δ/判定）
     results/<tag>.md     markdown 表（verify.ps1 会直接打印）
 
-判定规则（对齐 audit/2026-11-19/perf/README.md §6）：
+判定规则（对齐 doc/audit/2026-11-19/perf/README.md §6）：
     |Δ| < 15%  → 无变化（不算优化，也不算回退）
     Δ ≤ −15%   → 通过（变快）
     Δ ≥ +15%   → 回退（变慢）

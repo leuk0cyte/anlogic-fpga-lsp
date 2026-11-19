@@ -9,7 +9,7 @@
 //
 //  ⚠ 占位命令必须**显式返回** `{"ok": false, "error": "not implemented"}`。
 //    静默不返回会让 LSP 客户端永远等这条响应（表现为命令"卡住"）。
-//    已实现 / 占位的完整两栏清单见 COMMANDS.md。
+//    已实现 / 占位的完整两栏清单见 doc/commands.md。
 // =============================================================================
 
 #include <algorithm>
@@ -326,7 +326,7 @@ Json LspServer::FeatureReports(const Json& params) {
     // 可选 limit：只裁剪副本（快照共享不可变），用于 timing/area 的大表。
     // F3：limit 现在是**构建期**生效（进 ReportStore 的快照键），所以要在 Get 之前解析；
     //     原来在返回的副本上裁剪是 no-op（只找节点自己的 paths，而真实形状是
-    //     data.timing.paths / groups[].paths），见 audit/2026-11-19/fix/F3.md。
+    //     data.timing.paths / groups[].paths），见 doc/audit/2026-11-19/fix/F3.md。
     const int limit = jsonrpc::GetInt(params, "limit", 0);
     const std::uint32_t trim_limit =
         limit > 0 ? static_cast<std::uint32_t>(std::min(limit, 100000)) : 0u;
@@ -336,7 +336,7 @@ Json LspServer::FeatureReports(const Json& params) {
     const auto snapshot = report_store_->Get(*project, mask, /*force=*/false, trim_limit);
     // ⚠ C2（性能审计）：这里原来是「整份克隆快照 -> 再 erase("raw")」。分节请求下
     //   raw 正文恰恰是最贵的那 10 MB，先拷一遍再立刻丢掉 = 246-267 ms/请求
-    //   （audit/2026-11-19/perf/CPU-PROFILE.md §0.6）。
+    //   （doc/audit/2026-11-19/perf/CPU-PROFILE.md §0.6）。
     //   改成「拷贝时就不带 raw」：遍历路径与旧的 drop_raw 完全一致（根一层、
     //   timing/area/qor 各一层、syn/phy 递归），所以输出 JSON 逐字节不变，只是
     //   不再为即将丢弃的字段付出拷贝代价。快照本身仍是不可变的共享对象，不动。

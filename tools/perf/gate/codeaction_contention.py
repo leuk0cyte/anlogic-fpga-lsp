@@ -15,7 +15,7 @@
 
 用法：
     python tools/perf/gate/codeaction_contention.py --samples 20 --rounds 3 \
-        --out audit/2026-11-19/fix/results/<tag>/codeaction_contention.json
+        --out doc/audit/2026-11-19/fix/results/<tag>/codeaction_contention.json
 """
 
 from __future__ import annotations

@@ -1042,7 +1042,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="fpga-lsp-cpp 审计 A3：MCP/CLI 对照探针")
     parser.add_argument("--exe", default=os.path.join(CPP_ROOT, "build", "bin",
                                                       "fpgalsp-native.exe"))
-    parser.add_argument("--out", default=os.path.join(CPP_ROOT, "audit", "2026-11-18",
+    parser.add_argument("--out", default=os.path.join(CPP_ROOT, "doc", "audit", "2026-11-18",
                                                       "parity-mcp", "raw.json"))
     parser.add_argument("--log-dir", default="")
     parser.add_argument("--sections", default="schema,tools,placeholders,write,cli,domain")

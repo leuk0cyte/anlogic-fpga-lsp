@@ -10,7 +10,7 @@
 //
 //  一个 `<MODULE>top; exec calc</MODULE>` 就足以在 TD 的 Tcl 解释器里执行任意
 //  命令（而且保存文件即自动触发 TD 检查）。详见
-//  audit/2026-11-18/static/SECURITY.md 的 S-01。
+//  doc/audit/2026-11-18/static/SECURITY.md 的 S-01。
 //
 //  本文件的约定：
 //   * TclQuote(value)     —— 总是返回一个 Tcl **单词**，其求值结果与 value 逐字节

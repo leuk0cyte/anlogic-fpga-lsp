@@ -9,7 +9,7 @@
 //        fpgalsp.runAnalysis  -> run(project, td_info)
 //        fpgalsp.updateProject-> check_project_version + open_project -update
 //
-//  ---- 契约（与 Python 逐字段一致；见 audit/2026-11-18/parity-lsp/raw.json）----
+//  ---- 契约（与 Python 逐字段一致；见 doc/audit/2026-11-18/parity-lsp/raw.json）----
 //  runAnalysis:
 //    { ok, generatedAt, device,
 //      drc: {supported, violations, rules:[{rule,severity,count}], details:[str],

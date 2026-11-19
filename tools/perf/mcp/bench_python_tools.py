@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """bench_python_tools.py —— 同一份 200 文件合成工程上，Python 参考实现 vs native 的 MCP 工具延迟。
 
-为什么需要：`audit/2026-11-18/performance/BENCH.md` §6 的 4.30 vs 3.73 ms 是**第一阶段**
+为什么需要：`doc/audit/2026-11-18/performance/BENCH.md` §6 的 4.30 vs 3.73 ms 是**第一阶段**
 （exe ccdacb9）在 21 文件真实工程上的数；第二阶段改了 IndexService/ReportStore/AsyncDispatcher，
 必须今天重测。本脚本让两侧跑**同一个合成工程、同一组固定参数**，只比工具延迟。
 

@@ -4,7 +4,7 @@
 Everything here is read-only with respect to the products under test: no file inside
 ``Y:/fpga-lsp`` or ``Y:/fpga-lsp-cpp`` is written.  The only writes are
 
-* the servers' own ``--log`` files, redirected into ``%TEMP%\\fpgalsp-audit\\logs``;
+* the servers' own ``--log`` files, redirected into ``%TEMP%\\fpgalsp-doc\audit\\logs``;
 * the JSON report given by ``--out``;
 * the synthetic project trees used by the scaling test, under ``%TEMP%``.
 
@@ -28,7 +28,7 @@ Usage
 -----
     python tools/audit/bench_servers.py \
         --iterations 30 --repeats 3 --project %WORKSPACE%/CorpusAlpha \
-        --out audit/2026-11-18/performance/bench.json
+        --out doc/audit/2026-11-18/performance/bench.json
 """
 
 from __future__ import annotations

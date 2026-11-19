@@ -110,7 +110,7 @@ def protocol_snapshot(spec, out_path):
     import subprocess
     exe = bs.default_native_exe()
     proc = subprocess.run(
-        [sys.executable, os.path.join(CPP, "tools", "audit", "probe_lsp.py"),
+        [sys.executable, os.path.join(CPP, "tools", "doc", "audit", "probe_lsp.py"),
          "--native-exe", exe, "--project", "%WORKSPACE%/CorpusAlpha", "--only", "all",
          "--out", out_path],
         capture_output=True, text=True, cwd=CPP)
@@ -121,7 +121,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", required=True)
     parser.add_argument("--baseline-raw",
-                        default=os.path.join(CPP, "audit", "2026-11-19", "fix",
+                        default=os.path.join(CPP, "doc", "audit", "2026-11-19", "fix",
                                              "baseline-wave2", "lsp-raw.json"))
     args = parser.parse_args(argv)
 

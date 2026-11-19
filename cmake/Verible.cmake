@@ -238,7 +238,7 @@ foreach(_pkg IN LISTS _VERIBLE_PACKAGES)
         # 在 /GL 下会被 LTCG 丢弃」，于是这里无条件强制 OFF。该归因**已被推翻**：
         # 真正原因是「全新 configure 时生成 TU 还没产出，verible_mount_generated_sources()
         # 挂接被跳过」，库建出来缺 lexer/parser 源 —— 与 /GL 无关，不加 LTO 的干净
-        # 构建同样失败（见 audit/2026-11-19/static/LTCG.md 的 E5 对照）。
+        # 构建同样失败（见 doc/audit/2026-11-19/static/LTCG.md 的 E5 对照）。
         #
         # 因此这里改为可配置：默认仍 OFF（保持现有构建行为与构建耗时不变），
         # 设 -DFPGA_LSP_VERIBLE_ALLOW_LTO=ON 可让 Verible 真正进入 LTO 图。

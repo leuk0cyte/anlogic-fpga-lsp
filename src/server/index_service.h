@@ -125,7 +125,7 @@ public:
     void SetStampValidationInterval(std::chrono::milliseconds interval);
     std::chrono::milliseconds stamp_validation_interval() const;
 
-    // 默认 TTL：250 ms（实测见 audit/2026-11-19/fix/F2.md §3：
+    // 默认 TTL：250 ms（实测见 doc/audit/2026-11-19/fix/F2.md §3：
     // 200 文件下一次强制校验 ≈ 0.30 ms，250 ms 窗口覆盖"连续打字/连续请求"的绝大多数）。
     static std::chrono::milliseconds DefaultStampValidationInterval();
 

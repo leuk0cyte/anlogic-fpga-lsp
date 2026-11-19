@@ -150,7 +150,7 @@ LspServer::LspServer(jsonrpc::TransportBaseCommon& transport, std::string td_exp
     //   * use_project_work_dir=true：cwd = <project>/.fpgalsp/run，与旧 CreateSession 一致
     //     （state-dir 外移由 platform 层负责，这里不比旧路径更"脏"）；
     //   * TdServiceOptions{}：debounce 300 ms / 取消在跑的一轮 / 取消后不再等（默认值，
-    //     实测结论见 audit/2026-11-18/phase2/A5-REPORT.md §2）。
+    //     实测结论见 doc/audit/2026-11-18/phase2/A5-REPORT.md §2）。
     td_service_ = std::make_unique<td::TdService>(
         [this]() -> std::unique_ptr<td::TdCheckRunner> {
             const std::string configured =

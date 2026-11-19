@@ -18,7 +18,7 @@
 //        InitializeFromFlags(&style)  +  FormatVerilog(text, name, style, out, lines, control)
 //    其中 `ExecutionControl::max_search_states` 的结构体默认值(10000) **不等于**
 //    官方 CLI 的默认值(100000)，两者都必须显式赋 flag 值 —— 这个坑在
-//    tests/FORMAT-GATE-REPORT.md 的「坑 2」有完整记录。
+//    doc/history/gate-reports/FORMAT-GATE-REPORT.md 的「坑 2」有完整记录。
 //
 //  等价性保证：
 //    本封装产出的格式化结果，与 `verible-verilog-format` 在同一 style 下
