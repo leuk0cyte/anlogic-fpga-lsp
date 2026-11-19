@@ -294,6 +294,8 @@ void LspServer::RegisterAll(jsonrpc::Dispatcher& dispatcher) {
                         [this](const Json& params) { return HandleFoldingRange(params); });
 
     // ---- 自定义 v2 方法（PROTOCOL-V2.md）----
+    dispatcher.Register("fpgaLsp/moduleChildren",
+                        [this](const Json& params) { return HandleModuleChildren(params); });
     dispatcher.Register("fpgaLsp/moduleTree",
                         [this](const Json& params) { return HandleModuleTree(params); });
     dispatcher.Register("fpgaLsp/reports",

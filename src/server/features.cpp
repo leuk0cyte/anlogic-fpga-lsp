@@ -432,6 +432,115 @@ Json Completion(const HdlIndex& index, std::string_view path, std::string_view t
     return result;
 }
 
+// P-C2：懒加载子节点。只构建**直接子节点**（每个都不带 children），
+// 并给出 hasChildren 让客户端知道还能继续展开。
+// 这样 1000 节点工程的首屏只传根的一层，而不是整棵树（服务端 500 子节点上限
+// 会静默截断，客户端也只能整棵重建）。
+namespace {
+
+bool HasChildInstances(const HdlIndex& index, const Module& definition,
+                       bool include_primitives) {
+    for (const Instance* child : index.InstancesOfFile(definition.file)) {
+        if (child->module.empty()) continue;
+        if (child->line < definition.line || child->line > definition.end_line) continue;
+        if (!include_primitives && index.ModuleByName(child->module) == nullptr &&
+            (hdl::IsPrimitiveGate(child->module) || hdl::IsDevicePrimitive(child->module))) {
+            continue;
+        }
+        return true;
+    }
+    return false;
+}
+
+// 与 BuildNode 的节点头**逐字段一致**，只是不带 children。
+Json BuildShallowNode(const HdlIndex& index, const std::string& module_name,
+                      const Instance* instance, bool include_primitives) {
+    const Module* definition = index.ModuleByName(module_name);
+    Json node = Json::object();
+    if (definition == nullptr) {
+        node["module"] = module_name;
+        node["instance"] = (instance != nullptr && !instance->name.empty()) ? instance->name
+                                                                            : module_name;
+        node["file"] = instance != nullptr ? instance->file : std::string();
+        const int line = instance != nullptr ? instance->line : 0;
+        const int character = instance != nullptr ? instance->character : 0;
+        node["range"] =
+            MakeRange(line, character, line, character + static_cast<int>(module_name.size()));
+        node["defined"] = false;
+        node["blackbox"] = true;
+        node["recursive"] = false;
+        node["portCount"] = 0;
+        node["usedAt"] = instance != nullptr ? MakeUsedAt(*instance) : Json(nullptr);
+        node["hasChildren"] = false;
+        return node;
+    }
+    node["module"] = definition->name;
+    node["instance"] = instance != nullptr ? instance->name : std::string();
+    node["file"] = definition->file;
+    node["range"] = MakeRange(definition->line, definition->character, definition->line,
+                              definition->character +
+                                  static_cast<int>(definition->name.size()));
+    node["defined"] = true;
+    node["blackbox"] = false;
+    node["recursive"] = false;
+    node["portCount"] = definition->ports.size();
+    node["usedAt"] = instance != nullptr ? MakeUsedAt(*instance) : Json(nullptr);
+    node["hasChildren"] = HasChildInstances(index, *definition, include_primitives);
+    return node;
+}
+
+}  // namespace
+
+Json ModuleChildren(const HdlIndex& index, const project::Project& project,
+                    std::string_view module, int offset, int limit, bool include_primitives) {
+    std::string parent = std::string(module);
+    if (parent.empty()) parent = project.top;
+    if (parent.empty()) {
+        Json out = Json::object();
+        out["ok"] = false;
+        out["error"] = "No HDL index or top module set";
+        return out;
+    }
+    const Module* definition = index.ModuleByName(parent);
+    if (definition == nullptr) {
+        Json out = Json::object();
+        out["ok"] = false;
+        out["error"] = "Unknown module: " + parent;
+        return out;
+    }
+
+    std::vector<const Instance*> children;
+    for (const Instance* child : index.InstancesOfFile(definition->file)) {
+        if (child->module.empty()) continue;
+        if (child->line < definition->line || child->line > definition->end_line) continue;
+        if (!include_primitives && index.ModuleByName(child->module) == nullptr &&
+            (hdl::IsPrimitiveGate(child->module) || hdl::IsDevicePrimitive(child->module))) {
+            continue;
+        }
+        children.push_back(child);
+    }
+
+    const int total = static_cast<int>(children.size());
+    const int begin = std::clamp(offset, 0, total);
+    const int take = std::clamp(limit <= 0 ? 200 : limit, 1, 500);
+    Json items = Json::array();
+    for (int i = begin; i < total && static_cast<int>(items.size()) < take; ++i) {
+        items.push_back(BuildShallowNode(index, children[i]->module, children[i],
+                                         include_primitives));
+    }
+
+    Json out = Json::object();
+    out["ok"] = true;
+    out["project"] = project.name;
+    out["al"] = project.al_path;
+    out["parent"] = definition->name;
+    out["children"] = std::move(items);
+    out["total"] = total;
+    out["nextOffset"] = begin + static_cast<int>(out["children"].size());
+    out["hasMore"] = begin + static_cast<int>(out["children"].size()) < total;
+    return out;
+}
+
 Json ModuleTree(const HdlIndex& index, const project::Project& project,
                 bool include_primitives) {
     if (project.top.empty()) {

@@ -212,3 +212,34 @@ TEST(SemanticDeltaTest, SingleTokenEditKeepsPrefixAndSuffix) {
     EXPECT_EQ(tail_edits[0].at("start").get<int>(), 50);
     EXPECT_EQ(tail_edits[0].at("deleteCount").get<int>(), 0);
 }
+
+// P-C2：懒加载子节点——只回一层、带 hasChildren、可翻页
+TEST_F(CommandsTest, ModuleChildrenReturnsOneLevelAndPaginates) {
+    Json params = Json::object();
+    params["module"] = "top";
+    params["limit"] = 2;
+    const Json first = server().FeatureModuleChildren(params);
+    ASSERT_TRUE(first.at("ok").get<bool>()) << first.dump();
+    EXPECT_EQ(first.at("parent").get<std::string>(), "top");
+    ASSERT_FALSE(first.at("children").empty());
+    ASSERT_LE(first.at("children").size(), 2u);
+    for (const Json& child : first.at("children")) {
+        EXPECT_FALSE(child.contains("children"))
+            << "懒加载只回一层，子节点不能再带 children";
+        EXPECT_TRUE(child.contains("hasChildren"));
+    }
+
+    if (first.at("hasMore").get<bool>()) {
+        params["offset"] = first.at("nextOffset");
+        const Json second = server().FeatureModuleChildren(params);
+        ASSERT_TRUE(second.at("ok").get<bool>());
+        EXPECT_FALSE(second.at("children").empty());
+        EXPECT_NE(second.at("children").at(0).at("instance").get<std::string>(),
+                  first.at("children").at(0).at("instance").get<std::string>());
+    }
+
+    // 未知模块要明确失败，而不是空 children
+    params["module"] = "definitely_not_a_module";
+    const Json unknown = server().FeatureModuleChildren(params);
+    EXPECT_FALSE(unknown.at("ok").get<bool>());
+}

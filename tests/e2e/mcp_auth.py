@@ -107,22 +107,36 @@ def main() -> int:
     root = str(Path(args.root).resolve())
     exe = str(Path(args.server).resolve())
     state_dir = Path(tempfile.mkdtemp(prefix="fpgalsp-mcp-auth-"))
-    port = free_port()
+    port = None
     log = state_dir / "server.log"
 
     env = dict(os.environ)
     env["FPGALSP_STATE_DIR"] = str(state_dir)
     env["FPGALSP_MCP_REQUIRE_TOKEN"] = "1"
-    proc = subprocess.Popen(
-        [exe, "--stdio", "--root", root, "--mcp-port", str(port), "--log", str(log)],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        env=env,
-        cwd=root,
-    )
+    proc = None
+    for _ in range(3):
+        port = free_port()
+        proc = subprocess.Popen(
+            [exe, "--stdio", "--root", root, "--mcp-port", str(port), "--log", str(log)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=env,
+            cwd=root,
+        )
+        try:
+            wait_port(port, timeout=20.0)
+            break
+        except SystemExit:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+            proc = None
+    if proc is None:
+        raise SystemExit("FAIL: 连续 3 次无法启动 MCP 监听")
     try:
-        wait_port(port)
         endpoint = read_endpoint(state_dir, port)
         check(endpoint.get("port") == port, "端点文件里的端口是真实端口")
         token = endpoint.get("token") or ""

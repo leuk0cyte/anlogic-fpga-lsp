@@ -147,6 +147,8 @@ public:
     Json FeatureCompletion(std::string_view path, int line, int character);
     // uri 为空 = 用当前工程（与 fpgaLsp/moduleTree 的 params.uri 语义一致）
     Json FeatureModuleTree(std::string_view uri, bool include_primitives = false);
+    // P-C2：懒加载子节点（offset/limit 分页）
+    Json FeatureModuleChildren(const Json& params);
     // 工程摘要（与 fpgalsp.info 同一实现）
     Json FeatureInfo();
 
@@ -253,6 +255,7 @@ private:
     //  handler（自定义 v2 方法 / executeCommand）—— 定义在 commands.cpp
     // =========================================================================
     HandlerResult HandleModuleTree(const Json& params);
+    HandlerResult HandleModuleChildren(const Json& params);
     HandlerResult HandleReports(const Json& params);
     HandlerResult HandleFlowStatus(const Json& params);
     HandlerResult HandleExecuteCommand(const Json& params);

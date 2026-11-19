@@ -225,6 +225,37 @@ Json BuildNode(const hdl::HdlIndex& index, const std::string& module_name,
 //  fpgaLsp/moduleTree
 // =============================================================================
 
+HandlerResult LspServer::HandleModuleChildren(const Json& params) {
+    return OkObject(FeatureModuleChildren(params));
+}
+
+Json LspServer::FeatureModuleChildren(const Json& params) {
+    const std::string uri = jsonrpc::GetString(params, "uri");
+    const auto project = uri.empty() ? CurrentProject()
+                                     : ProjectForPath(platform::uri_to_path(std::string(uri)));
+    if (!project.has_value()) {
+        Json out = Json::object();
+        out["ok"] = false;
+        out["error"] = "No Anlogic .al project found";
+        return out;
+    }
+    bool index_truncated = false;
+    const std::shared_ptr<const hdl::HdlIndex> index =
+        IndexForProject(*project, &index_truncated, nullptr);
+    if (!index) {
+        Json out = Json::object();
+        out["ok"] = false;
+        out["error"] = "No HDL index";
+        return out;
+    }
+    const std::string module = jsonrpc::GetString(params, "module");
+    const int offset = jsonrpc::GetInt(params, "offset", 0);
+    const int limit = jsonrpc::GetInt(params, "limit", 200);
+    const bool include_primitives = jsonrpc::GetBool(params, "includePrimitives", false);
+    return features::ModuleChildren(*index, *project, module, offset, limit,
+                                    include_primitives);
+}
+
 HandlerResult LspServer::HandleModuleTree(const Json& params) {
     return OkObject(FeatureModuleTree(jsonrpc::GetString(params, "uri"),
                                  jsonrpc::GetBool(params, "includePrimitives", false)));

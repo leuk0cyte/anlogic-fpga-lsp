@@ -100,8 +100,27 @@ def start_server(exe: str, root: str, port: int, env_extra: dict | None = None):
         env=env,
         cwd=root,
     )
-    wait_port(port)
+    # 端口是从 free_port() 借来的：机器忙时可能被别人抢走（ctest 全量跑时真实发生过）。
+    # 失败就换一个端口重试，而不是让测试红。
+    try:
+        wait_port(port, timeout=20.0)
+    except SystemExit:
+        stop_server(proc)
+        raise
     return proc, log
+
+
+def start_ready_server(exe: str, root: str, env_extra: dict | None = None):
+    """启动并等端口就绪；端口冲突时最多重试 3 次。返回 (proc, port)。"""
+    last_error = None
+    for _ in range(3):
+        port = free_port()
+        try:
+            proc, _log = start_server(exe, root, port, env_extra)
+            return proc, port
+        except SystemExit as exc:
+            last_error = exc
+    raise SystemExit("FAIL: 连续 3 次无法启动 MCP 监听（最后一次：%s）" % last_error)
 
 
 def stop_server(proc: subprocess.Popen) -> None:
@@ -126,8 +145,7 @@ def initialize(client: Client, ident: int) -> None:
 
 
 def scenario_parallel(exe: str, root: str) -> None:
-    port = free_port()
-    proc, _ = start_server(exe, root, port)
+    proc, port = start_ready_server(exe, root)
     try:
         holder = Client(port)
         initialize(holder, 1)
@@ -156,8 +174,7 @@ def scenario_parallel(exe: str, root: str) -> None:
 
 
 def scenario_limit(exe: str, root: str) -> None:
-    port = free_port()
-    proc, _ = start_server(exe, root, port, {"FPGALSP_MCP_CLIENTS": "1"})
+    proc, port = start_ready_server(exe, root, {"FPGALSP_MCP_CLIENTS": "1"})
     try:
         first = Client(port)
         initialize(first, 1)

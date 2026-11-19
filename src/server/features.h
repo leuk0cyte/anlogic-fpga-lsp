@@ -56,6 +56,11 @@ Json InlayHints(const hdl::HdlIndex& index, std::string_view path);
 Json Completion(const hdl::HdlIndex& index, std::string_view path, std::string_view text,
                 int line, int character);
 
+// fpgaLsp/moduleChildren（P-C2）：只回 parent 的直接子节点（带 hasChildren，不带 children），
+// offset/limit 分页。parent 为空时用 project.top。
+Json ModuleChildren(const hdl::HdlIndex& index, const project::Project& project,
+                    std::string_view module, int offset, int limit, bool include_primitives);
+
 // fpgaLsp/moduleTree（root=project.top；IP/VHDL 在索引里 -> 非黑盒）
 Json ModuleTree(const hdl::HdlIndex& index, const project::Project& project,
                 bool include_primitives);

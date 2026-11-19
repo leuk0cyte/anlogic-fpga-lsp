@@ -420,15 +420,57 @@ class ModuleTreeProvider {
             if (!this.payload || this.payload.ok === false || !this.rootNode) return [];
             return [this.rootNode];
         }
-        if (element.kind === 'module') return this._childrenOf(element);
-        return [];
+        if (element.kind !== 'module') return [];
+        // P-C2: lazy children. The server can answer with just this level
+        // (`hasChildren`), which keeps the first payload small on big designs.
+        // Kept **synchronous** when children are already known (all existing callers and
+        // tests rely on that); a lazy node returns a promise, which the TreeView accepts.
+        if (!Array.isArray(element.raw.children) && element.raw.hasChildren === true) {
+            if (!element._loadingPromise) {
+                element._loadingPromise = this._loadChildren(element).finally(() => {
+                    element._loadingPromise = undefined;
+                    this._onDidChangeTreeData.fire(element);
+                });
+            }
+            return element._loadingPromise.then(() => this._childrenOf(element));
+        }
+        return this._childrenOf(element);
+    }
+
+    /**
+     * P-C2: fetch one level from `fpgaLsp/moduleChildren`.
+     * Failures degrade to "no children" instead of a broken tree; the next refresh retries.
+     */
+    async _loadChildren(node) {
+        if (node._loading) return;
+        node._loading = true;
+        try {
+            const response = await this.rpc.request('fpgaLsp/moduleChildren', {
+                module: (node.raw && node.raw.module) || '',
+                offset: 0,
+                limit: 200,
+            });
+            const children = response && Array.isArray(response.children) ? response.children : [];
+            node.raw.children = children;
+            if (response && typeof response === 'object') {
+                node.raw.total = response.total;
+                node.raw.nextOffset = response.nextOffset;
+                node.raw.hasMore = response.hasMore === true;
+            }
+        } catch (_) {
+            node.raw.children = [];
+        } finally {
+            node._loading = false;
+        }
     }
 
     getTreeItem(node) {
         if (!node || node.kind !== 'module') return new vscode.TreeItem('?');
         const raw = node.raw || {};
         const rawChildren = raw && Array.isArray(raw.children) ? raw.children : [];
-        let state = rawChildren.length
+        // P-C2: `hasChildren` (from moduleChildren) means "expandable but not loaded yet"
+        const expandable = rawChildren.length > 0 || raw.hasChildren === true;
+        let state = expandable
             ? vscode.TreeItemCollapsibleState.Collapsed
             : vscode.TreeItemCollapsibleState.None;
         if (node.isRoot && rawChildren.length && !this._rootExpanded) {

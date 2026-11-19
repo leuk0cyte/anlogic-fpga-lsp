@@ -1290,3 +1290,42 @@ test('mcp endpoint: reads port/token, rejects a foreign root, ignores corrupt fi
     eq(readMcpEndpoint(dir, { root: 'Y:/p/demo' }).port, 45003,
        'newest endpoint wins even when another file is corrupt');
 });
+
+
+// P-C2: 懒加载。payload 只给根一层（hasChildren），展开时才发 moduleChildren，
+// 而且只发一次（重复展开不重复请求）。
+test('module tree: lazy children are fetched on expand, exactly once', async () => {
+    const calls = [];
+    const provider = new ModuleTreeProvider({
+        request: async (method, params) => {
+            calls.push({ method, params });
+            if (method === 'fpgaLsp/moduleTree') {
+                return {
+                    ok: true, project: 'demo', al: 'Y:/p/demo.al',
+                    root: { module: 'top', hasChildren: true, range: { start: { line: 0, character: 0 }, end: { line: 0, character: 3 } } },
+                };
+            }
+            if (method === 'fpgaLsp/moduleChildren') {
+                return {
+                    ok: true, parent: params.module, total: 2, nextOffset: 2, hasMore: false,
+                    children: [
+                        { module: 'a', instance: 'u_a', hasChildren: false },
+                        { module: 'b', instance: 'u_b', hasChildren: true },
+                    ],
+                };
+            }
+            return { ok: false };
+        },
+    });
+    await provider.refresh();
+
+    const [root] = provider.getChildren();
+    const children = await provider.getChildren(root);
+    eq(children.length, 2, 'one level fetched on expand');
+    eq(calls.filter((c) => c.method === 'fpgaLsp/moduleChildren').length, 1, 'moduleChildren called once');
+    eq(calls.find((c) => c.method === 'fpgaLsp/moduleChildren').params.module, 'top', 'asks for the expanded module');
+
+    const again = await provider.getChildren(root);
+    eq(again.length, 2, 'second expand reuses loaded children');
+    eq(calls.filter((c) => c.method === 'fpgaLsp/moduleChildren').length, 1, 'no duplicate request');
+});
