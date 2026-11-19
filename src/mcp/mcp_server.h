@@ -119,8 +119,15 @@ class McpServer {
     bool allow_write() const { return options_.allow_write; }
 
     // 结果包装（供单测直接验证截断/错误语义）
-    Json WrapToolResult(const Json& value) const;
+    // offset_hint：本次请求已跳过的条目数（由 arguments.offset 传入），
+    // 用于让裁剪后的 nextOffset 是**绝对**偏移（P-B2）。
+    Json WrapToolResult(const Json& value, std::size_t offset_hint = 0) const;
     static Json WrapToolError(const std::string& message);
+
+    // P-B2：分页式裁剪。把最大的数组裁到 limit 字节以内，并在对象上加
+    // {truncated:true, total, nextOffset}；找不到可裁的数组时返回 null（走旧行为）。
+    // 纯函数，单测直接覆盖。
+    static Json TruncatePayload(const Json& value, std::size_t limit, std::size_t offset_hint);
 
     // 协商档是否开启（单测/诊断用）
     bool structured_results() const { return options_.client_supports_structured; }

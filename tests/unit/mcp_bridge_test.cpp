@@ -1090,3 +1090,38 @@ TEST_F(BridgeTest, ProjectListTruncatesSilentlyWithoutFlag) {
 }
 
 }  // namespace
+
+// P-B2：分页偏移。裁剪后的 nextOffset 作为下一次的 offset，结果不重叠也不丢。
+TEST_F(BridgeTest, WorkspaceSymbolsPagesWithOffset) {
+    Json all_args = Json::object();
+    all_args["query"] = "";
+    all_args["limit"] = 1000;
+    const Json all = Call("workspace_symbols", all_args);
+    ASSERT_TRUE(all.at("ok").get<bool>());
+    const std::size_t total = all.at("symbols").size();
+    ASSERT_GT(total, 4u) << "语料里的符号数必须足够多，才能验证分页";
+
+    Json first_args = Json::object();
+    first_args["query"] = "";
+    first_args["limit"] = 3;
+    const Json first = Call("workspace_symbols", first_args);
+    ASSERT_TRUE(first.at("ok").get<bool>());
+    ASSERT_EQ(first.at("symbols").size(), 3u);
+    ASSERT_EQ(first.at("total").get<std::size_t>(), total);
+    const std::size_t next = first.at("nextOffset").get<std::size_t>();
+    EXPECT_EQ(next, 3u);
+
+    Json second_args = Json::object();
+    second_args["query"] = "";
+    second_args["limit"] = 3;
+    second_args["offset"] = next;
+    const Json second = Call("workspace_symbols", second_args);
+    ASSERT_TRUE(second.at("ok").get<bool>());
+    ASSERT_EQ(second.at("symbols").size(), 3u);
+
+    // 两页必须完全等于全量结果的前 6 项（说明偏移与顺序都对）
+    for (std::size_t i = 0; i < 3; ++i) {
+        EXPECT_EQ(second.at("symbols").at(i).at("name").get<std::string>(),
+                  all.at("symbols").at(i + 3).at("name").get<std::string>());
+    }
+}

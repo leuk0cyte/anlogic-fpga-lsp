@@ -133,6 +133,42 @@ def canonical(value) -> str:
     return json.dumps(value, sort_keys=True, ensure_ascii=False)
 
 
+
+def additive_only(cpp_tool: dict, py_tool: dict) -> bool:
+    """cpp 相对 python 是否只有"新增可选属性"这一种差异。
+
+    用户已明确放弃 Python 接口契约（2026-11），但 schema 门禁仍有价值：它能抓住
+    "少字段/改语义/顺序漂移"。所以规则收敛为：
+      * 顶层字段集合必须一致，除 inputSchema 外逐字段相等；
+      * inputSchema 除 properties 外逐字段相等（required/type/additionalProperties 等）；
+      * py 的每个 property 定义必须逐字相等；
+      * cpp 多出的 property 允许存在，但**不能出现在 required 里**（保持向后兼容）。
+    """
+    if set(cpp_tool) != set(py_tool):
+        return False
+    for key in cpp_tool:
+        if key == "inputSchema":
+            continue
+        if canonical(cpp_tool[key]) != canonical(py_tool[key]):
+            return False
+    cpp_schema = cpp_tool.get("inputSchema") or {}
+    py_schema = py_tool.get("inputSchema") or {}
+    if set(cpp_schema) != set(py_schema):
+        return False
+    for key in cpp_schema:
+        if key == "properties":
+            continue
+        if canonical(cpp_schema[key]) != canonical(py_schema[key]):
+            return False
+    py_props = py_schema.get("properties") or {}
+    cpp_props = cpp_schema.get("properties") or {}
+    for name, schema in py_props.items():
+        if canonical(cpp_props.get(name)) != canonical(schema):
+            return False
+    extra = set(cpp_props) - set(py_props)
+    required = set(py_schema.get("required") or [])
+    return extra.isdisjoint(required)
+
 def compare_tools(cpp_tools: list[dict], py_tools: list[dict], label: str,
                   verbose: bool) -> int:
     """返回差异条数。"""
@@ -167,6 +203,11 @@ def compare_tools(cpp_tools: list[dict], py_tools: list[dict], label: str,
         if canonical(cpp_tool) == canonical(py_tool):
             if verbose:
                 print("  [%s] OK   %s" % (label, name))
+            continue
+        if additive_only(cpp_tool, py_tool):
+            # 只多了可选参数（例如 P-B2 给 workspace_symbols 加的 offset）：允许，
+            # 但打印出来，避免悄悄扩参。
+            print("  [%s] EXT  %s（cpp 多出可选属性，允许）" % (label, name))
             continue
         problems += 1
         print("  [%s] DIFF %s" % (label, name))

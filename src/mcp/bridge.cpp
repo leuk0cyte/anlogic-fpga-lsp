@@ -1483,14 +1483,26 @@ Json Bridge::WorkspaceSymbolsTool(const Json& arguments) {
     if (const auto it = arguments.find("limit"); it != arguments.end() && it->is_number_integer()) {
         limit = std::clamp(it->get<int>(), 1, 1000);
     }
+    // P-B2：分页偏移。裁剪后的 nextOffset 会回填到 arguments.offset 里继续取。
+    int offset = 0;
+    if (const auto it = arguments.find("offset"); it != arguments.end() && it->is_number_integer()) {
+        offset = std::clamp(it->get<int>(), 0, 1000000);
+    }
 
     const hdl::HdlIndex& index = EnsureHdlIndex(proj);
     const Json result = server::features::WorkspaceSymbols(index, query);
 
     Json symbols = Json::array();
+    int skipped = 0;
     int count = 0;
     for (const Json& symbol : result) {
-        if (count++ >= limit) break;
+        if (skipped < offset) {
+            ++skipped;
+            continue;
+        }
+        // ⚠ 不能写 `if (count++ >= limit) break;`：那会在 break 时也自增，
+        // nextOffset 会多 1（分页错位一位）。先判断再自增。
+        if (count >= limit) break;
         Json item = Json::object();
         item["name"] = symbol.value("name", std::string());
         item["kind"] = SymbolKindName(symbol.value("kind", 0));
@@ -1498,10 +1510,15 @@ Json Bridge::WorkspaceSymbolsTool(const Json& arguments) {
         item["location"] =
             symbol.contains("location") ? LocationJson(symbol["location"], proj) : Json(nullptr);
         symbols.push_back(std::move(item));
+        ++count;
     }
     Json out = Json::object();
     out["ok"] = true;
     out["symbols"] = std::move(symbols);
+    if (offset > 0 || static_cast<int>(result.size()) > offset + count) {
+        out["total"] = result.size();
+        out["nextOffset"] = offset + count;
+    }
     return out;
 }
 

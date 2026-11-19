@@ -601,3 +601,56 @@ TEST(McpCancelTest, NonToolMethodsStaySynchronous) {
     ASSERT_TRUE(response.has_value()) << "非 tools/call 仍然同步返回";
     EXPECT_EQ(response->at("result"), Json::object());
 }
+
+// ------------------------------------------------- P-B2：分页式裁剪
+
+TEST(McpTruncationTest, ObjectArrayIsPagedInsteadOfDropped) {
+    Json value = Json::object();
+    value["ok"] = true;
+    value["symbols"] = Json::array();
+    for (int i = 0; i < 20000; ++i) {
+        Json item = Json::object();
+        item["name"] = "symbol_" + std::to_string(i);
+        item["containerName"] = "some_container_name_to_make_items_bigger";
+        value["symbols"].push_back(std::move(item));
+    }
+    ASSERT_GT(value.dump().size(), McpServer::kMaxToolResultBytes);
+
+    const Json trimmed = McpServer::TruncatePayload(value, McpServer::kMaxToolResultBytes, 0);
+    ASSERT_FALSE(trimmed.is_null());
+    EXPECT_TRUE(trimmed.at("truncated").get<bool>());
+    EXPECT_EQ(trimmed.at("total").get<std::size_t>(), 20000u);
+    EXPECT_EQ(trimmed.at("itemsField").get<std::string>(), "symbols");
+    const std::size_t kept = trimmed.at("symbols").size();
+    EXPECT_GT(kept, 0u);
+    EXPECT_LT(kept, 20000u);
+    EXPECT_EQ(trimmed.at("nextOffset").get<std::size_t>(), kept);
+    EXPECT_LT(trimmed.dump().size(), McpServer::kMaxToolResultBytes);
+
+    // 偏移量是绝对的：第二次裁剪从 nextOffset 继续
+    const Json again = McpServer::TruncatePayload(value, McpServer::kMaxToolResultBytes, kept);
+    EXPECT_EQ(again.at("nextOffset").get<std::size_t>(), kept + again.at("symbols").size());
+}
+
+TEST(McpTruncationTest, RootArrayIsWrappedAndPaged) {
+    Json value = Json::array();
+    for (int i = 0; i < 20000; ++i) {
+        Json item = Json::object();
+        item["path"] = "src/some/rather/long/path/file_" + std::to_string(i) + ".v";
+        value.push_back(std::move(item));
+    }
+    const Json trimmed = McpServer::TruncatePayload(value, McpServer::kMaxToolResultBytes, 0);
+    ASSERT_FALSE(trimmed.is_null());
+    EXPECT_TRUE(trimmed.at("ok").get<bool>());
+    EXPECT_TRUE(trimmed.at("truncated").get<bool>());
+    EXPECT_EQ(trimmed.at("total").get<std::size_t>(), 20000u);
+    EXPECT_GT(trimmed.at("items").size(), 0u);
+}
+
+TEST(McpTruncationTest, PayloadWithoutArrayCannotBePaged) {
+    Json value = Json::object();
+    value["ok"] = true;
+    value["blob"] = std::string(900000, 'x');
+    EXPECT_TRUE(McpServer::TruncatePayload(value, McpServer::kMaxToolResultBytes, 0).is_null())
+        << "没有数组可裁时应返回 null，让调用方回退到旧的整份丢弃";
+}

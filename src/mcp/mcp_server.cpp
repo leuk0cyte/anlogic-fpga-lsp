@@ -225,7 +225,81 @@ Json McpServer::WrapToolError(const std::string& message) {
     return out;
 }
 
-Json McpServer::WrapToolResult(const Json& value_in) const {
+// P-B2：分页式裁剪。
+// 旧行为是"超过 800000 字节就把整份结果换成 {truncated:true}"，agent 什么都拿不到。
+// 现在按"最大的那个数组"裁剪：保留对象其余字段，数组只留能放下的前缀，并带上
+// total / nextOffset，客户端可以继续取。
+// 找不到数组（纯大字符串/大对象）时返回 null，调用方回退到旧的整份丢弃。
+namespace {
+
+std::size_t CompactSize(const Json& value) {
+    return value.dump(-1, ' ', false, Json::error_handler_t::replace).size();
+}
+
+// 把 array 的前 count 项序列化后的字节数（含字段名开销，粗略但单调）。
+std::size_t PrefixSize(const Json& array, std::size_t count) {
+    Json slice = Json::array();
+    for (std::size_t i = 0; i < count && i < array.size(); ++i) slice.push_back(array[i]);
+    return CompactSize(slice);
+}
+
+}  // namespace
+
+Json McpServer::TruncatePayload(const Json& value, std::size_t limit,
+                                std::size_t offset_hint) {
+    constexpr std::size_t kSafety = 4096;  // 给信封/其他字段留余量
+    const std::size_t budget = limit > kSafety ? limit - kSafety : limit / 2;
+
+    // 1) 根数组：无法附加元数据，包成 {ok, items, ...}（旧行为下这种情况直接失败，
+    //    所以形状变化不会破坏任何能工作的客户端）。
+    if (value.is_array()) {
+        if (value.empty()) return Json();
+        std::size_t keep = value.size();
+        while (keep > 1 && PrefixSize(value, keep) > budget) {
+            keep = keep * 9 / 10;
+        }
+        Json out = Json::object();
+        out["ok"] = true;
+        out["items"] = Json::array();
+        for (std::size_t i = 0; i < keep; ++i) out["items"].push_back(value[i]);
+        out["truncated"] = true;
+        out["total"] = value.size();
+        out["nextOffset"] = offset_hint + keep;
+        return out;
+    }
+
+    if (!value.is_object()) return Json();
+
+    // 2) 对象：挑元素最多的一级数组字段。
+    const std::string* best_key = nullptr;
+    std::size_t best_count = 0;
+    for (auto it = value.begin(); it != value.end(); ++it) {
+        if (!it->is_array()) continue;
+        if (it->size() > best_count) {
+            best_count = it->size();
+            best_key = &it.key();
+        }
+    }
+    if (best_key == nullptr || best_count == 0) return Json();
+
+    const Json& source = value[*best_key];
+    std::size_t keep = source.size();
+    while (keep > 1 && PrefixSize(source, keep) > budget) {
+        keep = keep * 9 / 10;
+    }
+
+    Json out = value;
+    Json kept = Json::array();
+    for (std::size_t i = 0; i < keep; ++i) kept.push_back(source[i]);
+    out[*best_key] = std::move(kept);
+    out["truncated"] = true;
+    out["total"] = source.size();
+    out["nextOffset"] = offset_hint + keep;
+    out["itemsField"] = *best_key;  // 告诉调用方被裁的是哪个字段
+    return out;
+}
+
+Json McpServer::WrapToolResult(const Json& value_in, std::size_t offset_hint) const {
     Json value = value_in;
     // Python: 非 dict/list 的结果包成 {"ok": true, "result": value}
     if (!value.is_object() && !value.is_array()) {
@@ -247,12 +321,21 @@ Json McpServer::WrapToolResult(const Json& value_in) const {
     // 上限按**载荷**算，不能按 text 算：协商档的 text 是一行摘要，
     // 按它算会让超大 structuredContent 直接漏过去（客户端解析器会崩）。
     if (compact.size() > kMaxToolResultBytes) {
-        Json too_large = Json::object();
-        too_large["ok"] = false;
-        too_large["error"] = "Tool result too large; pass a smaller limit";
-        too_large["truncated"] = true;
-        value = std::move(too_large);
+        // P-B2：先尝试按数组分页裁剪（agent 还能继续取）；实在没有可裁的数组
+        // （纯大字符串/大对象）才回退到旧的"整份丢弃"。
+        Json truncated = TruncatePayload(value, kMaxToolResultBytes, offset_hint);
+        if (!truncated.is_null()) {
+            value = std::move(truncated);
+        } else {
+            Json too_large = Json::object();
+            too_large["ok"] = false;
+            too_large["error"] = "Tool result too large; pass a smaller limit";
+            too_large["truncated"] = true;
+            value = std::move(too_large);
+        }
         text = value.dump(-1, ' ', false, Json::error_handler_t::replace);
+        // 裁剪后的载荷仍可能偏大：再走一次协商档判断（结构化时 text 只是摘要）。
+        if (structured_payload && value.is_object()) text = SummaryOf(value);
     }
 
     Json content = Json::array();
@@ -444,7 +527,17 @@ std::optional<Json> McpServer::HandleSingle(const Json& message) {
 
     if (method == "tools/call") {
         try {
-            return Response(id, WrapToolResult(CallTool(params)));
+            // P-B2：让裁剪后的 nextOffset 是绝对偏移。
+            std::size_t offset = 0;
+            if (const Json* args = GetMember(params, "arguments");
+                args != nullptr && args->is_object()) {
+                if (const Json* value = GetMember(*args, "offset");
+                    value != nullptr && value->is_number_integer()) {
+                    const auto parsed = value->get<std::int64_t>();
+                    if (parsed > 0) offset = static_cast<std::size_t>(parsed);
+                }
+            }
+            return Response(id, WrapToolResult(CallTool(params), offset));
         } catch (const ToolError& error) {
             return Response(id, WrapToolError(error.what()));
         } catch (const std::exception& error) {
