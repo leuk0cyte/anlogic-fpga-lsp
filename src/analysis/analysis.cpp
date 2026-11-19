@@ -239,7 +239,7 @@ std::string NewestRoutedDb(const project::Project& project) {
 
 std::string CacheDir(const project::Project& project) {
     if (project.dir.empty()) return std::string();
-    return platform::normalize_path(project.dir + "/.fpgalsp/cache");
+    return platform::path_join(platform::state_dir(project.dir), "cache");
 }
 
 std::optional<Json> Cached(const project::Project& project) {
@@ -468,7 +468,7 @@ Json Run(const project::Project& project, std::string_view td_explicit, const Lo
     }
 
     // Python：run_dir = <project>/.fpgalsp/analysis（P-4 行为保持）
-    const std::string run_dir = platform::normalize_path(project.dir + "/.fpgalsp/analysis");
+    const std::string run_dir = platform::path_join(platform::state_dir(project.dir), "analysis");
 
     try {
         const std::optional<td::TdChoice> choice = td::FindTd(td_explicit);
@@ -581,7 +581,7 @@ Json UpdateProject(const project::Project& project, std::string_view td_explicit
         }
         // Python 用的是服务器常驻会话，其 cwd = <project>/.fpgalsp/run（server.py:_run_dir）
         td::TdSessionOptions options;
-        options.work_dir = platform::normalize_path(project.dir + "/.fpgalsp/run");
+        options.work_dir = platform::path_join(platform::state_dir(project.dir), "run");
         td::TdSession session(*choice, options);
 
         std::string output = session.Run("check_project_version -file {" + al + "}",

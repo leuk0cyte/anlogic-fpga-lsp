@@ -13,6 +13,8 @@
 
 #include "flow/flow_runner.h"
 
+#include "platform/path.h"  // state_dir()（Wave 3 / W1：状态目录可外移）
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -286,11 +288,11 @@ double StallSecondsFromEnv(double fallback) {
 }
 
 std::string DefaultFlowRoot(const project::Project& project) {
-    return Join(Join(project.dir, ".fpgalsp"), "flow");
+    return Join(platform::state_dir(project.dir), "flow");
 }
 
 std::string DefaultCacheRoot(const project::Project& project) {
-    return Join(Join(project.dir, ".fpgalsp"), "cache");
+    return Join(platform::state_dir(project.dir), "cache");
 }
 
 // -----------------------------------------------------------------------------

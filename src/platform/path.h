@@ -87,4 +87,29 @@ std::string uri_to_path(std::string_view uri);
 // URI 是否以 "file:" 开头（大小写不敏感）。
 bool uri_is_file(std::string_view uri);
 
+// -----------------------------------------------------------------------------
+// 状态目录（Wave 3 / W1）：`.fpgalsp` 可以外移到系统临时目录
+// -----------------------------------------------------------------------------
+//  用户在 2026-11-19 要求"插件的状态文件不要落在工作目录"。**C++ 侧只认环境变量**，
+//  目录由调用方（插件）算好并通过 `FPGALSP_STATE_DIR` 传下来 —— 这样两侧不会各算一套。
+//
+//  解析顺序（唯一事实源）：
+//    1) 环境变量 `FPGALSP_STATE_DIR` 非空  -> 用它（normalize_path 之后返回）
+//    2) 否则                              -> `<project_or_base>/.fpgalsp`
+//
+//  ⚠ 第 2 条必须与 Wave 3 之前**逐字节相同**：CLI/MCP 直连、单元测试、Python 对拍
+//     都依赖 `<project>/.fpgalsp/...` 这个语义。所以未设环境变量时本函数只是
+//     `path_join(base, ".fpgalsp")`，不做别的加工。
+//
+//  子目录约定（调用方用 path_join(state_dir(dir), "<sub>") 拼）：
+//    <state>/logs   <state>/run   <state>/cache   <state>/flow   <state>/analysis
+//
+//  ⚠ 本函数**不建目录**：很多调用点只"读缓存/试读日志"，不存在就当未命中。
+//     提前 create_directories 会让从没跑过 flow 的工程凭空多出目录，破坏 e2e 的
+//     "语料里不出现 .fpgalsp" 断言。建目录由真正要写的调用点负责。
+std::string state_dir(std::string_view project_or_base);
+
+// 当前是否由 `FPGALSP_STATE_DIR` 决定（仅供日志/诊断/测试断言用）。
+bool state_dir_from_env();
+
 }  // namespace fpgalsp::platform

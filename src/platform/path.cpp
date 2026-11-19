@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdlib>
 #include <filesystem>
 #include <cctype>
 #include <string>
@@ -428,6 +429,44 @@ bool uri_is_file(std::string_view uri) {
     if (uri.size() < 5) return false;
     return ascii_lower(uri[0]) == 'f' && ascii_lower(uri[1]) == 'i' && ascii_lower(uri[2]) == 'l' &&
            ascii_lower(uri[3]) == 'e' && uri[4] == ':';
+}
+
+// -----------------------------------------------------------------------------
+//  状态目录（Wave 3 / W1）：实现见 path.h 的说明
+// -----------------------------------------------------------------------------
+namespace {
+
+// 读 `FPGALSP_STATE_DIR`；未设置/空串返回 false。Windows 上走 _dupenv_s 避免 C4996。
+bool ReadStateDirEnv(std::string* out) {
+#if defined(_WIN32)
+    char* buffer = nullptr;
+    std::size_t size = 0;
+    if (_dupenv_s(&buffer, &size, "FPGALSP_STATE_DIR") != 0 || buffer == nullptr) return false;
+    std::string value(buffer);
+    std::free(buffer);
+    if (value.empty()) return false;
+    *out = std::move(value);
+    return true;
+#else
+    const char* value = std::getenv("FPGALSP_STATE_DIR");
+    if (value == nullptr || *value == '\0') return false;
+    *out = value;
+    return true;
+#endif
+}
+
+}  // namespace
+
+std::string state_dir(std::string_view project_or_base) {
+    std::string from_env;
+    if (ReadStateDirEnv(&from_env)) return normalize_path(from_env);
+    // 未设置环境变量：必须与 Wave 3 之前逐字节一致（CLI/MCP 直连、单测、Python 对拍都依赖它）。
+    return path_join(project_or_base, ".fpgalsp");
+}
+
+bool state_dir_from_env() {
+    std::string from_env;
+    return ReadStateDirEnv(&from_env);
 }
 
 }  // namespace fpgalsp::platform

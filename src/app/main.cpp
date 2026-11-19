@@ -36,6 +36,7 @@
 #include "jsonrpc/json_util.h"
 #include "jsonrpc/transport.h"
 #include "platform/log.h"
+#include "platform/path.h"  // state_dir()（Wave 3 / W1：状态目录可外移）
 #include "mcp/bridge.h"
 #include "mcp/mcp_server.h"
 #include "server/async_dispatcher.h"
@@ -266,7 +267,8 @@ int main(int argc, char** argv) {
         const std::filesystem::path base =
             is_lsp ? std::filesystem::current_path(ec)
                    : std::filesystem::path(options.root.empty() ? "." : options.root);
-        const std::filesystem::path logs = base / ".fpgalsp" / "logs";
+        const std::filesystem::path logs =
+            std::filesystem::path(fpgalsp::platform::state_dir(base.string())) / "logs";
         std::filesystem::create_directories(logs, ec);
         if (!ec) {
             options.log_path = (logs / (is_lsp ? "server.log" : "mcp.log")).string();
