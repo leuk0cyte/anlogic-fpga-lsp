@@ -69,6 +69,7 @@
 #include "constraints/port.h"
 #include "mcp/mcp_server.h"
 #include "mcp/tools.h"
+#include "server/index_service.h"  // D5：HDL 索引改由 IndexService 持有（增量 + TTL）
 #include "td/td_install.h"
 
 namespace fpgalsp::project {
@@ -224,9 +225,15 @@ class Bridge : public ToolDispatcher {
     std::optional<td::TdChoice> td_choice_;
 
     // 符号层：HDL 索引按工程缓存（JSON 形状由 server::features 产出，无状态）
-    std::unique_ptr<hdl::ParseCache> hdl_cache_;
-    std::unique_ptr<hdl::HdlIndex> hdl_index_;
-    std::string hdl_project_;  // hdl_index_ 对应的 .al 路径
+    //
+    // D5（2026-11-19）：旧实现只在 `hdl_project_ != proj.al_path` 时重建，
+    // 于是 MCP 长连接（agent 会话）**永远看到第一次建好的索引** —— 用户改了文件
+    // 也读不到新内容。现在改用一个 `server::IndexService`：它内部按
+    // (path, mtime, size) 做增量校验（默认 250 ms TTL，didSave/watcher 事件走强制校验），
+    // 与 LSP 侧同一套语义，既不会读到陈旧索引，也不会每请求全量重建。
+    std::unique_ptr<server::IndexService> index_service_;
+    // 上一次取到的不可变快照：保证返回的 `const HdlIndex&` 在本次调用期间有效
+    std::shared_ptr<const hdl::HdlIndex> hdl_snapshot_;
     std::unique_ptr<flow::FlowRunner> flow_runner_;
     // B6c：code_actions / rename_edits 的 feature 上下文。
     // LspServer 的 Feature* 需要 ProjectForPath / IndexForProject / LoadText 这些

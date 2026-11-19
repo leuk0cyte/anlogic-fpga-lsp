@@ -1134,18 +1134,18 @@ std::optional<CallHierarchyData> CallHierarchyForModule(const hdl::HdlIndex& ind
 // 产出，这里**不需要**构造 LspServer —— 也就不需要担心它的通知写进 MCP 的 stdout。
 // 这是比"复用 LspServer handler"更干净的分层：features 不持有状态、不碰传输。
 const hdl::HdlIndex& Bridge::EnsureHdlIndex(const project::Project& proj) {
-    if (hdl_index_ && hdl_project_ == proj.al_path) return *hdl_index_;
-    if (!hdl_cache_) hdl_cache_ = std::make_unique<hdl::ParseCache>();
-    hdl::BuildOptions options;
-    options.cache = hdl_cache_.get();
-    // MCP 没有"未保存缓冲区"的概念：一律读磁盘（对应 Python 的 doc fallback）
-    const hdl::TextLoader loader = [](const std::string& path) -> std::optional<std::string> {
-        return platform::try_read_file_utf8(path);
-    };
-    hdl::BuildResult built = hdl::BuildIndex(proj, loader, options);
-    hdl_index_ = std::make_unique<hdl::HdlIndex>(std::move(built.index));
-    hdl_project_ = proj.al_path;
-    return *hdl_index_;
+    // D5：交给 server::IndexService（与 LSP 侧同一套增量语义）。
+    // 它按 (path, mtime, size) 校验，默认 250 ms 窗口；因此长连接不会再读陈旧索引，
+    // 同时也不会退化成"每请求全量重建"。
+    if (!index_service_) index_service_ = std::make_unique<server::IndexService>();
+    index_service_->SetProject(proj);
+    if (auto snapshot = index_service_->Get(); snapshot != nullptr) {
+        hdl_snapshot_ = std::move(snapshot);
+    } else if (!hdl_snapshot_) {
+        // 工程为空 / 一个 HDL 文件都没有：返回一个稳定的空索引。
+        hdl_snapshot_ = std::make_shared<hdl::HdlIndex>();
+    }
+    return *hdl_snapshot_;
 }
 
 std::vector<constraints::Port> Bridge::TopPorts(const project::Project& proj,
