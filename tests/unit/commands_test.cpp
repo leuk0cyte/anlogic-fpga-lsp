@@ -129,3 +129,22 @@ TEST_F(CommandsTest, UnknownCommandFails) {
 }
 
 }  // namespace
+// P-C3：revision 条件请求。带上"我看到的那一版"时，服务端不该再取快照/做装饰。
+TEST_F(CommandsTest, ReportsHonourIfRevision) {
+    const Json first = server().FeatureReports(Json::object());
+    ASSERT_TRUE(first.contains("revision")) << "报告响应必须带 revision";
+    const std::uint64_t revision = first.at("revision").get<std::uint64_t>();
+
+    Json params = Json::object();
+    params["ifRevision"] = revision;
+    const Json second = server().FeatureReports(params);
+    EXPECT_TRUE(second.contains("unchanged"));
+    EXPECT_TRUE(second.at("unchanged").get<bool>());
+    EXPECT_EQ(second.at("revision").get<std::uint64_t>(), revision);
+    EXPECT_FALSE(second.contains("timing")) << "unchanged 应答不带任何报告数据";
+
+    // 版本对不上时必须真的返回数据
+    params["ifRevision"] = revision + 1;
+    const Json third = server().FeatureReports(params);
+    EXPECT_FALSE(third.contains("unchanged"));
+}

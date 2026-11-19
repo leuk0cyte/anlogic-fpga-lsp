@@ -1199,3 +1199,34 @@ const TEST_TIMEOUT_MS = 5000;
     if (failed > 0) process.exitCode = 1;
 })();
 
+
+// P-C3: conditional requests. Trusted server keeps a revision; a matching `ifRevision`
+// reply is "unchanged" and must be served from the cache without a second render.
+test('reports service: uses ifRevision and reuses the cached payload when unchanged', async () => {
+    const calls = [];
+    let revision = 7;
+    const service = new ReportsService({
+        request: async (method, params) => {
+            calls.push(Object.assign({}, params));
+            if (params.ifRevision !== undefined && params.ifRevision === revision) {
+                return { ok: true, unchanged: true, revision };
+            }
+            return { ok: true, section: params.section, revision, flow: {} };
+        },
+    }, { ttlMs: 0 });
+
+    const first = await service.getSection('timing');
+    ok(first && first.section === 'timing', 'first request returns real data');
+    eq(calls.length, 1, 'first request carries no ifRevision');
+    eq(calls[0].ifRevision, undefined, 'no revision before we have seen one');
+
+    const second = await service.getSection('timing');
+    eq(calls.length, 2, 'second request uses the conditional form');
+    eq(calls[1].ifRevision, 7, 'ifRevision echoes the server revision');
+    ok(second === first, 'unchanged reply is served from cache (same object)');
+
+    revision = 8; // flow wrote new reports
+    const third = await service.getSection('timing');
+    eq(calls.length, 3, 'a changed revision falls back to a real request');
+    ok(third !== first, 'changed revision produces fresh data');
+});

@@ -50,6 +50,7 @@ class ReportsService {
         /** @type {'unknown'|'supported'|'unsupported'} */
         this.sectionSupport = 'unknown';
         this.requests = 0; // observable in tests: total RPC calls actually sent
+        this._revision = undefined; // P-C3: 服务端报告 revision（用于条件请求）
         this._cache = new Map(); // key -> {at, payload}
         this._inflight = new Map(); // key -> Promise<payload>
     }
@@ -111,6 +112,9 @@ class ReportsService {
 
     async _send(section) {
         const params = section ? { section } : {};
+        // P-C3: conditional request. Once we know the server's revision we ask
+        // "is it still that one?" -- an unchanged reply costs no report build at all.
+        if (this._revision !== undefined) params.ifRevision = this._revision;
         this.requests += 1;
         let payload;
         try {
@@ -122,6 +126,28 @@ class ReportsService {
             };
         }
         if (!payload || typeof payload !== 'object') return { ok: false, error: 'empty response' };
+
+        // Unchanged: reuse whatever we already cached for this section. If we have nothing
+        // for this section yet (first fetch of it), ask once more without the condition --
+        // otherwise the caller would receive `{unchanged:true}` and no data.
+        if (payload.unchanged === true) {
+            const hit = this._cache.get(this._key(section));
+            if (hit) return hit.payload;
+            const retry = section ? { section } : {};
+            this.requests += 1;
+            try {
+                payload = await this.rpc.request(METHODS.reports, retry);
+            } catch (err) {
+                return {
+                    ok: false,
+                    error: `fpga-lsp reports request failed: ${(err && err.message) || err}`,
+                };
+            }
+            if (!payload || typeof payload !== 'object') {
+                return { ok: false, error: 'empty response' };
+            }
+        }
+        if (Number.isFinite(payload.revision)) this._revision = payload.revision;
 
         if (section && this.sectionSupport === 'unknown') {
             // Did the server understand `section`? It either echoes it or lists the sections it

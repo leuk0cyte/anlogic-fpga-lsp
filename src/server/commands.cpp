@@ -333,6 +333,23 @@ Json LspServer::FeatureReports(const Json& params) {
     // 分节请求默认不带 raw 正文（timing/area 的原始报告可达 10 MB+）；
     // 需要时显式 include_raw=true。全量请求（无 section）保持 Phase 1 行为。
     const bool include_raw = jsonrpc::GetBool(params, "include_raw", false);
+
+    // P-C3：revision 条件请求。客户端带上"我看到的那一版"，服务端没变就直接回
+    // `{unchanged:true}` —— 连快照都不用取（报告面板一次 flow 完成后的 4 次
+    // section 重取会退化成 1 次真取 + 3 次空应答）。
+    // 用全局 revision（ReportStore::revision()）：任何工程任何报告失效都会 +1，
+    // 是"是否需要重发"的粗粒度但正确的判据。
+    const std::uint64_t revision_before = report_store_->revision();
+    if (const auto it = params.find("ifRevision");
+        it != params.end() && it->is_number_integer() &&
+        static_cast<std::uint64_t>(it->get<std::int64_t>()) == revision_before) {
+        Json unchanged = Json::object();
+        unchanged["ok"] = true;
+        unchanged["unchanged"] = true;
+        unchanged["revision"] = revision_before;
+        return unchanged;
+    }
+
     const auto snapshot = report_store_->Get(*project, mask, /*force=*/false, trim_limit);
     // ⚠ C2（性能审计）：这里原来是「整份克隆快照 -> 再 erase("raw")」。分节请求下
     //   raw 正文恰恰是最贵的那 10 MB，先拷一遍再立刻丢掉 = 246-267 ms/请求
@@ -372,6 +389,9 @@ Json LspServer::FeatureReports(const Json& params) {
     if (!section_text.empty()) data["section"] = section_text;
     data["project"] = project->name;
     data["al"] = project->al_path;
+    // 冷构建会让 revision 前进，所以数据路径要报**构建之后**的值，否则客户端
+    // 拿到的 revision 立刻就是旧的、条件请求永远命不中。
+    data["revision"] = report_store_->revision();
     data["flow"] = CurrentFlowObject(flow_runner());
     if (data["flow"].is_object() && !data["flow"].contains("ok")) {
         data["flow"]["ok"] = nullptr;  // Python 的 _flow_state() 始终带 ok（未跑 flow 时为 null）
