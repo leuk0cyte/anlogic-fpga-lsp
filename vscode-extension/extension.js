@@ -37,6 +37,7 @@ const { ReportsService } = require('./src/reportsService');
 const { ReportsTreeProvider } = require('./src/reportsTree');
 const { renderTrendHtml } = require('./src/trendHtml');
 const { registerLmTools } = require('./src/lmTools');
+const { renderConstraintHtml } = require('./src/constraintHtml');
 const {
     buildMcpServerOptions,
     buildPortableConfig,
@@ -1467,6 +1468,27 @@ function activate(context) {
             uri: vscode.Uri.file(String(target.file)),
             range: new vscode.Range(position, position),
         });
+    });
+
+    // X-B3: pin constraint table (read-only). Editing stays in the editor so every change
+    // is a normal undoable edit -- a webview that writes .adc behind the user's back is not.
+    register(VSCodeCommands.showConstraintTable, async () => {
+        const payload = await rpc.execute('fpgalsp.constraintTable', []);
+        if (!payload || payload.ok === false) {
+            vscode.window.showInformationMessage(
+                `FPGA: ${(payload && payload.error) || 'no constraint data'}`);
+            return;
+        }
+        const files = Array.isArray(payload.files) ? payload.files : [];
+        if (!files.length) {
+            vscode.window.showInformationMessage('FPGA: no .adc pin constraints in this project.');
+            return;
+        }
+        const panel = vscode.window.createWebviewPanel(
+            'fpgaLsp.constraintTable', 'FPGA Pin Constraints', vscode.ViewColumn.Active,
+            { enableCommandUris: true, retainContextWhenHidden: true });
+        panel.webview.html = renderConstraintHtml({ files, project: payload.project });
+        context.subscriptions.push(panel);
     });
 
     // X-B2: QoR trend across runs. Data comes from `fpgalsp.runs`; the panel is a pure

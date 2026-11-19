@@ -157,6 +157,8 @@ public:
     Json FeatureListRuns(const Json& params);
     // B-B10：testbench 骨架（返回文本 + 解析自检）
     Json FeatureTestbench(const Json& params);
+    // X-B3：约束表格数据源（.adc -> 结构化行 + 诊断数）
+    Json FeatureConstraintTable(const Json& params);
     // 工程摘要（与 fpgalsp.info 同一实现）
     Json FeatureInfo();
 

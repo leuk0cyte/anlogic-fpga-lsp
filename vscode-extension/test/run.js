@@ -73,6 +73,7 @@ const { ReportsService, CancelledError } = require('../src/reportsService');
 const { renderReportsHtml } = require('../src/reportsHtml');
 const { renderTrendHtml } = require('../src/trendHtml');
 const { createLmTools, registerLmTools } = require('../src/lmTools');
+const { renderConstraintHtml } = require('../src/constraintHtml');
 const { ReportsPanel } = require('../src/reportsPanel');
 const { appendLog, flushLogSync } = require('../src/launchCheck');
 
@@ -1452,4 +1453,26 @@ test('lm tools: read-only slice maps to the right protocol calls', async () => {
     eq(registered[0].name, 'fpgalsp_project_info', 'first tool registered by name');
     const result = await registered[0].impl.invoke({ input: {} });
     ok(result.parts[0].text.includes('fpgalsp.info'), 'invoke wraps rpc output as text');
+});
+
+
+// X-B3: 引脚约束表。每行可跳转到 .adc 的确切行，有诊断的行带徽标。
+test('constraints html: rows jump to the adc line and flag diagnostics', () => {
+    const html = renderConstraintHtml({
+        project: 'demo',
+        files: [{
+            file: 'Y:/p/constrains/pin.adc',
+            rows: [
+                { line: 3, port: 'led[0]', location: 'P76', iostandard: 'LVCMOS33', pulltype: null, issues: 0 },
+                { line: 4, port: 'key[0]', location: '', iostandard: 'LVCMOS33', pulltype: null, issues: 2 },
+            ],
+        }],
+    });
+    ok(html.includes('openSourceLocation'), 'line numbers link to the source');
+    ok(html.includes('pin.adc:4'), 'link text uses 1-based line numbers');
+    ok(html.includes('P76') && html.includes('LVCMOS33'), 'assignment values are shown');
+    ok(html.includes('class="badge"'), 'rows with diagnostics carry a badge');
+    ok(html.includes('has-issue'), 'flagged rows are highlighted');
+    const empty = renderConstraintHtml({ files: [] });
+    ok(empty.includes('No <code>.adc</code>'), 'empty state is explained');
 });

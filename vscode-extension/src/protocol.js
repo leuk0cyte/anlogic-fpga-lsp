@@ -100,6 +100,8 @@ const VSCodeCommands = Object.freeze({
     openSourceLocation: 'fpgaLsp.openSourceLocation',
     // X-B2：跨 run 的 QoR 趋势面板
     showRunTrend: 'fpgaLsp.showRunTrend',
+    // X-B3：引脚约束表格（只读视图 + 跳行）
+    showConstraintTable: 'fpgaLsp.showConstraintTable',
     insertInstantiation: 'fpgaLsp.insertInstantiation',
     selectProject: 'fpgaLsp.selectProject',
     tdInfo: 'fpgaLsp.tdInfo',

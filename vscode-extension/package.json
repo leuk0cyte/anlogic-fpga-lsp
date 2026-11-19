@@ -381,6 +381,10 @@
                 "icon": "$(plug)"
             },
             {
+                "command": "fpgaLsp.showConstraintTable",
+                "title": "FPGA: Show Pin Constraints"
+            },
+            {
                 "command": "fpgaLsp.showRunTrend",
                 "title": "FPGA: Show QoR Trend"
             },

@@ -37,6 +37,9 @@
 #include "jsonrpc/json_util.h"
 #include "platform/log.h"
 #include "platform/path.h"
+#include "constraints/adc.h"
+#include "constraints/port.h"
+#include "server/constraints_features.h"
 #include "server/lsp_server.h"
 #include "td/td_device.h"
 #include "td/td_diagnostics.h"
@@ -820,7 +823,7 @@ const std::vector<std::string>& ExecuteCommandNames() {
         "fpgalsp.instantiate",  "fpgalsp.copyInstantiation", "fpgalsp.symbolPath",
         "fpgalsp.duplicateModules", "fpgalsp.searchHierarchy", "fpgalsp.addSourceFile",
         "fpgalsp.setProjectName", "fpgalsp.updateProject", "fpgalsp.debugHighlight",
-        "fpgalsp.metrics",      "fpgalsp.compareRuns", "fpgalsp.runs",      "fpgalsp.testbench",
+        "fpgalsp.metrics",      "fpgalsp.compareRuns", "fpgalsp.runs",      "fpgalsp.testbench", "fpgalsp.constraintTable",
     };
     return kNames;
 }
@@ -997,6 +1000,82 @@ HandlerResult LspServer::HandleDidRenameFiles(const Json& params) {
 // B-B6：两次 run 的差异（QoR/时序/面积）。数据来自 <project>_Runs/<name>/。
 // B-B6/X-B2：run 列表 + 指标（趋势图的数据源）。与 CompareRuns 同源。
 // B-B10：testbench 骨架（只生成文本，不落盘；写文件交给调用方/agent）。
+// X-B3：约束表格数据源（.adc 逐行 -> 结构化行 + 该行的诊断数）。
+// 只读：编辑交给调用方用 WorkspaceEdit 回写，服务端不直接改用户文件。
+Json LspServer::FeatureConstraintTable(const Json& params) {
+    const auto project = ProjectFromParams(params);
+    Json out = Json::object();
+    if (!project.has_value()) {
+        out["ok"] = false;
+        out["error"] = "No Anlogic .al project found";
+        return out;
+    }
+    bool truncated = false;
+    const std::shared_ptr<const hdl::HdlIndex> index = IndexForProject(*project, &truncated, nullptr);
+
+    // 顶层端口表（与 Problems 里的约束诊断同源）
+    std::vector<constraints::Port> ports;
+    if (index != nullptr && !project->top.empty()) {
+        if (const hdl::Module* module = index->ModuleByName(project->top); module != nullptr) {
+            for (const hdl::Port& port : module->ports) {
+                constraints::Port converted;
+                converted.name = port.name;
+                converted.direction = port.direction;
+                converted.width = port.width;
+                converted.msb = port.msb;
+                converted.lsb = port.lsb;
+                converted.line = port.line;
+                converted.character = port.character;
+                converted.file = port.file;
+                ports.push_back(std::move(converted));
+            }
+        }
+    }
+
+    Json files = Json::array();
+    for (const project::AlFile* file : project->AdcFiles()) {
+        const std::optional<std::string> text = LoadText(file->path);
+        if (!text.has_value()) continue;
+        const std::vector<constraints::adc::Entry> entries = constraints::adc::Parse(*text);
+
+        // 行号 -> 诊断数（表格里给一个可见的"有问题"标记）
+        std::map<int, int> issues_by_line;
+        for (const lsp::Diagnostic& diagnostic : ConstraintDiagnostics(file->path, *text, ports)) {
+            ++issues_by_line[diagnostic.range.start.line];
+        }
+
+        Json rows = Json::array();
+        for (const constraints::adc::Entry& entry : entries) {
+            Json row = Json::object();
+            row["line"] = entry.line;
+            row["character"] = entry.character;
+            row["command"] = entry.command;
+            row["port"] = entry.port;
+            row["base"] = entry.base;
+            row["bit"] = entry.bit.has_value() ? Json(*entry.bit) : Json(nullptr);
+            const auto attr = [&entry](const char* key) {
+                const auto it = entry.attrs.find(key);
+                return it != entry.attrs.end() ? Json(it->second) : Json(nullptr);
+            };
+            row["location"] = attr("LOCATION");
+            row["iostandard"] = attr("IOSTANDARD");
+            row["pulltype"] = attr("PULLTYPE");
+            const auto issue_count = issues_by_line.find(entry.line);
+            row["issues"] = issue_count != issues_by_line.end() ? issue_count->second : 0;
+            rows.push_back(std::move(row));
+        }
+
+        Json item = Json::object();
+        item["file"] = file->path;
+        item["rows"] = std::move(rows);
+        files.push_back(std::move(item));
+    }
+    out["ok"] = true;
+    out["project"] = project->name;
+    out["files"] = std::move(files);
+    return out;
+}
+
 Json LspServer::FeatureTestbench(const Json& params) {
     const auto project = ProjectFromParams(params);
     Json out = Json::object();
@@ -1334,6 +1413,9 @@ HandlerResult LspServer::HandleExecuteCommand(const Json& params) {
     }
     if (command == "fpgalsp.debugHighlight") {
         return OkObject(FeatureDebugHighlight(params));
+    }
+    if (command == "fpgalsp.constraintTable") {
+        return OkObject(FeatureConstraintTable(params));
     }
     if (command == "fpgalsp.testbench") {
         return OkObject(FeatureTestbench(params));
