@@ -381,6 +381,10 @@
                 "icon": "$(plug)"
             },
             {
+                "command": "fpgaLsp.openSourceLocation",
+                "title": "FPGA: Open Source Location"
+            },
+            {
                 "command": "fpgaLsp.openTimingPoint",
                 "title": "FPGA: Open Timing Point",
                 "icon": "$(go-to-file)"

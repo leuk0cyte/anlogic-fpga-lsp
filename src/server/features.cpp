@@ -539,6 +539,49 @@ void ResolveTimingSection(const HdlIndex& index, const project::Project& project
 
 }  // namespace
 
+namespace {
+
+// B-B7：area.modules[] 的每一项 -> {file,line,character,resolved,reason}
+void ResolveAreaSection(const HdlIndex& index, Json& section) {
+    if (!section.is_object()) return;
+    const auto modules_it = section.find("modules");
+    if (modules_it == section.end() || !modules_it->is_array()) return;
+    for (Json& row : *modules_it) {
+        if (!row.is_object()) continue;
+        std::string module_name = row.value("module", std::string());
+        if (module_name.empty()) module_name = row.value("name", std::string());
+        if (module_name.empty()) continue;
+        const hdl::Module* definition = index.ModuleByName(module_name);
+        if (definition == nullptr) {
+            row["resolved"] = false;
+            row["reason"] = "module-not-in-index";
+            row["file"] = nullptr;
+            row["line"] = nullptr;
+            continue;
+        }
+        row["resolved"] = true;
+        row["reason"] = nullptr;
+        row["file"] = platform::path_to_uri(definition->file);
+        row["line"] = definition->line;
+        row["character"] = definition->character;
+    }
+}
+
+}  // namespace
+
+void ResolveAreaModules(const HdlIndex& index, const project::Project& project, Json& data) {
+    (void)project;
+    if (!data.is_object()) return;
+    if (auto it = data.find("area"); it != data.end()) ResolveAreaSection(index, *it);
+    for (const char* stage : {"syn", "phy"}) {
+        if (auto stage_it = data.find(stage); stage_it != data.end() && stage_it->is_object()) {
+            if (auto area = stage_it->find("area"); area != stage_it->end()) {
+                ResolveAreaSection(index, *area);
+            }
+        }
+    }
+}
+
 void ResolveTimingEndpoints(const HdlIndex& index, const project::Project& project, Json& data) {
     if (project.top.empty() || !data.is_object()) return;
     if (auto it = data.find("timing"); it != data.end()) ResolveTimingSection(index, project, *it);

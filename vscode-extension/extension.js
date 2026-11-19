@@ -1467,6 +1467,20 @@ function activate(context) {
         });
     });
 
+    // B-B7: 面积热点跳源码（与 openTimingPoint 同一个实现，只是提示语更通用）。
+    register(VSCodeCommands.openSourceLocation, async (argument) => {
+        const target = Array.isArray(argument) ? argument[0] : argument;
+        if (!target || !target.file) {
+            vscode.window.showInformationMessage('FPGA: no parsable RTL location for this row.');
+            return;
+        }
+        const position = new vscode.Position(Math.max(0, Number(target.line) || 0), 0);
+        await openTarget({
+            uri: vscode.Uri.file(String(target.file)),
+            range: new vscode.Range(position, position),
+        });
+    });
+
     register(VSCodeCommands.showLogs, async () => {
         if (!fs.existsSync(extLog)) {
             vscode.window.showInformationMessage('FPGA: no log yet (extension has not started the server).');

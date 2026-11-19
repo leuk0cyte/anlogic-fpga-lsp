@@ -1051,3 +1051,31 @@ TEST(IndexServiceTest, ResolvesTimingEndpointsAgainstTheIndex) {
     EXPECT_EQ(counts["total"].get<int>(), 2);
     EXPECT_EQ(counts["resolved"].get<int>(), 1);
 }
+
+// B-B7：面积热点 -> 源码（area.modules 解析到模块定义位置）
+TEST(IndexServiceTest, ResolvesAreaModulesAgainstTheIndex) {
+    TinyProject tiny("area_modules");
+    IndexService service(DiskLoader);
+    service.SetProject(tiny.Parse());
+    const IndexService::Snapshot index = service.Get();
+    ASSERT_NE(index, nullptr);
+
+    nlohmann::json data = nlohmann::json::object();
+    nlohmann::json area = nlohmann::json::object();
+    area["modules"] = nlohmann::json::array({
+        {{"name", "u2"}, {"module", "m2"}, {"resources", {{"lut", 12}}}},
+        {{"name", "u_unknown"}, {"module", "no_such_module"}, {"resources", {{"lut", 3}}}},
+    });
+    data["area"] = area;
+
+    fpgalsp::server::features::ResolveAreaModules(*index, tiny.Parse(), data);
+
+    const auto& rows = data["area"]["modules"];
+    ASSERT_EQ(rows.size(), 2u);
+    EXPECT_TRUE(rows[0]["resolved"].get<bool>()) << rows[0].dump();
+    EXPECT_FALSE(rows[0]["file"].is_null());
+    EXPECT_FALSE(rows[0]["line"].is_null());
+
+    EXPECT_FALSE(rows[1]["resolved"].get<bool>());
+    EXPECT_EQ(rows[1]["reason"].get<std::string>(), "module-not-in-index");
+}

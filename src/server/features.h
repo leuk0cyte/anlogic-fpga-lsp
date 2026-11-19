@@ -60,6 +60,11 @@ Json Completion(const hdl::HdlIndex& index, std::string_view path, std::string_v
 // 之前 reports 层恒 resolved=false、reason="hdl-index-unavailable"（那层拿不到索引），
 // 导致插件的"时序点跳源码"是死链接。这里在服务端注入索引后重算，并把
 // timing.begin_end_resolved 的解析数一起更新。
+// B-B7：把面积报告里的模块（area.modules）解析到源码定义位置。
+// 面积热点"跳到源码"依赖它；模块名不在索引里时 resolved=false 并给出 reason。
+void ResolveAreaModules(const hdl::HdlIndex& index, const project::Project& project,
+                        Json& data);
+
 void ResolveTimingEndpoints(const hdl::HdlIndex& index, const project::Project& project,
                             Json& data);
 

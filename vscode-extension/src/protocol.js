@@ -96,6 +96,8 @@ const VSCodeCommands = Object.freeze({
     generateSvf: 'fpgaLsp.generateSvf',
     showCables: 'fpgaLsp.showCables',
     openTimingPoint: 'fpgaLsp.openTimingPoint',
+    // B-B7：面积热点跳源码（与 openTimingPoint 同一实现，命名更通用）
+    openSourceLocation: 'fpgaLsp.openSourceLocation',
     insertInstantiation: 'fpgaLsp.insertInstantiation',
     selectProject: 'fpgaLsp.selectProject',
     tdInfo: 'fpgaLsp.tdInfo',

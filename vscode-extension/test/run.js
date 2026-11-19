@@ -1367,3 +1367,25 @@ test('reports webview: resolved timing endpoints become clickable links', () => 
     ok(html.includes('reg_a'), '链接标题/内容包含信号名');
     ok(html.includes('u_b/reg_b/D'), '未解析的一侧保留原始文本');
 });
+
+
+// B-B7: 面积热点跳源码。resolved 的模块行必须渲染成 openSourceLocation 链接。
+test('reports webview: resolved area modules link to their definition', () => {
+    const reports = sampleReports();
+    reports.area = {
+        rows: [],
+        counts: {},
+        modules: [
+            { name: 'u2', module: 'm2', path: 'top/u2', resolved: true,
+              file: 'Y:/p/src/m2.v', line: 9, resources: { lut: 12 }, utilization: {} },
+            { name: 'u_bb', module: 'blackbox_x', path: 'top/u_bb', resolved: false,
+              resources: { lut: 3 }, utilization: {} },
+        ],
+    };
+    delete reports.syn;
+    delete reports.phy;
+    const html = renderReportsHtml({ reports, nonce: 'n' });
+    ok(html.includes('openSourceLocation'), 'resolved 的面积模块必须生成跳转链接');
+    ok(html.includes('m2.v:10'), '链接文本带 1-based 行号');
+    ok(html.includes('blackbox_x'), '未解析的模块仍然显示模块名');
+});

@@ -426,6 +426,8 @@ Json LspServer::FeatureReports(const Json& params) {
                 IndexForProject(*project, &ignored_truncation, nullptr);
             index != nullptr) {
             features::ResolveTimingEndpoints(*index, *project, data);
+            // B-B7：面积热点 -> 源码（area.modules 里的模块定义位置）
+            features::ResolveAreaModules(*index, *project, data);
         }
     }
 

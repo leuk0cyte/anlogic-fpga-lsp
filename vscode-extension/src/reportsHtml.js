@@ -312,6 +312,16 @@ function areaTab(area) {
     const counts = data.counts && typeof data.counts === 'object' ? data.counts : {};
     const countRows = Object.entries(counts).map(([key, value]) => ({ key, value }));
     const modules = Array.isArray(data.modules) ? data.modules : [];
+    // B-B7：后端已把 area.modules 解析到模块定义位置（resolved + file/line），
+    // 这里给每一行一个"跳到源码"的链接；未解析时留空。
+    const areaLocation = (module) => {
+        if (!module || module.resolved !== true || !module.file) return '';
+        const line = Number(module.line) || 0;
+        const href = commandHref('fpgaLsp.openSourceLocation',
+            { file: module.file, line, signal: module.module || '' });
+        return `<a href="${esc(href)}" title="${esc(module.file + ':' + (line + 1))}">`
+            + `${esc(basename(module.file))}:${line + 1}</a>`;
+    };
     const moduleRows = modules.map((module) => {
         const resources = module.resources || {};
         const utilization = module.utilization || {};
@@ -321,8 +331,20 @@ function areaTab(area) {
             lut: resources.lut, lut_util: fmtPercent(utilization.lut),
             ripple: resources.ripple, seq: resources.seq, seq_util: fmtPercent(utilization.seq),
             bram: resources.bram, dsp: resources.dsp,
+            location: areaLocation(module),
         };
     });
+    const moduleTable = moduleRows.length
+        ? `<table><thead><tr><th>Instance</th><th>Module</th><th>LUT</th><th>LUT %</th>
+             <th>Ripple</th><th>SEQ</th><th>SEQ %</th><th>BRAM</th><th>DSP</th><th>Source</th></tr></thead><tbody>`
+          + moduleRows.map((row) => `<tr class="searchable">`
+              + `<td>${esc(row.instance)}</td><td>${esc(row.module)}</td>`
+              + `<td>${esc(fmtNum(row.lut))}</td><td>${esc(row.lut_util)}</td>`
+              + `<td>${esc(fmtNum(row.ripple))}</td><td>${esc(fmtNum(row.seq))}</td>`
+              + `<td>${esc(row.seq_util)}</td><td>${esc(fmtNum(row.bram))}</td>`
+              + `<td>${esc(fmtNum(row.dsp))}</td><td>${row.location}</td></tr>`).join('')
+          + `</tbody></table>`
+        : '<p class="muted">No hierarchy area table.</p>';
     return {
         css: barCss.join('\n'),
         html: `
@@ -333,11 +355,7 @@ function areaTab(area) {
         : '<p class="muted">No area report found.</p>'}
   ${countRows.length ? `<h3>LUT statistics</h3>${searchableTable([['key', 'Metric'], ['value', 'Value']], countRows)}` : ''}
   <h3>Per-module utilization (${modules.length})</h3>
-  ${moduleRows.length ? searchableTable([
-        ['instance', 'Instance'], ['module', 'Module'],
-        ['lut', 'LUT'], ['lut_util', 'LUT %'], ['ripple', 'Ripple'],
-        ['seq', 'SEQ'], ['seq_util', 'SEQ %'], ['bram', 'BRAM'], ['dsp', 'DSP'],
-    ], moduleRows) : '<p class="muted">No hierarchy area table.</p>'}
+  ${moduleTable}
   ${rawBlock(data.raw, 'Raw area report')}
 </section>`,
     };
