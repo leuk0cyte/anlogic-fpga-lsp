@@ -63,6 +63,18 @@ class ToolDispatcher {
         progress_ = std::move(emitter);
     }
 
+    // ---- P-B6：MCP resources ----
+    // 只读数据（工程信息 / 文件清单 / 报告摘要 / flow 状态）以 resource 形式暴露，
+    // agent 可以直接 resources/read，不必为每个查询定义一个工具、也不必把大 JSON
+    // 塞进 tools/call 的 800 KB 信封里。
+    // 默认空实现：不知道 resources 的 dispatcher 保持旧行为（resources/list 为空）。
+    virtual Json ListResources() { return Json::array(); }
+    // 找不到返回 nullopt（服务端回 -32602）。
+    virtual std::optional<std::string> ReadResource(std::string_view uri) {
+        (void)uri;
+        return std::nullopt;
+    }
+
     // P-B4：取消令牌。服务端收到 `notifications/cancelled` 时置位；
     // 长任务（flow_wait / search_text / rename_edits）在循环边界自查。
     virtual void SetCancelToken(std::shared_ptr<std::atomic<bool>> token) {

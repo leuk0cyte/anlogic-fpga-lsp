@@ -1125,3 +1125,37 @@ TEST_F(BridgeTest, WorkspaceSymbolsPagesWithOffset) {
                   all.at("symbols").at(i + 3).at("name").get<std::string>());
     }
 }
+
+// P-B5：job 工具在"没有 flow 在跑"时必须明确返回 found:false / cancelled:false，
+// 不能让 agent 把空闲误读成"已完成"。
+TEST_F(BridgeTest, JobToolsReportIdleState) {
+    Json status_args = Json::object();
+    status_args["job"] = "flow_deadbeef";
+    const Json status = Call("job_status", status_args);
+    ASSERT_TRUE(status.at("ok").get<bool>());
+    EXPECT_FALSE(status.at("found").get<bool>());
+    EXPECT_FALSE(status.at("running").get<bool>());
+
+    Json cancel_args = Json::object();
+    cancel_args["job"] = "flow_deadbeef";
+    const Json cancelled = Call("job_cancel", cancel_args);
+    ASSERT_TRUE(cancelled.at("ok").get<bool>());
+    EXPECT_FALSE(cancelled.at("cancelled").get<bool>());
+}
+
+// P-B6：只读资源目录（工程信息 / 文件 / 报告摘要 / flow）
+TEST_F(BridgeTest, ResourcesExposeReadOnlyProjectViews) {
+    const Json resources = bridge->ListResources();
+    ASSERT_GE(resources.size(), 4u);
+    bool has_files = false;
+    for (const Json& item : resources) {
+        if (item.at("uri").get<std::string>() == "fpgalsp://project/files") has_files = true;
+        EXPECT_EQ(item.at("mimeType").get<std::string>(), "application/json");
+    }
+    EXPECT_TRUE(has_files);
+
+    const auto files = bridge->ReadResource("fpgalsp://project/files");
+    ASSERT_TRUE(files.has_value());
+    EXPECT_NE(files->find("\"ok\""), std::string::npos);
+    EXPECT_FALSE(bridge->ReadResource("fpgalsp://project/unknown").has_value());
+}

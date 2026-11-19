@@ -130,6 +130,10 @@ class Bridge : public ToolDispatcher {
 
     Json Call(std::string_view handler, const Json& arguments) override;
 
+    // P-B6：只读资源的目录与读取（工程信息 / 文件清单 / 报告摘要 / flow 状态）。
+    Json ListResources() override;
+    std::optional<std::string> ReadResource(std::string_view uri) override;
+
     // 关闭 TD 会话（幂等）。main 在退出路径上显式调用，避免孤儿进程。
     void Shutdown();
 
@@ -173,6 +177,9 @@ class Bridge : public ToolDispatcher {
     Json FlowWait(const Json& arguments);
     Json FlowRunTool(const Json& arguments);
     Json FlowCancelTool(const Json& arguments);
+    // P-B5：job = runId 的稳定别名（flow_run 已经异步，这里补查询/取消入口）
+    Json JobStatusTool(const Json& arguments);
+    Json JobCancelTool(const Json& arguments);
     Json StrategyCompareTool(const Json& arguments);
     Json CablesTool(const Json& arguments);
     Json CompletionTool(const Json& arguments);

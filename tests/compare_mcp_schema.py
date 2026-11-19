@@ -182,11 +182,13 @@ def compare_tools(cpp_tools: list[dict], py_tools: list[dict], label: str,
             problems += 1
     for name in cpp_by_name:
         if name not in py_by_name:
-            print("  [%s] 多出工具：%s" % (label, name))
-            problems += 1
+            # 用户已放弃 Python 契约：cpp 可以比 python 多出工具（例如 P-B5 的
+            # fpga_job_status / fpga_job_cancel）。这里只打印，不算差异。
+            print("  [%s] EXT  %s（cpp 独有工具，允许）" % (label, name))
 
-    # 顺序也是契约的一部分（客户端可能依赖首次出现的顺序）
-    cpp_order = [tool.get("name", "") for tool in cpp_tools]
+    # 顺序也是契约的一部分（客户端可能依赖首次出现的顺序），但只对**共同工具**比较：
+    # python 里的相对顺序必须原样保留，cpp 多出的工具不参与。
+    cpp_order = [tool.get("name", "") for tool in cpp_tools if tool.get("name", "") in py_by_name]
     py_order = [tool.get("name", "") for tool in py_tools]
     if cpp_order != py_order:
         for index, (left, right) in enumerate(zip(cpp_order, py_order)):

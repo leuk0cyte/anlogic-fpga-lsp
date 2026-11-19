@@ -10,6 +10,8 @@
 
 #include "mcp/mcp_server.h"
 
+#include "jsonrpc/json_util.h"
+
 #include <algorithm>
 #include <exception>
 #include <string>
@@ -510,7 +512,26 @@ std::optional<Json> McpServer::HandleSingle(const Json& message) {
 
     if (method == "resources/list") {
         Json result = Json::object();
-        result["resources"] = Json::array();
+        // P-B6：由 dispatcher 提供（Bridge 给出工程/报告/flow 三类只读资源）。
+        Json resources = dispatcher_.ListResources();
+        result["resources"] = resources.is_array() ? std::move(resources) : Json::array();
+        return Response(id, std::move(result));
+    }
+    if (method == "resources/read") {
+        const std::string uri = jsonrpc::GetString(params, "uri");
+        std::optional<std::string> text;
+        if (!uri.empty()) text = dispatcher_.ReadResource(uri);
+        if (!text.has_value()) {
+            return ErrorResponse(id, -32602, "Unknown resource: " + uri);
+        }
+        Json content = Json::object();
+        content["uri"] = uri;
+        content["mimeType"] = "application/json";
+        content["text"] = std::move(*text);
+        Json contents = Json::array();
+        contents.push_back(std::move(content));
+        Json result = Json::object();
+        result["contents"] = std::move(contents);
         return Response(id, std::move(result));
     }
     if (method == "resources/templates/list") {

@@ -60,6 +60,9 @@ const char* const kExpectedNames[] = {
     "fpga_device_info",
     "fpga_constraints_status",
     "fpga_td_info",
+    // P-B5：job 是 runId 的稳定别名（Python 版没有这两个工具）
+    "fpga_job_status",
+    "fpga_job_cancel",
     "fpga_cables",
     "fpga_flow_wait",
     "fpga_flow_log",
@@ -107,11 +110,12 @@ void CheckEnumsAreStrings(const Json& schema, const std::string& path) {
 
 }  // namespace
 
-TEST(McpTools, TableHas39Tools) {
-    EXPECT_EQ(fpgalsp::mcp::AllTools().size(), 39u);
+TEST(McpTools, TableHas41Tools) {
+    // 39 个 Python 对齐工具 + P-B5 的 fpga_job_status/fpga_job_cancel
+    EXPECT_EQ(fpgalsp::mcp::AllTools().size(), 41u);
 }
 
-TEST(McpTools, NamesMatchPythonReferenceOrder) {
+TEST(McpTools, NamesMatchDeclaredOrder) {
     const std::vector<Tool>& tools = fpgalsp::mcp::AllTools();
     ASSERT_EQ(tools.size(), std::size(kExpectedNames));
     for (size_t index = 0; index < tools.size(); ++index) {
@@ -124,7 +128,7 @@ TEST(McpTools, NamesAreUnique) {
     for (const Tool& tool : fpgalsp::mcp::AllTools()) {
         EXPECT_TRUE(names.insert(tool.name).second) << tool.name;
     }
-    EXPECT_EQ(names.size(), 39u);
+    EXPECT_EQ(names.size(), 41u);
 }
 
 TEST(McpTools, EveryToolHasTitleAndDescription) {
@@ -218,10 +222,11 @@ TEST(McpTools, ToolToJsonStripsInternalFields) {
     }
 }
 
-TEST(McpTools, VisibleToolsDefaultHidesSevenGatedTools) {
+TEST(McpTools, VisibleToolsDefaultHidesGatedTools) {
     const std::vector<Json> visible = fpgalsp::mcp::VisibleTools(false, false);
-    EXPECT_EQ(visible.size(), 32u);
+    EXPECT_EQ(visible.size(), 33u);
     const std::set<std::string> gated = {"fpga_flow_run",   "fpga_flow_cancel", "fpga_analysis_run",
+                                         "fpga_job_cancel",
                                          "fpga_strategy_compare", "fpga_project_update",
                                          "fpga_project_add_source", "fpga_project_rename"};
     for (const Json& tool : visible) {
@@ -231,11 +236,11 @@ TEST(McpTools, VisibleToolsDefaultHidesSevenGatedTools) {
 }
 
 TEST(McpTools, VisibleToolsAllIncludesEverything) {
-    EXPECT_EQ(fpgalsp::mcp::VisibleTools(true, true).size(), 39u);
-    // flow 门控 4 个（flow_run/flow_cancel/analysis_run/strategy_compare）
+    EXPECT_EQ(fpgalsp::mcp::VisibleTools(true, true).size(), 41u);
+    // flow 门控 5 个（flow_run/flow_cancel/job_cancel/analysis_run/strategy_compare）
     // write 门控 3 个（project_update/project_add_source/project_rename）
-    EXPECT_EQ(fpgalsp::mcp::VisibleTools(true, false).size(), 36u);
-    EXPECT_EQ(fpgalsp::mcp::VisibleTools(false, true).size(), 35u);
+    EXPECT_EQ(fpgalsp::mcp::VisibleTools(true, false).size(), 38u);
+    EXPECT_EQ(fpgalsp::mcp::VisibleTools(false, true).size(), 36u);
 }
 
 TEST(McpTools, FindToolReturnsNullForUnknown) {

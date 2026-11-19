@@ -1931,6 +1931,9 @@ Json Bridge::Call(std::string_view handler, const Json& arguments) {
     if (name == "flow_wait") return FlowWait(arguments);
     if (name == "flow_run") return FlowRunTool(arguments);
     if (name == "flow_cancel") return FlowCancelTool(arguments);
+    // P-B5：job 是 runId 的稳定别名（flow_run 启动异步线程后立刻返回 runId）
+    if (name == "job_status") return JobStatusTool(arguments);
+    if (name == "job_cancel") return JobCancelTool(arguments);
     if (name == "strategy_compare") return StrategyCompareTool(arguments);
     if (name == "cables") return CablesTool(arguments);
     if (name == "completion") return CompletionTool(arguments);
@@ -1963,6 +1966,43 @@ Json Bridge::Call(std::string_view handler, const Json& arguments) {
 // =============================================================================
 //  工程类工具
 // =============================================================================
+
+// P-B6：resource 目录。全部是只读聚合视图，读起来走 ReadResource。
+Json Bridge::ListResources() {
+    Json out = Json::array();
+    const auto add = [&out](const char* uri, const char* name, const char* description) {
+        Json item = Json::object();
+        item["uri"] = uri;
+        item["name"] = name;
+        item["description"] = description;
+        item["mimeType"] = "application/json";
+        out.push_back(std::move(item));
+    };
+    add("fpgalsp://project/info", "Project info", "Selected project: device, top, file counts, TD summary.");
+    add("fpgalsp://project/files", "Project files", "HDL/ADC/SDC/IP file list with existence flags.");
+    add("fpgalsp://project/reports/summary", "Report summary", "QoR/timing/area/flow summary (no raw text).");
+    add("fpgalsp://project/flow", "Flow status", "Current flow state, last message and run id.");
+    return out;
+}
+
+std::optional<std::string> Bridge::ReadResource(std::string_view uri) {
+    Json payload;
+    if (uri == "fpgalsp://project/info") {
+        payload = ProjectInfo(Json::object());
+    } else if (uri == "fpgalsp://project/files") {
+        payload = ProjectFiles(Json::object());
+    } else if (uri == "fpgalsp://project/reports/summary") {
+        Json args = Json::object();
+        args["section"] = "summary";
+        args["limit"] = 200;
+        payload = ProjectReports(args);
+    } else if (uri == "fpgalsp://project/flow") {
+        payload = FlowStatus(Json::object());
+    } else {
+        return std::nullopt;
+    }
+    return payload.dump(1, ' ');
+}
 
 Json Bridge::ProjectList(const Json& arguments) {
     std::string base = root_;
@@ -3408,7 +3448,13 @@ Json Bridge::FlowRunTool(const Json& arguments) {
     }
 
     flow::FlowRunner* runner = EnsureFlowRunner(proj);
-    return runner->Start(stages, jobs);
+    Json started = runner->Start(stages, jobs);
+    // P-B5：`job` 是 `runId` 的稳定别名，供 fpga_job_status / fpga_job_cancel 使用。
+    if (started.is_object() && started.contains("runId")) {
+        started["job"] = started["runId"];
+        started["async"] = true;  // 已经在后台线程跑，本调用立刻返回
+    }
+    return started;
 }
 
 Json Bridge::FlowCancelTool(const Json& arguments) {
@@ -3421,6 +3467,53 @@ Json Bridge::FlowCancelTool(const Json& arguments) {
         return out;
     }
     return flow_runner_->Cancel();
+}
+
+// P-B5：按 job id 查询。job 不在跑（或不是这个 job）时明确返回 found:false，
+// 而不是让 agent 把"没在跑"误读成"跑完了"。
+Json Bridge::JobStatusTool(const Json& arguments) {
+    const std::string job = arguments.value("job", std::string());
+    const project::Project& proj = ProjectFor(arguments);
+    Json out = Json::object();
+    out["ok"] = true;
+    out["job"] = job;
+    if (flow_runner_ == nullptr || flow_project_ != proj.al_path) {
+        out["found"] = false;
+        out["running"] = false;
+        out["note"] = "no active flow for this project";
+        out["flow"] = IdleFlowState();
+        return out;
+    }
+    flow::FlowState state = flow_runner_->Status();
+    const bool matches = job.empty() || job == state.run_id;
+    out["found"] = matches;
+    out["running"] = matches && state.running;
+    out["flow"] = state.ToJson();
+    if (!matches) out["note"] = "job id does not match the active run";
+    return out;
+}
+
+Json Bridge::JobCancelTool(const Json& arguments) {
+    const std::string job = arguments.value("job", std::string());
+    (void)ProjectFor(arguments);
+    Json out = Json::object();
+    out["ok"] = true;
+    out["job"] = job;
+    if (flow_runner_ == nullptr) {
+        out["cancelled"] = false;
+        out["note"] = "not running";
+        return out;
+    }
+    const flow::FlowState state = flow_runner_->Status();
+    if (!job.empty() && job != state.run_id) {
+        out["cancelled"] = false;
+        out["note"] = "job id does not match the active run";
+        return out;
+    }
+    Json cancelled = flow_runner_->Cancel();
+    out["cancelled"] = cancelled.value("ok", false);
+    out["runId"] = state.run_id;
+    return out;
 }
 
 Json Bridge::FlowStatus(const Json& arguments) {

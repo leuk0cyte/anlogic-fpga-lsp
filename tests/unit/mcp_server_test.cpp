@@ -157,9 +157,9 @@ TEST_F(McpServerTest, PingReturnsEmptyResult) {
 
 // --------------------------------------------------------------- tools/list
 
-TEST_F(McpServerTest, ToolsListAllModesReturns39) {
+TEST_F(McpServerTest, ToolsListAllModesReturns41) {
     const Json response = Call(Request("tools/list", Json::object()));
-    EXPECT_EQ(response.at("result").at("tools").size(), 39u);
+    EXPECT_EQ(response.at("result").at("tools").size(), 41u);
 }
 
 TEST_F(McpServerTest, ToolsListDefaultHidesFlowAndWriteTools) {
@@ -167,7 +167,7 @@ TEST_F(McpServerTest, ToolsListDefaultHidesFlowAndWriteTools) {
     McpServer restricted_server(dispatcher, restricted);
     const Json response = *restricted_server.Handle(Request("tools/list", Json::object()));
     const Json& tools = response.at("result").at("tools");
-    EXPECT_EQ(tools.size(), 32u);
+    EXPECT_EQ(tools.size(), 33u);
     for (const Json& tool : tools) {
         const std::string name = tool.at("name").get<std::string>();
         EXPECT_NE(name, "fpga_flow_run") << "flow 工具默认不该出现";
@@ -653,4 +653,62 @@ TEST(McpTruncationTest, PayloadWithoutArrayCannotBePaged) {
     value["blob"] = std::string(900000, 'x');
     EXPECT_TRUE(McpServer::TruncatePayload(value, McpServer::kMaxToolResultBytes, 0).is_null())
         << "没有数组可裁时应返回 null，让调用方回退到旧的整份丢弃";
+}
+
+// ------------------------------------------------- P-B6：MCP resources
+
+namespace {
+
+class ResourceDispatcher : public FakeDispatcher {
+  public:
+    Json ListResources() override {
+        Json out = Json::array();
+        Json item = Json::object();
+        item["uri"] = "fpgalsp://project/info";
+        item["name"] = "Project info";
+        item["mimeType"] = "application/json";
+        out.push_back(std::move(item));
+        return out;
+    }
+
+    std::optional<std::string> ReadResource(std::string_view uri) override {
+        if (uri != "fpgalsp://project/info") return std::nullopt;
+        return std::string("{\"ok\":true}");
+    }
+};
+
+}  // namespace
+
+TEST(McpResourceTest, ListAndReadGoThroughTheDispatcher) {
+    ResourceDispatcher dispatcher;
+    McpServerOptions options;
+    McpServer server(dispatcher, options);
+
+    const auto listed = server.Handle(Request("resources/list", Json::object()));
+    ASSERT_TRUE(listed.has_value());
+    const Json& resources = listed->at("result").at("resources");
+    ASSERT_EQ(resources.size(), 1u);
+    EXPECT_EQ(resources[0].at("uri").get<std::string>(), "fpgalsp://project/info");
+
+    Json read_params = Json::object();
+    read_params["uri"] = "fpgalsp://project/info";
+    const auto read = server.Handle(Request("resources/read", read_params));
+    ASSERT_TRUE(read.has_value());
+    const Json& contents = read->at("result").at("contents");
+    ASSERT_EQ(contents.size(), 1u);
+    EXPECT_EQ(contents[0].at("text").get<std::string>(), "{\"ok\":true}");
+    EXPECT_EQ(contents[0].at("mimeType").get<std::string>(), "application/json");
+}
+
+TEST(McpResourceTest, UnknownResourceIsInvalidParams) {
+    ResourceDispatcher dispatcher;
+    McpServerOptions options;
+    McpServer server(dispatcher, options);
+
+    Json params = Json::object();
+    params["uri"] = "fpgalsp://nope";
+    const auto response = server.Handle(Request("resources/read", params));
+    ASSERT_TRUE(response.has_value());
+    ASSERT_TRUE(response->contains("error"));
+    EXPECT_EQ(response->at("error").at("code").get<int>(), -32602);
 }
