@@ -102,6 +102,13 @@ public:
     // 取不可变快照（线程安全）。文档未打开返回无效快照。
     DocumentSnapshot Snapshot(std::string_view uri) const;
 
+    // 文本缓存失效（文件系统路径，不是 uri）。
+    //
+    // 为什么必须有这条**外部**失效通道：缓存键是 (path, size, mtime)，它无法区分
+    // "同大小且 mtime 被还原"的改写；而 `workspace/didChangeWatchedFiles` 事件
+    // 本来就说明"磁盘变了"，此时信任 mtime 等于自欺。watcher 报变化/删除时调用。
+    void EvictTextCache(const std::string& path) const;
+
     // 所有已打开文档的 uri 列表（测试/调试用）。
     std::vector<std::string> OpenUris() const;
 

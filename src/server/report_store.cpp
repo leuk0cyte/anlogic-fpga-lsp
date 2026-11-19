@@ -363,6 +363,7 @@ std::shared_ptr<const ReportsSnapshot> ReportStore::Get(const project::Project& 
     //     （projects_ 是 std::map，插入别的 key 不会让已有节点的指针失效）
     ProjectState* state = nullptr;
     bool changed = false;
+    std::uint64_t build_revision = 0;  // 审查 C2：构建起点的 revision，发布时比对
     {
         std::unique_lock<std::shared_mutex> write(state_mutex_);
         state = &projects_[key];
@@ -411,6 +412,11 @@ std::shared_ptr<const ReportsSnapshot> ReportStore::Get(const project::Project& 
             std::lock_guard<std::mutex> stats_lock(stats_mutex_);
             ++stats_.gets;
         }
+        // 审查 C2（P0）：记录构建开始时的 revision。构建在锁外跑几百毫秒，
+        // 期间可能被 InvalidatePaths 失效；发布时必须比对，否则会用**旧内容**
+        // 占住一个**新 revision** 的快照槽，而之后 AnyStaleUnlocked 因为解析表
+        // 已被清空而认为"不陈旧"，旧报告就永久驻留了。
+        build_revision = state->revision;
     }  // ← 这里释放 state_mutex_：接下来几百毫秒的解析不再挡任何请求
 
     // (2) 锁外构建。`current_` 只在持 build_mutex_ 时使用，所以是安全的。
@@ -435,10 +441,31 @@ std::shared_ptr<const ReportsSnapshot> ReportStore::Get(const project::Project& 
     snapshot->bytes = 0;
 
     // (3) 极短临界区：发布
+    bool published = false;
     {
         std::unique_lock<std::shared_mutex> write(state_mutex_);
-        snapshot->revision = state->revision;
-        state->snapshots[slot] = snapshot;
+        // 审查 C2（P0）：构建期间做过失效（revision 变了）→ 这份快照是"旧内容"，
+        // 不能写回缓存。只把它交给本次调用方（内容仍是现读的），下一次请求重建。
+        if (state->revision == build_revision) {
+            snapshot->revision = state->revision;
+            // 审查 C3（P1）：limit 参与快照键，不同 limit 会各存一份（10 MB 报告 ≈ 42 MB/份），
+            // 没有淘汰就能被客户端用不同 limit 打爆。这里只保留最近的 kMaxSnapshotsPerProject 份。
+            constexpr std::size_t kMaxSnapshotsPerProject = 8;
+            if (state->snapshots.size() >= kMaxSnapshotsPerProject) {
+                auto oldest = state->snapshots.begin();
+                for (auto it = state->snapshots.begin(); it != state->snapshots.end(); ++it) {
+                    if (it->second->revision < oldest->second->revision) oldest = it;
+                }
+                if (oldest->first != slot) state->snapshots.erase(oldest);
+            }
+            state->snapshots[slot] = snapshot;
+            published = true;
+        }
+    }
+    if (!published) {
+        // 构建期间被失效：这份快照只服务本次请求，不进缓存；计一次失效便于观察。
+        std::lock_guard<std::mutex> stats_lock(stats_mutex_);
+        ++stats_.revisions;
     }
     {
         std::lock_guard<std::mutex> stats_lock(stats_mutex_);

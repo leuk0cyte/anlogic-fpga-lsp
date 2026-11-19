@@ -424,6 +424,11 @@ HandlerResult LspServer::HandleDidChangeWatchedFiles(const Json& params) {
         index_service_->SetWatcherActive(true);
         index_service_->OnWatchedFiles(changed, deleted);
     }
+    // 审查 C1（P0）：文本缓存键是 (path,size,mtime)，watcher 事件说明磁盘确实变了，
+    // 而 (size,mtime) 无法识别"同大小 + mtime 被还原"的改写 —— 必须在这里显式失效，
+    // 否则 completion/hover/codeAction/ADC-SDC 会一直读到旧文本。
+    for (const std::string& path : changed) docs_.EvictTextCache(path);
+    for (const std::string& path : deleted) docs_.EvictTextCache(path);
     if (report_store_) {
         std::vector<std::string> all = changed;
         all.insert(all.end(), deleted.begin(), deleted.end());

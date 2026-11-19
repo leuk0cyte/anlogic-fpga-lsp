@@ -332,6 +332,9 @@ void DocumentStore::EvictCached(const std::string& path) const {
     text_cache_.erase(it);
 }
 
+// 审查 C1（P0）的修复：watcher 说"磁盘变了"，就不再信任 (size,mtime)。
+void DocumentStore::EvictTextCache(const std::string& path) const { EvictCached(path); }
+
 std::optional<std::string> DocumentStore::GetText(std::string_view uri) const {
     // ① 打开中的文档：**永远**返回缓冲区，绝不查缓存。
     //    这是 R6 最容易踩的回归点（用户改完看不到新内容），所以放在最前面且不参与任何缓存逻辑。
