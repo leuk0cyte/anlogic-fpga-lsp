@@ -14,6 +14,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <memory>
 #include <set>
 #include <sstream>
@@ -74,10 +75,24 @@ TEST_F(CommandsTest, CapabilityMatchesCommandTable) {
     const Json& commands = capabilities["executeCommandProvider"]["commands"];
     ASSERT_TRUE(commands.is_array());
 
-    const std::vector<std::string>& expected = fpgalsp::server::ExecuteCommandNames();
+    const std::vector<std::string>& expected = fpgalsp::server::AdvertisedCommandNames();
     ASSERT_EQ(commands.size(), expected.size());
     for (std::size_t i = 0; i < expected.size(); ++i) {
         EXPECT_EQ(commands[i].get<std::string>(), expected[i]) << "第 " << i << " 项不一致";
+    }
+}
+
+// 广播子集必须排除扩展自己 contributes 的 3 条历史命令 —— vscode-languageclient
+// 会把广播的每条命令注册成 VS Code 命令，重复注册会让 initialize 直接失败。
+TEST_F(CommandsTest, AdvertisedSubsetExcludesClientOwnedCommands) {
+    const std::vector<std::string>& all = fpgalsp::server::ExecuteCommandNames();
+    const std::vector<std::string>& advertised = fpgalsp::server::AdvertisedCommandNames();
+    EXPECT_EQ(advertised.size() + 3, all.size());
+    for (const std::string& name : {"fpgalsp.check", "fpgalsp.info", "fpgalsp.restart"}) {
+        EXPECT_EQ(std::find(advertised.begin(), advertised.end(), name), advertised.end())
+            << name << " 由扩展 contributes，不能再广播";
+        EXPECT_NE(std::find(all.begin(), all.end(), name), all.end())
+            << name << " 仍必须能被 executeCommand 分发";
     }
 }
 

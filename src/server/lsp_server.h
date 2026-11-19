@@ -481,4 +481,8 @@ Json ProjectSummaryOf(std::string_view al_path);
 // 防止出现"声明了但没实现"（B-A2 的验收条件）。
 const std::vector<std::string>& ExecuteCommandNames();
 
+// capability 里广播的子集：全表减去扩展自己 contributes 的 3 条（check/info/restart）。
+// vscode-languageclient 会为广播的每条命令注册 VS Code 命令，重复注册会让 initialize 失败。
+const std::vector<std::string>& AdvertisedCommandNames();
+
 }  // namespace fpgalsp::server

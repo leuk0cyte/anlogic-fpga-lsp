@@ -383,7 +383,7 @@ Json LspServer::FeatureInitialize(const Json& params) {
     // 表在 commands.cpp 的 ExecuteCommandNames()，与 dispatch 共用同一份来源。
     Json execute = Json::object();
     Json command_list = Json::array();
-    for (const std::string& name : ExecuteCommandNames()) command_list.push_back(name);
+    for (const std::string& name : AdvertisedCommandNames()) command_list.push_back(name);
     execute["commands"] = std::move(command_list);
     capabilities["executeCommandProvider"] = std::move(execute);
 

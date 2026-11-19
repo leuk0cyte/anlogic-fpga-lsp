@@ -703,6 +703,28 @@ const std::vector<std::string>& ExecuteCommandNames() {
     return kNames;
 }
 
+// capability 里**广播**的命令名 = 全表减去扩展自己 contributes 的 3 条历史命令。
+//
+// 为什么必须减：vscode-languageclient 会把 executeCommandProvider.commands 里的
+// **每一条**都注册成 VS Code 命令；扩展的 package.json 已经 contributes 了
+// `fpgalsp.check` / `fpgalsp.info` / `fpgalsp.restart`，重复注册会让 initialize 抛
+// "command 'fpgalsp.check' already exists" 并断开连接（doc/commands.md 有记录）。
+// 这 3 条仍然可以被 workspace/executeCommand 调用，只是不对外广播。
+const std::vector<std::string>& AdvertisedCommandNames() {
+    static const std::vector<std::string> kNames = [] {
+        std::vector<std::string> out;
+        for (const std::string& name : ExecuteCommandNames()) {
+            if (name == "fpgalsp.check" || name == "fpgalsp.info" ||
+                name == "fpgalsp.restart") {
+                continue;  // 扩展 contributes.commands 已占用
+            }
+            out.push_back(name);
+        }
+        return out;
+    }();
+    return kNames;
+}
+
 HandlerResult LspServer::HandleExecuteCommand(const Json& params) {
     const std::string command = jsonrpc::GetString(params, "command");
     const Json args = jsonrpc::GetArray(params, "arguments");
