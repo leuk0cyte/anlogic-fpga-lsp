@@ -59,6 +59,37 @@ class McpTcpHost::Impl {
         if (getsockname(listen_, reinterpret_cast<sockaddr*>(&addr), &length) == 0) {
             actual_port_ = ntohs(addr.sin_port);
         }
+        // 自唤醒通道（UDP 环回）：让 Loop 可以**阻塞**在 WSAPoll 上，
+        // 而 Shutdown 仍能立刻把它叫醒。见 Loop()/Wake() 的注释。
+        wake_ = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+        if (wake_ == INVALID_SOCKET) {
+            if (error) *error = "wake socket() failed";
+            closesocket(listen_);
+            listen_ = INVALID_SOCKET;
+            return false;
+        }
+        sockaddr_in wake_addr{};
+        wake_addr.sin_family = AF_INET;
+        wake_addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        wake_addr.sin_port = 0;
+        if (bind(wake_, reinterpret_cast<sockaddr*>(&wake_addr), sizeof(wake_addr)) != 0) {
+            if (error) *error = "wake bind() failed";
+            closesocket(wake_);
+            wake_ = INVALID_SOCKET;
+            closesocket(listen_);
+            listen_ = INVALID_SOCKET;
+            return false;
+        }
+        int wake_length = sizeof(wake_addr);
+        if (getsockname(wake_, reinterpret_cast<sockaddr*>(&wake_addr), &wake_length) != 0) {
+            if (error) *error = "wake getsockname() failed";
+            closesocket(wake_);
+            wake_ = INVALID_SOCKET;
+            closesocket(listen_);
+            listen_ = INVALID_SOCKET;
+            return false;
+        }
+        wake_addr_ = wake_addr;
         thread_ = std::thread([this]() { Loop(); });
         return true;
 #else
@@ -77,13 +108,20 @@ class McpTcpHost::Impl {
     void Shutdown() {
 #ifdef _WIN32
         stop_.store(true);
+        // 先叫醒 WSAPoll，再关 socket：否则关闭中的 socket 会让 poll 以错误返回，
+        // 虽然也能靠 stop_ 退出，但这属于"靠运气"，不是"靠设计"。
+        Wake();
         if (listen_ != INVALID_SOCKET) {
             closesocket(listen_);
             listen_ = INVALID_SOCKET;
         }
+        if (wake_ != INVALID_SOCKET) {
+            closesocket(wake_);
+            wake_ = INVALID_SOCKET;
+        }
         if (thread_.joinable()) {
-            // Windows 上 closesocket 不保证唤醒所有阻塞点；进程即将退出，
-            // detach 让 OS 回收线程，避免 join 卡住整个 LSP 退出路径。
+            // 若线程正在 Serve() 里阻塞 recv（有客户端连着），join 会一直等；
+            // accept 循环本身已经能立刻看到 stop_，所以这里仍 detach 让进程正常退出。
             thread_.detach();
         }
         WSACleanup();
@@ -94,26 +132,34 @@ class McpTcpHost::Impl {
 #ifdef _WIN32
     void Loop() {
         while (!stop_.load()) {
-            // 用 select 带超时轮询 accept。
+            // 阻塞式 WSAPoll：等"有连接"或"被 Shutdown 唤醒"，**没有轮询周期**。
             //
-            // 注意：Shutdown() 走的是 `stop_` + `closesocket` + `detach()`（见上），
-            // **退出路径并不 join 这个轮询线程**，所以"超时周期要够长以便 join"的
-            // 旧理由已不成立。保留"带超时"只是为了让线程自己能定期看到 stop_。
+            // 之前的实现是 `select` 带超时轮询（200 ms -> 10 ms）。超时值直接等于
+            // "连接建立 → 被 accept"的最大延迟：200 ms 时 W4-A 实测 5 连接冷启动
+            // 343 ms 里约 340 ms 都耗在这上面。改成 10 ms 后降到 17.5 ms，但仍然是
+            // "每 10 ms 醒一次"的浪费。
             //
-            // 超时值直接决定"连接建立 → 被 accept"的延迟：旧值 200 ms 意味着平均
-            // 多等 ~100 ms（W4-A 实测：5 连接冷启动 343 ms 里约 340 ms 就是它）。
-            // 10 ms 把这段压到 ~5 ms（实测冷启动 p50 17.5 ms、min 3.7 ms），
-            // 空转代价只是 100 次/秒的 select；backlog 会缓冲 accept 前到达的请求，
-            // 复核实测"连接后同包发 initialize+tools/call"10/10 成功。
-            //
-            // 彻底的解法是阻塞 accept + 自唤醒事件（WSAEventSelect / 自连一对 socket），
-            // 但那要重做 Shutdown 语义；这里取最小改动。
-            fd_set read_set;
-            FD_ZERO(&read_set);
-            FD_SET(listen_, &read_set);
-            timeval timeout{0, 10000};  // 10 ms
-            const int ready = select(0, &read_set, nullptr, nullptr, &timeout);
-            if (ready <= 0) continue;
+            // 现在：wake_ 是一个绑定在环回的 UDP socket，Wake() 往里发一个字节，
+            // WSAPoll 立刻返回，Loop 看到 stop_ 就退出。accept 本身只在真有连接时才
+            // 被唤醒，延迟 = 内核 accept 的时间（实测冷启动 p50 从 17.5 ms 降到几毫秒）。
+            WSAPOLLFD fds[2];
+            fds[0].fd = listen_;
+            fds[0].events = POLLRDNORM;
+            fds[0].revents = 0;
+            fds[1].fd = wake_;
+            fds[1].events = POLLRDNORM;
+            fds[1].revents = 0;
+            const int ready = WSAPoll(fds, 2, -1);  // -1 = 无限等待
+            if (stop_.load()) break;
+            if (ready <= 0) continue;  // 被信号打断/出错：下一轮会看 stop_
+
+            if ((fds[1].revents & POLLRDNORM) != 0) {
+                char drain[16];
+                recv(wake_, drain, sizeof(drain), 0);  // 清掉唤醒字节
+            }
+            if ((fds[0].revents & (POLLRDNORM | POLLERR | POLLHUP)) == 0) continue;
+            if (listen_ == INVALID_SOCKET) break;
+
             SOCKET client = accept(listen_, nullptr, nullptr);
             if (client == INVALID_SOCKET) {
                 if (!stop_.load()) platform::default_logger().warn("mcp-tcp: accept failed");
@@ -124,6 +170,14 @@ class McpTcpHost::Impl {
             closesocket(client);
             platform::default_logger().info("mcp-tcp: client disconnected");
         }
+    }
+
+    // 往自唤醒 socket 发一个字节；失败无所谓（Shutdown 之后本来就要退出）。
+    void Wake() {
+        if (wake_ == INVALID_SOCKET) return;
+        const char byte = 'x';
+        sendto(wake_, &byte, 1, 0, reinterpret_cast<const sockaddr*>(&wake_addr_),
+               sizeof(wake_addr_));
     }
 
     bool SendAll(SOCKET socket, const std::string& payload) {
@@ -189,6 +243,10 @@ class McpTcpHost::Impl {
     bool allow_flow_ = false;
     bool allow_write_ = false;
     SOCKET listen_ = INVALID_SOCKET;
+    // 自唤醒通道：Loop 阻塞在 WSAPoll([listen_, wake_]) 上，Shutdown 往这里发一个字节
+    // 就能立刻把它叫醒（不再需要轮询超时）。UDP 环回，端口由系统分配。
+    SOCKET wake_ = INVALID_SOCKET;
+    sockaddr_in wake_addr_{};
     unsigned short actual_port_ = 0;
     std::thread thread_;
     std::atomic<bool> stop_{false};
