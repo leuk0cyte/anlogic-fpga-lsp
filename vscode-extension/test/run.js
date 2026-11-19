@@ -72,6 +72,7 @@ const { FALLBACK_POLL_MS } = require('../src/flowController');
 const { ReportsService, CancelledError } = require('../src/reportsService');
 const { renderReportsHtml } = require('../src/reportsHtml');
 const { renderTrendHtml } = require('../src/trendHtml');
+const { createLmTools, registerLmTools } = require('../src/lmTools');
 const { ReportsPanel } = require('../src/reportsPanel');
 const { appendLog, flushLogSync } = require('../src/launchCheck');
 
@@ -1411,4 +1412,44 @@ test('qor trend: three runs produce three linked points', () => {
     // 没有 run 时给可读提示，而不是空图
     const empty = renderTrendHtml({ runs: [] });
     ok(/No flow runs/i.test(empty), 'empty state is explained');
+});
+
+
+// X-B7: Copilot 只读工具。名字唯一、都有描述/schema，invoke 走 rpc 并返回 JSON 文本。
+test('lm tools: read-only slice maps to the right protocol calls', async () => {
+    const calls = [];
+    const rpc = {
+        request: async (method, params) => { calls.push({ method, params }); return { ok: true, method }; },
+        execute: async (command, args) => { calls.push({ command, args }); return { ok: true, command }; },
+    };
+    const tools = createLmTools(rpc);
+    eq(tools.length, 5, 'five curated read-only tools');
+    const names = new Set(tools.map((tool) => tool.name));
+    eq(names.size, tools.length, 'tool names are unique');
+    for (const tool of tools) {
+        ok(tool.description && tool.description.length > 10, `description for ${tool.name}`);
+        ok(tool.inputSchema && tool.inputSchema.type === 'object', `schema for ${tool.name}`);
+    }
+
+    const info = await tools.find((t) => t.name === 'fpgalsp_project_info').invoke({});
+    ok(JSON.parse(info).command === 'fpgalsp.info', 'project info goes through executeCommand');
+
+    await tools.find((t) => t.name === 'fpgalsp_module_hierarchy').invoke({ module: 'top', limit: 5 });
+    const children = calls.find((call) => call.method === 'fpgaLsp/moduleChildren');
+    ok(children && children.params.module === 'top' && children.params.limit === 5,
+        'hierarchy call carries module/limit');
+
+    // 注册路径：没有 lm API 时返回空数组（不抛），有 API 时逐个注册并返回 disposable
+    eq(registerLmTools({}, rpc).length, 0, 'no lm API -> no tools');
+    const registered = [];
+    const fakeVscode = {
+        lm: { registerTool: (name, impl) => { registered.push({ name, impl }); return { dispose() {} }; } },
+        LanguageModelToolResult: class { constructor(parts) { this.parts = parts; } },
+        LanguageModelTextPart: class { constructor(text) { this.text = text; } },
+    };
+    const disposables = registerLmTools(fakeVscode, rpc);
+    eq(disposables.length, 5, 'registers every tool');
+    eq(registered[0].name, 'fpgalsp_project_info', 'first tool registered by name');
+    const result = await registered[0].impl.invoke({ input: {} });
+    ok(result.parts[0].text.includes('fpgalsp.info'), 'invoke wraps rpc output as text');
 });

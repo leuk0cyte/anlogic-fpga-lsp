@@ -36,6 +36,7 @@ const { ReportsPanel } = require('./src/reportsPanel');
 const { ReportsService } = require('./src/reportsService');
 const { ReportsTreeProvider } = require('./src/reportsTree');
 const { renderTrendHtml } = require('./src/trendHtml');
+const { registerLmTools } = require('./src/lmTools');
 const {
     buildMcpServerOptions,
     buildPortableConfig,
@@ -1569,6 +1570,19 @@ function activate(context) {
 
     client.start().then(async () => {
         refreshStatus().catch(() => undefined);
+        // X-B7: expose the read-only slice to Copilot Chat. Only in a trusted workspace:
+        // these tools read project files and reports, which is exactly what an untrusted
+        // workspace forbids.
+        try {
+            if (vscode.workspace && vscode.workspace.isTrusted === false) {
+                diag('lm tools skipped: workspace is not trusted');
+            } else {
+                const disposables = registerLmTools(vscode, rpc, diag);
+                context.subscriptions.push(...disposables);
+            }
+        } catch (err) {
+            diag('lm tools registration failed: ' + ((err && err.message) || err));
+        }
         try {
             // Register after the connection is up so no custom notification is missed.
             client.onNotification(METHODS.flowEvent, (event) => {
