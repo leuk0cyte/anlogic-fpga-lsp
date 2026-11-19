@@ -384,6 +384,9 @@ struct ProjectListEntry {
     std::int64_t base_mtime = 0;
     std::vector<std::pair<std::string, std::pair<std::uintmax_t, std::int64_t>>> als;
     Json projects = Json::array();
+    // W4-A：Bridge 构造函数默认工程发现直接复用这里的结果（原来每个连接都要
+    // 重新 DiscoverProjects + 重新建工程对象，TCP attach 冷启动 = 8–16 ms/连接）。
+    std::string chosen_al;
     std::chrono::steady_clock::time_point refresh_after{};
     std::chrono::steady_clock::time_point last_used{};
 };
@@ -434,6 +437,8 @@ Json CachedProjectListEntries(const std::string& base) {
     Json projects = Json::array();
     std::vector<std::pair<std::string, std::pair<std::uintmax_t, std::int64_t>>> als;
     int index = 0;
+    std::string chosen_al;
+    const std::string base_lower = LowerAscii(normalize_path(base));
     for (const std::string& al : found) {
         if (index++ >= 100) break;
         const project::Project parsed = project::ParseAl(al);
@@ -447,6 +452,10 @@ Json CachedProjectListEntries(const std::string& base) {
         item["hdl"] = static_cast<int>(parsed.HdlFiles().size());
         item["warnings"] = static_cast<int>(parsed.warnings.size());
         projects.push_back(std::move(item));
+
+        // 与 DiscoverDefaultAl 相同的优先级：工程根下的 .al 优先，否则第一个
+        if (chosen_al.empty()) chosen_al = al;
+        if (LowerAscii(path_dirname(al)) == base_lower) chosen_al = al;
 
         std::int64_t mtime_ns = 0;
         std::uintmax_t size = 0;
@@ -462,6 +471,7 @@ Json CachedProjectListEntries(const std::string& base) {
         slot.base_mtime = base_mtime;
         slot.als = std::move(als);
         slot.projects = projects;
+        slot.chosen_al = chosen_al;
         slot.last_used = now;
         slot.refresh_after = now + kProjectListTtl;
         while (g_project_list_cache.size() > kProjectListMaxRoots) {
@@ -474,6 +484,91 @@ Json CachedProjectListEntries(const std::string& base) {
         }
     }
     return projects;
+}
+
+// -----------------------------------------------------------------------------
+// W4-A：进程级"默认工程发现 + .al 解析结果"缓存（连接级复用）
+// -----------------------------------------------------------------------------
+//  背景：loopback TCP 主机对**每个连接**新建一个 Bridge，构造时要做
+//  `DiscoverProjects`(200 文件工程实测 7.7–8.1 ms) + 首次工具调用时 `ParseAl`。
+//  多个连接其实看的是同一个工作区，完全没必要重复做。
+//
+//  为什么不是"多个连接共享同一个 Bridge"：Bridge 的可变状态（projects_/devices_/
+//  session_/td_choice_/flow_runner_/feature_server_/active_al_）全部没有锁，
+//  而宿主 mcp_tcp.cpp 的 accept/Serve 实现不在本任务写域（src/mcp/**）内；
+//  直接共享会出现"连接 A 的 active project 泄漏到连接 B"以及关闭连接时把正在
+//  跑的请求所用的会话析构掉。这里改为共享**不可变结果**（发现结果 + 解析后的
+//  Project），每个连接仍有自己的 Bridge/active_al_/TD 会话，语义零变化。
+
+// 取默认工程（替代 Bridge::DiscoverDefaultAl 的每次重扫）。
+// 语义与 DiscoverDefaultAl 完全一致：优先工程根下的 .al，否则发现顺序里的第一个；
+// 找不到抛 ToolError（构造函数的 catch 分支照旧）。
+std::string CachedDefaultAl(const std::string& root) {
+    (void)CachedProjectListEntries(root);  // 确保工程列表缓存已建立/已校验
+    const std::string key = LowerAscii(normalize_path(root));
+    {
+        std::lock_guard<std::mutex> lock(g_project_list_mutex);
+        const auto it = g_project_list_cache.find(key);
+        if (it != g_project_list_cache.end() && !it->second.chosen_al.empty()) {
+            return it->second.chosen_al;
+        }
+    }
+    throw ToolError("No Anlogic .al project found under " + root);
+}
+
+// 进程级 .al 解析缓存：键 = 规范化 .al 路径，命中条件 = (size, mtime) 一致。
+// 这样第二个连接不需要重新 ParseAl；同时 `.al` 被改/被换掉时会自动重新解析
+// （与 D5 的索引 stamp 校验同一套思路，只是粒度更粗）。
+struct GlobalProjectEntry {
+    std::uintmax_t size = 0;
+    std::int64_t mtime_ns = 0;
+    std::shared_ptr<const project::Project> project;
+    std::chrono::steady_clock::time_point last_used{};
+};
+
+std::mutex g_project_cache_mutex;
+std::map<std::string, GlobalProjectEntry> g_project_cache;
+constexpr std::size_t kProjectCacheMax = 8;
+
+std::shared_ptr<const project::Project> CachedParsedProject(const std::string& al_path) {
+    const std::string key = normalize_path(al_path);
+    std::int64_t mtime_ns = 0;
+    std::uintmax_t size = 0;
+    const bool stat_ok = StatStamp(key, &mtime_ns, &size);
+    const auto now = std::chrono::steady_clock::now();
+    if (stat_ok) {
+        std::lock_guard<std::mutex> lock(g_project_cache_mutex);
+        const auto it = g_project_cache.find(key);
+        if (it != g_project_cache.end() && it->second.size == size &&
+            it->second.mtime_ns == mtime_ns && it->second.project) {
+            it->second.last_used = now;
+            return it->second.project;
+        }
+    }
+    auto parsed = std::make_shared<const project::Project>(project::ParseAl(key));
+    {
+        std::lock_guard<std::mutex> lock(g_project_cache_mutex);
+        auto& slot = g_project_cache[key];
+        slot.size = size;
+        slot.mtime_ns = mtime_ns;
+        slot.project = parsed;
+        slot.last_used = now;
+        while (g_project_cache.size() > kProjectCacheMax) {
+            auto victim = g_project_cache.begin();
+            for (auto it = g_project_cache.begin(); it != g_project_cache.end(); ++it) {
+                if (it->second.last_used < victim->second.last_used) victim = it;
+            }
+            if (victim == g_project_cache.end()) break;
+            g_project_cache.erase(victim);
+        }
+    }
+    return parsed;
+}
+
+// .al 被写工具改过后必须丢掉进程级缓存，否则其它连接会继续看到旧名字/旧文件表。
+void DropCachedProject(const std::string& al_path) {
+    std::lock_guard<std::mutex> lock(g_project_cache_mutex);
+    g_project_cache.erase(normalize_path(al_path));
 }
 
 // Python fnmatch.fnmatch 的子集（* 与 ?）。MCP 的 glob 参数只用到这个程度。
@@ -610,7 +705,9 @@ Bridge::Bridge(BridgeOptions options) : options_(std::move(options)) {
         active_al_ = ResolveAl(options_.project);
     } else {
         try {
-            active_al_ = DiscoverDefaultAl();
+            // W4-A：不再每个连接重新 `DiscoverProjects`（200 文件工程 7.7–8.1 ms），
+            // 改为复用进程级发现缓存（F4 引入、这里补充 chosen_al）。
+            active_al_ = CachedDefaultAl(root_);
         } catch (const ToolError&) {
             active_al_.clear();  // 没有工程也能起服务：工程类工具按需报错
         }
@@ -681,14 +778,13 @@ std::string Bridge::ResolveAl(const std::string& value) const {
 
 const project::Project& Bridge::ActiveProject() {
     if (!active_al_.empty()) {
-        const auto it = projects_.find(active_al_);
-        if (it != projects_.end()) return *it->second;
-        auto parsed = std::make_unique<project::Project>(project::ParseAl(active_al_));
-        auto& slot = projects_[active_al_];
-        slot = std::move(parsed);
-        return *slot;
+        // W4-A：每次调用都问一次进程级缓存（内部按 (size,mtime) 校验，命中只花 1 次
+        // stat + 一次 map 查找），因此 `.al` 改动后下一次工具调用就能看到新内容，
+        // 而连接之间又共享同一份解析结果。
+        projects_[active_al_] = CachedParsedProject(active_al_);
+        return *projects_[active_al_];
     }
-    active_al_ = DiscoverDefaultAl();
+    active_al_ = CachedDefaultAl(root_);
     return ActiveProject();
 }
 
@@ -696,12 +792,9 @@ const project::Project& Bridge::ProjectFor(const Json& arguments) {
     const auto it = arguments.find("project");
     if (it != arguments.end() && it->is_string() && !it->get<std::string>().empty()) {
         const std::string al = ResolveAl(it->get<std::string>());
-        const auto cached = projects_.find(al);
-        if (cached != projects_.end()) return *cached->second;
-        auto& slot = projects_[al];
-        slot = std::make_unique<project::Project>(project::ParseAl(al));
+        projects_[al] = CachedParsedProject(al);
         active_al_ = al;
-        return *slot;
+        return *projects_[al];
     }
     return ActiveProject();
 }
@@ -3944,6 +4037,7 @@ Json Bridge::ProjectUpdateTool(const Json& arguments) {
     });
     // 对应 Python 的 invalidate_project_caches()：.al 可能被 TD 改写，缓存必须失效。
     projects_.erase(al);
+    DropCachedProject(al);  // W4-A：同时丢掉进程级解析缓存（其它连接也要看到新 .al）
     return result;
 }
 

@@ -219,7 +219,7 @@ class Bridge : public ToolDispatcher {
     BridgeOptions options_;
     std::string root_;
     std::string active_al_;
-    std::map<std::string, std::unique_ptr<project::Project>> projects_;
+    std::map<std::string, std::shared_ptr<const project::Project>> projects_;
     std::map<std::string, std::unique_ptr<td::DeviceInfo>> devices_;
     std::unique_ptr<td::TdSession> session_;
     std::optional<td::TdChoice> td_choice_;

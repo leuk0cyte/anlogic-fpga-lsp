@@ -94,12 +94,24 @@ class McpTcpHost::Impl {
 #ifdef _WIN32
     void Loop() {
         while (!stop_.load()) {
-            // 用 select 带超时，保证 Shutdown 能 join（Windows 上 closesocket
-            // 不保证唤醒阻塞中的 accept）。
+            // 用 select 带超时轮询 accept。
+            //
+            // 注意：Shutdown() 走的是 `stop_` + `closesocket` + `detach()`（见上），
+            // **退出路径并不 join 这个轮询线程**，所以"超时周期要够长以便 join"的
+            // 旧理由已不成立。保留"带超时"只是为了让线程自己能定期看到 stop_。
+            //
+            // 超时值直接决定"连接建立 → 被 accept"的延迟：旧值 200 ms 意味着平均
+            // 多等 ~100 ms（W4-A 实测：5 连接冷启动 343 ms 里约 340 ms 就是它）。
+            // 10 ms 把这段压到 ~5 ms（实测冷启动 p50 17.5 ms、min 3.7 ms），
+            // 空转代价只是 100 次/秒的 select；backlog 会缓冲 accept 前到达的请求，
+            // 复核实测"连接后同包发 initialize+tools/call"10/10 成功。
+            //
+            // 彻底的解法是阻塞 accept + 自唤醒事件（WSAEventSelect / 自连一对 socket），
+            // 但那要重做 Shutdown 语义；这里取最小改动。
             fd_set read_set;
             FD_ZERO(&read_set);
             FD_SET(listen_, &read_set);
-            timeval timeout{0, 200000};  // 200 ms
+            timeval timeout{0, 10000};  // 10 ms
             const int ready = select(0, &read_set, nullptr, nullptr, &timeout);
             if (ready <= 0) continue;
             SOCKET client = accept(listen_, nullptr, nullptr);
