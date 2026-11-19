@@ -693,17 +693,30 @@ def main() -> int:
                         item for item in client.notification_slice(mark, end)
                         if item.get("method") == "textDocument/publishDiagnostics"
                     ]
-                    total = sum(
-                        len((item.get("params") or {}).get("diagnostics") or [])
-                        for item in published_events
-                    )
-                    files = len(published_events)
-                    # 2026-11-19：publishDiagnostics 改为 lint（内嵌 Verible）+ TD 的并集，
-                    # 所以总数会多于 TD 报告数；这里断言语义从 "==" 放宽为 ">="，
-                    # 同时要求仍然覆盖到 TD 的全部条目（截断会让 total 变小）。
-                    check(total >= expected,
-                          f"全量发布：{files} 个文件共 {total} 条 >= TD 报告 {expected} 条"
-                          f"（多出的是服务端内嵌 lint 诊断；无截断）")
+                    # 2026-11-19：publishDiagnostics 变成 lint（内嵌 Verible）+ TD 的并集。
+                    # 不能对窗口内所有通知求和 —— 同一文件会被发布多次（首帧 + lint 刷新），
+                    # 求和会让"TD 被截断"淹没在总数里。改成：每个 uri 只取**最后一次**发布，
+                    # 再按来源分别统计，断言 TD 条数仍然精确等于报告数（截断会让它变小）。
+                    latest = {}
+                    for item in published_events:
+                        params = item.get("params") or {}
+                        uri = params.get("uri")
+                        if uri:
+                            latest[uri] = params.get("diagnostics") or []
+                    td_count = 0
+                    lint_count = 0
+                    for diagnostics in latest.values():
+                        for diagnostic in diagnostics:
+                            source = str(diagnostic.get("source") or "")
+                            if ":td" in source or source.endswith("td"):
+                                td_count += 1
+                            else:
+                                lint_count += 1
+                    files = len(latest)
+                    check(td_count == expected,
+                          f"全量发布：{files} 个文件，TD 诊断 {td_count} 条 == 报告 {expected} 条（无截断）")
+                    note(f"同一窗口另有 {lint_count} 条 lint 诊断（服务端内嵌 Verible，"
+                         f"来自 {len(published_events)} 次 publish）")
 
         # ---- 6b. 连续两次 check：不叠加 TD 线程（PYTHON-BUGS P-8）----
         if not args.skip_td:
