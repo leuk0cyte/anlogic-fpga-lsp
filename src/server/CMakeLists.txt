@@ -22,6 +22,8 @@ add_library(fpga_lsp_server STATIC
     async_dispatcher.cpp
     report_store.cpp
     index_service.cpp
+    # T1 / task-50：服务端 lint 的后台调度（内嵌 Verible，worker 线程 + 每文件去抖）
+    lint_service.cpp
 )
 
 add_library(fpga_lsp::server ALIAS fpga_lsp_server)

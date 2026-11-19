@@ -101,3 +101,6 @@ fpgalsp_add_unit_test(report_store fpga_lsp::server)
 
 # Phase 2 / A1：增量索引（IndexService + hdl 增量 API）
 fpgalsp_add_unit_test(index_service fpga_lsp::server fpga_lsp::hdl)
+
+# T1 / task-50：服务端 lint（LintService 调度 + 注释掩码 + 诊断按来源合并）
+fpgalsp_add_unit_test(lint_service fpga_lsp::server fpga_lsp::hdl fpga_lsp::verible_bridge)

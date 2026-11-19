@@ -190,4 +190,207 @@ LintAutofixResult AutofixText(std::string_view text, std::string_view filename) 
     }
 }
 
+// -----------------------------------------------------------------------------
+//  T1 / task-50：只收集 violation（服务端 lint）
+// -----------------------------------------------------------------------------
+LintResult LintText(std::string_view text, std::string_view filename) {
+    LintResult result;
+    if (text.empty()) {
+        result.ok = true;
+        return result;
+    }
+
+    try {
+        const std::string name(filename);
+
+        verilog::LinterConfiguration config;
+        if (!BuildDefaultConfiguration(&config, &result.error)) return result;
+
+        const std::unique_ptr<verilog::VerilogAnalyzer> analyzer =
+            verilog::VerilogAnalyzer::AnalyzeAutomaticPreprocessFallback(text, name);
+        if (!analyzer) {
+            result.error = "verible analyzer unavailable";
+            return result;
+        }
+
+        const verible::TextStructureView& structure = analyzer->Data();
+        const absl::StatusOr<std::vector<LintRuleStatus>> statuses =
+            verilog::VerilogLintTextStructure(name, config, structure);
+        if (!statuses.ok()) {
+            result.error = statuses.status().message();
+            return result;
+        }
+
+        for (const LintRuleStatus& status : *statuses) {
+            const std::string rule(status.lint_rule_name);
+            for (const verible::LintViolation& violation : status.violations) {
+                // token -> (line, column) 由 TextStructure 的 LineColumnMap 给出；
+                // 它是 0-based、**码点**列（多字节字符算 1 列），server 侧再转 UTF-16。
+                const verible::LineColumnRange range =
+                    structure.GetRangeForToken(violation.token);
+                LintDiagnostic diagnostic;
+                diagnostic.line = range.start.line;
+                diagnostic.column = range.start.column;
+                diagnostic.end_line = range.end.line;
+                diagnostic.end_column = range.end.column;
+                diagnostic.severity = 2;  // lint 一律 warning（与 verible CLI 的措辞一致）
+                diagnostic.rule = rule;
+                diagnostic.message = violation.reason;
+                result.diagnostics.push_back(std::move(diagnostic));
+            }
+        }
+
+        // 稳定顺序（同一位置按规则名），便于上层做"内容相同就不重发"的比较。
+        std::stable_sort(result.diagnostics.begin(), result.diagnostics.end(),
+                         [](const LintDiagnostic& a, const LintDiagnostic& b) {
+                             if (a.line != b.line) return a.line < b.line;
+                             if (a.column != b.column) return a.column < b.column;
+                             if (a.rule != b.rule) return a.rule < b.rule;
+                             return a.message < b.message;
+                         });
+        result.ok = true;
+        return result;
+    } catch (const std::exception& error) {
+        result.ok = false;
+        result.error = std::string("verible lint threw: ") + error.what();
+        return result;
+    } catch (...) {
+        result.ok = false;
+        result.error = "verible lint threw: unknown";
+        return result;
+    }
+}
+
+// -----------------------------------------------------------------------------
+//  T1 / task-50：丢掉"注释里的 no-tabs"
+// -----------------------------------------------------------------------------
+namespace {
+
+// 每一行里"哪些码点列属于注释"的掩码（1 = 注释）。
+// 只做 Verilog 需要的三种词法状态：行注释、块注释、双引号字符串（含转义）。
+std::vector<std::vector<char>> BuildCommentMask(std::string_view text) {
+    std::vector<std::vector<char>> mask(1);
+    std::size_t line = 0;
+    std::size_t column = 0;
+    bool in_block = false;
+    bool in_string = false;
+    bool escaped = false;
+
+    auto mark = [&](std::size_t ln, std::size_t col) {
+        if (ln >= mask.size()) return;
+        if (mask[ln].size() <= col) mask[ln].resize(col + 1, 0);
+        mask[ln][col] = 1;
+    };
+    // UTF-8 码点长度（非法字节按 1 处理，never-raise）
+    auto utf8_len = [](unsigned char c) -> std::size_t {
+        if ((c & 0xE0) == 0xC0) return 2;
+        if ((c & 0xF0) == 0xE0) return 3;
+        if ((c & 0xF8) == 0xF0) return 4;
+        return 1;
+    };
+
+    std::size_t i = 0;
+    while (i < text.size()) {
+        const unsigned char c = static_cast<unsigned char>(text[i]);
+        const char next = (i + 1 < text.size()) ? text[i + 1] : '\0';
+        if (c == '\n') {
+            ++line;
+            column = 0;
+            mask.emplace_back();
+            escaped = false;
+            ++i;
+            continue;
+        }
+        const std::size_t len = utf8_len(c);
+
+        if (in_block) {
+            if (c == '*' && next == '/') {
+                mark(line, column);
+                mark(line, column + 1);
+                in_block = false;
+                i += 2;
+                column += 2;
+                continue;
+            }
+            mark(line, column);
+            i += len;
+            ++column;
+            continue;
+        }
+        if (in_string) {
+            if (escaped) {
+                escaped = false;
+                i += len;
+                ++column;
+                continue;
+            }
+            if (c == '\\') {
+                escaped = true;
+                i += len;
+                ++column;
+                continue;
+            }
+            if (c == '"') in_string = false;
+            i += len;
+            ++column;
+            continue;
+        }
+        if (c == '/' && next == '/') {
+            std::size_t j = i;
+            std::size_t col = column;
+            while (j < text.size() && text[j] != '\n') {
+                mark(line, col);
+                j += utf8_len(static_cast<unsigned char>(text[j]));
+                ++col;
+            }
+            i = j;
+            column = col;
+            continue;
+        }
+        if (c == '/' && next == '*') {
+            in_block = true;
+            mark(line, column);
+            mark(line, column + 1);
+            i += 2;
+            column += 2;
+            continue;
+        }
+        if (c == '"') {
+            in_string = true;
+            i += 1;
+            ++column;
+            continue;
+        }
+        i += len;
+        ++column;
+    }
+    return mask;
+}
+
+bool ColumnInComment(const std::vector<std::vector<char>>& mask, int line, int column) {
+    if (line < 0 || static_cast<std::size_t>(line) >= mask.size()) return false;
+    if (column < 0) return false;
+    const std::vector<char>& row = mask[static_cast<std::size_t>(line)];
+    return static_cast<std::size_t>(column) < row.size() && row[static_cast<std::size_t>(column)] != 0;
+}
+
+}  // namespace
+
+std::vector<LintDiagnostic> DropCommentNoTabs(std::string_view text,
+                                             std::vector<LintDiagnostic> diagnostics) {
+    if (diagnostics.empty()) return diagnostics;
+    const std::vector<std::vector<char>> mask = BuildCommentMask(text);
+    std::vector<LintDiagnostic> kept;
+    kept.reserve(diagnostics.size());
+    for (LintDiagnostic& diagnostic : diagnostics) {
+        // 只对 no-tabs 做这个过滤（其它规则在注释里仍然有意义，例如行宽）。
+        if (diagnostic.rule == "no-tabs" &&
+            ColumnInComment(mask, diagnostic.line, diagnostic.column)) {
+            continue;
+        }
+        kept.push_back(std::move(diagnostic));
+    }
+    return kept;
+}
+
 }  // namespace fpgalsp::verible_bridge

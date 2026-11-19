@@ -43,6 +43,7 @@
 #include "project/al_project.h"
 #include "td/td_service.h"
 #include "server/index_service.h"
+#include "server/lint_service.h"
 #include "server/report_store.h"
 
 namespace fpgalsp::td {
@@ -79,6 +80,9 @@ struct Settings {
     std::vector<std::string> verible_args;
     bool verible_format = true;
     bool format_fallback = true;
+    // T1：didChange 之后在服务端跑内嵌 Verible lint（默认开）。
+    // 关掉后行为退回"只有 TD 诊断"（排查 lint 相关问题时用）。
+    bool lint_on_change = true;
 
     // 对应 _Settings.update：接受 {"fpgaLsp": {...}} 或直接 {...}
     void Update(const Json& options);
@@ -266,6 +270,16 @@ private:
     // didOpen/didChange/didSave 之后重发该文件（或全部）的诊断
     void RunDiagnostics(std::string_view path, bool publish_all);
 
+    // ---- T1 / task-50：服务端 lint（内嵌 Verible）+ 按来源合并 ----
+    // 请求该文件的 lint 重算（非阻塞，300 ms 去抖，worker 线程执行）。
+    void ScheduleLint(const std::string& path, const std::string& uri);
+    // worker 线程：取文档快照 -> 内嵌 Verible -> 转成 LSP Diagnostic（UTF-16 列）。
+    lsp::DiagnosticList ComputeLint(const std::string& path);
+    // worker 线程回调：写 diag_lint_ 并发布该文件的**并集**（lint + TD）。
+    void OnLintResult(const std::string& path, lsp::DiagnosticList diagnostics);
+    // 发布一个文件的并集（lint + TD）。project == nullptr 时只发 lint。
+    void PublishMergedPath(const project::Project* project, const std::string& path);
+
     void PublishDiagnostics(std::string_view path, const lsp::DiagnosticList& diagnostics);
     void SendNotification(std::string_view method, Json params);
     // Phase 2：索引/报告变化推送（插件定向刷新用；旧客户端会忽略未知通知）
@@ -355,11 +369,16 @@ private:
     mutable std::mutex session_mutex_;
     std::shared_ptr<td::TdSession> session_;
 
-    // 诊断表：al_path -> (file_path -> 诊断)
+    // 诊断表：**按来源分开存**（T1）。发布时合并，互不覆盖。
+    //   * diag_td_  : al_path -> (file_path -> 诊断)
+    //   * diag_lint_: file_path -> 诊断（lint 是单文件概念，不需要工程键）
     mutable std::mutex state_mutex_;
-    std::map<std::string, std::map<std::string, lsp::DiagnosticList>> td_diags_;
+    std::map<std::string, std::map<std::string, lsp::DiagnosticList>> diag_td_;
+    std::map<std::string, lsp::DiagnosticList> diag_lint_;
     std::map<std::string, std::set<std::string>> published_;
     bool shutting_down_ = false;
+    // T1：lint 的后台调度（每文件去抖 + single-flight + 结果作废）。Shutdown 里 join。
+    std::unique_ptr<LintService> lint_service_;
     // W3：TD 检查的单飞队列（300 ms 去抖 + 取消在跑的一轮）。
     // 以前这里是 td_running_/td_pending_/td_worker_ 三个字段 + 手写 TdCheckLoop；
     // 现在策略全部在 td::TdService 里（src/td/td_service.h），本类只剩"请求"和"落地"。
@@ -419,6 +438,13 @@ private:
 // JSON 里取诊断的落点路径：td::MapMessage 把绝对路径写在 data["path"]（见
 // td_diagnostics.h 的约定），发布前要把它从 data 里摘掉（Python 是 pop("_path")）。
 std::string DiagnosticPath(const lsp::Diagnostic& diagnostic, std::string_view fallback);
+
+// T1 / task-50：按来源合并诊断（lint + TD）并**稳定排序**。
+//   * 排序键：line -> character -> severity -> source -> code -> message（确定性，便于"内容相同就不重发"）
+//   * 去重：完全相同的 (range,severity,code,source,message) 只留一条
+//   * 红线：**lint 不覆盖 TD、TD 不覆盖 lint** —— 两个来源的条目都会保留
+lsp::DiagnosticList MergeDiagnosticSources(const lsp::DiagnosticList& lint,
+                                           const lsp::DiagnosticList& td);
 
 // 工程摘要（对应 project.py project_summary；注意 warnings 是**条数**不是列表）
 Json ProjectSummaryOf(const project::Project& project);

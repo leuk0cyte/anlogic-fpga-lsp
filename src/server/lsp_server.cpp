@@ -28,6 +28,7 @@
 
 #include "platform/log.h"
 #include "platform/path.h"
+#include "platform/utf16.h"
 #include "flow/flow_runner.h"
 #include "hdl/hdl_index.h"
 #include "td/td_diagnostics.h"
@@ -38,6 +39,7 @@
 //   链接了 fpga_lsp::verible_bridge 时 fmt 可用；否则走"返回空编辑"。
 #if defined(FPGA_LSP_HAVE_VERIBLE_BRIDGE)
 #include "verible_bridge/format_text.h"
+#include "verible_bridge/lint_text.h"
 #endif
 
 namespace fpgalsp::server {
@@ -72,34 +74,6 @@ std::string RunDir(const project::Project& project) {
     const auto temp = std::filesystem::temp_directory_path(ec);
     const std::string base = ec ? std::string(".") : temp.generic_string();
     return platform::path_join(base, "fpgalsp/run");
-}
-
-// 对应 Python _dedupe：(code, message, start.line, start.character) 相同即视为同一条。
-// 保留**首次出现**的那条（与 Python 一致），用 set 做键避免 O(n²)。
-void DedupeInPlace(lsp::DiagnosticList& diagnostics) {
-    std::set<std::tuple<std::string, std::string, int, int>> seen;
-    lsp::DiagnosticList out;
-    out.reserve(diagnostics.size());
-    for (auto& diag : diagnostics) {
-        auto key = std::make_tuple(diag.code, diag.message, diag.range.start.line,
-                                   diag.range.start.character);
-        if (!seen.insert(std::move(key)).second) continue;
-        out.push_back(std::move(diag));
-    }
-    diagnostics = std::move(out);
-}
-
-// 对应 Python 的排序键 (severity, start.line, start.character)：
-// error(1) 在前，同严重度按位置。**全量、不截断**。
-void SortBySeverity(lsp::DiagnosticList& diagnostics) {
-    std::stable_sort(diagnostics.begin(), diagnostics.end(),
-                     [](const lsp::Diagnostic& a, const lsp::Diagnostic& b) {
-                         if (a.severity != b.severity) return a.severity < b.severity;
-                         if (a.range.start.line != b.range.start.line) {
-                             return a.range.start.line < b.range.start.line;
-                         }
-                         return a.range.start.character < b.range.start.character;
-                     });
 }
 
 }  // namespace
@@ -155,6 +129,7 @@ void Settings::Update(const Json& options) {
     }
     verible_format = jsonrpc::GetBool(*section, "veribleFormat", verible_format);
     format_fallback = jsonrpc::GetBool(*section, "formatFallback", format_fallback);
+    lint_on_change = jsonrpc::GetBool(*section, "lintOnChange", lint_on_change);
 }
 
 // =============================================================================
@@ -188,6 +163,18 @@ LspServer::LspServer(jsonrpc::TransportBaseCommon& transport, std::string td_exp
             ApplyTdResult(project, std::move(result));
         },
         td::TdServiceOptions{/*debounce_ms=*/300});
+
+    // T1：服务端 lint（内嵌 Verible）。worker 线程上跑，300 ms 去抖 + 每文件 single-flight。
+    //   * Runner：取文档快照 -> LintText -> 转 LSP Diagnostic（UTF-16 列）。
+    //   * Sink  ：写 diag_lint_ 后发布**并集**（lint + TD 互不覆盖）。
+    //   sink 在 worker 线程，不能再调 Request()（见 lint_service.h 的注释）。
+    lint_service_ = std::make_unique<LintService>(
+        [this](const std::string& path, const std::string& /*uri*/) { return ComputeLint(path); },
+        [this](const std::string& path, const std::string& /*uri*/,
+               lsp::DiagnosticList diagnostics) {
+            OnLintResult(path, std::move(diagnostics));
+        },
+        LintServiceOptions{/*debounce_ms=*/300});
 }
 
 LspServer::~LspServer() { Shutdown(); }
@@ -203,6 +190,8 @@ void LspServer::Shutdown() {
     //    !cancelled && !stop_ && !superseded 时回调），所以不会有"shutdown 之后
     //    还往 transport 写诊断"的悬垂写。
     if (td_service_) td_service_->Shutdown();
+    // 0b) T1：再停 lint 服务 —— 清 pending + join；退出后不再有 lint 发布。
+    if (lint_service_) lint_service_->Shutdown();
 
     // 1) 再停 flow：runner 归 server 所有，必须在 transport 还活着的时候取消并 join。
     //    否则可能出现"进程退出时 flow worker 还在写 transport"的悬垂写。
@@ -912,6 +901,8 @@ HandlerResult LspServer::HandleDidOpen(const Json& params) {
     }
     index_service_->OnFileChanged(path, jsonrpc::GetString(document, "text"));
     RunDiagnostics(path, false);
+    // T1：didOpen 之后也排一次 lint（打开文件就该看到波浪线）
+    ScheduleLint(path, uri);
     return HandlerResult::Ok(Json());
 }
 
@@ -939,6 +930,8 @@ HandlerResult LspServer::HandleDidChange(const Json& params) {
         index_service_->OnFileChanged(path, *text);
     }
     RunDiagnostics(path, false);
+    // T1：按键路径**只入队**（加锁 + notify，~µs），lint 在 worker 上算，绝不在这里跑 Verible。
+    ScheduleLint(path, uri);
     return HandlerResult::Ok(Json());
 }
 
@@ -969,6 +962,9 @@ HandlerResult LspServer::HandleDidSave(const Json& params) {
 
     RunDiagnostics(path, true);
 
+    // T1：保存也排一次 lint（相当于"停手"信号，通常随后就会去抖开跑）
+    ScheduleLint(path, uri);
+
     // 0.10.28 的行为：保存时**立即**清空该文件的 TD 诊断，然后**只排队一次**重跑。
     //   * 先清 —— 否则"改好了但旧错误还挂着"，用户会以为没生效
     //   * 再排队 —— 若上一轮还在跑，只置一个 pending 标志（不叠加线程）
@@ -988,6 +984,12 @@ HandlerResult LspServer::HandleDidClose(const Json& params) {
     docs_.Close(uri);
     // Phase 2 / A1：关闭后回落到磁盘内容（丢弃未保存缓冲区）
     index_service_->OnFileChanged(path, std::nullopt);
+    // T1：取消该文件的 lint 调度，并丢掉 lint 诊断（在跑的那轮结果也会作废）。
+    if (lint_service_) lint_service_->Cancel(path);
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        diag_lint_.erase(path);
+    }
     // 对应 Python didClose：把该文件的诊断清空（否则关掉文件后 Problems 还留着）
     PublishDiagnostics(path, lsp::DiagnosticList{});
     return HandlerResult::Ok(Json());
@@ -1088,12 +1090,76 @@ void LspServer::PublishDiagnostics(std::string_view path,
     SendNotification("textDocument/publishDiagnostics", std::move(params));
 }
 
+// =============================================================================
+//  诊断发布：按来源合并（T1 / task-50）
+// =============================================================================
+//  两张表（diag_lint_ / diag_td_）**永不互相写**：本函数只做只读合并。
+//  红线：lint 不能覆盖 TD、TD 不能覆盖 lint —— 单测见 tests/unit/lint_service_test.cpp。
+lsp::DiagnosticList MergeDiagnosticSources(const lsp::DiagnosticList& lint,
+                                           const lsp::DiagnosticList& td) {
+    lsp::DiagnosticList merged;
+    merged.reserve(lint.size() + td.size());
+    merged.insert(merged.end(), lint.begin(), lint.end());
+    merged.insert(merged.end(), td.begin(), td.end());
+
+    // 稳定排序：severity -> line -> character -> source -> code -> message。
+    // 为什么 severity 放第一位：这是 2026-11-19 之前（只有 TD 诊断时）的既有顺序，
+    // tests/e2e/lsp_smoke.py 有断言锁着它；lint 并进来之后保持同样的可读性
+    // （error 永远在最前），也让通知内容可回归比较。
+    std::stable_sort(merged.begin(), merged.end(),
+                     [](const lsp::Diagnostic& a, const lsp::Diagnostic& b) {
+                         if (a.severity != b.severity) return a.severity < b.severity;
+                         if (a.range.start.line != b.range.start.line) {
+                             return a.range.start.line < b.range.start.line;
+                         }
+                         if (a.range.start.character != b.range.start.character) {
+                             return a.range.start.character < b.range.start.character;
+                         }
+                         if (a.source != b.source) return a.source < b.source;
+                         if (a.code != b.code) return a.code < b.code;
+                         return a.message < b.message;
+                     });
+
+    // 完全相同的条目（同 range/severity/code/source/message）只留一条；
+    // 不同来源即使文案相同也都会保留（source 不同 -> 不去重）。
+    const auto same = [](const lsp::Diagnostic& a, const lsp::Diagnostic& b) {
+        return a.range.start.line == b.range.start.line &&
+               a.range.start.character == b.range.start.character &&
+               a.range.end.line == b.range.end.line &&
+               a.range.end.character == b.range.end.character && a.severity == b.severity &&
+               a.code == b.code && a.source == b.source && a.message == b.message;
+    };
+    merged.erase(std::unique(merged.begin(), merged.end(), same), merged.end());
+    return merged;
+}
+
+void LspServer::PublishMergedPath(const project::Project* project, const std::string& path) {
+    lsp::DiagnosticList lint;
+    lsp::DiagnosticList td;
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        if (const auto it = diag_lint_.find(path); it != diag_lint_.end()) lint = it->second;
+        if (project != nullptr) {
+            if (const auto table = diag_td_.find(project->al_path); table != diag_td_.end()) {
+                if (const auto it = table->second.find(path); it != table->second.end()) {
+                    td = it->second;
+                }
+            }
+        }
+    }
+    if (lint.empty() && td.empty()) {
+        PublishDiagnostics(path, lsp::DiagnosticList{});
+        return;
+    }
+    PublishDiagnostics(path, MergeDiagnosticSources(lint, td));
+}
+
 void LspServer::PublishMerged(const project::Project& project, const std::string* only_path) {
     std::map<std::string, lsp::DiagnosticList> table;
     std::vector<std::string> paths;
     {
         std::lock_guard<std::mutex> lock(state_mutex_);
-        if (const auto it = td_diags_.find(project.al_path); it != td_diags_.end()) {
+        if (const auto it = diag_td_.find(project.al_path); it != diag_td_.end()) {
             table = it->second;
         }
         std::set<std::string> all;
@@ -1108,29 +1174,22 @@ void LspServer::PublishMerged(const project::Project& project, const std::string
     }
 
     if (only_path != nullptr) {
-        if (table.find(*only_path) == table.end()) {
-            PublishDiagnostics(*only_path, lsp::DiagnosticList{});
-            return;
-        }
+        // 注意：即使 TD 表里没有这个文件，也要走 PublishMergedPath ——
+        // 它可能只有 lint 诊断（T1 之前这里会直接发空数组，把 lint 清掉）。
         paths = {*only_path};
     }
 
     for (const auto& path : paths) {
-        lsp::DiagnosticList diagnostics;
-        if (const auto it = table.find(path); it != table.end()) {
-            diagnostics = it->second;
-        }
-        DedupeInPlace(diagnostics);
-        SortBySeverity(diagnostics);  // error 在前
-        PublishDiagnostics(path, diagnostics);
+        PublishMergedPath(&project, path);
     }
+    (void)table;
 }
 
 void LspServer::ClearTdPath(const project::Project& project, std::string_view path) {
     bool changed = false;
     {
         std::lock_guard<std::mutex> lock(state_mutex_);
-        if (auto it = td_diags_.find(project.al_path); it != td_diags_.end()) {
+        if (auto it = diag_td_.find(project.al_path); it != diag_td_.end()) {
             if (it->second.erase(std::string(path)) > 0) changed = true;
         }
     }
@@ -1153,6 +1212,93 @@ void LspServer::RunDiagnostics(std::string_view path, bool publish_all) {
     // 没有 .al 工程时 Python 会跑单文件分析（ADC/SDC）。这两个分析器在本项目里
     // 属于独立任务，本阶段没有；此处只清掉该文件的旧诊断，避免"旧诊断卡住"。
     PublishDiagnostics(path, lsp::DiagnosticList{});
+}
+
+// =============================================================================
+//  T1 / task-50：服务端 lint（内嵌 Verible）
+// =============================================================================
+
+namespace {
+
+bool IsHdlTextPath(std::string_view lower_path) {
+    const auto ends_with = [&](std::string_view suffix) {
+        return lower_path.size() >= suffix.size() &&
+               lower_path.compare(lower_path.size() - suffix.size(), suffix.size(), suffix) == 0;
+    };
+    return ends_with(".v") || ends_with(".sv") || ends_with(".vh") || ends_with(".svh");
+}
+
+std::string LowerPath(std::string_view path) {
+    std::string out(path);
+    for (char& c : out) {
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+    return out;
+}
+
+}  // namespace
+
+void LspServer::ScheduleLint(const std::string& path, const std::string& uri) {
+    if (!settings_.lint_on_change || !lint_service_) return;
+    if (!IsHdlTextPath(LowerPath(path))) return;   // .adc/.sdc 不走 Verilog lint
+    if (!uri.empty() && !docs_.IsOpen(uri)) return;  // 只 lint 已打开文档
+    // 非阻塞：只入队 + 去抖；真正算在 LintService 的 worker 线程上（0.3 ms 级）。
+    lint_service_->Request(path, uri);
+}
+
+lsp::DiagnosticList LspServer::ComputeLint(const std::string& path) {
+#if defined(FPGA_LSP_HAVE_VERIBLE_BRIDGE)
+    // 关键：**在入口取文档快照**（LoadText -> DocumentStore 的值拷贝）。
+    // worker 线程后续只读这份拷贝，不会和 IO 线程的 didChange 撕裂。
+    const std::optional<std::string> loaded = LoadText(path);
+    if (!loaded.has_value() || loaded->empty()) return {};
+    const std::string& text = *loaded;
+
+    verible_bridge::LintResult result = verible_bridge::LintText(text, path);
+    if (!result.ok) return {};
+
+    // 与旧插件等价：注释里的 no-tabs 不报（代码里的照报）。
+    std::vector<verible_bridge::LintDiagnostic> violations =
+        verible_bridge::DropCommentNoTabs(text, std::move(result.diagnostics));
+
+    constexpr std::size_t kMaxLintDiagnostics = 1000;  // 安全上限（防病态文件刷爆通知）
+    lsp::DiagnosticList diagnostics;
+    diagnostics.reserve(std::min(violations.size(), kMaxLintDiagnostics));
+    for (const verible_bridge::LintDiagnostic& item : violations) {
+        if (diagnostics.size() >= kMaxLintDiagnostics) break;
+        // Verible 的列是**码点**列（0-based）；LSP 要 UTF-16 码元列。
+        const std::string_view line = platform::line_at(text, static_cast<std::size_t>(item.line));
+        const int start = static_cast<int>(platform::codepoint_index_to_utf16_column(
+            line, static_cast<std::size_t>(std::max(0, item.column))));
+        int end = start + 1;
+        if (item.end_line == item.line) {
+            const int raw_end = static_cast<int>(platform::codepoint_index_to_utf16_column(
+                line, static_cast<std::size_t>(std::max(0, item.end_column))));
+            end = std::max(raw_end, start + 1);
+        }
+        lsp::Diagnostic diagnostic =
+            lsp::Diagnostic::Span(item.line, start, item.line, end, lsp::kWarning, item.rule,
+                                  "fpga-lsp:verible", item.message);
+        diagnostic.WithBackend("verible").WithData("origin", "verible");
+        diagnostics.push_back(std::move(diagnostic));
+    }
+    return diagnostics;
+#else
+    (void)path;
+    return {};
+#endif
+}
+
+void LspServer::OnLintResult(const std::string& path, lsp::DiagnosticList diagnostics) {
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        if (shutting_down_) return;
+        // 只写 lint 表：TD 表保持不动（这就是"互不覆盖"的落地）。
+        diag_lint_[path] = std::move(diagnostics);
+    }
+    // 发布该文件的并集（lint + TD）。找不到工程时只发 lint。
+    const std::optional<project::Project> owner = ProjectForPath(path);
+    PublishMergedPath(owner.has_value() ? &*owner : nullptr, path);
 }
 
 // =============================================================================
@@ -1191,7 +1337,7 @@ void LspServer::ApplyTdResult(const project::Project& project, td::TdCheckResult
         // 失败必须清掉旧表，否则上一版诊断会永远挂在 Problems 里。
         {
             std::lock_guard<std::mutex> lock(state_mutex_);
-            td_diags_.erase(project.al_path);
+            diag_td_.erase(project.al_path);
         }
         PublishMerged(project, nullptr);
         LogMessage(1, "TD check failed: " + error);
@@ -1202,8 +1348,8 @@ void LspServer::ApplyTdResult(const project::Project& project, td::TdCheckResult
     {
         std::lock_guard<std::mutex> lock(state_mutex_);
         if (shutting_down_) return;
-        before = td_diags_[project.al_path];
-        td_diags_[project.al_path] = result.by_file;
+        before = diag_td_[project.al_path];
+        diag_td_[project.al_path] = result.by_file;
     }
     // 只发布**变更**的文件（与旧实现同一个 ChangedDiagnosticFiles 口径），
     // 避免每次保存整工程 Problems 闪烁。
@@ -1233,7 +1379,7 @@ void LspServer::RunTdCheckOnce(const project::Project& project) {
         // 建不起会话：必须清掉旧表，否则上一版诊断会永远挂在 Problems 里
         {
             std::lock_guard<std::mutex> lock(state_mutex_);
-            td_diags_.erase(project.al_path);
+            diag_td_.erase(project.al_path);
         }
         PublishMerged(project, nullptr);
         LogMessage(1, "TD check failed: " + error);
@@ -1274,7 +1420,7 @@ void LspServer::RunTdCheckOnce(const project::Project& project) {
     if (!failure.empty()) {
         {
             std::lock_guard<std::mutex> lock(state_mutex_);
-            td_diags_.erase(project.al_path);
+            diag_td_.erase(project.al_path);
         }
         PublishMerged(project, nullptr);
         LogMessage(1, "TD check failed: " + failure);
@@ -1296,8 +1442,8 @@ void LspServer::RunTdCheckOnce(const project::Project& project) {
     std::map<std::string, lsp::DiagnosticList> before;
     {
         std::lock_guard<std::mutex> lock(state_mutex_);
-        before = td_diags_[project.al_path];
-        td_diags_[project.al_path] = table;
+        before = diag_td_[project.al_path];
+        diag_td_[project.al_path] = table;
     }
     // Phase 2 / B2：只发变更文件，避免每次保存整工程 Problems 闪烁。
     for (const std::string& path : ChangedDiagnosticFiles(before, table)) {
@@ -1527,7 +1673,7 @@ std::optional<project::Project> LspServer::ProjectFromParams(const Json& params)
 void LspServer::InvalidateProjectCaches() {
     {
         std::lock_guard<std::mutex> lock(state_mutex_);
-        td_diags_.clear();
+        diag_td_.clear();
         published_.clear();
     }
     {

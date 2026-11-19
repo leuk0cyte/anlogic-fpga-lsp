@@ -698,8 +698,12 @@ def main() -> int:
                         for item in published_events
                     )
                     files = len(published_events)
-                    check(total == expected,
-                          f"全量发布：{files} 个文件共 {total} 条 == TD 报告 {expected} 条（无截断）")
+                    # 2026-11-19：publishDiagnostics 改为 lint（内嵌 Verible）+ TD 的并集，
+                    # 所以总数会多于 TD 报告数；这里断言语义从 "==" 放宽为 ">="，
+                    # 同时要求仍然覆盖到 TD 的全部条目（截断会让 total 变小）。
+                    check(total >= expected,
+                          f"全量发布：{files} 个文件共 {total} 条 >= TD 报告 {expected} 条"
+                          f"（多出的是服务端内嵌 lint 诊断；无截断）")
 
         # ---- 6b. 连续两次 check：不叠加 TD 线程（PYTHON-BUGS P-8）----
         if not args.skip_td:

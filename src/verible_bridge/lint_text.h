@@ -32,6 +32,7 @@
 
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace fpgalsp::verible_bridge {
 
@@ -47,5 +48,51 @@ struct LintAutofixResult {
 //   text     待检查的源码（UTF-8）
 //   filename 仅用于诊断/规则的文件名相关判断（如 module-filename）
 LintAutofixResult AutofixText(std::string_view text, std::string_view filename);
+
+// -----------------------------------------------------------------------------
+//  T1 / task-50：**只收集 violation**，不生成修复文本（服务端 lint 用）
+// -----------------------------------------------------------------------------
+//  与 AutofixText 走**同一条** Verible 管线（同一个 default ruleset、同一个
+//  AnalyzeAutomaticPreprocessFallback 入口），区别只是：
+//    * 不读 autofix、不拼新文本；
+//    * 额外按 (line, column) 报出每个 violation 的位置与规则名。
+//
+//  ⚠ 坐标口径：`line` 是 0-based；`column` / `end_column` 是 **Unicode 码点**
+//    列（Verible 的 LineColumn 语义，见 thirdparty/.../line-column-map.h）。
+//    LSP 要的是 UTF-16 码元列，转换在 **server 侧**做
+//    （platform::codepoint_index_to_utf16_column），本层不转 —— 保持 bridge 只认
+//    "Verible 的坐标"，不用关心 LSP 的编码细节。
+struct LintDiagnostic {
+    int line = 0;
+    int column = 0;      // 0-based, UTF-8 码点列
+    int end_line = 0;
+    int end_column = 0;  // 0-based, UTF-8 码点列
+    int severity = 2;    // LSP 口径：1=Error 2=Warning 3=Info 4=Hint（lint 一律 2）
+    std::string rule;    // Verible 规则名，如 "no-tabs"
+    std::string message; // violation.reason
+};
+
+struct LintResult {
+    bool ok = false;
+    std::vector<LintDiagnostic> diagnostics;
+    std::string error;  // ok=false 时给出原因（不抛异常）
+};
+
+// 对 `text` 跑一遍内嵌 Verible lint 并返回结构化 violation。
+// never-raise；空文本返回 ok=true + 空列表。
+LintResult LintText(std::string_view text, std::string_view filename);
+
+// 复现旧插件 `veribleDiagnostics.js::buildCommentIndex/isInsideComment` 的语义：
+// **丢掉位置落在注释里的 `no-tabs` violation**（代码里的 tab 照报）。
+//
+// 为什么需要它（T1 / task-50，Lead 明确要求）：
+//   旧插件在客户端把"注释里的 tab"过滤掉了；那个模块已删除。如果服务端直接吐
+//   Verible 原始 violation，用户会在注释里看到一堆 "Use spaces, not tabs"，
+//   比改之前更吵。这里保持等价语义。
+//
+// 注释识别：`//` 到行尾、`/* ... */`（可跨行）；`"..."` 字符串里的 `//` **不算**
+// 注释（处理 `\"` 与 `\\` 转义）—— 与旧实现一致。
+std::vector<LintDiagnostic> DropCommentNoTabs(std::string_view text,
+                                             std::vector<LintDiagnostic> diagnostics);
 
 }  // namespace fpgalsp::verible_bridge
