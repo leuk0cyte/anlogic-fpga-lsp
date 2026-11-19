@@ -132,6 +132,26 @@ struct StageSection {
     jsonrpc::Json ToJson() const;
 };
 
+// -----------------------------------------------------------------------------
+//  B-B6：两次 run 的差异（QoR 指标 + 时序 summary + 面积总量）
+// -----------------------------------------------------------------------------
+//  `_Runs/<name>/` 里每次 flow 都会留下 route.qor / final_timing.rpt / *.area。
+//  "为什么这次比上次差" 是用户最常问的问题之一，而数据一直都在，只是没有对比入口。
+struct RunMetrics {
+    std::string name;              // "phy_1"
+    std::string dir;
+    std::map<std::string, double> values;  // 指标名 -> 数值
+    std::vector<std::string> files;        // 参与解析的文件（便于追溯）
+};
+
+// 列出工程下的 run（按名字排序）。没有 *_Runs 目录时返回空。
+std::vector<RunMetrics> ListRuns(const project::Project& project);
+
+// 对比两次 run。from/to 为空时取最近两个（名字序）。返回可直接给 UI/MCP 的 JSON：
+//   {ok, from, to, metrics:[{name,from,to,delta,direction,improved}], summary:{...}}
+jsonrpc::Json CompareRuns(const project::Project& project, std::string_view from,
+                          std::string_view to);
+
 struct ReportsBundle {
     bool ok = false;
     std::string error;

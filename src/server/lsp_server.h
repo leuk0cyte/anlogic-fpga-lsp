@@ -151,6 +151,8 @@ public:
     Json FeatureModuleChildren(const Json& params);
     // B-A3：改名会破坏 .al 的路径记录 —— 必须在客户端改名前给出 WorkspaceEdit。
     Json FeatureWillRenameFiles(const Json& params);
+    // B-B6：两次 run 的 QoR/时序差异
+    Json FeatureCompareRuns(const Json& params);
     // 工程摘要（与 fpgalsp.info 同一实现）
     Json FeatureInfo();
 

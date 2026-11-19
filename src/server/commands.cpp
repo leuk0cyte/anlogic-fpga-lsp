@@ -818,7 +818,7 @@ const std::vector<std::string>& ExecuteCommandNames() {
         "fpgalsp.instantiate",  "fpgalsp.copyInstantiation", "fpgalsp.symbolPath",
         "fpgalsp.duplicateModules", "fpgalsp.searchHierarchy", "fpgalsp.addSourceFile",
         "fpgalsp.setProjectName", "fpgalsp.updateProject", "fpgalsp.debugHighlight",
-        "fpgalsp.metrics",
+        "fpgalsp.metrics",      "fpgalsp.compareRuns",
     };
     return kNames;
 }
@@ -990,6 +990,19 @@ HandlerResult LspServer::HandleDidRenameFiles(const Json& params) {
         MaybeNotifyIndexChanged({project->al_path});
     }
     return HandlerResult::Ok(Json());
+}
+
+// B-B6：两次 run 的差异（QoR/时序/面积）。数据来自 <project>_Runs/<name>/。
+Json LspServer::FeatureCompareRuns(const Json& params) {
+    const auto project = ProjectFromParams(params);
+    if (!project.has_value()) {
+        Json out = Json::object();
+        out["ok"] = false;
+        out["error"] = "No Anlogic .al project found";
+        return out;
+    }
+    return reports::CompareRuns(*project, jsonrpc::GetString(params, "from"),
+                                jsonrpc::GetString(params, "to"));
 }
 
 HandlerResult LspServer::HandleExecuteCommand(const Json& params) {
@@ -1269,6 +1282,9 @@ HandlerResult LspServer::HandleExecuteCommand(const Json& params) {
     }
     if (command == "fpgalsp.debugHighlight") {
         return OkObject(FeatureDebugHighlight(params));
+    }
+    if (command == "fpgalsp.compareRuns") {
+        return OkObject(FeatureCompareRuns(params));
     }
     if (command == "fpgalsp.metrics") {
         const AsyncMetricsSnapshot metrics = GetAsyncMetrics();

@@ -1932,6 +1932,12 @@ Json Bridge::Call(std::string_view handler, const Json& arguments) {
     if (name == "flow_run") return FlowRunTool(arguments);
     if (name == "flow_cancel") return FlowCancelTool(arguments);
     // P-B5：job 是 runId 的稳定别名（flow_run 启动异步线程后立刻返回 runId）
+    if (name == "run_diff") {
+        // B-B6：两次 run 的 QoR/时序/面积差异（数据来自 <project>_Runs/*）
+        const project::Project& project = ProjectFor(arguments);
+        return reports::CompareRuns(project, arguments.value("from", std::string()),
+                                    arguments.value("to", std::string()));
+    }
     if (name == "job_status") return JobStatusTool(arguments);
     if (name == "job_cancel") return JobCancelTool(arguments);
     if (name == "strategy_compare") return StrategyCompareTool(arguments);

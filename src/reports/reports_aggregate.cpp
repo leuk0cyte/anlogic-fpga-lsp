@@ -12,6 +12,15 @@
 #include <utility>
 #include <vector>
 
+#include <algorithm>
+#include <filesystem>
+#include <fstream>
+#include <set>
+#include <sstream>
+#include "reports/area.h"
+#include "reports/artifacts.h"
+#include "reports/qor.h"
+#include "reports/timing.h"
 #include "reports/report_text.h"
 
 namespace fpgalsp::reports {
@@ -409,4 +418,198 @@ ReportsBundle BuildReports(const project::Project& project,
     return bundle;
 }
 
-}  // namespace fpgalsp::reports
+// =============================================================================
+//  B-B6：run 列表与两次 run 的差异
+// =============================================================================
+namespace {
+
+std::string ReadWholeFile(const std::string& path) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return {};
+    std::ostringstream buffer;
+    buffer << in.rdbuf();
+    return buffer.str();
+}
+
+bool EndsWithAny(const std::string& name, std::initializer_list<const char*> suffixes) {
+    for (const char* suffix : suffixes) {
+        const std::string tail(suffix);
+        if (name.size() >= tail.size() &&
+            name.compare(name.size() - tail.size(), tail.size(), tail) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+
+// QoR 的 value 是原样字符串（"171" / "61.52%" / "68.923MHz" / "-861"），
+// 这里取出前面的数值部分；取不到就跳过该指标（宁缺勿错）。
+std::optional<double> ParseMetricValue(std::string_view text) {
+    std::size_t start = 0;
+    while (start < text.size() &&
+           !(std::isdigit(static_cast<unsigned char>(text[start])) || text[start] == '-' ||
+             text[start] == '+' || text[start] == '.')) {
+        ++start;
+    }
+    if (start >= text.size()) return std::nullopt;
+    std::size_t end = start;
+    while (end < text.size()) {
+        const char ch = text[end];
+        if (std::isdigit(static_cast<unsigned char>(ch)) || ch == '.' || ch == '-' || ch == '+' ||
+            ch == 'e' || ch == 'E') {
+            ++end;
+            continue;
+        }
+        break;
+    }
+    try {
+        return std::stod(std::string(text.substr(start, end - start)));
+    } catch (...) {
+        return std::nullopt;
+    }
+}
+
+// 指标方向：slack / WNS / TNS / FMAX 越大越好；面积/资源/线长越小越好。
+bool HigherIsBetter(const std::string& name) {
+    return name.find("SN") != std::string::npos || name.find("slack") != std::string::npos ||
+           name.find("WNS") != std::string::npos || name.find("TNS") != std::string::npos ||
+           name.find("FMAX") != std::string::npos || name.find("coverage") != std::string::npos;
+}
+
+}  // namespace
+
+std::vector<RunMetrics> ListRuns(const project::Project& project) {
+    std::vector<RunMetrics> runs;
+    const std::string runs_dir = RunsDirectory(project.dir, project.name);
+    std::error_code ec;
+    std::vector<std::string> names;
+    for (const auto& entry : std::filesystem::directory_iterator(runs_dir, ec)) {
+        if (ec) break;
+        if (!entry.is_directory(ec)) continue;
+        names.push_back(entry.path().filename().string());
+    }
+    std::sort(names.begin(), names.end());
+
+    for (const std::string& name : names) {
+        const std::string dir = runs_dir + "/" + name;
+        RunMetrics run;
+        run.name = name;
+        run.dir = dir;
+
+        // QoR：route.qor / place.qor / gate.qor 任取第一个存在的
+        for (const char* qor_name : {"route.qor", "place.qor", "gate.qor"}) {
+            const std::string path = dir + "/" + qor_name;
+            const std::string text = ReadWholeFile(path);
+            if (text.empty()) continue;
+            const QorReport qor = ParseQor(text, name.substr(0, name.find('_')));
+            for (const QorMetric& metric : qor.metrics) {
+                // value 是原样字符串（"171" / "61.52%" / "68.923MHz"），这里只取数值部分。
+                if (const std::optional<double> parsed = ParseMetricValue(metric.value);
+                    parsed.has_value()) {
+                    run.values[metric.key] = *parsed;
+                }
+            }
+            run.files.push_back(path);
+            break;
+        }
+
+        // 时序 summary：final_timing.rpt / *.timing
+        for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
+            if (ec) break;
+            if (!entry.is_regular_file(ec)) continue;
+            if (!EndsWithAny(entry.path().filename().string(), {".rpt", ".timing"})) continue;
+            const TimingReport timing = ParseTiming(ReadWholeFile(entry.path().string()));
+            for (const auto& [key, value] : timing.summary) run.values[key] = value;
+            run.files.push_back(entry.path().string());
+            break;
+        }
+
+        // 面积：*.area（取 LUT/FF/BRAM 等计数）
+        for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
+            if (ec) break;
+            if (!entry.is_regular_file(ec)) continue;
+            if (!EndsWithAny(entry.path().filename().string(), {".area"})) continue;
+            const AreaReport area = ParseArea(ReadWholeFile(entry.path().string()));
+            for (const auto& [key, value] : area.counts) {
+                run.values["area:" + key] = static_cast<double>(value);
+            }
+            run.files.push_back(entry.path().string());
+            break;
+        }
+
+        runs.push_back(std::move(run));
+    }
+    return runs;
+}
+
+jsonrpc::Json CompareRuns(const project::Project& project, std::string_view from,
+                          std::string_view to) {
+    const std::vector<RunMetrics> runs = ListRuns(project);
+    jsonrpc::Json out = jsonrpc::Json::object();
+    out["ok"] = true;
+    out["project"] = project.name;
+    if (runs.size() < 2) {
+        out["ok"] = false;
+        out["error"] =
+            "need at least two runs under " + RunsDirectory(project.dir, project.name);
+        out["runs"] = jsonrpc::Json::array();
+        for (const RunMetrics& run : runs) out["runs"].push_back(run.name);
+        return out;
+    }
+
+    const RunMetrics* left = nullptr;
+    const RunMetrics* right = nullptr;
+    for (const RunMetrics& run : runs) {
+        if (!from.empty() && run.name == from) left = &run;
+        if (!to.empty() && run.name == to) right = &run;
+    }
+    if (left == nullptr) left = &runs[runs.size() - 2];
+    if (right == nullptr) right = &runs[runs.size() - 1];
+    if (left == right) {
+        out["ok"] = false;
+        out["error"] = "from and to are the same run";
+        return out;
+    }
+
+    out["from"] = left->name;
+    out["to"] = right->name;
+    jsonrpc::Json metrics = jsonrpc::Json::array();
+    int improved = 0;
+    int regressed = 0;
+    int comparable = 0;
+    std::set<std::string> names;
+    for (const auto& [key, value] : left->values) names.insert(key);
+    for (const auto& [key, value] : right->values) names.insert(key);
+    for (const std::string& name : names) {
+        const auto left_it = left->values.find(name);
+        const auto right_it = right->values.find(name);
+        if (left_it == left->values.end() || right_it == right->values.end()) continue;
+        const bool higher = HigherIsBetter(name);
+        const double delta = right_it->second - left_it->second;
+        jsonrpc::Json item = jsonrpc::Json::object();
+        item["name"] = name;
+        item["from"] = left_it->second;
+        item["to"] = right_it->second;
+        item["delta"] = delta;
+        item["direction"] = higher ? "higher-is-better" : "lower-is-better";
+        const bool better = higher ? delta > 0 : delta < 0;
+        item["improved"] = (delta == 0.0) ? false : better;
+        if (delta != 0.0) {
+            ++comparable;
+            if (better) {
+                ++improved;
+            } else {
+                ++regressed;
+            }
+        }
+        metrics.push_back(std::move(item));
+    }
+    out["metrics"] = std::move(metrics);
+    jsonrpc::Json summary = jsonrpc::Json::object();
+    summary["compared"] = comparable;
+    summary["improved"] = improved;
+    summary["regressed"] = regressed;
+    out["summary"] = std::move(summary);
+    return out;
+}}  // namespace fpgalsp::reports

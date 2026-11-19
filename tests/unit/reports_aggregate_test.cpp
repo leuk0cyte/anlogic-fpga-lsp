@@ -17,6 +17,7 @@
 #include <utility>
 #include <vector>
 
+#include <ctime>
 #include <gtest/gtest.h>
 
 #include "platform/encoding.h"
@@ -532,4 +533,50 @@ TEST(ReportsAggregate, SameCacheParsesEachFileOnlyOnce) {
     first_cmp.erase("generatedAt");
     second_cmp.erase("generatedAt");
     EXPECT_EQ(Canon(first_cmp), Canon(second_cmp));
+}
+
+// =============================================================================
+//  B-B6：两次 run 的差异（QoR 指标 + 方向 + 汇总）
+// =============================================================================
+TEST(CompareRunsTest, DiffsTwoRunsAndExplainsDirection) {
+    namespace fs = std::filesystem;
+    const fs::path root =
+        fs::temp_directory_path() / ("fpgalsp-runs-" + std::to_string(::time(nullptr)));
+    const fs::path runs = root / "demo_Runs";
+    fs::create_directories(runs / "phy_1");
+    fs::create_directories(runs / "phy_2");
+    // 用真实夹具当两次 run 的 route.qor（指标不同）
+    const std::string fixtures = std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports";
+    fs::copy_file(fixtures + "/ef2_gate.qor", runs / "phy_1" / "route.qor",
+                  fs::copy_options::overwrite_existing);
+    fs::copy_file(fixtures + "/eg4_gate.qor", runs / "phy_2" / "route.qor",
+                  fs::copy_options::overwrite_existing);
+
+    fpgalsp::project::Project project;
+    project.dir = root.generic_string();
+    project.name = "demo";
+    project.al_path = (root / "demo.al").generic_string();
+
+    const auto runs_list = fpgalsp::reports::ListRuns(project);
+    ASSERT_EQ(runs_list.size(), 2u);
+    EXPECT_EQ(runs_list[0].name, "phy_1");
+    EXPECT_EQ(runs_list[1].name, "phy_2");
+
+    const nlohmann::json diff = fpgalsp::reports::CompareRuns(project, "", "");
+    ASSERT_TRUE(diff.at("ok").get<bool>()) << diff.dump();
+    EXPECT_EQ(diff.at("from").get<std::string>(), "phy_1");
+    EXPECT_EQ(diff.at("to").get<std::string>(), "phy_2");
+    ASSERT_FALSE(diff.at("metrics").empty());
+    bool saw_setup_wns = false;
+    for (const auto& metric : diff.at("metrics")) {
+        if (metric.at("name").get<std::string>() != "Setup WNS") continue;
+        saw_setup_wns = true;
+        // 夹具里 phy_1 = -861，phy_2 = -947 -> 变差
+        EXPECT_NEAR(metric.at("from").get<double>(), -861.0, 1e-6);
+        EXPECT_NEAR(metric.at("to").get<double>(), -947.0, 1e-6);
+        EXPECT_EQ(metric.at("direction").get<std::string>(), "higher-is-better");
+        EXPECT_FALSE(metric.at("improved").get<bool>());
+    }
+    EXPECT_TRUE(saw_setup_wns) << "Setup WNS 必须在对比结果里";
+    EXPECT_GE(diff.at("summary").at("compared").get<int>(), 1);
 }
