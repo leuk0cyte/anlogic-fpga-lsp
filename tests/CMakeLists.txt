@@ -12,6 +12,12 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/unit/CMakeLists.txt")
     add_subdirectory(unit)
 endif()
 
+# 性能探针（tests/perf/probe_*.cpp -> build/bin/perf_<area>.exe）
+# 注意：**不注册 ctest**。性能数字受机器负载影响，不能进门禁。
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/perf/CMakeLists.txt")
+    add_subdirectory(perf)
+endif()
+
 # =============================================================================
 #  阶段 0 门禁：cst_dump vs 官方 verible-verilog-syntax 的 token 一致性
 # =============================================================================

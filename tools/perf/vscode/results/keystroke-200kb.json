@@ -1,0 +1,284 @@
+{
+ "generatedAt": "2026-11-19T02:17:12.750Z",
+ "kb": 200,
+ "benches": {
+  "didChangeImmediate": {
+   "label": "didChange.immediate(200kb)",
+   "rounds": [
+    {
+     "n": 21,
+     "min": 0.0053,
+     "p50": 0.0093,
+     "p95": 0.0327,
+     "max": 0.0527,
+     "mean": 0.013904761904761904
+    },
+    {
+     "n": 21,
+     "min": 0.0035,
+     "p50": 0.0039,
+     "p95": 0.0044,
+     "max": 0.0049,
+     "mean": 0.00401904761904762
+    },
+    {
+     "n": 21,
+     "min": 0.0033,
+     "p50": 0.0037,
+     "p95": 0.0041,
+     "max": 0.0042,
+     "mean": 0.0037190476190476192
+    }
+   ],
+   "aggregate": {
+    "n": 63,
+    "min": 0.0033,
+    "p50": 0.004,
+    "p95": 0.0268,
+    "max": 0.0527,
+    "mean": 0.007214285714285715
+   },
+   "csv": [
+    "didChange.immediate(200kb),round1,21,0.009,0.033,0.014",
+    "didChange.immediate(200kb),round2,21,0.004,0.004,0.004",
+    "didChange.immediate(200kb),round3,21,0.004,0.004,0.004"
+   ]
+  },
+  "didChangeFlush": {
+   "label": "didChange.flush.notify(200kb)",
+   "rounds": [
+    {
+     "n": 21,
+     "min": 0.359,
+     "p50": 0.646,
+     "p95": 2.5871,
+     "max": 2.894,
+     "mean": 0.7717952380952381
+    },
+    {
+     "n": 21,
+     "min": 0.3301,
+     "p50": 0.4556,
+     "p95": 2.3732,
+     "max": 2.4968,
+     "mean": 0.7397952380952381
+    },
+    {
+     "n": 21,
+     "min": 0.3512,
+     "p50": 0.5011,
+     "p95": 1.9996,
+     "max": 2.7646,
+     "mean": 0.7760904761904763
+    }
+   ],
+   "aggregate": {
+    "n": 63,
+    "min": 0.3301,
+    "p50": 0.5868,
+    "p95": 2.4968,
+    "max": 2.894,
+    "mean": 0.7625603174603175
+   },
+   "csv": [
+    "didChange.flush.notify(200kb),round1,21,0.646,2.587,0.772",
+    "didChange.flush.notify(200kb),round2,21,0.456,2.373,0.740",
+    "didChange.flush.notify(200kb),round3,21,0.501,2.000,0.776"
+   ]
+  },
+  "getTextCopy": {
+   "label": "document.getText.copy(200kb)",
+   "rounds": [
+    {
+     "n": 21,
+     "min": 0.0001,
+     "p50": 0.0002,
+     "p95": 0.0064,
+     "max": 0.0078,
+     "mean": 0.0008571428571428572
+    },
+    {
+     "n": 21,
+     "min": 0.0002,
+     "p50": 0.0002,
+     "p95": 0.0002,
+     "max": 0.0002,
+     "mean": 0.00020000000000000004
+    },
+    {
+     "n": 21,
+     "min": 0.0001,
+     "p50": 0.0002,
+     "p95": 0.0002,
+     "max": 0.0003,
+     "mean": 0.0001952380952380953
+    }
+   ],
+   "aggregate": {
+    "n": 63,
+    "min": 0.0001,
+    "p50": 0.0002,
+    "p95": 0.0004,
+    "max": 0.0078,
+    "mean": 0.0004174603174603175
+   },
+   "csv": [
+    "document.getText.copy(200kb),round1,21,0.000,0.006,0.001",
+    "document.getText.copy(200kb),round2,21,0.000,0.000,0.000",
+    "document.getText.copy(200kb),round3,21,0.000,0.000,0.000"
+   ]
+  },
+  "publishTabs": {
+   "label": "diagnostics.publish.tabs(200kb)",
+   "rounds": [
+    {
+     "n": 21,
+     "min": 1.3174,
+     "p50": 1.6509,
+     "p95": 2.5959,
+     "max": 2.6798,
+     "mean": 1.782247619047619
+    },
+    {
+     "n": 21,
+     "min": 1.3172,
+     "p50": 1.6285,
+     "p95": 2.1193,
+     "max": 2.2712,
+     "mean": 1.6772857142857143
+    },
+    {
+     "n": 21,
+     "min": 1.3152,
+     "p50": 1.4159,
+     "p95": 1.901,
+     "max": 2.0158,
+     "mean": 1.515742857142857
+    }
+   ],
+   "aggregate": {
+    "n": 63,
+    "min": 1.3152,
+    "p50": 1.5319,
+    "p95": 2.3295,
+    "max": 2.6798,
+    "mean": 1.6584253968253968
+   },
+   "csv": [
+    "diagnostics.publish.tabs(200kb),round1,21,1.651,2.596,1.782",
+    "diagnostics.publish.tabs(200kb),round2,21,1.629,2.119,1.677",
+    "diagnostics.publish.tabs(200kb),round3,21,1.416,1.901,1.516"
+   ]
+  },
+  "publish10Tabs": {
+   "label": "diagnostics.publish.10tabs(200kb)",
+   "rounds": [
+    {
+     "n": 11,
+     "min": 1.3263,
+     "p50": 1.3891,
+     "p95": 2.0536,
+     "max": 2.0536,
+     "mean": 1.523309090909091
+    },
+    {
+     "n": 11,
+     "min": 1.3342,
+     "p50": 1.3603,
+     "p95": 1.7913,
+     "max": 1.7913,
+     "mean": 1.4472727272727275
+    },
+    {
+     "n": 11,
+     "min": 1.3263,
+     "p50": 1.6595,
+     "p95": 2.2952,
+     "max": 2.2952,
+     "mean": 1.6577181818181819
+    }
+   ],
+   "aggregate": {
+    "n": 33,
+    "min": 1.3263,
+    "p50": 1.404,
+    "p95": 2.0536,
+    "max": 2.2952,
+    "mean": 1.5427666666666666
+   },
+   "csv": [
+    "diagnostics.publish.10tabs(200kb),round1,11,1.389,2.054,1.523",
+    "diagnostics.publish.10tabs(200kb),round2,11,1.360,1.791,1.447",
+    "diagnostics.publish.10tabs(200kb),round3,11,1.659,2.295,1.658"
+   ]
+  },
+  "publish50Tabs": {
+   "label": "diagnostics.publish.50tabs(200kb)",
+   "rounds": [
+    {
+     "n": 11,
+     "min": 1.3414,
+     "p50": 1.5034,
+     "p95": 2.5201,
+     "max": 2.5201,
+     "mean": 1.6454727272727274
+    },
+    {
+     "n": 11,
+     "min": 1.3276,
+     "p50": 1.3332,
+     "p95": 2.0332,
+     "max": 2.0332,
+     "mean": 1.4459363636363636
+    },
+    {
+     "n": 11,
+     "min": 1.3261,
+     "p50": 1.3326,
+     "p95": 2.1139,
+     "max": 2.1139,
+     "mean": 1.4131363636363636
+    }
+   ],
+   "aggregate": {
+    "n": 33,
+    "min": 1.3261,
+    "p50": 1.3414,
+    "p95": 2.1139,
+    "max": 2.5201,
+    "mean": 1.5015151515151517
+   },
+   "csv": [
+    "diagnostics.publish.50tabs(200kb),round1,11,1.503,2.520,1.645",
+    "diagnostics.publish.50tabs(200kb),round2,11,1.333,2.033,1.446",
+    "diagnostics.publish.50tabs(200kb),round3,11,1.333,2.114,1.413"
+   ]
+  }
+ },
+ "csv": [
+  "didChange.immediate(200kb),round1,21,0.009,0.033,0.014",
+  "didChange.immediate(200kb),round2,21,0.004,0.004,0.004",
+  "didChange.immediate(200kb),round3,21,0.004,0.004,0.004",
+  "didChange.flush.notify(200kb),round1,21,0.646,2.587,0.772",
+  "didChange.flush.notify(200kb),round2,21,0.456,2.373,0.740",
+  "didChange.flush.notify(200kb),round3,21,0.501,2.000,0.776",
+  "document.getText.copy(200kb),round1,21,0.000,0.006,0.001",
+  "document.getText.copy(200kb),round2,21,0.000,0.000,0.000",
+  "document.getText.copy(200kb),round3,21,0.000,0.000,0.000",
+  "diagnostics.publish.tabs(200kb),round1,21,1.651,2.596,1.782",
+  "diagnostics.publish.tabs(200kb),round2,21,1.629,2.119,1.677",
+  "diagnostics.publish.tabs(200kb),round3,21,1.416,1.901,1.516",
+  "diagnostics.publish.10tabs(200kb),round1,11,1.389,2.054,1.523",
+  "diagnostics.publish.10tabs(200kb),round2,11,1.360,1.791,1.447",
+  "diagnostics.publish.10tabs(200kb),round3,11,1.659,2.295,1.658",
+  "diagnostics.publish.50tabs(200kb),round1,11,1.503,2.520,1.645",
+  "diagnostics.publish.50tabs(200kb),round2,11,1.333,2.033,1.446",
+  "diagnostics.publish.50tabs(200kb),round3,11,1.333,2.114,1.413"
+ ],
+ "textBytes": 204844,
+ "writes": {
+  "frames": 138,
+  "bytes": 14404095
+ },
+ "cpuBusy": 0.1845712464137711
+}

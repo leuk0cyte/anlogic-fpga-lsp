@@ -1,0 +1,284 @@
+{
+ "generatedAt": "2026-11-19T02:17:13.313Z",
+ "kb": 1024,
+ "benches": {
+  "didChangeImmediate": {
+   "label": "didChange.immediate(1024kb)",
+   "rounds": [
+    {
+     "n": 21,
+     "min": 0.0055,
+     "p50": 0.0078,
+     "p95": 0.0279,
+     "max": 0.0521,
+     "mean": 0.012414285714285715
+    },
+    {
+     "n": 21,
+     "min": 0.0041,
+     "p50": 0.0053,
+     "p95": 0.0062,
+     "max": 0.0062,
+     "mean": 0.0051190476190476186
+    },
+    {
+     "n": 21,
+     "min": 0.0033,
+     "p50": 0.0043,
+     "p95": 0.0051,
+     "max": 0.0055,
+     "mean": 0.004238095238095238
+    }
+   ],
+   "aggregate": {
+    "n": 63,
+    "min": 0.0033,
+    "p50": 0.0053,
+    "p95": 0.0229,
+    "max": 0.0521,
+    "mean": 0.007257142857142856
+   },
+   "csv": [
+    "didChange.immediate(1024kb),round1,21,0.008,0.028,0.012",
+    "didChange.immediate(1024kb),round2,21,0.005,0.006,0.005",
+    "didChange.immediate(1024kb),round3,21,0.004,0.005,0.004"
+   ]
+  },
+  "didChangeFlush": {
+   "label": "didChange.flush.notify(1024kb)",
+   "rounds": [
+    {
+     "n": 21,
+     "min": 1.9511,
+     "p50": 2.3204,
+     "p95": 2.9224,
+     "max": 2.9302,
+     "mean": 2.3070809523809523
+    },
+    {
+     "n": 21,
+     "min": 1.886,
+     "p50": 2.0189,
+     "p95": 2.3577,
+     "max": 2.4388,
+     "mean": 2.041166666666667
+    },
+    {
+     "n": 21,
+     "min": 1.8809,
+     "p50": 2.0389,
+     "p95": 2.3498,
+     "max": 2.658,
+     "mean": 2.062123809523809
+    }
+   ],
+   "aggregate": {
+    "n": 63,
+    "min": 1.8809,
+    "p50": 2.0441,
+    "p95": 2.5639,
+    "max": 2.9302,
+    "mean": 2.136790476190477
+   },
+   "csv": [
+    "didChange.flush.notify(1024kb),round1,21,2.320,2.922,2.307",
+    "didChange.flush.notify(1024kb),round2,21,2.019,2.358,2.041",
+    "didChange.flush.notify(1024kb),round3,21,2.039,2.350,2.062"
+   ]
+  },
+  "getTextCopy": {
+   "label": "document.getText.copy(1024kb)",
+   "rounds": [
+    {
+     "n": 21,
+     "min": 0.0001,
+     "p50": 0.0002,
+     "p95": 0.0055,
+     "max": 0.0074,
+     "mean": 0.0007952380952380952
+    },
+    {
+     "n": 21,
+     "min": 0.0001,
+     "p50": 0.0002,
+     "p95": 0.0002,
+     "max": 0.0002,
+     "mean": 0.00017142857142857148
+    },
+    {
+     "n": 21,
+     "min": 0.0001,
+     "p50": 0.0002,
+     "p95": 0.0002,
+     "max": 0.0003,
+     "mean": 0.00017619047619047624
+    }
+   ],
+   "aggregate": {
+    "n": 63,
+    "min": 0.0001,
+    "p50": 0.0002,
+    "p95": 0.0003,
+    "max": 0.0074,
+    "mean": 0.0003809523809523809
+   },
+   "csv": [
+    "document.getText.copy(1024kb),round1,21,0.000,0.005,0.001",
+    "document.getText.copy(1024kb),round2,21,0.000,0.000,0.000",
+    "document.getText.copy(1024kb),round3,21,0.000,0.000,0.000"
+   ]
+  },
+  "publishTabs": {
+   "label": "diagnostics.publish.tabs(1024kb)",
+   "rounds": [
+    {
+     "n": 21,
+     "min": 7.2577,
+     "p50": 8.2624,
+     "p95": 29.0492,
+     "max": 49.5886,
+     "mean": 13.565214285714287
+    },
+    {
+     "n": 21,
+     "min": 7.1969,
+     "p50": 7.4849,
+     "p95": 25.0082,
+     "max": 25.2731,
+     "mean": 10.075595238095238
+    },
+    {
+     "n": 21,
+     "min": 7.2881,
+     "p50": 8.4658,
+     "p95": 24.3236,
+     "max": 26.1127,
+     "mean": 11.353947619047618
+    }
+   ],
+   "aggregate": {
+    "n": 63,
+    "min": 7.1969,
+    "p50": 7.9189,
+    "p95": 26.1127,
+    "max": 49.5886,
+    "mean": 11.66491904761905
+   },
+   "csv": [
+    "diagnostics.publish.tabs(1024kb),round1,21,8.262,29.049,13.565",
+    "diagnostics.publish.tabs(1024kb),round2,21,7.485,25.008,10.076",
+    "diagnostics.publish.tabs(1024kb),round3,21,8.466,24.324,11.354"
+   ]
+  },
+  "publish10Tabs": {
+   "label": "diagnostics.publish.10tabs(1024kb)",
+   "rounds": [
+    {
+     "n": 11,
+     "min": 7.5334,
+     "p50": 9.1989,
+     "p95": 25.9485,
+     "max": 25.9485,
+     "mean": 12.772027272727273
+    },
+    {
+     "n": 11,
+     "min": 7.6181,
+     "p50": 7.8448,
+     "p95": 29.0493,
+     "max": 29.0493,
+     "mean": 12.646263636363637
+    },
+    {
+     "n": 11,
+     "min": 7.6293,
+     "p50": 11.0576,
+     "p95": 21.3641,
+     "max": 21.3641,
+     "mean": 12.481963636363638
+    }
+   ],
+   "aggregate": {
+    "n": 33,
+    "min": 7.5334,
+    "p50": 9.1989,
+    "p95": 27.7394,
+    "max": 29.0493,
+    "mean": 12.633418181818184
+   },
+   "csv": [
+    "diagnostics.publish.10tabs(1024kb),round1,11,9.199,25.948,12.772",
+    "diagnostics.publish.10tabs(1024kb),round2,11,7.845,29.049,12.646",
+    "diagnostics.publish.10tabs(1024kb),round3,11,11.058,21.364,12.482"
+   ]
+  },
+  "publish50Tabs": {
+   "label": "diagnostics.publish.50tabs(1024kb)",
+   "rounds": [
+    {
+     "n": 11,
+     "min": 7.5524,
+     "p50": 8.3099,
+     "p95": 26.6975,
+     "max": 26.6975,
+     "mean": 12.0959
+    },
+    {
+     "n": 11,
+     "min": 7.8639,
+     "p50": 9.1528,
+     "p95": 20.161,
+     "max": 20.161,
+     "mean": 11.824454545454547
+    },
+    {
+     "n": 11,
+     "min": 7.9193,
+     "p50": 10.1045,
+     "p95": 24.1021,
+     "max": 24.1021,
+     "mean": 12.5007
+    }
+   ],
+   "aggregate": {
+    "n": 33,
+    "min": 7.5524,
+    "p50": 9.1382,
+    "p95": 24.1361,
+    "max": 26.6975,
+    "mean": 12.140351515151515
+   },
+   "csv": [
+    "diagnostics.publish.50tabs(1024kb),round1,11,8.310,26.698,12.096",
+    "diagnostics.publish.50tabs(1024kb),round2,11,9.153,20.161,11.824",
+    "diagnostics.publish.50tabs(1024kb),round3,11,10.104,24.102,12.501"
+   ]
+  }
+ },
+ "csv": [
+  "didChange.immediate(1024kb),round1,21,0.008,0.028,0.012",
+  "didChange.immediate(1024kb),round2,21,0.005,0.006,0.005",
+  "didChange.immediate(1024kb),round3,21,0.004,0.005,0.004",
+  "didChange.flush.notify(1024kb),round1,21,2.320,2.922,2.307",
+  "didChange.flush.notify(1024kb),round2,21,2.019,2.358,2.041",
+  "didChange.flush.notify(1024kb),round3,21,2.039,2.350,2.062",
+  "document.getText.copy(1024kb),round1,21,0.000,0.005,0.001",
+  "document.getText.copy(1024kb),round2,21,0.000,0.000,0.000",
+  "document.getText.copy(1024kb),round3,21,0.000,0.000,0.000",
+  "diagnostics.publish.tabs(1024kb),round1,21,8.262,29.049,13.565",
+  "diagnostics.publish.tabs(1024kb),round2,21,7.485,25.008,10.076",
+  "diagnostics.publish.tabs(1024kb),round3,21,8.466,24.324,11.354",
+  "diagnostics.publish.10tabs(1024kb),round1,11,9.199,25.948,12.772",
+  "diagnostics.publish.10tabs(1024kb),round2,11,7.845,29.049,12.646",
+  "diagnostics.publish.10tabs(1024kb),round3,11,11.058,21.364,12.482",
+  "diagnostics.publish.50tabs(1024kb),round1,11,8.310,26.698,12.096",
+  "diagnostics.publish.50tabs(1024kb),round2,11,9.153,20.161,11.824",
+  "diagnostics.publish.50tabs(1024kb),round3,11,10.104,24.102,12.501"
+ ],
+ "textBytes": 1048604,
+ "writes": {
+  "frames": 138,
+  "bytes": 73650600
+ },
+ "cpuBusy": 0.2800449210717788
+}

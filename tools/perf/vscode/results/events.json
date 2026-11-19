@@ -1,0 +1,745 @@
+{
+ "generatedAt": "2026-11-19T01:06:30.942Z",
+ "constants": {
+  "INDEX_DEBOUNCE_MS": 150,
+  "FALLBACK_POLL_MS": 10000
+ },
+ "benches": {
+  "moduleTreeInPlace_36nodes": {
+   "label": "moduleTree.inPlace.36nodes",
+   "rounds": [
+    {
+     "n": 21,
+     "min": 0.0171,
+     "p50": 0.031,
+     "p95": 0.0577,
+     "max": 0.0581,
+     "mean": 0.03386190476190477
+    },
+    {
+     "n": 21,
+     "min": 0.0112,
+     "p50": 0.017,
+     "p95": 0.0303,
+     "max": 0.0309,
+     "mean": 0.017876190476190473
+    },
+    {
+     "n": 21,
+     "min": 0.0115,
+     "p50": 0.0159,
+     "p95": 0.0351,
+     "max": 0.0472,
+     "mean": 0.017980952380952386
+    }
+   ],
+   "aggregate": {
+    "n": 63,
+    "min": 0.0112,
+    "p50": 0.0188,
+    "p95": 0.051,
+    "max": 0.0581,
+    "mean": 0.02323968253968254
+   },
+   "csv": [
+    "moduleTree.inPlace.36nodes,round1,21,0.031,0.058,0.034",
+    "moduleTree.inPlace.36nodes,round2,21,0.017,0.030,0.018",
+    "moduleTree.inPlace.36nodes,round3,21,0.016,0.035,0.018"
+   ]
+  },
+  "moduleTreeRebuild_36nodes": {
+   "label": "moduleTree.rebuild+render.36nodes",
+   "rounds": [
+    {
+     "n": 21,
+     "min": 0.0045,
+     "p50": 0.0053,
+     "p95": 0.0096,
+     "max": 0.0161,
+     "mean": 0.006157142857142857
+    },
+    {
+     "n": 21,
+     "min": 0.0037,
+     "p50": 0.005,
+     "p95": 0.0057,
+     "max": 0.0127,
+     "mean": 0.005295238095238096
+    },
+    {
+     "n": 21,
+     "min": 0.0036,
+     "p50": 0.0041,
+     "p95": 0.0046,
+     "max": 0.01,
+     "mean": 0.004371428571428572
+    }
+   ],
+   "aggregate": {
+    "n": 63,
+    "min": 0.0036,
+    "p50": 0.0049,
+    "p95": 0.0096,
+    "max": 0.0161,
+    "mean": 0.005274603174603173
+   },
+   "csv": [
+    "moduleTree.rebuild+render.36nodes,round1,21,0.005,0.010,0.006",
+    "moduleTree.rebuild+render.36nodes,round2,21,0.005,0.006,0.005",
+    "moduleTree.rebuild+render.36nodes,round3,21,0.004,0.005,0.004"
+   ]
+  },
+  "moduleTreeRenderAll_36nodes": {
+   "label": "moduleTree.renderAllExpanded.36nodes",
+   "rounds": [
+    {
+     "n": 21,
+     "min": 0.0971,
+     "p50": 0.1409,
+     "p95": 0.2383,
+     "max": 1.9369,
+     "mean": 0.2386666666666667
+    },
+    {
+     "n": 21,
+     "min": 0.0352,
+     "p50": 0.0554,
+     "p95": 0.095,
+     "max": 0.0952,
+     "mean": 0.05625714285714286
+    },
+    {
+     "n": 21,
+     "min": 0.0282,
+     "p50": 0.0521,
+     "p95": 0.0897,
+     "max": 0.0947,
+     "mean": 0.056619047619047624
+    }
+   ],
+   "aggregate": {
+    "n": 63,
+    "min": 0.0282,
+    "p50": 0.0674,
+    "p95": 0.2113,
+    "max": 1.9369,
+    "mean": 0.11718095238095236
+   },
+   "csv": [
+    "moduleTree.renderAllExpanded.36nodes,round1,21,0.141,0.238,0.239",
+    "moduleTree.renderAllExpanded.36nodes,round2,21,0.055,0.095,0.056",
+    "moduleTree.renderAllExpanded.36nodes,round3,21,0.052,0.090,0.057"
+   ]
+  },
+  "moduleTreeInPlace_1000nodes": {
+   "label": "moduleTree.inPlace.1000nodes",
+   "rounds": [
+    {
+     "n": 21,
+     "min": 0.0362,
+     "p50": 0.0789,
+     "p95": 0.737,
+     "max": 1.1433,
+     "mean": 0.17862380952380952
+    },
+    {
+     "n": 21,
+     "min": 0.0345,
+     "p50": 0.046,
+     "p95": 0.1153,
+     "max": 0.1642,
+     "mean": 0.056052380952380965
+    },
+    {
+     "n": 21,
+     "min": 0.0324,
+     "p50": 0.0432,
+     "p95": 0.1538,
+     "max": 0.2458,
+     "mean": 0.0623857142857143
+    }
+   ],
+   "aggregate": {
+    "n": 63,
+    "min": 0.0324,
+    "p50": 0.0483,
+    "p95": 0.2359,
+    "max": 1.1433,
+    "mean": 0.09902063492063491
+   },
+   "csv": [
+    "moduleTree.inPlace.1000nodes,round1,21,0.079,0.737,0.179",
+    "moduleTree.inPlace.1000nodes,round2,21,0.046,0.115,0.056",
+    "moduleTree.inPlace.1000nodes,round3,21,0.043,0.154,0.062"
+   ]
+  },
+  "moduleTreeRebuild_1000nodes": {
+   "label": "moduleTree.rebuild+render.1000nodes",
+   "rounds": [
+    {
+     "n": 21,
+     "min": 0.0015,
+     "p50": 0.0016,
+     "p95": 0.0017,
+     "max": 0.0018,
+     "mean": 0.0015904761904761912
+    },
+    {
+     "n": 21,
+     "min": 0.0015,
+     "p50": 0.0016,
+     "p95": 0.0016,
+     "max": 0.0016,
+     "mean": 0.0015761904761904765
+    },
+    {
+     "n": 21,
+     "min": 0.0015,
+     "p50": 0.0016,
+     "p95": 0.0018,
+     "max": 0.0019,
+     "mean": 0.0015952380952380957
+    }
+   ],
+   "aggregate": {
+    "n": 63,
+    "min": 0.0015,
+    "p50": 0.0016,
+    "p95": 0.0017,
+    "max": 0.0019,
+    "mean": 0.0015873015873015873
+   },
+   "csv": [
+    "moduleTree.rebuild+render.1000nodes,round1,21,0.002,0.002,0.002",
+    "moduleTree.rebuild+render.1000nodes,round2,21,0.002,0.002,0.002",
+    "moduleTree.rebuild+render.1000nodes,round3,21,0.002,0.002,0.002"
+   ]
+  },
+  "moduleTreeRenderAll_1000nodes": {
+   "label": "moduleTree.renderAllExpanded.1000nodes",
+   "rounds": [
+    {
+     "n": 21,
+     "min": 0.6758,
+     "p50": 0.9055,
+     "p95": 1.4028,
+     "max": 1.5217,
+     "mean": 0.9757333333333332
+    },
+    {
+     "n": 21,
+     "min": 0.5608,
+     "p50": 0.6497,
+     "p95": 0.8511,
+     "max": 1.0054,
+     "mean": 0.6733238095238097
+    },
+    {
+     "n": 21,
+     "min": 0.529,
+     "p50": 0.5813,
+     "p95": 0.7387,
+     "max": 0.9657,
+     "mean": 0.6263666666666666
+    }
+   ],
+   "aggregate": {
+    "n": 63,
+    "min": 0.529,
+    "p50": 0.7049,
+    "p95": 1.2511,
+    "max": 1.5217,
+    "mean": 0.7584746031746031
+   },
+   "csv": [
+    "moduleTree.renderAllExpanded.1000nodes,round1,21,0.905,1.403,0.976",
+    "moduleTree.renderAllExpanded.1000nodes,round2,21,0.650,0.851,0.673",
+    "moduleTree.renderAllExpanded.1000nodes,round3,21,0.581,0.739,0.626"
+   ]
+  },
+  "moduleTreeDebouncedFlush": {
+   "label": "moduleTree.debouncedFlush(150ms window)",
+   "rounds": [
+    {
+     "n": 11,
+     "min": 168.0506,
+     "p50": 169.649,
+     "p95": 170.994,
+     "max": 170.994,
+     "mean": 169.62727272727273
+    },
+    {
+     "n": 11,
+     "min": 167.6691,
+     "p50": 168.4189,
+     "p95": 169.6793,
+     "max": 169.6793,
+     "mean": 168.4520272727273
+    },
+    {
+     "n": 11,
+     "min": 167.104,
+     "p50": 168.8024,
+     "p95": 169.5401,
+     "max": 169.5401,
+     "mean": 168.7093181818182
+    }
+   ],
+   "aggregate": {
+    "n": 33,
+    "min": 167.104,
+    "p50": 168.8024,
+    "p95": 170.9277,
+    "max": 170.994,
+    "mean": 168.92953939393942
+   },
+   "csv": [
+    "moduleTree.debouncedFlush(150ms window),round1,11,169.649,170.994,169.627",
+    "moduleTree.debouncedFlush(150ms window),round2,11,168.419,169.679,168.452",
+    "moduleTree.debouncedFlush(150ms window),round3,11,168.802,169.540,168.709"
+   ]
+  },
+  "moduleTreeRefreshDirect": {
+   "label": "moduleTree.refreshDirect(fake rpc,36nodes)",
+   "rounds": [
+    {
+     "n": 21,
+     "min": 0.0038,
+     "p50": 0.0042,
+     "p95": 0.0061,
+     "max": 0.0115,
+     "mean": 0.004614285714285714
+    },
+    {
+     "n": 21,
+     "min": 0.0038,
+     "p50": 0.0039,
+     "p95": 0.0041,
+     "max": 0.0042,
+     "mean": 0.0038952380952380957
+    },
+    {
+     "n": 21,
+     "min": 0.0038,
+     "p50": 0.0039,
+     "p95": 0.0041,
+     "max": 0.0084,
+     "mean": 0.004138095238095239
+    }
+   ],
+   "aggregate": {
+    "n": 63,
+    "min": 0.0038,
+    "p50": 0.0039,
+    "p95": 0.0052,
+    "max": 0.0115,
+    "mean": 0.004215873015873014
+   },
+   "csv": [
+    "moduleTree.refreshDirect(fake rpc,36nodes),round1,21,0.004,0.006,0.005",
+    "moduleTree.refreshDirect(fake rpc,36nodes),round2,21,0.004,0.004,0.004",
+    "moduleTree.refreshDirect(fake rpc,36nodes),round3,21,0.004,0.004,0.004"
+   ]
+  },
+  "panelRefreshSummary": {
+   "label": "reportsPanel.refresh(summary,tty-cached)",
+   "rounds": [
+    {
+     "n": 21,
+     "min": 0.0901,
+     "p50": 0.1743,
+     "p95": 0.2336,
+     "max": 0.2482,
+     "mean": 0.1748761904761905
+    },
+    {
+     "n": 21,
+     "min": 0.0804,
+     "p50": 0.0948,
+     "p95": 0.1497,
+     "max": 0.1585,
+     "mean": 0.11010476190476194
+    },
+    {
+     "n": 21,
+     "min": 0.0884,
+     "p50": 0.1397,
+     "p95": 0.4683,
+     "max": 1.1518,
+     "mean": 0.19569047619047616
+    }
+   ],
+   "aggregate": {
+    "n": 63,
+    "min": 0.0804,
+    "p50": 0.1463,
+    "p95": 0.2336,
+    "max": 1.1518,
+    "mean": 0.16022380952380952
+   },
+   "csv": [
+    "reportsPanel.refresh(summary,tty-cached),round1,21,0.174,0.234,0.175",
+    "reportsPanel.refresh(summary,tty-cached),round2,21,0.095,0.150,0.110",
+    "reportsPanel.refresh(summary,tty-cached),round3,21,0.140,0.468,0.196"
+   ]
+  },
+  "panelPatchSummary": {
+   "label": "reportsPanel.patch.build(summary)",
+   "rounds": [
+    {
+     "n": 21,
+     "min": 0.0641,
+     "p50": 0.0842,
+     "p95": 0.1714,
+     "max": 0.349,
+     "mean": 0.10656190476190476
+    },
+    {
+     "n": 21,
+     "min": 0.064,
+     "p50": 0.0953,
+     "p95": 0.145,
+     "max": 0.1494,
+     "mean": 0.1043952380952381
+    },
+    {
+     "n": 21,
+     "min": 0.0631,
+     "p50": 0.0836,
+     "p95": 0.1816,
+     "max": 0.1821,
+     "mean": 0.09753333333333336
+    }
+   ],
+   "aggregate": {
+    "n": 63,
+    "min": 0.0631,
+    "p50": 0.0842,
+    "p95": 0.1714,
+    "max": 0.349,
+    "mean": 0.10283015873015874
+   },
+   "csv": [
+    "reportsPanel.patch.build(summary),round1,21,0.084,0.171,0.107",
+    "reportsPanel.patch.build(summary),round2,21,0.095,0.145,0.104",
+    "reportsPanel.patch.build(summary),round3,21,0.084,0.182,0.098"
+   ]
+  },
+  "panelFirstPaintFull": {
+   "label": "reportsPanel.firstPaint(full-26mb)",
+   "rounds": [
+    {
+     "n": 11,
+     "min": 40.2072,
+     "p50": 42.7967,
+     "p95": 46.5317,
+     "max": 46.5317,
+     "mean": 43.10448181818182
+    },
+    {
+     "n": 11,
+     "min": 40.8411,
+     "p50": 42.4762,
+     "p95": 53.4594,
+     "max": 53.4594,
+     "mean": 43.68164545454545
+    },
+    {
+     "n": 11,
+     "min": 40.1946,
+     "p50": 42.007,
+     "p95": 47.7658,
+     "max": 47.7658,
+     "mean": 42.561927272727274
+    }
+   ],
+   "aggregate": {
+    "n": 33,
+    "min": 40.1946,
+    "p50": 42.4278,
+    "p95": 47.7658,
+    "max": 53.4594,
+    "mean": 43.11601818181818
+   },
+   "csv": [
+    "reportsPanel.firstPaint(full-26mb),round1,11,42.797,46.532,43.104",
+    "reportsPanel.firstPaint(full-26mb),round2,11,42.476,53.459,43.682",
+    "reportsPanel.firstPaint(full-26mb),round3,11,42.007,47.766,42.562"
+   ]
+  },
+  "panelPatchFull": {
+   "label": "reportsPanel.patch.build(full-26mb)",
+   "rounds": [
+    {
+     "n": 11,
+     "min": 89.2419,
+     "p50": 96.7274,
+     "p95": 139.0436,
+     "max": 139.0436,
+     "mean": 99.97424545454545
+    },
+    {
+     "n": 11,
+     "min": 89.713,
+     "p50": 94.0263,
+     "p95": 119.5589,
+     "max": 119.5589,
+     "mean": 95.62128181818183
+    },
+    {
+     "n": 11,
+     "min": 88.8776,
+     "p50": 93.3762,
+     "p95": 96.1791,
+     "max": 96.1791,
+     "mean": 92.91135454545456
+    }
+   ],
+   "aggregate": {
+    "n": 33,
+    "min": 88.8776,
+    "p50": 94.511,
+    "p95": 119.5589,
+    "max": 139.0436,
+    "mean": 96.1689606060606
+   },
+   "csv": [
+    "reportsPanel.patch.build(full-26mb),round1,11,96.727,139.044,99.974",
+    "reportsPanel.patch.build(full-26mb),round2,11,94.026,119.559,95.621",
+    "reportsPanel.patch.build(full-26mb),round3,11,93.376,96.179,92.911"
+   ]
+  },
+  "reportsTreeRefresh": {
+   "label": "reportsTree.refresh(summary)",
+   "rounds": [
+    {
+     "n": 21,
+     "min": 0.0114,
+     "p50": 0.0162,
+     "p95": 0.0356,
+     "max": 0.0742,
+     "mean": 0.02052857142857143
+    },
+    {
+     "n": 21,
+     "min": 0.007,
+     "p50": 0.0075,
+     "p95": 0.0142,
+     "max": 0.0154,
+     "mean": 0.009014285714285714
+    },
+    {
+     "n": 21,
+     "min": 0.0069,
+     "p50": 0.0075,
+     "p95": 0.0081,
+     "max": 0.0085,
+     "mean": 0.007585714285714287
+    }
+   ],
+   "aggregate": {
+    "n": 63,
+    "min": 0.0069,
+    "p50": 0.0079,
+    "p95": 0.0258,
+    "max": 0.0742,
+    "mean": 0.012376190476190476
+   },
+   "csv": [
+    "reportsTree.refresh(summary),round1,21,0.016,0.036,0.021",
+    "reportsTree.refresh(summary),round2,21,0.007,0.014,0.009",
+    "reportsTree.refresh(summary),round3,21,0.007,0.008,0.008"
+   ]
+  },
+  "flowTreeRefresh": {
+   "label": "flowTree.refresh(summary+info)",
+   "rounds": [
+    {
+     "n": 21,
+     "min": 0.0134,
+     "p50": 0.0241,
+     "p95": 0.0571,
+     "max": 0.0616,
+     "mean": 0.03067142857142857
+    },
+    {
+     "n": 21,
+     "min": 0.0112,
+     "p50": 0.0196,
+     "p95": 0.0311,
+     "max": 0.0406,
+     "mean": 0.01941428571428571
+    },
+    {
+     "n": 21,
+     "min": 0.0112,
+     "p50": 0.0117,
+     "p95": 0.0135,
+     "max": 0.0141,
+     "mean": 0.01194285714285714
+    }
+   ],
+   "aggregate": {
+    "n": 63,
+    "min": 0.0112,
+    "p50": 0.0183,
+    "p95": 0.0499,
+    "max": 0.0616,
+    "mean": 0.02067619047619048
+   },
+   "csv": [
+    "flowTree.refresh(summary+info),round1,21,0.024,0.057,0.031",
+    "flowTree.refresh(summary+info),round2,21,0.020,0.031,0.019",
+    "flowTree.refresh(summary+info),round3,21,0.012,0.013,0.012"
+   ]
+  },
+  "flowTreeApplyEvent": {
+   "label": "flowTree.applyFlowEvent",
+   "rounds": [
+    {
+     "n": 21,
+     "min": 0.0091,
+     "p50": 0.0133,
+     "p95": 0.0206,
+     "max": 0.0218,
+     "mean": 0.013690476190476187
+    },
+    {
+     "n": 21,
+     "min": 0.0135,
+     "p50": 0.0148,
+     "p95": 0.0159,
+     "max": 0.0175,
+     "mean": 0.014823809523809526
+    },
+    {
+     "n": 21,
+     "min": 0.0079,
+     "p50": 0.0086,
+     "p95": 0.0097,
+     "max": 0.0411,
+     "mean": 0.0101
+    }
+   ],
+   "aggregate": {
+    "n": 63,
+    "min": 0.0079,
+    "p50": 0.0135,
+    "p95": 0.0196,
+    "max": 0.0411,
+    "mean": 0.01287142857142857
+   },
+   "csv": [
+    "flowTree.applyFlowEvent,round1,21,0.013,0.021,0.014",
+    "flowTree.applyFlowEvent,round2,21,0.015,0.016,0.015",
+    "flowTree.applyFlowEvent,round3,21,0.009,0.010,0.010"
+   ]
+  },
+  "flowPollOnce": {
+   "label": "flowController.pollOnce(flowStatus)",
+   "rounds": [
+    {
+     "n": 21,
+     "min": 0.0004,
+     "p50": 0.0006,
+     "p95": 0.0014,
+     "max": 0.0019,
+     "mean": 0.0006952380952380953
+    },
+    {
+     "n": 21,
+     "min": 0.0004,
+     "p50": 0.0005,
+     "p95": 0.0007,
+     "max": 0.0007,
+     "mean": 0.000538095238095238
+    },
+    {
+     "n": 21,
+     "min": 0.0005,
+     "p50": 0.0005,
+     "p95": 0.0009,
+     "max": 0.002,
+     "mean": 0.0006238095238095239
+    }
+   ],
+   "aggregate": {
+    "n": 63,
+    "min": 0.0004,
+    "p50": 0.0005,
+    "p95": 0.001,
+    "max": 0.002,
+    "mean": 0.000619047619047619
+   },
+   "csv": [
+    "flowController.pollOnce(flowStatus),round1,21,0.001,0.001,0.001",
+    "flowController.pollOnce(flowStatus),round2,21,0.001,0.001,0.001",
+    "flowController.pollOnce(flowStatus),round3,21,0.001,0.001,0.001"
+   ]
+  }
+ },
+ "csv": [
+  "moduleTree.inPlace.36nodes,round1,21,0.031,0.058,0.034",
+  "moduleTree.inPlace.36nodes,round2,21,0.017,0.030,0.018",
+  "moduleTree.inPlace.36nodes,round3,21,0.016,0.035,0.018",
+  "moduleTree.rebuild+render.36nodes,round1,21,0.005,0.010,0.006",
+  "moduleTree.rebuild+render.36nodes,round2,21,0.005,0.006,0.005",
+  "moduleTree.rebuild+render.36nodes,round3,21,0.004,0.005,0.004",
+  "moduleTree.renderAllExpanded.36nodes,round1,21,0.141,0.238,0.239",
+  "moduleTree.renderAllExpanded.36nodes,round2,21,0.055,0.095,0.056",
+  "moduleTree.renderAllExpanded.36nodes,round3,21,0.052,0.090,0.057",
+  "moduleTree.inPlace.1000nodes,round1,21,0.079,0.737,0.179",
+  "moduleTree.inPlace.1000nodes,round2,21,0.046,0.115,0.056",
+  "moduleTree.inPlace.1000nodes,round3,21,0.043,0.154,0.062",
+  "moduleTree.rebuild+render.1000nodes,round1,21,0.002,0.002,0.002",
+  "moduleTree.rebuild+render.1000nodes,round2,21,0.002,0.002,0.002",
+  "moduleTree.rebuild+render.1000nodes,round3,21,0.002,0.002,0.002",
+  "moduleTree.renderAllExpanded.1000nodes,round1,21,0.905,1.403,0.976",
+  "moduleTree.renderAllExpanded.1000nodes,round2,21,0.650,0.851,0.673",
+  "moduleTree.renderAllExpanded.1000nodes,round3,21,0.581,0.739,0.626",
+  "moduleTree.debouncedFlush(150ms window),round1,11,169.649,170.994,169.627",
+  "moduleTree.debouncedFlush(150ms window),round2,11,168.419,169.679,168.452",
+  "moduleTree.debouncedFlush(150ms window),round3,11,168.802,169.540,168.709",
+  "moduleTree.refreshDirect(fake rpc,36nodes),round1,21,0.004,0.006,0.005",
+  "moduleTree.refreshDirect(fake rpc,36nodes),round2,21,0.004,0.004,0.004",
+  "moduleTree.refreshDirect(fake rpc,36nodes),round3,21,0.004,0.004,0.004",
+  "reportsPanel.refresh(summary,tty-cached),round1,21,0.174,0.234,0.175",
+  "reportsPanel.refresh(summary,tty-cached),round2,21,0.095,0.150,0.110",
+  "reportsPanel.refresh(summary,tty-cached),round3,21,0.140,0.468,0.196",
+  "reportsPanel.patch.build(summary),round1,21,0.084,0.171,0.107",
+  "reportsPanel.patch.build(summary),round2,21,0.095,0.145,0.104",
+  "reportsPanel.patch.build(summary),round3,21,0.084,0.182,0.098",
+  "reportsPanel.firstPaint(full-26mb),round1,11,42.797,46.532,43.104",
+  "reportsPanel.firstPaint(full-26mb),round2,11,42.476,53.459,43.682",
+  "reportsPanel.firstPaint(full-26mb),round3,11,42.007,47.766,42.562",
+  "reportsPanel.patch.build(full-26mb),round1,11,96.727,139.044,99.974",
+  "reportsPanel.patch.build(full-26mb),round2,11,94.026,119.559,95.621",
+  "reportsPanel.patch.build(full-26mb),round3,11,93.376,96.179,92.911",
+  "reportsTree.refresh(summary),round1,21,0.016,0.036,0.021",
+  "reportsTree.refresh(summary),round2,21,0.007,0.014,0.009",
+  "reportsTree.refresh(summary),round3,21,0.007,0.008,0.008",
+  "flowTree.refresh(summary+info),round1,21,0.024,0.057,0.031",
+  "flowTree.refresh(summary+info),round2,21,0.020,0.031,0.019",
+  "flowTree.refresh(summary+info),round3,21,0.012,0.013,0.012",
+  "flowTree.applyFlowEvent,round1,21,0.013,0.021,0.014",
+  "flowTree.applyFlowEvent,round2,21,0.015,0.016,0.015",
+  "flowTree.applyFlowEvent,round3,21,0.009,0.010,0.010",
+  "flowController.pollOnce(flowStatus),round1,21,0.001,0.001,0.001",
+  "flowController.pollOnce(flowStatus),round2,21,0.001,0.001,0.001",
+  "flowController.pollOnce(flowStatus),round3,21,0.001,0.001,0.001"
+ ],
+ "moduleTreeDebounce": {
+  "requests": 39,
+  "debounced": 39
+ },
+ "panelStats": {
+  "html": 1,
+  "patch": 137,
+  "cancelled": 0
+ },
+ "flowPoll": {
+  "fallbackMs": 10000,
+  "pollerPresent": false
+ },
+ "cpuBusy": 0.1716316940210052
+}

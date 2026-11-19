@@ -1,0 +1,149 @@
+{
+ "generatedAt": "2026-11-19T02:17:08.308Z",
+ "activate": {
+  "syncMs": 16.4031,
+  "subscriptions": 56,
+  "commands": 46,
+  "treeViews": 3,
+  "notificationHandlers": [
+   "fpgaLsp/flowEvent",
+   "fpgaLsp/indexChanged"
+  ],
+  "duplicateNotifications": []
+ },
+ "requests": {
+  "startup": [
+   "fpgaLsp/moduleTree",
+   "fpgaLsp/reports",
+   "workspace/executeCommand:fpgalsp.info",
+   "workspace/executeCommand:fpgalsp.debugHighlight"
+  ]
+ },
+ "events": {
+  "saveToModuleTreeRequestMs": 161.7735,
+  "saveRequests": [
+   "fpgaLsp/moduleTree"
+  ],
+  "fiveSavesRequestCount": 1,
+  "editorSwitchToRequestMs": 153.3876,
+  "indexChangedInPlaceMs": 0.0193,
+  "indexChangedRequests": 0,
+  "pushToModuleTreeRequestMs": 0.1424,
+  "savePlusPushToRequestMs": 15.9268,
+  "indexChangedForeignMs": 0.0026,
+  "openTriggers": [
+   "workspace/executeCommand:fpgalsp.debugHighlight"
+  ],
+  "highlightReportRequests": 1
+ },
+ "csv": [
+  "activate,sync,ms,16.403",
+  "activate,subscriptions,count,56",
+  "activate,startupRequests,count,4",
+  "syncAppend.extensionLog(temp),round1,21,0.404,0.519,0.443",
+  "syncAppend.extensionLog(temp),round2,21,0.383,0.852,0.446",
+  "syncAppend.extensionLog(temp),round3,21,0.372,0.478,0.387",
+  "syncAppend.extensionLog(Y:),round1,21,8.392,10.868,8.697",
+  "syncAppend.extensionLog(Y:),round2,21,8.450,9.601,8.387",
+  "syncAppend.extensionLog(Y:),round3,21,8.810,10.119,8.813",
+  "event,save->moduleTreeRequest,ms,161.8",
+  "event,fiveSaves,moduleTreeRequests,1",
+  "event,activeEditor->moduleTreeRequest,ms,153.4",
+  "indexChanged.inPlace(handler),round1,21,0.046,0.101,0.055",
+  "indexChanged.inPlace(handler),round2,21,0.018,0.037,0.023",
+  "indexChanged.inPlace(handler),round3,21,0.012,0.035,0.018",
+  "event,indexChanged(paths-only)->moduleTreeRequest,ms,0.1",
+  "event,save+push->moduleTreeRequest,ms,15.9",
+  "indexChanged.foreign,round1,21,0.003,0.008,0.004",
+  "indexChanged.foreign,round2,21,0.002,0.003,0.002",
+  "indexChanged.foreign,round3,21,0.002,0.004,0.004",
+  "event,open->debugHighlight,requests,1"
+ ],
+ "benches": {
+  "syncAppendTemp": {
+   "label": "syncAppend.extensionLog(temp)",
+   "rounds": [
+    {
+     "n": 21,
+     "min": 0.351,
+     "p50": 0.4036,
+     "p95": 0.5192,
+     "max": 0.9058,
+     "mean": 0.44306190476190477
+    },
+    {
+     "n": 21,
+     "min": 0.3611,
+     "p50": 0.383,
+     "p95": 0.8522,
+     "max": 0.8774,
+     "mean": 0.44609999999999994
+    },
+    {
+     "n": 21,
+     "min": 0.3575,
+     "p50": 0.3717,
+     "p95": 0.4784,
+     "max": 0.503,
+     "mean": 0.3866904761904762
+    }
+   ],
+   "aggregate": {
+    "n": 63,
+    "min": 0.351,
+    "p50": 0.3803,
+    "p95": 0.6297,
+    "max": 0.9058,
+    "mean": 0.4252841269841271
+   },
+   "csv": [
+    "syncAppend.extensionLog(temp),round1,21,0.404,0.519,0.443",
+    "syncAppend.extensionLog(temp),round2,21,0.383,0.852,0.446",
+    "syncAppend.extensionLog(temp),round3,21,0.372,0.478,0.387"
+   ]
+  },
+  "syncAppendY": {
+   "label": "syncAppend.extensionLog(Y:)",
+   "rounds": [
+    {
+     "n": 21,
+     "min": 6.7659,
+     "p50": 8.3917,
+     "p95": 10.868,
+     "max": 13.8832,
+     "mean": 8.696661904761903
+    },
+    {
+     "n": 21,
+     "min": 7.2832,
+     "p50": 8.4497,
+     "p95": 9.6008,
+     "max": 10.2698,
+     "mean": 8.386809523809523
+    },
+    {
+     "n": 21,
+     "min": 7.3034,
+     "p50": 8.8098,
+     "p95": 10.1193,
+     "max": 10.1908,
+     "mean": 8.812619047619046
+    }
+   ],
+   "aggregate": {
+    "n": 63,
+    "min": 6.7659,
+    "p50": 8.5875,
+    "p95": 10.1908,
+    "max": 13.8832,
+    "mean": 8.63203015873016
+   },
+   "csv": [
+    "syncAppend.extensionLog(Y:),round1,21,8.392,10.868,8.697",
+    "syncAppend.extensionLog(Y:),round2,21,8.450,9.601,8.387",
+    "syncAppend.extensionLog(Y:),round3,21,8.810,10.119,8.813"
+   ]
+  }
+ },
+ "cpuBusy": 0.08710035878738576
+}
