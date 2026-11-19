@@ -18,6 +18,7 @@
 #include "hdl/hdl_index.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cstdint>
 #include <exception>
@@ -26,6 +27,7 @@
 #include <set>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -1699,6 +1701,7 @@ std::string CacheKey(std::string_view path, std::string_view text) {
 std::shared_ptr<const ParsedFile> ParseCache::Get(std::string_view path,
                                                  std::string_view text) {
     const std::string key = CacheKey(path, text);
+    std::lock_guard<std::mutex> lock(mutex_);
     const auto it = entries_.find(key);
     if (it == entries_.end()) {
         ++misses_;
@@ -1710,11 +1713,32 @@ std::shared_ptr<const ParsedFile> ParseCache::Get(std::string_view path,
 
 void ParseCache::Put(std::string_view path, std::string_view text,
                      std::shared_ptr<ParsedFile> file) {
+    // 哈希与键构造在锁外做（CacheKey 只读 path/text，不碰共享状态）
+    const std::string key = CacheKey(path, text);
+    std::lock_guard<std::mutex> lock(mutex_);
     if (entries_.size() >= capacity) entries_.clear();
-    entries_[CacheKey(path, text)] = std::move(file);
+    entries_[key] = std::move(file);
 }
 
-void ParseCache::Clear() { entries_.clear(); }
+void ParseCache::Clear() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    entries_.clear();
+}
+
+std::size_t ParseCache::size() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return entries_.size();
+}
+
+std::size_t ParseCache::hits() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return hits_;
+}
+
+std::size_t ParseCache::misses() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return misses_;
+}
 
 // =============================================================================
 // 工程级构建
@@ -1759,6 +1783,69 @@ std::vector<std::string> VhdlFilesFor(const project::Project& project) {
     return files;
 }
 
+// =============================================================================
+// 冷构建并行（Phase 2 / A1）
+// =============================================================================
+//  只并行**每文件独立**的那一段（读文本 + 解析 + 缓存），合并仍在调用线程按
+//  files 顺序做 —— 所以输出（文件顺序 / 模块首次出现顺序 / 截断点）与顺序版
+//  逐字段一致。预算（max_files / max_total_tokens）只在合并阶段扣减。
+namespace {
+
+// 并行取"文本 + 解析结果"；下标与 files 一一对应，失败项为 nullptr。
+std::vector<std::shared_ptr<const ParsedFile>> ParseFileListParallel(
+    const std::vector<std::string>& files, std::size_t count, const TextLoader& load,
+    ParseCache* cache, std::size_t threads) {
+    std::vector<std::shared_ptr<const ParsedFile>> parsed(count);
+    if (count == 0) return parsed;
+    if (load == nullptr) return parsed;
+
+    std::atomic<std::size_t> next{0};
+    const std::size_t workers =
+        std::max<std::size_t>(1, std::min<std::size_t>(threads == 0 ? 1 : threads, count));
+
+    auto worker = [&]() {
+        for (;;) {
+            const std::size_t i = next.fetch_add(1, std::memory_order_relaxed);
+            if (i >= count) return;
+            const std::string& path = files[i];
+            std::optional<std::string> text;
+            try {
+                text = load(path);
+            } catch (...) {
+                text = std::nullopt;
+            }
+            if (!text.has_value()) continue;
+            std::shared_ptr<const ParsedFile> one;
+            if (cache != nullptr) one = cache->Get(path, *text);
+            if (!one) {
+                try {
+                    auto fresh = std::make_shared<ParsedFile>(ParseFile(path, *text));
+                    if (cache != nullptr) cache->Put(path, *text, fresh);
+                    one = std::move(fresh);
+                } catch (...) {
+                    one = nullptr;  // never-throw：一个文件失败不拖垮整次构建
+                }
+            }
+            parsed[i] = std::move(one);
+        }
+    };
+
+    std::vector<std::thread> pool;
+    pool.reserve(workers - 1);
+    for (std::size_t w = 1; w < workers; ++w) pool.emplace_back(worker);
+    worker();  // 调用线程也参与，不白等
+    for (std::thread& thread : pool) thread.join();
+    return parsed;
+}
+
+}  // namespace
+
+std::size_t RecommendedParseThreads() {
+    const unsigned hw = std::thread::hardware_concurrency();
+    if (hw <= 1) return 1;
+    return std::min<std::size_t>(8, static_cast<std::size_t>(hw) - 1);
+}
+
 BuildResult BuildIndex(const project::Project& project, const TextLoader& load,
                        const BuildOptions& options) {
     BuildResult result;
@@ -1767,7 +1854,38 @@ BuildResult BuildIndex(const project::Project& project, const TextLoader& load,
     for (const std::string& path : VhdlFilesFor(project)) files.push_back(path);
 
     std::size_t token_budget = options.max_total_tokens;
-    for (const std::string& path : files) {
+
+    auto consume = [&](const std::shared_ptr<const ParsedFile>& parsed) {
+        token_budget = parsed->tokens.size() >= token_budget
+                           ? 0
+                           : token_budget - parsed->tokens.size();
+        ++result.files_indexed;
+        result.parse_error_count += parsed->parse_errors.size();
+        result.index.AddFile(parsed);  // 共享所有权：不再深拷贝整份 ParsedFile
+    };
+
+    std::size_t remaining_begin = 0;
+
+    // ---- 阶段 1（可选）：并行解析前 min(files, max_files) 个文件 ----
+    if (options.parse_threads > 1 && load != nullptr && files.size() > 1) {
+        const std::size_t parallel_count = std::min(files.size(), options.max_files);
+        const std::vector<std::shared_ptr<const ParsedFile>> parsed = ParseFileListParallel(
+            files, parallel_count, load, options.cache, options.parse_threads);
+        for (std::size_t i = 0; i < parallel_count; ++i) {
+            if (result.files_indexed >= options.max_files || token_budget == 0) {
+                result.truncated = true;
+                break;
+            }
+            if (!parsed[i]) continue;
+            consume(parsed[i]);
+        }
+        if (result.truncated) return result;
+        remaining_begin = parallel_count;
+    }
+
+    // ---- 阶段 2：顺序合并/补尾（与 B8 之前的循环逐字一致）----
+    for (std::size_t i = remaining_begin; i < files.size(); ++i) {
+        const std::string& path = files[i];
         if (result.files_indexed >= options.max_files || token_budget == 0) {
             result.truncated = true;
             break;
@@ -1788,12 +1906,7 @@ BuildResult BuildIndex(const project::Project& project, const TextLoader& load,
             if (options.cache != nullptr) options.cache->Put(path, *text, fresh);
             parsed = fresh;
         }
-        token_budget = parsed->tokens.size() >= token_budget
-                           ? 0
-                           : token_budget - parsed->tokens.size();
-        ++result.files_indexed;
-        result.parse_error_count += parsed->parse_errors.size();
-        result.index.AddFile(*parsed);
+        consume(parsed);
     }
     return result;
 }
@@ -1802,12 +1915,23 @@ BuildResult BuildIndex(const project::Project& project, const TextLoader& load,
 // HdlIndex
 // =============================================================================
 
-void HdlIndex::AddFile(ParsedFile file) {
-    const std::size_t file_index = files_.size();
-    by_lower_path_[ToLower(file.path)] = file_index;
+namespace {
 
-    for (std::size_t module_index = 0; module_index < file.modules.size(); ++module_index) {
-        const Module& module = file.modules[module_index].module;
+// 索引里"文件"的键：规范化 + 小写（Windows 语义）。AddFile / File / ReplaceFile /
+// RemoveFile 必须用同一个函数，否则增量更新会找不到条目。
+std::string IndexPathKey(std::string_view path) {
+    return ToLower(platform::normalize_path(path));
+}
+
+}  // namespace
+
+void HdlIndex::AddFile(std::shared_ptr<const ParsedFile> file) {
+    if (!file) return;
+    const std::size_t file_index = files_.size();
+    by_lower_path_[IndexPathKey(file->path)] = file_index;
+
+    for (std::size_t module_index = 0; module_index < file->modules.size(); ++module_index) {
+        const Module& module = file->modules[module_index].module;
         const std::string key = ToLower(IdentKey(module.name));
         if (modules_by_key_.find(key) == modules_by_key_.end()) {
             modules_by_key_[key] = {file_index, module_index};
@@ -1817,11 +1941,71 @@ void HdlIndex::AddFile(ParsedFile file) {
     files_.push_back(std::move(file));
 }
 
+// -----------------------------------------------------------------------------
+// 增量更新（Phase 2 / A1）
+// -----------------------------------------------------------------------------
+
+HdlIndex HdlIndex::Clone() const {
+    HdlIndex copy;
+    copy.files_ = files_;  // 只拷 shared_ptr（不深拷贝 ParsedFile / token 表）
+    copy.by_lower_path_ = by_lower_path_;
+    copy.modules_by_key_ = modules_by_key_;
+    copy.module_order_ = module_order_;
+    return copy;
+}
+
+void HdlIndex::ReplaceFile(std::shared_ptr<const ParsedFile> file) {
+    if (!file) return;
+    const auto it = by_lower_path_.find(IndexPathKey(file->path));
+    if (it == by_lower_path_.end()) {
+        // 新文件：追加（AddFile 会增量维护模块索引，首次出现顺序 = 追加顺序）
+        AddFile(std::move(file));
+        return;
+    }
+    files_[it->second] = std::move(file);
+    // 该文件的模块集合可能整体替换/改名/增减：模块表整体重建（O(模块数)）
+    RebuildModuleIndex();
+}
+
+bool HdlIndex::RemoveFile(std::string_view path) {
+    const auto it = by_lower_path_.find(IndexPathKey(path));
+    if (it == by_lower_path_.end()) return false;
+    files_.erase(files_.begin() + static_cast<std::ptrdiff_t>(it->second));
+    RebuildPathIndex();     // 后面的下标整体左移
+    RebuildModuleIndex();
+    return true;
+}
+
+void HdlIndex::RebuildPathIndex() {
+    by_lower_path_.clear();
+    for (std::size_t i = 0; i < files_.size(); ++i) {
+        if (!files_[i]) continue;
+        by_lower_path_[IndexPathKey(files_[i]->path)] = i;
+    }
+}
+
+void HdlIndex::RebuildModuleIndex() {
+    modules_by_key_.clear();
+    module_order_.clear();
+    for (std::size_t file_index = 0; file_index < files_.size(); ++file_index) {
+        const std::shared_ptr<const ParsedFile>& file = files_[file_index];
+        if (!file) continue;
+        for (std::size_t module_index = 0; module_index < file->modules.size(); ++module_index) {
+            const std::string& name = file->modules[module_index].module.name;
+            const std::string key = ToLower(IdentKey(name));
+            if (modules_by_key_.find(key) == modules_by_key_.end()) {
+                modules_by_key_.emplace(key, std::make_pair(file_index, module_index));
+                module_order_.push_back(name);
+            }
+        }
+    }
+}
+
 const ParsedFile* HdlIndex::File(std::string_view path) const {
-    const std::string key = ToLower(platform::normalize_path(path));
+    const std::string key = IndexPathKey(path);
     const auto it = by_lower_path_.find(key);
     if (it == by_lower_path_.end()) return nullptr;
-    return &files_[it->second];
+    return files_[it->second].get();
 }
 
 const Module* HdlIndex::ModuleByName(std::string_view name) const {
@@ -1829,7 +2013,7 @@ const Module* HdlIndex::ModuleByName(std::string_view name) const {
     const auto it = modules_by_key_.find(ToLower(IdentKey(name)));
     if (it == modules_by_key_.end()) return nullptr;
     const auto& [file_index, module_index] = it->second;
-    return &files_[file_index].modules[module_index].module;
+    return &files_[file_index]->modules[module_index].module;
 }
 
 std::vector<std::string> HdlIndex::ModuleNames() const { return module_order_; }
@@ -1852,8 +2036,9 @@ std::vector<const Instance*> HdlIndex::InstancesOfFile(std::string_view path) co
 
 std::vector<const Instance*> HdlIndex::AllInstances() const {
     std::vector<const Instance*> out;
-    for (const ParsedFile& file : files_) {
-        for (const Instance& instance : file.instances) out.push_back(&instance);
+    for (const auto& file_ptr : files_) {
+        if (!file_ptr) continue;
+        for (const Instance& instance : file_ptr->instances) out.push_back(&instance);
     }
     return out;
 }
@@ -1861,7 +2046,9 @@ std::vector<const Instance*> HdlIndex::AllInstances() const {
 std::vector<std::string> HdlIndex::Paths() const {
     std::vector<std::string> out;
     out.reserve(files_.size());
-    for (const ParsedFile& file : files_) out.push_back(file.path);
+    for (const auto& file_ptr : files_) {
+        if (file_ptr) out.push_back(file_ptr->path);
+    }
     return out;
 }
 
@@ -2220,7 +2407,9 @@ std::vector<WorkspaceSymbol> HdlIndex::SearchSymbols(std::string_view query) con
         return ToLower(name).find(needle) != std::string::npos;
     };
 
-    for (const ParsedFile& file : files_) {
+    for (const auto& file_ptr : files_) {
+        if (!file_ptr) continue;
+        const ParsedFile& file = *file_ptr;
         for (const ModuleInfo& info : file.modules) {
             const Module& module = info.module;
             if (matches(module.name)) {
@@ -2284,7 +2473,9 @@ std::vector<Location> HdlIndex::References(std::string_view path, int line,
     const std::string wanted = IdentKey(token->text);
     if (wanted.empty()) return out;
 
-    for (const ParsedFile& candidate : files_) {
+    for (const auto& candidate_ptr : files_) {
+        if (!candidate_ptr) continue;
+        const ParsedFile& candidate = *candidate_ptr;
         for (const Token& other : candidate.tokens) {
             if (other.kind != 'i') continue;
             if (IdentKey(other.text) != wanted) continue;

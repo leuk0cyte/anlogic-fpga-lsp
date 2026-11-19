@@ -52,12 +52,27 @@ add_subdirectory(td)
 # 阶段 4-γ：TD 报告解析（QoR / Timing / Area / FlowStatus / 产物探测）
 add_subdirectory(reports)
 
+# Phase B：DRC/CDC 后流程分析（src/analysis，B5 新增；server 的 FeatureRunAnalysis 依赖）
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/analysis/CMakeLists.txt")
+    add_subdirectory(analysis)
+endif()
+
 # 阶段 4-δ：Flow 引擎（一键综合/布线）+ BitWizard 烧录 + 策略对比
 add_subdirectory(flow)
 
 # 阶段 3：HDL 符号索引（Verible 词法 + 结构识别；server 的符号类 handler 依赖它）
 #   必须排在 server 之前：server 链接 fpga_lsp::hdl。
 add_subdirectory(hdl)
+
+# Phase B：语义高亮 / 折叠（src/semantics，B2 新增；server 的 FeatureSemanticTokens 依赖）
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/semantics/CMakeLists.txt")
+    add_subdirectory(semantics)
+endif()
+
+# 阶段 5-α：ADC 引脚约束 + SDC 时序约束（纯文本解析，不依赖 Verible / 真实 TD）
+#   ⚠ 必须排在 server 之前：server 的 features_constraints.cpp 直接调 constraints::adc/sdc，
+#   而 if(TARGET fpga_lsp::constraints) 在 configure 时求值 —— 晚于 server 定义会恒为 FALSE。
+add_subdirectory(constraints)
 
 # 内嵌 Verible 的可选能力桥（目前只有 formatter）。
 #   ⚠ 必须排在 server 之前：server 需要它来把 textDocument/formatting 接成真实现。
@@ -70,9 +85,6 @@ endif()
 
 # 阶段 2-γ：LSP 服务主体（编排 platform/jsonrpc/lsp/project/td；formatter 走可选桥）
 add_subdirectory(server)
-
-# 阶段 5-α：ADC 引脚约束 + SDC 时序约束（纯文本解析，不依赖 Verible / 真实 TD）
-add_subdirectory(constraints)
 
 # 阶段 5-β：MCP server（39 个工具，stdio newline-delimited JSON-RPC）
 #   依赖 feature 层（project/td/reports/constraints），**不**依赖 server/hdl：

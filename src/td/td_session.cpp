@@ -11,9 +11,12 @@
 #include "td/td_session.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <vector>
 
@@ -30,6 +33,7 @@
 #include <tlhelp32.h>
 #endif
 
+#include "platform/command_line.h"
 #include "platform/encoding.h"
 #include "platform/path.h"
 
@@ -47,6 +51,34 @@ std::string MakeTag() {
     return "dsh" + std::to_string(static_cast<long long>(ms % 1000000000LL));
 }
 
+// D-3：options.work_dir 为空时**不再**让 TD 继承本进程的 cwd（那会把 TD 自己的
+// 日志/中间文件撒到用户的工作目录或 IDE 的启动目录里），而是给本进程一个
+// %TEMP%/fpgalsp-td-<pid> 的 scratch 目录。
+//
+// 为什么按"进程"而不是"会话"分目录：LSP 每次保存都会新建一个 TD 会话（read_hdl
+// 会烧掉会话），按会话分目录会在 %TEMP% 里留下成百上千个空目录。TD 自己的日志名
+// 带时间戳（td_YYYYMMDD_HHMMSS.logw），同一进程内的多个会话共享目录不会互相覆盖。
+// 调用方仍可显式指定（bridge 侧应传 <project>/.fpgalsp/run，patch 见 B7-REPORT）。
+std::string MakeScratchWorkDir() {
+    std::error_code ec;
+    std::filesystem::path base = std::filesystem::temp_directory_path(ec);
+    if (ec || base.empty()) base = std::filesystem::path(".");
+#ifdef _WIN32
+    const unsigned long pid = ::GetCurrentProcessId();
+#else
+    const unsigned long pid = 0;
+#endif
+    const std::string name = "fpgalsp-td-" + std::to_string(pid);
+    std::filesystem::path dir = base / name;
+    std::filesystem::create_directories(dir, ec);
+    // 目录建不出来就退回"当前目录"，绝不因为 scratch 目录失败而让 TD 起不来
+    if (ec) return std::string();
+    // 全项目内部路径都是 UTF-8（Windows 用户名可能是非 ASCII，不能走 ACP 的
+    // path::string()），所以这里显式按 UTF-8 取出。
+    const std::u8string utf8 = dir.u8string();
+    return std::string(reinterpret_cast<const char*>(utf8.data()), utf8.size());
+}
+
 }  // namespace
 
 struct TdSession::Impl {
@@ -61,6 +93,7 @@ struct TdSession::Impl {
 #endif
     std::atomic<bool> alive{false};
     std::string buffer;  // 累积的 stdout 字节
+    std::string work_dir;  // D-3：本会话实际使用的 cwd（空 = 未能创建）
     std::mutex io_mutex;
     unsigned long pid = 0;
 
@@ -192,9 +225,14 @@ bool AssignToJob(HANDLE process, HANDLE* out_job) {
 TdSession::TdSession(const TdChoice& td, const TdSessionOptions& options) : td_(td) {
     impl_ = std::make_unique<Impl>();
 
+    // D-3：未显式指定 cwd 时用独立 scratch 目录，别让 TD 往"当前目录"写东西。
+    std::string work_dir = options.work_dir;
+    if (work_dir.empty()) work_dir = MakeScratchWorkDir();
+    impl_->work_dir = work_dir;
+
     // 对应 Python: os.makedirs(cwd, exist_ok=True)
-    if (!options.work_dir.empty()) {
-        plat::ensure_directory(options.work_dir);
+    if (!work_dir.empty()) {
+        plat::ensure_directory(work_dir);
     }
 
 #ifdef _WIN32
@@ -224,16 +262,21 @@ TdSession::TdSession(const TdChoice& td, const TdSessionOptions& options) : td_(
     si.hStdError = stdout_write;  // 关键：stderr 合并到 stdout
     PROCESS_INFORMATION pi{};
 
-    std::wstring cmdline = Widen(td.exe);
+    // ⚠ B7 / S-02：exe 路径可能含空格（"C:\Program Files\...\td_commands_prompt.exe"）。
+    //   旧实现把 exe 原样塞进 lpCommandLine 且 lpApplicationName=nullptr，Windows 会
+    //   按空白切分去猜可执行文件 -> 试图运行 "C:\Program.exe"（CWE-428）。
+    //   现在：lpApplicationName 传权威的 exe 全路径，lpCommandLine 里的 argv[0] 按
+    //   CRT 规则加引号（td 目前不接受任何命令行参数，args 为空）。
+    const std::wstring exe_wide = Widen(td.exe);
+    std::wstring cmdline = plat::BuildWindowsCommandLine(exe_wide);
     std::vector<wchar_t> mutable_cmd(cmdline.begin(), cmdline.end());
     mutable_cmd.push_back(L'\0');
 
-    const std::wstring workdir = options.work_dir.empty()
-                                     ? std::wstring()
-                                     : Widen(plat::normalize_path(options.work_dir));
+    const std::wstring workdir = work_dir.empty() ? std::wstring()
+                                                  : Widen(plat::normalize_path(work_dir));
 
     const BOOL ok = CreateProcessW(
-        nullptr, mutable_cmd.data(), nullptr, nullptr, TRUE,
+        exe_wide.c_str(), mutable_cmd.data(), nullptr, nullptr, TRUE,
         CREATE_SUSPENDED | CREATE_NEW_PROCESS_GROUP, nullptr,
         workdir.empty() ? nullptr : workdir.c_str(), &si, &pi);
 
@@ -410,6 +453,11 @@ void TdSession::Close() {
 }
 
 unsigned long TdSession::ProcessId() const { return impl_->pid; }
+
+const std::string& TdSession::WorkDir() const {
+    static const std::string kEmpty;
+    return impl_ != nullptr ? impl_->work_dir : kEmpty;
+}
 
 // -----------------------------------------------------------------------------
 // 进程计数（测试用）

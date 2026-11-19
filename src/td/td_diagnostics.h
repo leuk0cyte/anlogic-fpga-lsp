@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -23,8 +24,10 @@
 
 #include "lsp/diagnostic.h"
 #include "project/al_project.h"
+#include "td/td_cancel.h"
 #include "td/td_install.h"
 #include "td/td_output.h"
+#include "td/td_timing.h"
 
 namespace fpgalsp::td {
 
@@ -142,5 +145,56 @@ EnsureDeviceResult EnsureDevice(const project::Project& project, TdSession& sess
 // never-raise：任何失败都以诊断形式返回，不抛异常。
 lsp::DiagnosticList RunReadHdl(const project::Project& project, TdSession& session,
                                std::string_view explicit_db = {});
+
+// =============================================================================
+//  A5 / task-25：一轮检查的结构化结果（计时 + 按文件切分 + 取消）
+// =============================================================================
+
+// 一轮 TD 检查的完整结果。
+//
+// 为什么把 by_file 一起返回（而不是让调用方自己分组）：
+//   * LSP 需要"只发布变更文件"（`DiffChangedFiles`），分组口径必须与 TD 侧一致；
+//   * 分组规则（data["path"] 优先 / 回落 .al）原本写在 lsp_server.cpp 里，
+//     MCP 侧要复用时又得抄一遍 —— 现在只有这一份。
+struct TdCheckResult {
+    lsp::DiagnosticList all;                              // 与 by_file 内容相同，扁平化
+    std::map<std::string, lsp::DiagnosticList> by_file;   // key = 规范化后的文件绝对路径
+    TdPhaseTimings timings;
+
+    // 被取消：all/by_file 可能只有半轮结果，**调用方不得发布**。
+    bool cancelled = false;
+    // 失败（设备导入失败 / read_hdl 抛错 / 工程无 HDL 等）：error 给原因，
+    // all 里通常有一条 TD-* 错误诊断（用于让用户在 Problems 里看到）。
+    bool failed = false;
+    std::string error;
+
+    std::size_t total() const { return all.size(); }
+    bool empty() const { return all.empty(); }
+};
+
+// 一条诊断归属哪个文件（与 lsp_server 原有的 DiagnosticPath 逐字一致）：
+//   data["path"]（字符串、非空）优先，否则回落 fallback（通常是 project.al_path）。
+// 返回值已 normalize_path。
+std::string DiagnosticFileKey(const lsp::Diagnostic& diagnostic,
+                              std::string_view fallback_path);
+
+// 一轮检查（可取消）：ensure_device -> read_hdl -> 映射 -> 按文件分组，并填 timings。
+//
+// 取消语义：
+//   * 每个阶段之间检查 cancel->cancelled()；
+//   * read_hdl 是阻塞的，只能靠 cancel 携带的 kill hook 杀进程树；
+//     杀完之后 Run 抛错 -> 这里把 cancelled 置位并**丢弃半截结果**（不发布截断数据）。
+//
+// never-raise。
+TdCheckResult RunReadHdlCheck(const project::Project& project, TdSession& session,
+                              std::string_view explicit_db = {},
+                              const CancelToken* cancel = nullptr);
+
+// 只发布变更：返回 before/after 之间"新增 / 删除 / 内容变化"的文件路径（已排序）。
+// 内容比较用 (line, character, severity, code, message) 指纹，忽略 data 里的装饰字段
+// （例如发布前会被摘掉的 data["path"]），避免无意义的抖动。
+std::vector<std::string> DiffChangedFiles(
+    const std::map<std::string, lsp::DiagnosticList>& before,
+    const std::map<std::string, lsp::DiagnosticList>& after);
 
 }  // namespace fpgalsp::td

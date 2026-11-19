@@ -1,0 +1,464 @@
+// =============================================================================
+//  src/server/index_service.cpp —— 索引服务实现（增量更新 + 不可变快照）
+// =============================================================================
+//  写者路径（全部在同一把 mutex_ 下）：
+//    SetProject      -> 只在"工程 HDL 文件集合变了"时标 dirty（懒全量）
+//    OnFileChanged   -> Clone() + ReplaceFile(单文件) + 换指针
+//    OnWatchedFiles  -> .al 变更 -> 懒全量；其它文件 -> 逐个增量
+//    Get()           -> dirty ? 全量 : (watcher 缺失 ? stamp 懒校验 : 直接返回)
+//
+//  读路径（Get）只做一次加锁 + 一次 shared_ptr 拷贝；调用方拿到快照后**在锁外**
+//  跑查询，写者替换的是指针而不是快照内容，所以读永远看到完整一致的索引。
+// =============================================================================
+
+#include "server/index_service.h"
+
+#include <algorithm>
+#include <cstdint>
+#include <filesystem>
+#include <utility>
+
+#include "platform/encoding.h"
+#include "platform/path.h"
+
+namespace fpgalsp::server {
+namespace {
+
+std::string KeyOf(std::string_view path) {
+    if (path.empty()) return std::string();
+    return platform::path_key(platform::normalize_path(path));
+}
+
+std::optional<std::string> ReadDisk(const std::string& path) {
+    return platform::try_read_file_utf8(path);
+}
+
+bool IsAlPath(std::string_view path) {
+    return platform::path_key(platform::path_extension(path)) == ".al";
+}
+
+// 工程参与索引的文件：.v/.sv/.vh/.svh + .vhd/.vhdl，再并上 IP 生成的 HDL。
+// 顺序与 hdl::BuildIndex 完全一致（先 Verilog 后 VHDL）。
+std::vector<std::string> ExpectedFiles(const project::Project& project) {
+    std::vector<std::string> files = hdl::VerilogFilesFor(project);
+    for (const std::string& path : hdl::VhdlFilesFor(project)) files.push_back(path);
+    return files;
+}
+
+// 一次目录枚举带回整目录的 (size, mtime)；与 LspServer::ProjectSignature 里的
+// DirStampCache 同策略（枚举不到就按"磁盘上没有"处理）。
+class DirStamps {
+public:
+    const IndexService::FileStamp* Find(const std::string& path) {
+        const std::size_t slash = path.find_last_of("/\\");
+        if (slash == std::string::npos || slash + 1 >= path.size()) return nullptr;
+        const std::string dir = path.substr(0, slash);
+        const std::string name = platform::path_key(std::string_view(path).substr(slash + 1));
+
+        auto it = dirs_.find(dir);
+        if (it == dirs_.end()) it = dirs_.emplace(dir, LoadDir(dir)).first;
+        const auto found = it->second.find(name);
+        return found == it->second.end() ? nullptr : &found->second;
+    }
+
+private:
+    static std::map<std::string, IndexService::FileStamp> LoadDir(const std::string& dir) {
+        std::map<std::string, IndexService::FileStamp> entries;
+        std::error_code ec;
+        std::filesystem::directory_iterator iter{std::filesystem::path(dir), ec};
+        if (ec) return entries;
+        const std::filesystem::directory_iterator end;
+        for (; iter != end; iter.increment(ec)) {
+            if (ec) break;
+            const std::filesystem::directory_entry& entry = *iter;
+            std::error_code entry_ec;
+            const std::uintmax_t size = entry.file_size(entry_ec);
+            if (entry_ec) continue;
+            const std::filesystem::file_time_type write_time = entry.last_write_time(entry_ec);
+            if (entry_ec) continue;
+            // 文件名按 UTF-8 字节比较（平台层的路径就是 UTF-8 std::string）
+            const std::u8string u8 = entry.path().filename().u8string();
+            std::string name(reinterpret_cast<const char*>(u8.data()), u8.size());
+
+            IndexService::FileStamp stamp;
+            stamp.exists = true;
+            stamp.size = size;
+            stamp.mtime = static_cast<std::int64_t>(write_time.time_since_epoch().count());
+            entries.emplace(platform::path_key(name), stamp);
+        }
+        return entries;
+    }
+
+    std::map<std::string, std::map<std::string, IndexService::FileStamp>> dirs_;
+};
+
+// 解析一个文件：命中解析缓存就直接共享（B8/PERF-03 的 shared_ptr 语义）。
+std::shared_ptr<const hdl::ParsedFile> ParseOne(const std::string& path, std::string_view text,
+                                                hdl::ParseCache* cache) {
+    if (cache != nullptr) {
+        if (auto hit = cache->Get(path, text); hit != nullptr) return hit;
+    }
+    auto fresh = std::make_shared<hdl::ParsedFile>(hdl::ParseFile(path, text));
+    if (cache != nullptr) cache->Put(path, text, fresh);
+    return fresh;
+}
+
+std::optional<std::string> LoadSafely(const hdl::TextLoader& loader, const std::string& path) {
+    if (!loader) return std::nullopt;
+    try {
+        return loader(path);
+    } catch (...) {
+        return std::nullopt;  // loader 是外部注入的：never-throw 由我们兜
+    }
+}
+
+// 两个工程模型"对索引而言是否等价"：只看参与索引的字段（路径/种类/是否在 build）。
+// 这个比较是 O(#文件) 的字符串相等，比重新算一遍 ExpectedFiles（两次 build +
+// 小写化 + std::set）便宜一个数量级 —— 集成方每个请求都会调 SetProject。
+bool SameIndexInputs(const project::Project& a, const project::Project& b) {
+    if (a.al_path != b.al_path) return false;
+    if (a.files.size() != b.files.size()) return false;
+    for (std::size_t i = 0; i < a.files.size(); ++i) {
+        const project::AlFile& left = a.files[i];
+        const project::AlFile& right = b.files[i];
+        if (left.path != right.path || left.kind != right.kind ||
+            left.enabled != right.enabled || left.excluded != right.excluded ||
+            left.exists != right.exists) {
+            return false;
+        }
+    }
+    return true;
+}
+
+}  // namespace
+
+// =============================================================================
+// 生命周期
+// =============================================================================
+
+IndexService::IndexService() : IndexService(TextLoader{}) {}
+
+IndexService::IndexService(TextLoader loader) : loader_(std::move(loader)) {
+    if (!loader_) loader_ = &ReadDisk;  // 默认：读盘（UTF-8，never-throw）
+}
+
+IndexService::~IndexService() = default;
+
+// =============================================================================
+// 读路径
+// =============================================================================
+
+IndexService::Snapshot IndexService::Get() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return EnsureFreshLocked();
+}
+
+IndexService::Snapshot IndexService::EnsureFreshLocked() const {
+    if (!state_.have_project) return nullptr;
+    if (state_.dirty) {
+        RebuildAllLocked();
+    } else if (!state_.watcher_active) {
+        ValidateStampsLocked();
+    }
+    return state_.snapshot;
+}
+
+// =============================================================================
+// 写路径
+// =============================================================================
+
+void IndexService::SetProject(project::Project project) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    // 工程模型没变（同一个 .al、同一批 HDL 文件）：只换字段，不动索引、不重算
+    // 文件集合。集成方可以每个请求都调用（ProjectForPath 本来就是每请求一次）。
+    if (state_.have_project && SameIndexInputs(project, state_.project)) {
+        state_.project = std::move(project);
+        return;
+    }
+
+    std::vector<std::string> files = ExpectedFiles(project);
+    state_.project = std::move(project);
+    state_.have_project = true;
+    SetExpectedLocked(std::move(files));
+    state_.dirty = true;
+    state_.stamps.clear();
+    state_.stamps_initialized = false;
+}
+
+void IndexService::OnFileChanged(std::string path, std::optional<std::string> text) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!state_.have_project || path.empty()) return;
+
+    const std::string key = KeyOf(path);
+    // 只有工程的 HDL 文件会影响索引；其它文件（含 .al）走 OnWatchedFiles。
+    if (!IsExpected(key)) return;
+
+    // 快照还没建、或者已经脏了（.al 刚变更过）：不做增量。
+    // 下一次 Get 的全量重建会通过 loader（集成方传入缓冲区优先的 LoadText）
+    // 拿到最新内容，结果与"先做一次增量再全量"相同。
+    if (state_.dirty || state_.snapshot == nullptr) return;
+
+    auto next = std::make_shared<hdl::HdlIndex>(state_.snapshot->Clone());
+    if (text.has_value()) {
+        next->ReplaceFile(ParseOne(path, *text, &state_.cache));
+    } else {
+        // 没有缓冲区文本：从磁盘重读；读不到（删除/不可读）就从索引里移除。
+        const std::optional<std::string> disk_text = LoadSafely(loader_, path);
+        if (disk_text.has_value()) {
+            next->ReplaceFile(ParseOne(path, *disk_text, &state_.cache));
+        } else {
+            next->RemoveFile(path);
+        }
+    }
+    ++state_.stats.file_updates;
+    InstallLocked(std::move(next));
+
+    // stamp 基线跟着走：记的是**磁盘当前状态**（缓冲区内容可能领先磁盘，
+    // 用户保存后 mtime 变化会再触发一次重读，最多多解析一次，结果相同）。
+    if (state_.stamps_initialized) {
+        DirStamps disk;
+        const FileStamp* now = disk.Find(path);
+        state_.stamps[key] = now != nullptr ? *now : FileStamp{};
+    }
+}
+
+void IndexService::OnWatchedFiles(const std::vector<std::string>& changed,
+                                  const std::vector<std::string>& deleted) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!state_.have_project) return;
+
+    bool al_changed = false;
+    for (const std::string& path : changed) {
+        if (IsAlPath(path)) al_changed = true;
+    }
+    for (const std::string& path : deleted) {
+        if (IsAlPath(path)) al_changed = true;
+    }
+
+    if (al_changed) {
+        // .al 是"哪些文件参与构建"的权威来源：重解析（拿新的文件集合/top/器件），
+        // 然后标脏——下一次 Get 全量重建。
+        if (!state_.project.al_path.empty()) {
+            project::Project fresh = project::ParseAl(state_.project.al_path);
+            if (!fresh.al_path.empty()) state_.project = std::move(fresh);
+        }
+        SetExpectedLocked(ExpectedFiles(state_.project));
+        state_.dirty = true;
+        state_.stamps.clear();
+        state_.stamps_initialized = false;
+        return;
+    }
+
+    if (state_.dirty || state_.snapshot == nullptr) return;
+
+    auto next = std::make_shared<hdl::HdlIndex>(state_.snapshot->Clone());
+    DirStamps disk;
+    bool touched = false;
+
+    for (const std::string& path : deleted) {
+        if (next->RemoveFile(path)) {
+            ++state_.stats.file_updates;
+            touched = true;
+        }
+        if (state_.stamps_initialized) {
+            state_.stamps[KeyOf(path)] = FileStamp{};  // 磁盘上已经没有了
+        }
+    }
+
+    for (const std::string& path : changed) {
+        const std::string key = KeyOf(path);
+        if (!IsExpected(key) && next->File(path) == nullptr) continue;  // 与本工程无关
+        const std::optional<std::string> text = LoadSafely(loader_, path);
+        if (text.has_value()) {
+            next->ReplaceFile(ParseOne(path, *text, &state_.cache));
+        } else {
+            next->RemoveFile(path);
+        }
+        ++state_.stats.file_updates;
+        touched = true;
+        if (state_.stamps_initialized) {
+            const FileStamp* now = disk.Find(path);
+            state_.stamps[key] = now != nullptr ? *now : FileStamp{};
+        }
+    }
+
+    if (touched) InstallLocked(std::move(next));
+}
+
+void IndexService::InvalidateAll() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    state_.dirty = true;
+    state_.stamps.clear();
+    state_.stamps_initialized = false;
+}
+
+void IndexService::SetWatcherActive(bool active) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (state_.watcher_active == active) return;
+    state_.watcher_active = active;
+    // 从"有 watcher"切到"没有"：此刻磁盘状态就是基线（索引刚构建/刚增量过），
+    // 不等下一次 Get 再补 —— 否则切换瞬间的改动会被漏掉。
+    if (!active) RefreshStampsLocked();
+}
+
+// =============================================================================
+// 观察/诊断
+// =============================================================================
+
+bool IndexService::watcher_active() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return state_.watcher_active;
+}
+
+IndexService::Stats IndexService::stats() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return state_.stats;
+}
+
+bool IndexService::has_project() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return state_.have_project;
+}
+
+std::string IndexService::al_path() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return state_.project.al_path;
+}
+
+bool IndexService::truncated() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return state_.truncated;
+}
+
+std::size_t IndexService::parse_errors() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return state_.parse_errors;
+}
+
+std::size_t IndexService::tracked_files() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return state_.expected.size();
+}
+
+// =============================================================================
+// 内部（全部要求已持有 mutex_）
+// =============================================================================
+
+void IndexService::RebuildAllLocked() const {
+    state_.dirty = false;
+    if (!state_.have_project) {
+        state_.snapshot.reset();
+        return;
+    }
+
+    hdl::BuildOptions options;
+    options.cache = &state_.cache;
+    // 冷构建并行解析（A1 第 3 点）：N = min(8, hw-1)，保序合并。
+    options.parse_threads = hdl::RecommendedParseThreads();
+
+    hdl::BuildResult built = hdl::BuildIndex(state_.project, loader_, options);
+    auto next = std::make_shared<hdl::HdlIndex>(std::move(built.index));
+
+    state_.truncated = built.truncated;
+    state_.parse_errors = built.parse_error_count;
+    ++state_.stats.rebuilds;
+
+    // stamp 基线：watcher 缺失时**立刻**建立（此刻索引内容就是刚读到的磁盘/缓冲区
+    // 状态），否则基线会拖到下一次 Get 才建立 —— 那期间磁盘上的改动就会被漏掉。
+    // watcher 可用时不需要基线（信任 didChangeWatchedFiles）。
+    state_.stamps.clear();
+    state_.stamps_initialized = false;
+    if (!state_.watcher_active) RefreshStampsLocked();
+
+    InstallLocked(std::move(next));
+}
+
+void IndexService::ValidateStampsLocked() const {
+    if (!state_.stamps_initialized) {
+        RefreshStampsLocked();  // 第一次：只取基线（索引内容就是按当时的磁盘/缓冲区建的）
+        return;
+    }
+    if (state_.snapshot == nullptr) return;
+
+    DirStamps disk;
+    std::vector<std::string> changed;
+    std::vector<std::string> removed;
+    changed.reserve(4);
+    removed.reserve(4);
+
+    for (const std::string& path : state_.expected) {
+        const std::string key = KeyOf(path);
+        const FileStamp* now = disk.Find(path);
+        const FileStamp current = now != nullptr ? *now : FileStamp{};
+
+        const auto stored = state_.stamps.find(key);
+        if (stored == state_.stamps.end()) {
+            if (current.exists) changed.push_back(path);
+            continue;
+        }
+        if (stored->second == current) continue;
+        if (current.exists) {
+            changed.push_back(path);
+        } else {
+            removed.push_back(path);
+        }
+    }
+
+    if (changed.empty() && removed.empty()) return;
+
+    auto next = std::make_shared<hdl::HdlIndex>(state_.snapshot->Clone());
+    bool touched = false;
+
+    for (const std::string& path : removed) {
+        if (next->RemoveFile(path)) {
+            ++state_.stats.file_updates;
+            touched = true;
+        }
+        state_.stamps[KeyOf(path)] = FileStamp{};
+    }
+
+    for (const std::string& path : changed) {
+        const std::optional<std::string> text = LoadSafely(loader_, path);
+        if (text.has_value()) {
+            next->ReplaceFile(ParseOne(path, *text, &state_.cache));
+        } else {
+            next->RemoveFile(path);
+        }
+        ++state_.stats.file_updates;
+        touched = true;
+        const FileStamp* now = disk.Find(path);
+        state_.stamps[KeyOf(path)] = now != nullptr ? *now : FileStamp{};
+    }
+
+    if (touched) InstallLocked(std::move(next));
+}
+
+void IndexService::RefreshStampsLocked() const {
+    DirStamps disk;
+    state_.stamps.clear();
+    for (const std::string& path : state_.expected) {
+        const FileStamp* now = disk.Find(path);
+        state_.stamps[KeyOf(path)] = now != nullptr ? *now : FileStamp{};
+    }
+    state_.stamps_initialized = true;
+}
+
+void IndexService::InstallLocked(std::shared_ptr<const hdl::HdlIndex> next) const {
+    state_.snapshot = std::move(next);
+    ++state_.stats.generation;
+}
+
+void IndexService::SetExpectedLocked(std::vector<std::string> files) {
+    state_.expected = std::move(files);
+    state_.expected_index.clear();
+    for (std::size_t i = 0; i < state_.expected.size(); ++i) {
+        state_.expected_index.emplace(KeyOf(state_.expected[i]), i);
+    }
+}
+
+bool IndexService::IsExpected(std::string_view key) const {
+    return state_.expected_index.find(std::string(key)) != state_.expected_index.end();
+}
+
+}  // namespace fpgalsp::server

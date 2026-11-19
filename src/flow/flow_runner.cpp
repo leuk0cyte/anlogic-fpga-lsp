@@ -35,6 +35,7 @@
 #include "td/td_device.h"
 #include "td/td_output.h"
 #include "td/td_session.h"
+#include "td/tcl_quote.h"
 
 namespace fpgalsp::flow {
 namespace {
@@ -622,10 +623,13 @@ struct FlowRunner::Impl {
     Failure RunStage(const std::string& run_name, int jobs) {
         ClearStopFlags();
         Emit("progress", "reset_runs {" + run_name + "}");
-        Record(RunCommand("reset_runs { " + run_name + " }", 120.0));
+        // B7 / S-01：run_name 目前都是内部常量（syn_1/phy_1），但仍按"不可信"处理，
+        // 走 TclQuoteGrouped —— 正常名字输出与旧实现逐字节相同（`{ syn_1 }`）。
+        Record(RunCommand("reset_runs " + td::TclQuoteGrouped(" " + run_name + " "), 120.0));
 
         Emit("progress", "launch_runs {" + run_name + "} -jobs " + std::to_string(jobs));
-        const std::string launch = "launch_runs { " + run_name + " } -jobs " + std::to_string(jobs);
+        const std::string launch = "launch_runs " + td::TclQuoteGrouped(" " + run_name + " ") +
+                                   " -jobs " + std::to_string(jobs);
         std::string out = RunCommand(launch, 300.0);
         RememberRunLog(run_name, out);
         if (td::HasError(out)) {
@@ -650,7 +654,8 @@ struct FlowRunner::Impl {
         SetStageStarted(started);
         SetStallReason({});
 
-        out = RunCommand("wait_run " + run_name + " -quiet", owner->options_.timeout_seconds);
+        out = RunCommand("wait_run " + td::TclQuote(run_name) + " -quiet",
+                         owner->options_.timeout_seconds);
         RememberRunLog(run_name, out);
         SetStageRun({});
         const double elapsed = Now() - started;
@@ -701,7 +706,7 @@ struct FlowRunner::Impl {
 
         SetStage("route");
         Emit("progress", "import_db " + BaseName(source_db));
-        std::string out = RunCommand("import_db {" + source_db + "}", 300.0);
+        std::string out = RunCommand("import_db " + td::TclQuoteGrouped(source_db), 300.0);
         if (td::HasFatal(out)) return Fail("import_db failed: " + ErrorLines(out));
 
         const double t0 = Now();
@@ -723,10 +728,10 @@ struct FlowRunner::Impl {
         const std::string area = Join(dir, "route.area");
 
         std::vector<std::pair<std::string, std::string>> produced_targets = {
-            {"bitgen -bit {" + bit + "}", bit},
-            {"report_timing_summary -file {" + timing + "}", timing},
-            {"report_qor -step route -file {" + qor + "}", qor},
-            {"report_area -file {" + area + "}", area},
+            {"bitgen -bit " + td::TclQuoteGrouped(bit), bit},
+            {"report_timing_summary -file " + td::TclQuoteGrouped(timing), timing},
+            {"report_qor -step route -file " + td::TclQuoteGrouped(qor), qor},
+            {"report_area -file " + td::TclQuoteGrouped(area), area},
         };
         std::vector<std::pair<std::string, std::string>> produced;  // (扩展名, 路径)
         for (const auto& [command, target] : produced_targets) {
@@ -980,7 +985,8 @@ struct FlowRunner::Impl {
                 }
             } else {
                 // Python 不检查 open_project 的输出（失败会在 launch_runs 阶段暴露），保持一致
-                (void)RunCommand("open_project {" + Slashes(owner->project_.al_path) + "}", 300.0);
+                (void)RunCommand("open_project " + td::TclQuoteGrouped(Slashes(owner->project_.al_path)),
+                         300.0);
                 Emit("progress", "Project loaded: " + owner->project_.name);
 
                 for (const std::string& stage : stages) {

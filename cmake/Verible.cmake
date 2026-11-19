@@ -232,6 +232,17 @@ foreach(_pkg IN LISTS _VERIBLE_PACKAGES)
         # 二进制目录与源码目录分离，保持源码树干净
         add_subdirectory("${FPGA_LSP_VERIBLE_DIR}/${_pkg}"
                          "${CMAKE_BINARY_DIR}/verible/${_pkg}")
+        # B3 / LTO：Verible 的 flex/bison 生成 TU 在 `/GL` 下会把 Parser 符号
+        # 在 LTCG 阶段丢弃（/WHOLEARCHIVE 也救不回）。第三方代码不做 LTO，
+        # 只让本项目自有代码参与全程序优化，同时避免生成物与 LTO 的兼容问题。
+        if(CMAKE_INTERPROCEDURAL_OPTIMIZATION)
+            get_property(_verible_targets DIRECTORY "${FPGA_LSP_VERIBLE_DIR}/${_pkg}"
+                         PROPERTY BUILDSYSTEM_TARGETS)
+            foreach(_verible_target IN LISTS _verible_targets)
+                set_target_properties(${_verible_target} PROPERTIES
+                                      INTERPROCEDURAL_OPTIMIZATION OFF)
+            endforeach()
+        endif()
     else()
         message(WARNING "Verible 包缺少 CMakeLists.txt，已跳过：${_pkg}")
     endif()

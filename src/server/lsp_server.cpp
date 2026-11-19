@@ -162,7 +162,11 @@ void Settings::Update(const Json& options) {
 // =============================================================================
 
 LspServer::LspServer(jsonrpc::TransportBaseCommon& transport, std::string td_explicit)
-    : transport_(transport), td_explicit_(std::move(td_explicit)) {}
+    : transport_(transport), td_explicit_(std::move(td_explicit)) {
+    index_service_ = std::make_unique<IndexService>(
+        [this](const std::string& path) { return LoadText(path); });
+    report_store_ = std::make_unique<ReportStore>();
+}
 
 LspServer::~LspServer() { Shutdown(); }
 
@@ -227,6 +231,11 @@ void LspServer::RegisterAll(jsonrpc::Dispatcher& dispatcher) {
     dispatcher.Register("workspace/didChangeConfiguration", [this](const Json& params) {
         return HandleDidChangeConfiguration(params);
     });
+    // Phase 2：客户端 FileSystemWatcher 已经会发这个通知；之前没有 handler，事件被静默丢弃。
+    // A1 的 IndexService 接入前，这里只做轻量登记（签名机制仍会在请求时兜底）。
+    dispatcher.Register("workspace/didChangeWatchedFiles", [this](const Json& params) {
+        return HandleDidChangeWatchedFiles(params);
+    });
 
     // ---- 标准 LSP：符号类能力（hdl_handlers.cpp）----
     dispatcher.Register("textDocument/completion",
@@ -244,28 +253,31 @@ void LspServer::RegisterAll(jsonrpc::Dispatcher& dispatcher) {
     dispatcher.Register("textDocument/inlayHint",
                         [this](const Json& params) { return HandleInlayHint(params); });
 
-    // ---- 标准 LSP：已声明能力对应的空实现（绝不 -32601，见 COMMANDS.md）----
+    // ---- 标准 LSP：已实现的能力（Phase B 起不再是空返回）----
     dispatcher.Register("textDocument/codeAction",
-                        [this](const Json& params) { return HandleEmptyList(params); });
+                        [this](const Json& params) { return HandleCodeAction(params); });
     dispatcher.Register("textDocument/formatting",
                         [this](const Json& params) { return HandleFormatting(params); });
     dispatcher.Register("textDocument/rangeFormatting",
                         [this](const Json& params) { return HandleRangeFormatting(params); });
     dispatcher.Register("textDocument/prepareRename",
-                        [this](const Json& params) { return HandleNull(params); });
+                        [this](const Json& params) { return HandlePrepareRename(params); });
     dispatcher.Register("textDocument/rename",
-                        [this](const Json& params) { return HandleNull(params); });
+                        [this](const Json& params) { return HandleRename(params); });
     dispatcher.Register("textDocument/prepareCallHierarchy",
-                        [this](const Json& params) { return HandleEmptyList(params); });
+                        [this](const Json& params) { return HandlePrepareCallHierarchy(params); });
     dispatcher.Register("callHierarchy/incomingCalls",
-                        [this](const Json& params) { return HandleEmptyList(params); });
+                        [this](const Json& params) { return HandleIncomingCalls(params); });
     dispatcher.Register("callHierarchy/outgoingCalls",
-                        [this](const Json& params) { return HandleEmptyList(params); });
+                        [this](const Json& params) { return HandleOutgoingCalls(params); });
     dispatcher.Register("textDocument/semanticTokens/full", [this](const Json& params) {
         return HandleSemanticTokensFull(params);
     });
+    dispatcher.Register("textDocument/semanticTokens/full/delta", [this](const Json& params) {
+        return HandleSemanticTokensDelta(params);
+    });
     dispatcher.Register("textDocument/foldingRange",
-                        [this](const Json& params) { return HandleEmptyList(params); });
+                        [this](const Json& params) { return HandleFoldingRange(params); });
 
     // ---- 自定义 v2 方法（PROTOCOL-V2.md）----
     dispatcher.Register("fpgaLsp/moduleTree",
@@ -309,18 +321,29 @@ Json LspServer::FeatureInitialize(const Json& params) {
 
     Json capabilities = Json::object();
 
-    // textDocumentSync: {openClose, change:2(Incremental), save:{includeText:false}}
+    // textDocumentSync: {openClose, change:2(Incremental), save:{includeText:true}}
+    //   includeText=true 与 Python 一致：didSave 时把缓冲区交给服务端，避免落盘竞态。
     Json sync = Json::object();
     sync["openClose"] = true;
     sync["change"] = 2;
     Json save = Json::object();
-    save["includeText"] = false;
+    save["includeText"] = true;
     sync["save"] = std::move(save);
     capabilities["textDocumentSync"] = std::move(sync);
 
+    // 与 Python 的 completionProvider 逐字对齐（集合相同、顺序不参与契约）
     Json completion = Json::object();
-    completion["triggerCharacters"] = Json::array({".", "("});
+    completion["triggerCharacters"] =
+        Json::array({"{", "=", " ", "[", "\t", "|"});
     capabilities["completionProvider"] = std::move(completion);
+
+    // 多根工作区：Python 声明 supported + changeNotifications
+    Json folders = Json::object();
+    folders["supported"] = true;
+    folders["changeNotifications"] = true;
+    Json workspace = Json::object();
+    workspace["workspaceFolders"] = std::move(folders);
+    capabilities["workspace"] = std::move(workspace);
 
     capabilities["hoverProvider"] = true;
     capabilities["definitionProvider"] = true;
@@ -349,7 +372,7 @@ Json LspServer::FeatureInitialize(const Json& params) {
     legend["tokenModifiers"] = Json::array();
     Json semantic = Json::object();
     semantic["legend"] = std::move(legend);
-    semantic["full"] = true;
+    semantic["full"] = Json::object({{"delta", true}});
     capabilities["semanticTokensProvider"] = std::move(semantic);
 
     capabilities["foldingRangeProvider"] = true;
@@ -376,6 +399,74 @@ HandlerResult LspServer::HandleInitialize(const Json& params) {
 HandlerResult LspServer::HandleNoop(const Json& params) {
     (void)params;
     return HandlerResult::Ok(Json());
+}
+
+// Phase 2：客户端 FileSystemWatcher 的变化通知。
+// A1 的 IndexService 接入后，这里会调用 OnWatchedFiles() 做增量更新；当前先记录，
+// 具体失效仍由下一次请求的工程签名兜底（不改变行为）。
+HandlerResult LspServer::HandleDidChangeWatchedFiles(const Json& params) {
+    const Json changes = jsonrpc::GetArray(params, "changes");
+    std::vector<std::string> changed;
+    std::vector<std::string> deleted;
+    for (const Json& change : changes) {
+        if (!change.is_object()) continue;
+        const std::string uri = jsonrpc::GetString(change, "uri");
+        if (uri.empty()) continue;
+        const std::string path = platform::uri_to_path(uri);
+        const int type = jsonrpc::GetInt(change, "type", 2);
+        if (type == 3) {
+            deleted.push_back(path);
+        } else {
+            changed.push_back(path);
+        }
+    }
+    if (index_service_) {
+        index_service_->SetWatcherActive(true);
+        index_service_->OnWatchedFiles(changed, deleted);
+    }
+    if (report_store_) {
+        std::vector<std::string> all = changed;
+        all.insert(all.end(), deleted.begin(), deleted.end());
+        if (report_store_->InvalidatePaths(all) != 0) {
+            if (const auto project = CurrentProject(); project.has_value()) {
+                SendReportsChanged(*project);
+            }
+        }
+    }
+    MaybeNotifyIndexChanged(changed);
+    platform::default_logger().debug("didChangeWatchedFiles: " +
+                                     std::to_string(changed.size()) + " changed, " +
+                                     std::to_string(deleted.size()) + " deleted");
+    return HandlerResult::Ok(Json());
+}
+
+// Phase 2：索引快照 generation 变了才推送（插件据此定向刷新；旧客户端忽略）。
+void LspServer::MaybeNotifyIndexChanged(const std::vector<std::string>& paths) {
+    if (!index_service_ || paths.empty()) return;
+    const std::uint64_t generation = index_service_->stats().generation;
+    if (generation == 0 || generation == last_index_generation_) return;
+    last_index_generation_ = generation;
+    Json params = Json::object();
+    params["al"] = index_service_->al_path();
+    params["generation"] = generation;
+    params["paths"] = paths;
+    SendNotification("fpgaLsp/indexChanged", std::move(params));
+}
+
+void LspServer::SendReportsChanged(const project::Project& project) {
+    if (!report_store_) return;
+    const auto snapshot = report_store_->Get(project, reports::sections::kAll);
+    Json params = Json::object();
+    params["stage"] = "all";
+    Json sections = Json::array();
+    for (const char* name : {"files", "artifacts", "qor", "timing", "area", "flow"}) {
+        bool ok = false;
+        const std::uint32_t bit = reports::sections::Parse(name, &ok);
+        if (ok && (snapshot->mask & bit) != 0) sections.push_back(name);
+    }
+    params["sections"] = std::move(sections);
+    params["generatedAt"] = snapshot->generated_at;
+    SendNotification("fpgaLsp/reportsChanged", std::move(params));
 }
 
 HandlerResult LspServer::HandleNull(const Json& params) {
@@ -459,21 +550,177 @@ HandlerResult LspServer::HandleFormatting(const Json& params) {
 #endif
 }
 
-// textDocument/rangeFormatting —— 暂不实现（返回 []）
-//   编辑器的"格式化选区"走 Verible 的 FormatVerilogRange（只输出区间那一段、
-//   不做收敛性检验），该 API 尚未做等价性验证（FORMAT-GATE-REPORT.md §8）。
-//   验证前不接，避免"看起来能用但输出与官方 CLI 不同"。
-//   右键 → Format Document（全文档）已可用。
-HandlerResult LspServer::HandleRangeFormatting(const Json& params) {
-    (void)params;
-    return HandlerResult::Ok(Json::array());
+namespace {
+
+bool TextDocumentUri(const Json& params, std::string* uri) {
+    const auto doc = params.find("textDocument");
+    if (doc == params.end() || !doc->is_object()) return false;
+    const auto value = doc->find("uri");
+    if (value == doc->end() || !value->is_string()) return false;
+    *uri = value->get<std::string>();
+    return !uri->empty();
 }
 
+bool CursorPosition(const Json& params, int* line, int* character) {
+    const auto pos = params.find("position");
+    if (pos == params.end() || !pos->is_object()) return false;
+    *line = jsonrpc::GetInt(*pos, "line", -1);
+    *character = jsonrpc::GetInt(*pos, "character", -1);
+    return *line >= 0 && *character >= 0;
+}
+
+}  // namespace
+
+// textDocument/rangeFormatting —— Phase B 接入（B4 填 FeatureRangeFormatting）
+HandlerResult LspServer::HandleRangeFormatting(const Json& params) {
+    std::string uri;
+    if (!TextDocumentUri(params, &uri)) return HandlerResult::Ok(Json::array());
+    const Json range = params.contains("range") && params["range"].is_object()
+                           ? params["range"]
+                           : Json::object();
+    const Json options = params.contains("options") && params["options"].is_object()
+                             ? params["options"]
+                             : Json::object();
+    return HandlerResult::Ok(
+        FeatureRangeFormatting(platform::uri_to_path(uri), range, options));
+}
+
+namespace {
+
+std::string SemanticResultId(const Json& data, std::string_view uri) {
+    std::uint64_t hash = 1469598103934665603ull;
+    const std::string text = std::string(uri) + data.dump();
+    for (unsigned char c : text) {
+        hash ^= c;
+        hash *= 1099511628211ull;
+    }
+    char buffer[20];
+    std::snprintf(buffer, sizeof(buffer), "%016llx", static_cast<unsigned long long>(hash));
+    return std::string(buffer);
+}
+
+}  // namespace
+
 HandlerResult LspServer::HandleSemanticTokensFull(const Json& params) {
-    (void)params;
-    Json result = Json::object();
-    result["data"] = Json::array();
+    std::string uri;
+    if (!TextDocumentUri(params, &uri)) {
+        Json empty = Json::object();
+        empty["data"] = Json::array();
+        return HandlerResult::Ok(std::move(empty));
+    }
+    Json result = FeatureSemanticTokens(platform::uri_to_path(uri));
+    const std::string id = SemanticResultId(result["data"], uri);
+    {
+        std::lock_guard<std::mutex> lock(semantic_mutex_);
+        SemanticCacheEntry& entry = semantic_cache_[uri];
+        entry.result_id = id;
+        entry.data = result["data"];
+    }
+    result["resultId"] = id;
     return HandlerResult::Ok(std::move(result));
+}
+
+// Phase 2 / B2：semanticTokens 增量。当前实现：
+//   * 内容没变（resultId 相同）-> edits 为空（客户端复用旧 token）；
+//   * 变了 -> 返回一条“整段替换”编辑（合法 delta；比全量响应少一次 resultId 协商）。
+HandlerResult LspServer::HandleSemanticTokensDelta(const Json& params) {
+    std::string uri;
+    if (!TextDocumentUri(params, &uri)) {
+        Json empty = Json::object();
+        empty["edits"] = Json::array();
+        return HandlerResult::Ok(std::move(empty));
+    }
+    const std::string previous = jsonrpc::GetString(params, "previousResultId");
+    Json current = FeatureSemanticTokens(platform::uri_to_path(uri));
+    const Json data = current["data"];
+    const std::string id = SemanticResultId(data, uri);
+
+    Json edits = Json::array();
+    {
+        std::lock_guard<std::mutex> lock(semantic_mutex_);
+        SemanticCacheEntry& entry = semantic_cache_[uri];
+        if (entry.result_id != id) {
+            Json edit = Json::object();
+            edit["start"] = 0;
+            edit["deleteCount"] = entry.data.is_array() ? entry.data.size() : 0;
+            edit["data"] = data;
+            edits.push_back(std::move(edit));
+        }
+        entry.result_id = id;
+        entry.data = data;
+    }
+    Json result = Json::object();
+    result["resultId"] = id;
+    result["edits"] = std::move(edits);
+    (void)previous;
+    return HandlerResult::Ok(std::move(result));
+}
+
+HandlerResult LspServer::HandleFoldingRange(const Json& params) {
+    std::string uri;
+    if (!TextDocumentUri(params, &uri)) return HandlerResult::Ok(Json::array());
+    return HandlerResult::Ok(FeatureFoldingRanges(platform::uri_to_path(uri)));
+}
+
+HandlerResult LspServer::HandleCodeAction(const Json& params) {
+    std::string uri;
+    if (!TextDocumentUri(params, &uri)) return HandlerResult::Ok(Json::array());
+    const Json range = params.contains("range") && params["range"].is_object()
+                           ? params["range"]
+                           : Json::object();
+    const Json context = params.contains("context") && params["context"].is_object()
+                             ? params["context"]
+                             : Json::object();
+    return HandlerResult::Ok(
+        FeatureCodeActions(platform::uri_to_path(uri), range, context));
+}
+
+HandlerResult LspServer::HandlePrepareRename(const Json& params) {
+    std::string uri;
+    int line = 0;
+    int character = 0;
+    if (!TextDocumentUri(params, &uri) || !CursorPosition(params, &line, &character)) {
+        return HandlerResult::Ok(Json(nullptr));
+    }
+    return HandlerResult::Ok(
+        FeaturePrepareRename(platform::uri_to_path(uri), line, character));
+}
+
+HandlerResult LspServer::HandleRename(const Json& params) {
+    std::string uri;
+    int line = 0;
+    int character = 0;
+    if (!TextDocumentUri(params, &uri) || !CursorPosition(params, &line, &character)) {
+        return HandlerResult::Ok(Json(nullptr));
+    }
+    const std::string new_name = jsonrpc::GetString(params, "newName");
+    return HandlerResult::Ok(
+        FeatureRename(platform::uri_to_path(uri), line, character, new_name));
+}
+
+HandlerResult LspServer::HandlePrepareCallHierarchy(const Json& params) {
+    std::string uri;
+    int line = 0;
+    int character = 0;
+    if (!TextDocumentUri(params, &uri) || !CursorPosition(params, &line, &character)) {
+        return HandlerResult::Ok(Json::array());
+    }
+    return HandlerResult::Ok(
+        FeatureCallHierarchyPrepare(platform::uri_to_path(uri), line, character));
+}
+
+HandlerResult LspServer::HandleIncomingCalls(const Json& params) {
+    const Json item = params.contains("item") && params["item"].is_object()
+                          ? params["item"]
+                          : Json::object();
+    return HandlerResult::Ok(FeatureCallHierarchyIncoming(item));
+}
+
+HandlerResult LspServer::HandleOutgoingCalls(const Json& params) {
+    const Json item = params.contains("item") && params["item"].is_object()
+                          ? params["item"]
+                          : Json::object();
+    return HandlerResult::Ok(FeatureCallHierarchyOutgoing(item));
 }
 
 // =============================================================================
@@ -485,22 +732,104 @@ std::optional<std::string> LspServer::LoadText(const std::string& path) {
     return docs_.GetText(platform::path_to_uri(path));
 }
 
+namespace {
+
+std::string LowerAsciiPath(std::string_view text) {
+    std::string out(text);
+    for (char& c : out) {
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+    }
+    return out;
+}
+
+// B8/PERF-01：把"每文件 2 次系统调用"（file_size + last_write_time）换成
+// "每目录 1 次枚举"。Windows 上一次目录枚举就带回整目录的 (size, mtime)，
+// 所以 200 文件工程的签名从 ~13 ms 降到 <1 ms。
+//
+// 正确性：枚举不到（目录不可读、条目缺失、非常规文件名）就返回 nullptr，
+// 调用方回落到原来的逐文件查询 —— 输出与旧实现逐字节一致。
+class DirStampCache {
+public:
+    struct Stamp {
+        std::uintmax_t size = 0;
+        std::int64_t mtime = 0;
+    };
+
+    const Stamp* Find(const std::string& path) {
+        const std::size_t slash = path.find_last_of("/\\");
+        if (slash == std::string::npos || slash + 1 >= path.size()) return nullptr;
+        const std::string dir = path.substr(0, slash);
+        const std::string name = LowerAsciiPath(std::string_view(path).substr(slash + 1));
+
+        auto it = dirs_.find(dir);
+        if (it == dirs_.end()) {
+            it = dirs_.emplace(dir, LoadDir(dir)).first;
+        }
+        const auto found = it->second.find(name);
+        return found == it->second.end() ? nullptr : &found->second;
+    }
+
+private:
+    static std::map<std::string, Stamp> LoadDir(const std::string& dir) {
+        std::map<std::string, Stamp> entries;
+        std::error_code ec;
+        std::filesystem::directory_iterator iter{std::filesystem::path(dir), ec};
+        if (ec) return entries;
+        const std::filesystem::directory_iterator end;
+        for (; iter != end; iter.increment(ec)) {
+            if (ec) break;
+            const std::filesystem::directory_entry& entry = *iter;
+            std::error_code entry_ec;
+            const std::uintmax_t size = entry.file_size(entry_ec);
+            if (entry_ec) continue;
+            const std::filesystem::file_time_type write_time = entry.last_write_time(entry_ec);
+            if (entry_ec) continue;
+            // 文件名按 UTF-8 字节比较（平台层的路径就是 UTF-8 std::string）
+            const std::u8string u8 = entry.path().filename().u8string();
+            std::string name(reinterpret_cast<const char*>(u8.data()), u8.size());
+            Stamp stamp;
+            stamp.size = size;
+            stamp.mtime = static_cast<std::int64_t>(write_time.time_since_epoch().count());
+            entries.emplace(LowerAsciiPath(name), stamp);
+        }
+        return entries;
+    }
+
+    std::map<std::string, std::map<std::string, Stamp>> dirs_;
+};
+
+}  // namespace
+
 std::string LspServer::ProjectSignature(const project::Project& project) {
     // 只需要"变了没变"，所以用 (路径, 版本或 mtime+size) 拼串即可，不做哈希。
     std::string signature = project.al_path;
     std::vector<std::string> files = hdl::VerilogFilesFor(project);
     for (const std::string& path : hdl::VhdlFilesFor(project)) files.push_back(path);
+    signature.reserve(signature.size() + files.size() * 48);
+
+    // 没有打开任何文档时不必逐文件问 DocumentStore（省掉 2 次字符串构造 + 加锁 + 查表）。
+    const bool check_buffers = docs_.Size() > 0;
+    DirStampCache stamps;
 
     for (const std::string& path : files) {
         signature += '\n';
         signature += path;
         signature += '|';
-        if (const auto version = docs_.GetVersion(platform::path_to_uri(path));
-            version.has_value()) {
-            signature += 'v';
-            signature += std::to_string(*version);
+        if (check_buffers) {
+            if (const auto version = docs_.GetVersion(platform::path_to_uri(path));
+                version.has_value()) {
+                signature += 'v';
+                signature += std::to_string(*version);
+                continue;
+            }
+        }
+        if (const DirStampCache::Stamp* stamp = stamps.Find(path); stamp != nullptr) {
+            signature += std::to_string(stamp->size);
+            signature += ':';
+            signature += std::to_string(stamp->mtime);
             continue;
         }
+        // 回落：目录枚举不可用时的原路径（行为与 B8 之前完全一致）
         std::error_code ec;
         const auto size = std::filesystem::file_size(std::filesystem::path(path), ec);
         if (ec) {
@@ -521,45 +850,14 @@ std::string LspServer::ProjectSignature(const project::Project& project) {
 std::shared_ptr<const hdl::HdlIndex> LspServer::IndexForProject(const project::Project& project,
                                                                 bool* truncated,
                                                                 std::size_t* parse_errors) {
-    const std::string signature = ProjectSignature(project);
-    {
-        std::lock_guard<std::mutex> lock(hdl_mutex_);
-        const auto it = hdl_cache_.find(project.al_path);
-        if (it != hdl_cache_.end() && it->second.signature == signature) {
-            if (truncated != nullptr) *truncated = it->second.truncated;
-            if (parse_errors != nullptr) *parse_errors = it->second.parse_errors;
-            return it->second.index;
-        }
-    }
-
-    if (!hdl_parse_cache_) hdl_parse_cache_ = std::make_unique<hdl::ParseCache>();
-    hdl::BuildOptions options;
-    options.cache = hdl_parse_cache_.get();
-
-    hdl::BuildResult built = hdl::BuildIndex(
-        project, [this](const std::string& path) { return LoadText(path); }, options);
-
-    auto index = std::make_shared<hdl::HdlIndex>(std::move(built.index));
-    platform::default_logger().info("HDL 索引重建: " + project.al_path + " -> " +
-                                    std::to_string(index->FileCount()) + " 文件 / " +
-                                    std::to_string(index->ModuleCount()) + " 模块" +
-                                    (built.truncated ? "（已截断）" : ""));
-
-    {
-        std::lock_guard<std::mutex> lock(hdl_mutex_);
-        // 只保留少量工程（多工程工作区里也就是当前这一两个）
-        if (hdl_cache_.size() >= 4) hdl_cache_.clear();
-        HdlIndexEntry entry;
-        entry.signature = signature;
-        entry.index = index;
-        entry.truncated = built.truncated;
-        entry.parse_errors = built.parse_error_count;
-        hdl_cache_[project.al_path] = std::move(entry);
-    }
-
-    if (truncated != nullptr) *truncated = built.truncated;
-    if (parse_errors != nullptr) *parse_errors = built.parse_error_count;
-    return index;
+    // Phase 2 / A1：IndexService 内部做增量更新；这里只负责把工程模型交给它。
+    // 快照是不可变的，调用方可以在锁外安全查询。
+    index_service_->SetProject(project);
+    std::shared_ptr<const hdl::HdlIndex> snapshot = index_service_->Get();
+    if (truncated != nullptr) *truncated = index_service_->truncated();
+    if (parse_errors != nullptr) *parse_errors = index_service_->parse_errors();
+    if (!snapshot) snapshot = std::make_shared<hdl::HdlIndex>();
+    return snapshot;
 }
 
 // =============================================================================
@@ -579,6 +877,11 @@ HandlerResult LspServer::HandleDidOpen(const Json& params) {
     }
     docs_.Open(uri, jsonrpc::GetString(document, "text"), version,
                jsonrpc::GetString(document, "languageId"), path);
+    // Phase 2 / A1：用未保存缓冲区更新索引（只重解析这一份文件）
+    if (const auto project = ProjectForPath(path); project.has_value()) {
+        index_service_->SetProject(*project);
+    }
+    index_service_->OnFileChanged(path, jsonrpc::GetString(document, "text"));
     RunDiagnostics(path, false);
     return HandlerResult::Ok(Json());
 }
@@ -598,6 +901,14 @@ HandlerResult LspServer::HandleDidChange(const Json& params) {
 
     const lsp::DocumentSnapshot snapshot = docs_.Snapshot(uri);
     const std::string path = snapshot.valid() ? snapshot.path : platform::uri_to_path(uri);
+    // Phase 2 / A1：先确保工程已绑定，否则首个 didChange 会被 IndexService 当作"非工程文件"
+    if (const auto project = ProjectForPath(path); project.has_value()) {
+        index_service_->SetProject(*project);
+    }
+    // Phase 2 / A1：增量更新该文件的索引快照
+    if (const auto text = docs_.GetText(uri); text.has_value()) {
+        index_service_->OnFileChanged(path, *text);
+    }
     RunDiagnostics(path, false);
     return HandlerResult::Ok(Json());
 }
@@ -615,6 +926,17 @@ HandlerResult LspServer::HandleDidSave(const Json& params) {
 
     const lsp::DocumentSnapshot snapshot = docs_.Snapshot(uri);
     const std::string path = snapshot.valid() ? snapshot.path : platform::uri_to_path(uri);
+
+    // Phase 2 / A1：保存后基于缓冲区（includeText=true）增量更新索引
+    if (const auto project = ProjectForPath(path); project.has_value()) {
+        index_service_->SetProject(*project);
+    }
+    if (const auto buffer = docs_.GetText(uri); buffer.has_value()) {
+        index_service_->OnFileChanged(path, *buffer);
+    } else {
+        index_service_->OnFileChanged(path, std::nullopt);
+    }
+    MaybeNotifyIndexChanged({path});
 
     RunDiagnostics(path, true);
 
@@ -635,6 +957,8 @@ HandlerResult LspServer::HandleDidClose(const Json& params) {
     if (uri.empty()) return HandlerResult::Ok(Json());
     const std::string path = platform::uri_to_path(uri);
     docs_.Close(uri);
+    // Phase 2 / A1：关闭后回落到磁盘内容（丢弃未保存缓冲区）
+    index_service_->OnFileChanged(path, std::nullopt);
     // 对应 Python didClose：把该文件的诊断清空（否则关掉文件后 Problems 还留着）
     PublishDiagnostics(path, lsp::DiagnosticList{});
     return HandlerResult::Ok(Json());
@@ -652,6 +976,42 @@ HandlerResult LspServer::HandleDidChangeConfiguration(const Json& params) {
 // =============================================================================
 //  诊断发布
 // =============================================================================
+
+namespace {
+
+bool SameDiagnosticList(const lsp::DiagnosticList& left, const lsp::DiagnosticList& right) {
+    if (left.size() != right.size()) return false;
+    for (std::size_t i = 0; i < left.size(); ++i) {
+        const lsp::Diagnostic& a = left[i];
+        const lsp::Diagnostic& b = right[i];
+        if (a.range.start.line != b.range.start.line ||
+            a.range.start.character != b.range.start.character ||
+            a.range.end.line != b.range.end.line ||
+            a.range.end.character != b.range.end.character || a.severity != b.severity ||
+            a.code != b.code || a.message != b.message) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Phase 2 / B2：只发布发生变化的文件（新增/删除/内容变化）。
+std::vector<std::string> ChangedDiagnosticFiles(
+    const std::map<std::string, lsp::DiagnosticList>& before,
+    const std::map<std::string, lsp::DiagnosticList>& after) {
+    std::vector<std::string> changed;
+    for (const auto& [path, list] : after) {
+        const auto it = before.find(path);
+        if (it == before.end() || !SameDiagnosticList(it->second, list)) changed.push_back(path);
+    }
+    for (const auto& [path, list] : before) {
+        (void)list;
+        if (after.find(path) == after.end()) changed.push_back(path);
+    }
+    return changed;
+}
+
+}  // namespace
 
 std::string DiagnosticPath(const lsp::Diagnostic& diagnostic, std::string_view fallback) {
     if (diagnostic.data.is_object()) {
@@ -882,11 +1242,16 @@ void LspServer::RunTdCheckOnce(const project::Project& project) {
         total += list.size();
     }
 
+    std::map<std::string, lsp::DiagnosticList> before;
     {
         std::lock_guard<std::mutex> lock(state_mutex_);
-        td_diags_[project.al_path] = std::move(table);
+        before = td_diags_[project.al_path];
+        td_diags_[project.al_path] = table;
     }
-    PublishMerged(project, nullptr);
+    // Phase 2 / B2：只发变更文件，避免每次保存整工程 Problems 闪烁。
+    for (const std::string& path : ChangedDiagnosticFiles(before, table)) {
+        PublishMerged(project, &path);
+    }
 
     const double elapsed = std::chrono::duration<double>(clock_type::now() - started).count();
     char buffer[256];
@@ -955,6 +1320,40 @@ std::string LspServer::RootPath() const {
     return platform::normalize_path(root_uri_);
 }
 
+std::optional<project::Project> LspServer::ParseAlCached(const std::string& al_path) {
+    // 对应 Python project.parse_al_cached：按 .al 的 (mtime, size) 决定是否重新解析。
+    std::error_code ec;
+    const std::filesystem::path al_file(al_path);
+    const std::uintmax_t size = std::filesystem::file_size(al_file, ec);
+    if (ec) return project::ParseAl(al_path);  // .al 不存在/不可读：不缓存，保持原行为
+    const std::filesystem::file_time_type write_time =
+        std::filesystem::last_write_time(al_file, ec);
+    if (ec) return project::ParseAl(al_path);
+    const std::int64_t mtime =
+        static_cast<std::int64_t>(write_time.time_since_epoch().count());
+
+    {
+        std::lock_guard<std::mutex> lock(project_cache_mutex_);
+        const auto it = project_cache_.find(al_path);
+        if (it != project_cache_.end() && it->second.mtime == mtime &&
+            it->second.size == size) {
+            return it->second.project;  // 返回副本：调用方语义（std::optional<Project>）不变
+        }
+    }
+
+    std::optional<project::Project> parsed = project::ParseAl(al_path);
+    {
+        std::lock_guard<std::mutex> lock(project_cache_mutex_);
+        if (project_cache_.size() >= 8) project_cache_.clear();
+        ParsedProjectEntry entry;
+        entry.mtime = mtime;
+        entry.size = size;
+        entry.project = parsed;
+        project_cache_[al_path] = std::move(entry);
+    }
+    return parsed;
+}
+
 std::optional<project::Project> LspServer::ProjectForPath(std::string_view path) {
     if (path.empty()) return std::nullopt;
 
@@ -977,7 +1376,7 @@ std::optional<project::Project> LspServer::ProjectForPath(std::string_view path)
             if (clock_type::now() - it->second.at < std::chrono::seconds(5)) {
                 return it->second.al.empty()
                            ? std::nullopt
-                           : std::optional<project::Project>(project::ParseAl(it->second.al));
+                           : std::optional<project::Project>(ParseAlCached(it->second.al));
             }
         }
     }
@@ -993,7 +1392,7 @@ std::optional<project::Project> LspServer::ProjectForPath(std::string_view path)
         discovery_cache_[key] = std::move(entry);
     }
     if (!al.has_value()) return std::nullopt;
-    return project::ParseAl(*al);
+    return ParseAlCached(*al);
 }
 
 std::optional<project::Project> LspServer::CurrentProject() {
@@ -1024,6 +1423,11 @@ void LspServer::InvalidateProjectCaches() {
         // 工程切换后旧索引不再有意义（键是 al_path，留着也只是占内存）
         std::lock_guard<std::mutex> lock(hdl_mutex_);
         hdl_cache_.clear();
+    }
+    {
+        // 同上：已解析的 Project 也一起丢（下次按 (mtime, size) 重新解析）
+        std::lock_guard<std::mutex> lock(project_cache_mutex_);
+        project_cache_.clear();
     }
 }
 

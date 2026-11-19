@@ -2,7 +2,9 @@
 
 > 权威协议：`Y:\fpga-lsp\PROTOCOL-V2.md`
 > 参考实现：`Y:\fpga-lsp\fpgalsp\server.py`
-> 本文件是 **task-14 验收项之一**："必须列出已实现 / 占位两栏"。
+> 本文件原为 **task-14 验收项**（"已实现 / 占位两栏"）。2026-11-18 Phase B 后
+> **不再有占位命令/空实现**；本文件保留为"方法与命令的落点索引"，逐条证据见
+> `audit/2026-11-18/parity-matrix.md` 与 `audit/2026-11-18/FIX-REPORT.md`。
 
 ## 铁律：占位必须显式返回
 
@@ -35,21 +37,24 @@
 | `fpgalsp.program` | `{ok, refused?, stage?, device_id, log}` | **三条硬规则在 `flow::Program()` 内部**：`confirm:true` 必须显式传 / 无下载器直接拒 / 器件不匹配即使 `allowMismatch:true` 也拒 |
 | `fpgalsp.svfgen` | `{ok, svf, size, command}` | 生成 SVF |
 
-## 一、`workspace/executeCommand` —— 占位（统一 `{ok:false,"not implemented"}`）
+## 一、`workspace/executeCommand` —— Phase B 已全部实现（无占位）
 
-| command | 归属模块 | 备注 |
+> 2026-11-18 Phase B 后：下表 11 条命令全部走 `LspServer::Feature*`（LSP 与 MCP 同一实现），
+> 不再有 `{"ok":false,"error":"not implemented"}`。逐条验收见 `audit/2026-11-18/parity-matrix.md` 的 CMD-01..CMD-10。
+
+| command | 归属模块 | 说明 |
 | --- | --- | --- |
-| `fpgalsp.reports` | reports | 随 `fpgaLsp/reports` 一起接入 |
-| `fpgalsp.runAnalysis` | analysis | DRC / CDC |
-| `fpgalsp.addSourceFile` | ide | 写 `.al` 的 `<Source_Files>` |
-| `fpgalsp.setProjectName` | ide | 改 `.al` 的 `<Name>` |
+| `fpgalsp.reports` | reports | 与 `fpgaLsp/reports` 同一实现 |
+| `fpgalsp.runAnalysis` | analysis | DRC / CDC（无布线产物时 `ok:false` + 可读 error） |
+| `fpgalsp.addSourceFile` | ide | 写 `.al` 的 `<Source_Files>`（原子写 + 回滚） |
+| `fpgalsp.setProjectName` | ide | 改 `.al` 的 `<Name>`（原子写 + 回滚） |
 | `fpgalsp.updateProject` | ide + TD | `check_project_version` + `open_project -update` |
-| `fpgalsp.instantiate` | hdl / ide | 例化文本生成 |
+| `fpgalsp.instantiate` | hdl / ide | 例化文本生成（`BuildInstantiationText`） |
 | `fpgalsp.copyInstantiation` | ide | 当前文件第一个 module 的例化 |
 | `fpgalsp.symbolPath` | ide | 光标处层次路径 |
 | `fpgalsp.duplicateModules` | ide | 跨构建文件重名 module |
 | `fpgalsp.searchHierarchy` | ide | 模块名/例化名搜索 |
-| `fpgalsp.debugHighlight` | semantics | Python 有、协议未文档化的调试命令 |
+| `fpgalsp.debugHighlight` | semantics | 语义 token 统计（与 `FeatureSemanticTokens` 同源） |
 
 未在以上两栏里的命令 → `{ok:false, error:"unknown command <name>"}`（与 Python 一致）。
 
@@ -59,9 +64,9 @@
 
 | 方法 | 状态 | 说明 |
 | --- | --- | --- |
-| `fpgaLsp/moduleTree` | **已实现（真实索引）** | 基于 `src/hdl` 的 Verible 符号索引；见下方"已知局限" |
-| `fpgaLsp/reports` | 占位 | 返回 `{ok:false, error:"reports module not implemented"}`，但 §2 的**全部字段结构已预留**（`artifacts/flow/qor/timing/area/flowStatus/files`） |
-| `fpgaLsp/flowStatus` | 占位 | `{ok:true, flow:{running:false, stage:"idle", elapsed:0, lastMessage:"", log:[]}}` |
+| `fpgaLsp/moduleTree` | **已实现（真实索引）** | 基于 `src/hdl` 的 Verible 符号索引；`includePrimitives=false` 时按 745 条器件原语过滤黑盒 |
+| `fpgaLsp/reports` | **已实现** | `reports::BuildReports` + `routed_db` + `strategies.available` + `flow`；无 flow 时 `ok:false` + Python 同文案 |
+| `fpgaLsp/flowStatus` | **已实现** | `{ok, flow{...,log,ok}, artifacts{runs[]}}` |
 | `fpgaLsp/flowEvent`（通知，服务器→客户端） | 预留 | `LspServer::SendFlowEvent(event)` 已固定签名与 wire 形状，flow 接入后直接调用；本阶段**没有调用点** |
 
 ### `fpgaLsp/moduleTree`（阶段 3 起用真实 HDL 索引）
@@ -131,18 +136,22 @@ instance 的 `module/name/line/character`。
 
 ### 仍返回空结果（占位，不报错）
 
-| 方法 | 返回 |
-| --- | --- |
-| `textDocument/codeAction` | `[]` |
-| `textDocument/formatting` | `[]`（Verible 桥接未接入；`[]` = 不改文本） |
-| `textDocument/rangeFormatting` | `[]` |
-| `textDocument/prepareRename` / `rename` | `null`（= 不改文本；`null` 是 WorkspaceEdit 的合法值） |
-| `textDocument/prepareCallHierarchy` / `callHierarchy/*` | `[]` |
-| `textDocument/semanticTokens/full` | `{data:[]}` |
-| `textDocument/foldingRange` | `[]` |
+> 2026-11-18 Phase B 后**已无空实现**：下表全部变为真实现，逐条见 `parity-matrix.md`
+> LSP-01..LSP-09。保留本节只是为了让旧读者知道这里曾经是空的。
 
-> 备注：`formatting` 按 v5 协议**始终声明**（内嵌 Verible 负责格式化），
-> 因此客户端会调用它；当前返回 `[]`。Verible 桥接任务接入后改这里即可。
+| 方法 | Phase B 后的行为 |
+| --- | --- |
+| `textDocument/codeAction` | 实例化 refactor + 内嵌 Verible lint autofix + `.adc` 引脚 quickfix |
+| `textDocument/formatting` | 内嵌 Verible 全文档格式化（与 `fpga_format` 同一桥） |
+| `textDocument/rangeFormatting` | 内嵌 Verible，区间编辑 |
+| `textDocument/prepareRename` / `rename` | 符号级 range + 全工程 token 级编辑 |
+| `textDocument/prepareCallHierarchy` / `callHierarchy/*` | 真实层次调用（in/out） |
+| `textDocument/semanticTokens/full` | Verible 原始词法流 → 语义 token |
+| `textDocument/foldingRange` | 关键字/括号折叠区间 |
+
+> 备注：`formatting` 按 v5 协议**始终声明**（内嵌 Verible 负责格式化）。
+> Verible 版本基线 = `thirdparty/verible` 的 `c6b29d62`；与 Python 侧外部
+> `verible 0.0-4296` 的差异只在 LSP-18（formatting 字节）一族，属于版本基线而非能力缺失。
 
 ---
 
@@ -205,8 +214,9 @@ src/server/lsp_server.cpp     LSP 传输/线程/缓存；handler 只解包 param
 
 | capability | 值 | 协议出处 |
 | --- | --- | --- |
-| `textDocumentSync` | `{openClose:true, change:2, save:{includeText:false}}` | v7（Incremental） |
-| `completionProvider` | `{triggerCharacters:[".","("]}` | task-14 |
+| `textDocumentSync` | `{openClose:true, change:2, save:{includeText:true}}` | v7（Incremental）+ Phase B 与 Python 对齐 |
+| `completionProvider` | `{triggerCharacters:["{","="," ","[","\t","|"]}` | Phase B 与 Python 集合一致 |
+| `workspace.workspaceFolders` | `{supported:true, changeNotifications:true}` | Phase B |
 | `hoverProvider` | `true` | v1 |
 | `definitionProvider` | `true` | v1 |
 | `documentSymbolProvider` | `true` | v1 |

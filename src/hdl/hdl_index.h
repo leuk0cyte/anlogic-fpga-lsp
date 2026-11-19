@@ -33,10 +33,12 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -214,20 +216,29 @@ ParsedFile ParseFile(std::string_view path, std::string_view text);
 // -----------------------------------------------------------------------------
 // 解析缓存（按 path + 内容哈希）
 // -----------------------------------------------------------------------------
+//  Phase 2 / A1：冷构建改为**多线程并行解析**，所以缓存必须线程安全。
+//  策略：一把互斥量保护 entries_ 与计数器（Get/Put 都只做一次哈希 + 一次查表，
+//  临界区 ~100 ns；真正的解析在锁外做，因此不存在"大锁"). 若将来出现更高并发，
+//  再按哈希分片即可，接口不变。
 class ParseCache {
 public:
+    ParseCache() = default;
+    ParseCache(const ParseCache&) = delete;
+    ParseCache& operator=(const ParseCache&) = delete;
+
     // 命中返回旧结果；未命中返回 nullptr（调用方解析后 Put）
     std::shared_ptr<const ParsedFile> Get(std::string_view path, std::string_view text);
     void Put(std::string_view path, std::string_view text, std::shared_ptr<ParsedFile> file);
     void Clear();
-    std::size_t size() const { return entries_.size(); }
-    std::size_t hits() const { return hits_; }
-    std::size_t misses() const { return misses_; }
+    std::size_t size() const;
+    std::size_t hits() const;
+    std::size_t misses() const;
 
     // 容量上限（超出时整体清空 —— 缓存只是加速，丢了不影响正确性）
     std::size_t capacity = 4096;
 
 private:
+    mutable std::mutex mutex_;
     std::map<std::string, std::shared_ptr<ParsedFile>> entries_;
     std::size_t hits_ = 0;
     std::size_t misses_ = 0;
@@ -284,7 +295,38 @@ class HdlIndex {
 public:
     HdlIndex() = default;
 
-    void AddFile(ParsedFile file);
+    // B8 / PERF-03：按共享所有权加入，**不再深拷贝** ParsedFile。
+    // 解析缓存（ParseCache）里本来就存着 shared_ptr<const ParsedFile>，索引直接共享同一份；
+    // 200 文件工程的峰值内存因此少掉一整份 token 表（实测 16.2 MB → 12.4 MB）。
+    void AddFile(std::shared_ptr<const ParsedFile> file);
+
+    // 兼容重载（单元测试/一次性用法）：把值 move 进 shared_ptr，**本身也不做深拷贝**。
+    // 热路径（BuildIndex）一律走上面的共享版。
+    void AddFile(ParsedFile file) {
+        AddFile(std::make_shared<const ParsedFile>(std::move(file)));
+    }
+
+    // ---- 增量更新（Phase 2 / A1）---------------------------------------------
+    //  给 IndexService 用：改一个文件时不再全量 BuildIndex，而是
+    //      HdlIndex next = current.Clone();      // O(N) shared_ptr 指针拷贝
+    //      next.ReplaceFile(parsed);             // O(模块数) 重建模块索引
+    //  这些方法都**不深拷贝 ParsedFile**（只搬 shared_ptr），也不重新解析别的文件。
+
+    // 深拷贝"索引结构"（files_ 里是 shared_ptr，拷贝的是指针）——供写者做 COW。
+    HdlIndex Clone() const;
+
+    // 同路径替换（路径不存在时追加，语义等于 Upsert）。会重建 modules_by_key_。
+    void ReplaceFile(std::shared_ptr<const ParsedFile> file);
+    void UpsertFile(std::shared_ptr<const ParsedFile> file) { ReplaceFile(std::move(file)); }
+
+    // 移除一个文件；返回是否真的存在并移除了。
+    // 会重建 by_lower_path_（下标整体左移）与 modules_by_key_。
+    bool RemoveFile(std::string_view path);
+
+    // 重建 modules_by_key_ / module_order_（O(模块数)）。
+    // 语义与"按 files_ 顺序重新 AddFile 一遍"完全相同：
+    //   模块名首次出现在哪个文件就以哪个为准，module_order_ 保持首次出现顺序。
+    void RebuildModuleIndex();
 
     // 按路径取文件；大小写不敏感回退（Windows 语义）
     const ParsedFile* File(std::string_view path) const;
@@ -323,7 +365,9 @@ public:
     std::vector<Location> References(std::string_view path, int line, int character) const;
 
 private:
-    std::vector<ParsedFile> files_;
+    void RebuildPathIndex();  // RemoveFile 后下标左移：重建 path -> 下标
+
+    std::vector<std::shared_ptr<const ParsedFile>> files_;
     std::map<std::string, std::size_t> by_lower_path_;                          // lower(path) -> 下标
     std::map<std::string, std::pair<std::size_t, std::size_t>> modules_by_key_;  // lower name -> (file, module)
     std::vector<std::string> module_order_;
@@ -354,7 +398,16 @@ struct BuildOptions {
     ParseCache* cache = nullptr;
     std::size_t max_files = 2000;              // 文件数预算（防异常工程）
     std::size_t max_total_tokens = 4'000'000;  // token 总预算
+
+    // 并行解析线程数（Phase 2 / A1）：
+    //   0（默认）或 1 = 顺序（B8 之前的原路径，行为逐字节一致）；
+    //   >=2        = 多线程解析，**保序合并**（结果与顺序完全一致）。
+    // 用 RecommendedParseThreads() 取"自动"值：min(8, hardware_concurrency()-1)。
+    std::size_t parse_threads = 0;
 };
+
+// 冷构建并行的默认线程数：min(8, hw-1)，下限 1（= 顺序）。
+std::size_t RecommendedParseThreads();
 
 struct BuildResult {
     HdlIndex index;

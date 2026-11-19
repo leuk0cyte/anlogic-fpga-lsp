@@ -10,6 +10,8 @@ add_library(fpga_lsp_td STATIC
     td_session.cpp
     td_device.cpp
     td_diagnostics.cpp
+    # A5 / task-25：单飞队列 + 取消 + 去抖（策略层，不依赖 lsp_server）
+    td_service.cpp
 )
 
 add_library(fpga_lsp::td ALIAS fpga_lsp_td)

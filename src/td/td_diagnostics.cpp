@@ -13,6 +13,7 @@
 #include "platform/path.h"
 #include "td/td_device.h"
 #include "td/td_session.h"
+#include "td/tcl_quote.h"
 
 namespace fpgalsp::td {
 namespace {
@@ -221,8 +222,14 @@ std::vector<std::string> IpGeneratedHdl(const project::Project& project) {
 std::string MakeReadHdlCommand(const std::vector<std::string>& files,
                                std::string_view top) {
     // 对应 Python: "read_hdl -file {%s} -top %s" % (_file_list_tcl(files), project.top or "top")
+    // ⚠ B7 / S-01：`-file` 的列表与 `-top` 都必须是一个**完整 Tcl 单词**。
+    //   旧实现把 project.top 裸拼进来，一个 `<MODULE>top; exec calc</MODULE>`
+    //   就是一条任意命令（保存文件即自动触发）。现在：
+    //     * 列表整体 TclQuote -> 普通路径下输出仍是 `{a.v b.v}`（行为不变）
+    //     * top 走 TclQuote；调用方（RunReadHdl）另外还会拒绝非标识符
     const std::string top_name = top.empty() ? std::string("top") : std::string(top);
-    return "read_hdl -file {" + FileListTcl(files) + "} -top " + top_name;
+    return "read_hdl -file " + TclQuoteGrouped(FileListTcl(files)) + " -top " +
+           TclQuote(top_name);
 }
 
 // -----------------------------------------------------------------------------
@@ -261,15 +268,24 @@ EnsureDeviceResult EnsureDevice(const project::Project& project, TdSession& sess
         result.error = "project has no device";
         return result;
     }
+    // ⚠ B7 / S-01：器件名来自 .al 的 <HardWare><Device>，是唯一的"包名"来源。
+    //   合法形态（EF2L45LG144B）必须过白名单；非法值直接安全失败（报错，不拼命令）。
+    //   注意这里**不做 quote 兜底**：非法器件名一定是工程坏了，让用户看到错误，
+    //   而不是让 TD 去猜一个带引号的怪名字。
+    if (!IsTclToken(package)) {
+        result.error = "project device name contains characters that cannot be passed to TD: \"" +
+                       package + "\"";
+        return result;
+    }
 
-    const std::string speed_suffix = SpeedArgSuffix(project.speed);
+    // 速度后缀由 MakeImportDeviceCommand 内部生成（两条路径共用同一份拼装逻辑）
 
     // 显式给出 db：直接用它（对应 Python：不校验结果，信任调用方）
     if (!explicit_db.empty()) {
         try {
-            session.Run("import_device " + std::string(explicit_db) + " -package " + package +
-                            speed_suffix,
-                        90.0);
+            // B7 / S-01：与下面的候选循环共用同一个构造函数（曾经是手拼的重复逻辑，
+            // 手拼那份没有引号，是 S-01 的注入点之一）。
+            session.Run(MakeImportDeviceCommand(explicit_db, package, project.speed), 90.0);
             result.ok = true;
             result.db = std::string(explicit_db);
             result.tried = 1;
@@ -313,17 +329,141 @@ EnsureDeviceResult EnsureDevice(const project::Project& project, TdSession& sess
 }
 
 // -----------------------------------------------------------------------------
-// RunReadHdl
+// A5 / task-25：按文件分组 + 变更对比
 // -----------------------------------------------------------------------------
 
-lsp::DiagnosticList RunReadHdl(const project::Project& project, TdSession& session,
-                               std::string_view explicit_db) {
-    lsp::DiagnosticList diags;
+namespace {
+
+// 指纹：只取"用户能看到"的字段。data 里有 path/backend 之类的装饰信息，参与比较
+// 会让同一批诊断每轮都被判成"变了"，失去"只发布变更"的意义。
+std::string DiagnosticFingerprint(const lsp::Diagnostic& d) {
+    std::string out;
+    out.reserve(64);
+    out += std::to_string(d.range.start.line);
+    out += ':';
+    out += std::to_string(d.range.start.character);
+    out += ':';
+    out += std::to_string(d.range.end.line);
+    out += ':';
+    out += std::to_string(d.range.end.character);
+    out += ':';
+    out += std::to_string(d.severity);
+    out += ':';
+    out += d.code;
+    out += ':';
+    out += d.message;
+    return out;
+}
+
+std::vector<std::string> FileFingerprints(const lsp::DiagnosticList& list) {
+    std::vector<std::string> out;
+    out.reserve(list.size());
+    for (const lsp::Diagnostic& d : list) out.push_back(DiagnosticFingerprint(d));
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
+// 把一批诊断按文件分表，同时填扁平列表
+void GroupByFile(const project::Project& project, lsp::DiagnosticList* diagnostics,
+                 TdCheckResult* result) {
+    for (lsp::Diagnostic& d : *diagnostics) {
+        const std::string key = DiagnosticFileKey(d, project.al_path);
+        result->by_file[key].push_back(d);
+    }
+    result->all = std::move(*diagnostics);
+}
+
+}  // namespace
+
+std::string DiagnosticFileKey(const lsp::Diagnostic& diagnostic,
+                              std::string_view fallback_path) {
+    if (diagnostic.data.is_object()) {
+        const auto it = diagnostic.data.find("path");
+        if (it != diagnostic.data.end() && it->is_string()) {
+            const std::string path = it->get<std::string>();
+            if (!path.empty()) return platform::normalize_path(path);
+        }
+    }
+    return std::string(fallback_path);
+}
+
+std::vector<std::string> DiffChangedFiles(
+    const std::map<std::string, lsp::DiagnosticList>& before,
+    const std::map<std::string, lsp::DiagnosticList>& after) {
+    std::vector<std::string> changed;
+    auto it_before = before.begin();
+    auto it_after = after.begin();
+    while (it_before != before.end() || it_after != after.end()) {
+        if (it_after == after.end() ||
+            (it_before != before.end() && it_before->first < it_after->first)) {
+            changed.push_back(it_before->first);  // 这个文件的诊断被清空了
+            ++it_before;
+            continue;
+        }
+        if (it_before == before.end() || it_after->first < it_before->first) {
+            changed.push_back(it_after->first);  // 新出现的文件
+            ++it_after;
+            continue;
+        }
+        // 同一个文件：比指纹集合
+        if (FileFingerprints(it_before->second) != FileFingerprints(it_after->second)) {
+            changed.push_back(it_after->first);
+        }
+        ++it_before;
+        ++it_after;
+    }
+    std::sort(changed.begin(), changed.end());
+    changed.erase(std::unique(changed.begin(), changed.end()), changed.end());
+    return changed;
+}
+
+// -----------------------------------------------------------------------------
+// RunReadHdlCheck / RunReadHdl
+// -----------------------------------------------------------------------------
+
+TdCheckResult RunReadHdlCheck(const project::Project& project, TdSession& session,
+                              std::string_view explicit_db, const CancelToken* cancel) {
+    TdCheckResult result;
+    // ⚠ 两个秒表：total 用自己的（**从不 Restart**），watch 只在各阶段之间打点。
+    //   早期版本用同一个 watch 的 ElapsedMs() 当 total，而它每次 LapMs() 都会重启，
+    //   结果 total 只等于"最后一段"，比各段之和小一个数量级（A5 实测踩过）。
+    PhaseStopwatch total_watch;
+    PhaseStopwatch watch;
+
+    const auto finish = [&]() -> TdCheckResult& {
+        result.timings.total_ms = total_watch.ElapsedMs();
+        return result;
+    };
+    const auto is_cancelled = [cancel] { return cancel != nullptr && cancel->cancelled(); };
 
     // 工程里没有 HDL -> 直接返回空（对应 Python: if not files: return []）
     const auto hdl = project.HdlFiles();
     if (hdl.empty()) {
-        return diags;
+        return finish();
+    }
+
+    // ⚠ B7 / S-01：<TOP_MODULE><MODULE> 来自 .al，是注入 TD Tcl 的主要入口
+    //   （`top; exec calc` 完全合法地出现在 .al 里）。它不是"路径"，没有理由
+    //   包含 Tcl 元字符 —— 非法即安全失败：给一条诊断并**不发送任何命令**，
+    //   而不是把值 quote 之后让 TD 报一个莫名其妙的 unknown module。
+    const std::string effective_top = project.top.empty() ? std::string("top") : project.top;
+    if (!IsTclIdentifier(effective_top)) {
+        lsp::Diagnostic diag = lsp::Diagnostic::AtLine(
+            0, 0, 1, lsp::kError, "LSP-TCL-IDENT", "fpga-lsp:td",
+            "Top module name \"" + effective_top +
+                "\" contains characters that cannot be passed to TD; TD check skipped");
+        diag.WithData("path", lsp::Json(project.al_path));
+        lsp::DiagnosticList diags;
+        diags.push_back(std::move(diag));
+        GroupByFile(project, &diags, &result);
+        result.failed = true;
+        result.error = "invalid top module name";
+        return finish();
+    }
+
+    if (is_cancelled()) {
+        result.cancelled = true;
+        return finish();
     }
 
     std::vector<std::string> files;
@@ -343,31 +483,74 @@ lsp::DiagnosticList RunReadHdl(const project::Project& project, TdSession& sessi
         }
     }();
 
+    watch.Restart();
     const EnsureDeviceResult device = EnsureDevice(project, session, td_root, explicit_db);
+    result.timings.import_ms = watch.LapMs();
+    result.timings.db_candidates = device.tried;
+
+    // import_device 期间可能被杀（取消）：先看重置位，避免把 kill 造成的失败
+    // 当成"器件库不支持"发布出去。
+    if (is_cancelled()) {
+        result.cancelled = true;
+        return finish();
+    }
+
     if (!device.ok) {
         // never-raise：import 失败产出一条诊断而不是抛异常
         lsp::Diagnostic diag = lsp::Diagnostic::AtLine(
             0, 0, 1, lsp::kError, "TD-DEVICE-IMPORT", "fpga-lsp:td",
             "Unable to import_device for " + project.device + ": " + device.error);
         diag.WithData("path", lsp::Json(project.al_path));
+        lsp::DiagnosticList diags;
         diags.push_back(std::move(diag));
-        return diags;
+        GroupByFile(project, &diags, &result);
+        result.failed = true;
+        result.error = device.error;
+        return finish();
     }
 
-    // 执行 read_hdl（⚠ 本会话之后不可再用）
+    // 执行 read_hdl（⚠ 本会话之后不可再用）。阻塞点：只有 kill hook 能中断它。
     std::string output;
+    watch.Restart();
     try {
         output = session.Run(MakeReadHdlCommand(files, project.top), 300.0);
     } catch (const std::exception& exc) {
+        result.timings.read_hdl_ms = watch.LapMs();
+        if (is_cancelled()) {
+            // 是被我们自己杀掉的：半截输出没有意义，不产生任何诊断
+            result.cancelled = true;
+            return finish();
+        }
         lsp::Diagnostic diag = lsp::Diagnostic::AtLine(
             0, 0, 1, lsp::kError, "TD-READ-HDL-FAILED", "fpga-lsp:td",
             std::string("read_hdl failed: ") + exc.what());
         diag.WithData("path", lsp::Json(project.al_path));
+        lsp::DiagnosticList diags;
         diags.push_back(std::move(diag));
-        return diags;
+        GroupByFile(project, &diags, &result);
+        result.failed = true;
+        result.error = exc.what();
+        return finish();
+    }
+    result.timings.read_hdl_ms = watch.LapMs();
+
+    if (is_cancelled()) {
+        result.cancelled = true;
+        return finish();
     }
 
-    return DiagnosticsFromReadHdlOutput(output, project);
+    watch.Restart();
+    lsp::DiagnosticList diags = DiagnosticsFromReadHdlOutput(output, project);
+    result.timings.parse_ms = watch.LapMs();
+
+    GroupByFile(project, &diags, &result);
+    return finish();
+}
+
+lsp::DiagnosticList RunReadHdl(const project::Project& project, TdSession& session,
+                               std::string_view explicit_db) {
+    // 保留旧接口：签名与语义不变（失败时返回一条 TD-* 诊断，不抛）。
+    return RunReadHdlCheck(project, session, explicit_db, nullptr).all;
 }
 
 }  // namespace fpgalsp::td

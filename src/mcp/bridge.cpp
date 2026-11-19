@@ -22,6 +22,7 @@
 
 #include <re2/re2.h>
 
+#include "analysis/analysis.h"
 #include "constraints/adc.h"
 #include "flow/flow_runner.h"
 #include "flow/programmer.h"
@@ -35,9 +36,19 @@
 #include "platform/path.h"
 #include "project/al_project.h"
 #include "reports/reports_aggregate.h"
+#include "server/features_rename_util.h"
+#include "server/lsp_server.h"
 #include "td/td_device.h"
 #include "td/td_diagnostics.h"
 #include "td/td_session.h"
+
+// Phase B / B6：MCP format 与 LSP formatting 用同一个 Verible 桥。
+// 宏由 CMake 定义（FPGA_LSP_VERIBLE_ENABLED=ON 时）；关闭构建时 format 返回
+// "No formatter available（Verible missing and fallback disabled）"，与 Python 的
+// ToolError 文案一致。
+#if defined(FPGA_LSP_HAVE_VERIBLE_BRIDGE)
+#include "verible_bridge/format_text.h"
+#endif
 
 namespace fpgalsp::mcp {
 namespace {
@@ -270,11 +281,23 @@ std::string BlankComments(std::string_view text) {
 Json SummarizeReports(const Json& data, const std::string& project_name, std::string stage,
                       std::string section, int limit, bool include_raw);
 
-Json Placeholder(const std::string& what) {
-    Json out = Json::object();
-    out["ok"] = false;
-    out["error"] = "not implemented: " + what;
-    return out;
+// B6c：code_actions / rename_edits 需要一个"没有 transport 的 LspServer"上下文。
+// Feature* 只把 transport 用于发布诊断/日志（codeAction/rename 路径上不会发），
+// 所以一个 no-op transport 就够；ReadMessage 永远不会被调用（我们不跑 serve 循环）。
+class NullTransport final : public jsonrpc::TransportBaseCommon {
+public:
+    ReadResult ReadMessage() override { return ReadResult{ReadStatus::EndOfStream, Json()}; }
+    bool WriteMessage(const Json& /*message*/) override { return true; }
+    bool closed() const override { return false; }
+    void Close() override {}
+    bool compact_json() const override { return true; }
+    int parse_errors() const override { return 0; }
+    int write_errors() const override { return 0; }
+};
+
+jsonrpc::TransportBaseCommon& NullTransportRef() {
+    static NullTransport transport;
+    return transport;
 }
 
 }  // namespace
@@ -308,6 +331,8 @@ void Bridge::Shutdown() {
     }
     td_choice_.reset();
     devices_.clear();
+    // B6c：feature 上下文随 Bridge 一起释放（它只是 Feature* 的宿主，没有外部资源）
+    feature_server_.reset();
 }
 
 std::string Bridge::DiscoverDefaultAl() const {
@@ -326,9 +351,21 @@ std::string Bridge::ResolveAl(const std::string& value) const {
 
     const std::string candidate =
         normalize_path(platform::is_absolute_path(trimmed) ? trimmed : path_join(root_, trimmed));
-    if (IsFile(candidate) && platform::path_extension(candidate) == ".al") return candidate;
+    // B7 / S-03：`--root` 是安全边界，不是"自动发现工程的起点"。绝对路径同样要落在
+    // root_ 之内（用物理路径判定，防 junction/symlink 把边界搬走）。
+    const bool inside_root = platform::path_is_within_canonical(candidate, root_);
+    if (IsFile(candidate) && platform::path_extension(candidate) == ".al") {
+        if (!inside_root) {
+            throw ToolError("Project is outside the MCP root (" + root_ + "): " + candidate);
+        }
+        return candidate;
+    }
 
     if (IsDirectory(candidate)) {
+        if (!inside_root) {
+            throw ToolError("Project directory is outside the MCP root (" + root_ + "): " +
+                            candidate);
+        }
         const std::string dot_al = path_join(candidate, ".al");
         if (IsFile(dot_al)) return normalize_path(dot_al);
         const std::vector<std::string> found = project::DiscoverProjects(candidate, 4);
@@ -406,6 +443,11 @@ std::string Bridge::SafeProjectFile(const std::string& value,
                                     const project::Project& proj) const {
     const std::string path = ResolveFile(value, proj);
     if (!IsWithin(path, proj.dir)) throw ToolError("File is outside the project directory: " + path);
+    // B7 / S-04：词法包含挡不住符号链接/junction（工程内一个 junction 就能读出外部文件）。
+    // 物理复核：canonical 之后仍必须落在工程目录内。
+    if (!platform::path_is_within_canonical(path, proj.dir)) {
+        throw ToolError("File resolves outside the project directory (link): " + path);
+    }
     return path;
 }
 
@@ -428,6 +470,10 @@ std::string Bridge::SafeProjectPath(const std::string& value,
     candidate = normalize_path(candidate);
     if (!IsWithin(candidate, proj.dir)) {
         throw ToolError("Path is outside the project directory: " + candidate);
+    }
+    // B7 / S-04：同上，补物理复核（junction/symlink 不能把边界搬出工程）。
+    if (!platform::path_is_within_canonical(candidate, proj.dir)) {
+        throw ToolError("Path resolves outside the project directory (link): " + candidate);
     }
     if (!PathExists(candidate)) throw ToolError("Path not found: " + candidate);
     return candidate;
@@ -460,12 +506,16 @@ Json Bridge::TdSummary() const {
     return out;
 }
 
-td::TdSession& Bridge::EnsureSession() {
+td::TdSession& Bridge::EnsureSession(const project::Project& project) {
     if (session_) return *session_;
     std::optional<td::TdChoice> choice = td::FindTd(options_.td_path);
     if (!choice.has_value()) throw ToolError("No TangDynasty installation found");
     td_choice_ = *choice;
     td::TdSessionOptions session_options;
+    // D-3：显式给 scratch cwd。B7 已把 TdSession 的默认 cwd 改成 %TEMP% 下的独立目录，
+    // "不设"也不会污染调用者目录；这里仍显式指向工程，是为了让 TD 会话日志留在
+    // `<project>/.fpgalsp/run/`（与 Python 的 `_run_dir()` 同一位置，便于两侧对照排障）。
+    session_options.work_dir = path_join(project.dir, ".fpgalsp/run");
     session_ = std::make_unique<td::TdSession>(*td_choice_, session_options);
     return *session_;
 }
@@ -479,7 +529,7 @@ const td::DeviceInfo& Bridge::EnsureDeviceInfo(const project::Project& proj, boo
     }
     if (proj.device.empty()) throw ToolError("Project has no device in the .al");
 
-    td::TdSession& session = EnsureSession();
+    td::TdSession& session = EnsureSession(proj);
     const td::EnsureDeviceResult ensured = td::EnsureDevice(proj, session, td_choice_->root);
     if (!ensured.ok) {
         throw ToolError("No device library supports " + proj.device +
@@ -885,9 +935,48 @@ Json Bridge::ProjectStructure(const Json& arguments) {
     }
 
     // 对应 Python 的 convert()：MCP 用 1-based 位置，字段名保持 moduleTree 的 camelCase
+    //
+    // B8/PERF-02：这一层原先每个节点要复制 3–4 份中间 Json（range / usedAt 整对象），
+    // 且每节点都调一次 RelativeTo —— 后者内部是 fs::relative()，会对两个路径各做一次
+    // canonicalize（本机约 70 µs/次），是全工具最贵的一行。这里：
+    //   ① range 只取指针，不再 node.value("range") 复制整对象；
+    //   ② RelativeTo 按路径**记忆**（同文件的多个节点只算一次）；
+    //   ③ usedAt 就地生成，复用记忆结果。
+    // 输出的字段与顺序、1-based 换算、空串回落规则全部与旧实现一致。
+    std::map<std::string, std::string> relative_cache;
+    const auto relative_of = [&](const std::string& path) -> std::string {
+        if (path.empty()) return std::string();
+        const auto it = relative_cache.find(path);
+        if (it != relative_cache.end()) return it->second;
+        std::string value = RelativeTo(path, proj.dir);
+        relative_cache.emplace(path, value);
+        return value;
+    };
+    const auto location_of = [&](const Json& used) -> Json {
+        if (!used.is_object()) return Json(nullptr);
+        const std::string path = platform::uri_to_path(used.value("uri", std::string()));
+        Json out = Json::object();
+        out["file"] = path;
+        if (!path.empty()) out["relative"] = relative_of(path);
+        const Json* used_range = nullptr;
+        if (const auto it = used.find("range"); it != used.end() && it->is_object()) {
+            used_range = &(*it);
+        }
+        Json one_based =
+            OneBasedRange(used_range != nullptr ? *used_range : Json::object());
+        out["range"] = one_based;
+        out["line"] = one_based["start"]["line"];
+        out["column"] = one_based["start"]["column"];
+        return out;
+    };
+
     std::function<Json(const Json&, int)> convert = [&](const Json& node, int depth) -> Json {
         if (!node.is_object()) return Json(nullptr);
-        const Json range = OneBasedRange(node.value("range", Json::object()));
+        const Json* node_range = nullptr;
+        if (const auto it = node.find("range"); it != node.end() && it->is_object()) {
+            node_range = &(*it);
+        }
+        const Json range = OneBasedRange(node_range != nullptr ? *node_range : Json::object());
         Json out = Json::object();
         out["module"] = node.value("module", std::string());
         out["instance"] = node.value("instance", std::string());
@@ -898,8 +987,8 @@ Json Bridge::ProjectStructure(const Json& arguments) {
         out["blackbox"] = node.value("blackbox", false);
         out["recursive"] = node.value("recursive", false);
         out["portCount"] = node.value("portCount", 0);
-        if (node.contains("usedAt") && node["usedAt"].is_object()) {
-            out["usedAt"] = LocationJson(node["usedAt"], proj);
+        if (const auto used = node.find("usedAt"); used != node.end() && used->is_object()) {
+            out["usedAt"] = location_of(*used);
         }
         if (include_ports) {
             const hdl::Module* definition = index.ModuleByName(node.value("module", std::string()));
@@ -931,7 +1020,10 @@ Json Bridge::ProjectStructure(const Json& arguments) {
     Json out = Json::object();
     out["ok"] = true;
     out["project"] = proj.name;
-    out["root"] = convert(tree.value("root", Json(nullptr)), 0);
+    // 注意：旧写法 tree.value("root", Json(nullptr)) 会**深拷贝整棵树**再转换一遍。
+    const Json* root = nullptr;
+    if (const auto it = tree.find("root"); it != tree.end()) root = &(*it);
+    out["root"] = root != nullptr ? convert(*root, 0) : Json(nullptr);
     out["modulesSeen"] = tree.value("modulesSeen", 0);
     out["truncated"] = tree.value("truncated", false);
     return out;
@@ -1420,24 +1512,12 @@ Json Bridge::Call(std::string_view handler, const Json& arguments) {
     if (name == "module_info") return ModuleInfoTool(arguments);
     if (name == "duplicate_modules") return DuplicateModulesTool(arguments);
 
-    // ---- 显式占位：依赖尚未移植的模块 ----
-    // 仍依赖尚未移植的能力：代码动作 / 重命名编辑（需要编辑构造层）
-    if (name == "code_actions" || name == "rename_edits") {
-        return Placeholder("LSP-side code action / rename edit constructors are not exposed "
-                           "as a reusable feature API yet");
-    }
-    if (name == "format") {
-        return Placeholder("Verible formatter bridge not ported yet");
-    }
-    if (name == "analysis_run") {
-        return Placeholder("TD DRC/CDC analysis (fpgalsp.runAnalysis) is not implemented "
-                           "in the C++ port yet; flow itself is available via fpga_flow_run");
-    }
-    if (name == "project_update") {
-        return Placeholder("open_project -update / check_project_version are not implemented "
-                           "in the C++ port yet (project_rename / project_add_source do work "
-                           "on the .al itself)");
-    }
+    // ---- B6c：代码动作 / 重命名编辑（与 LSP 同一条 Feature 实现）----
+    if (name == "code_actions") return CodeActionsTool(arguments);
+    if (name == "rename_edits") return RenameEditsTool(arguments);
+    if (name == "format") return FormatTool(arguments);
+    if (name == "analysis_run") return AnalysisRunTool(arguments);
+    if (name == "project_update") return ProjectUpdateTool(arguments);
 
     throw ToolError("Tool implementation missing: " + name);
 }
@@ -1450,7 +1530,12 @@ Json Bridge::ProjectList(const Json& arguments) {
     std::string base = root_;
     if (const auto it = arguments.find("root"); it != arguments.end() && it->is_string() &&
                                                      !it->get<std::string>().empty()) {
-        base = normalize_path(it->get<std::string>());
+        // B7 / S-03：扫描根同样只允许 root_ 之内（含 root_ 本身）
+        const std::string requested = normalize_path(it->get<std::string>());
+        if (!platform::path_is_within_canonical(requested, root_)) {
+            throw ToolError("root is outside the MCP root (" + root_ + "): " + requested);
+        }
+        base = requested;
     }
     const std::vector<std::string> found = project::DiscoverProjects(base, 6);
     Json projects = Json::array();
@@ -1513,7 +1598,8 @@ Json Bridge::ProjectInfo(const Json& arguments) {
     out["dir"] = proj.dir;
     out["family"] = proj.family;
     out["device"] = proj.device;
-    out["speed"] = proj.speed.value_or(std::string());
+    // Python: project.speed 为 None 时输出 JSON null（<Speed></Speed> -> null）
+    out["speed"] = proj.speed.has_value() ? Json(*proj.speed) : Json(nullptr);
     out["top"] = proj.top;
     out["td_version"] = proj.td_version;
     out["files"] = std::move(files);
@@ -1690,7 +1776,7 @@ Json Bridge::DiagnosticsTool(const Json& arguments) {
     // TD 层（可选，需要真实 TD；Python 同）
     if (want("td")) {
         try {
-            td::TdSession& session = EnsureSession();
+            td::TdSession& session = EnsureSession(proj);
             const lsp::DiagnosticList td_diags = td::RunReadHdl(proj, session);
             // read_hdl 会关闭 stdout 管道（PYTHON-BUGS.md P-6）：会话必须丢弃
             session.Close();
@@ -1716,8 +1802,13 @@ Json Bridge::DiagnosticsTool(const Json& arguments) {
     out["file"] = file_path;
     out["diagnostics"] = std::move(diagnostics);
     out["truncated"] = false;
-    out["portsSource"] = ports_source;
-    out["unavailable"] = std::move(unavailable);
+    // D-2：Python 的 diagnostics 只有 {ok, project, file, diagnostics, truncated}。
+    // `portsSource` / `unavailable` 是 C++ 早期追加的"数据可信度"字段，Python 没有，
+    // 为字段级等价已移除；TD 层的错误改为写日志（不再静默丢失）。
+    if (!unavailable.empty()) {
+        platform::default_logger().warn(
+            std::string("diagnostics: unavailable layers: ") + unavailable.dump());
+    }
     return out;
 }
 
@@ -1759,11 +1850,15 @@ Json Bridge::DeviceInfoTool(const Json& arguments) {
 
     if (include_pins) {
         Json pins = Json::array();
+        // D-1：pin/location 输出**与 Python 一致的大小写**——Python 的 `pin.get("pe")` 是
+        // TD 器件表里的规范名 "P81"（td_device 的 `pe`），不是原始小写 `pe_raw`。
+        // 过滤仍然大小写不敏感（Python: `needle = pin_filter.lower()` 后比 `name.lower()`）。
+        const std::string needle = LowerAscii(pin_filter);
         for (const auto& [key, pin] : device.pins) {
-            const std::string name = LowerAscii(pin.pe_raw.empty() ? pin.pe : pin.pe_raw);
-            const std::string location = LowerAscii(pin.location);
-            if (!pin_filter.empty() && name.find(pin_filter) == std::string::npos &&
-                location.find(pin_filter) == std::string::npos) {
+            const std::string name = pin.pe.empty() ? pin.pe_raw : pin.pe;
+            const std::string location = pin.location;
+            if (!needle.empty() && LowerAscii(name).find(needle) == std::string::npos &&
+                LowerAscii(location).find(needle) == std::string::npos) {
                 continue;
             }
             Json item = Json::object();
@@ -1842,7 +1937,6 @@ Json Bridge::ConstraintsStatus(const Json& arguments) {
     out["ok"] = true;
     out["project"] = proj.name;
     out["top"] = proj.top;
-    out["portsSource"] = ports_source;
     out["adcFiles"] = std::move(adc_files);
     out["ports"] = static_cast<int>(ports.size());
     out["constrainedPorts"] = static_cast<int>(coverage.covered.size());
@@ -1992,7 +2086,6 @@ Json Bridge::ConstraintAudit(const Json& arguments) {
     out["ok"] = true;
     out["project"] = proj.name;
     out["top"] = proj.top;
-    out["portsSource"] = ports_source;
     out["adcFiles"] = std::move(adc_files);
     out["totalBits"] = total;
     out["constrainedBits"] = constrained;
@@ -2006,7 +2099,6 @@ Json Bridge::ConstraintAudit(const Json& arguments) {
     out["issueCount"] = static_cast<int>(issues.size());
     out["deviceLoaded"] = device_loaded;
     out["deviceError"] = device_error;
-    out["device"] = device_json;
     out["sdc"] = std::move(sdc_summary);
     out["warnings"] = std::move(warnings);
     return out;
@@ -2031,6 +2123,22 @@ Json Bridge::ReadFileTool(const Json& arguments) {
         file_value = it->get<std::string>();
     }
     const std::string path = SafeProjectFile(file_value, proj);
+
+    // B7 / S-07：先看大小，别把整个文件读进内存再截断。
+    // 16 MiB 远大于任何 HDL/约束文件，也远小于会伤内存的规模。
+    constexpr std::uintmax_t kMaxReadBytes = 16u * 1024u * 1024u;
+    {
+        std::error_code size_ec;
+        const auto size = fs::file_size(fs::u8path(path), size_ec);
+        if (!size_ec && size > kMaxReadBytes) {
+            Json too_large = Json::object();
+            too_large["ok"] = false;
+            too_large["file"] = path;
+            too_large["error"] = "File is too large to read (" + std::to_string(size) +
+                                 " bytes > 16777216)";
+            return too_large;
+        }
+    }
 
     int offset = 1;
     int limit = 400;
@@ -3052,6 +3160,10 @@ Json Bridge::InstantiationTool(const Json& arguments) {
     }
     text += indent + ");\n";
 
+    // Python: `return indent + "\n".join(lines) + "\n"` —— 整段文本还有一个**行首缩进**，
+    // 所以首行是 "    trans #(" 而不是 "trans #("（实测 diff 就出在这一处）。
+    text = indent + text;
+
     // 自定义实例名：与 Python 一样做一次文本替换（默认实例名 -> 指定名）
     if (instance != default_instance) {
         size_t position = 0;
@@ -3190,7 +3302,7 @@ Json Bridge::ProjectRenameTool(const Json& arguments) {
     out["ok"] = true;
     out["changed"] = true;
     out["name"] = name;
-    out["al"] = proj.al_path;
+    // D-2：Python 的 setProjectName 只回 {ok, changed, name}（无 al），为字段级等价已移除。
     return out;
 }
 
@@ -3319,14 +3431,358 @@ Json Bridge::ProjectAddSourceTool(const Json& arguments) {
     out["added"] = true;
     out["rel"] = rel;
     out["compileOrder"] = compile_order;
-    out["fileCount"] = static_cast<int>(after.files.size());
-    if (arguments.value("update", false)) {
-        // .al 改完后 GUI 会调 open_project -update。C++ 侧还没有对应实现：
-        // **显式说明**而不是假装成功（否则 agent 会以为 TD 已经同步）。
-        out["updated"] = false;
-        out["updateNote"] = "open_project -update is not implemented in the C++ port yet; "
-                            "call fpgalsp.check / reopen the project in TD to resync";
+    // D-2：Python 的 ide.add_source_file 只回 {ok, added, rel, compileOrder}；
+    // C++ 早期多给的 fileCount 已移除（字段级等价）。
+    if (arguments.value("update", false) && out.value("ok", false)) {
+        // 对应 Python project_add_source：update=True 时把 project_update 的结果挂在 "update" 下。
+        out["update"] = ProjectUpdateTool(arguments);
     }
+    return out;
+}
+
+// =============================================================================
+//  Phase B / B6：format / analysis_run / project_update 的真实实现
+// =============================================================================
+//  1) format：与 LSP `textDocument/formatting` 共用 Verible 桥（`verible_bridge::FormatText`），
+//     所以同一份文本在两个通道得到逐字节相同的结果。
+//  2) analysis_run / project_update：与 LSP 的 `fpgalsp.runAnalysis` / `fpgalsp.updateProject`
+//     共用同一实现（`analysis::Run` / `analysis::UpdateProject`；B5 的
+//     `FeatureRunAnalysis/FeatureUpdateProject` 就是这两个函数的一行包装）。
+//     这里**不**去构造 LspServer：那需要 transport、会注册一堆 handler，
+//     而这两个命令只依赖 project + td，直接调 analysis:: 更小、副作用更少。
+// =============================================================================
+
+Json Bridge::FormatTool(const Json& arguments) {
+    std::string file_value;
+    if (const auto it = arguments.find("file"); it != arguments.end() && it->is_string()) {
+        file_value = it->get<std::string>();
+    }
+    std::string text_value;
+    if (const auto it = arguments.find("text"); it != arguments.end() && it->is_string()) {
+        text_value = it->get<std::string>();
+    }
+
+    // Python：file 优先，否则用 text；两者都空 -> ToolError("file or text is required")
+    std::string path;
+    std::string source;
+    if (!file_value.empty()) {
+        std::string resolved = file_value;
+        if (!platform::is_absolute_path(resolved)) {
+            // 有工程就按工程目录解析（与其它工具的 ResolveFile 同一口径），否则按 --root
+            bool resolved_with_project = false;
+            try {
+                const project::Project& proj = ProjectFor(arguments);
+                resolved = ResolveFile(file_value, proj);
+                resolved_with_project = true;
+            } catch (const ToolError&) {
+                resolved_with_project = false;
+            }
+            if (!resolved_with_project) resolved = normalize_path(path_join(root_, file_value));
+        } else {
+            resolved = normalize_path(resolved);
+        }
+        if (!IsFile(resolved)) throw ToolError("File not found: " + resolved);
+        path = resolved;
+        source = ReadTextFile(path);
+        // Python 用文本模式读文件（universal newlines），doc.text 里 CRLF 已变成 LF；
+        // 这里必须先做同样的归一化，否则 Verible 的 line_terminator=auto 会保留 CRLF，
+        // 与 Python 的输出逐字节不同（实测 10883 B vs 11224 B）。
+        if (source.find('\r') != std::string::npos) {
+            std::string normalized_text;
+            normalized_text.reserve(source.size());
+            for (size_t index = 0; index < source.size(); ++index) {
+                if (source[index] == '\r') {
+                    normalized_text.push_back('\n');
+                    if (index + 1 < source.size() && source[index + 1] == '\n') ++index;
+                } else {
+                    normalized_text.push_back(source[index]);
+                }
+            }
+            source = std::move(normalized_text);
+        }
+    } else if (!text_value.empty()) {
+        path = path_join(root_, "mcp_format.v");
+        source = text_value;
+    } else {
+        throw ToolError("file or text is required");
+    }
+
+    // Python 的 tab_size/insert_spaces 只影响**fallback 重排器**，Verible 路径不读它们；
+    // 这里保留参数解析只为与 Python 的入参契约一致（值不参与格式化）。
+    int tab_size = 4;
+    bool insert_spaces = true;
+    if (const auto it = arguments.find("tab_size"); it != arguments.end() && it->is_number_integer()) {
+        tab_size = it->get<int>();
+    }
+    if (const auto it = arguments.find("insert_spaces");
+        it != arguments.end() && it->is_boolean()) {
+        insert_spaces = it->get<bool>();
+    }
+    (void)tab_size;
+    (void)insert_spaces;
+
+#if defined(FPGA_LSP_HAVE_VERIBLE_BRIDGE)
+    const verible_bridge::FormatResult formatted = verible_bridge::FormatText(source, path);
+    if (!formatted.ok) {
+        // Python 在 Verible 失败时会退到"保守重排器"（format_fallback.py，C++ 未移植）。
+        // 这里选择**显式失败**，而不是返回一段未经格式化却看似成功的文本。
+        throw ToolError("Formatter failed: " + formatted.error);
+    }
+    const std::string formatted_text = formatted.text;
+#else
+    // 与 Python 的 ToolError 文案一致（Verible 缺失且 fallback 关闭）
+    throw ToolError("No formatter available (Verible missing and fallback disabled)");
+#endif
+
+    // range 变体（对应 Python server.on_textDocument_rangeFormatting）
+    std::optional<int> start_line;
+    std::optional<int> end_line;
+    if (const auto it = arguments.find("start_line");
+        it != arguments.end() && it->is_number_integer()) {
+        start_line = it->get<int>();
+    }
+    if (const auto it = arguments.find("end_line"); it != arguments.end() && it->is_number_integer()) {
+        end_line = it->get<int>();
+    }
+    if (start_line.has_value() && end_line.has_value()) {
+        // MCP 的行号是 1-based；LSP range 是 0-based（Python 的 _mcp_range(start,1,end,1)）
+        const int start = std::max(0, *start_line - 1);
+        const int end = std::max(0, *end_line - 1);
+        const std::vector<std::string> old_rows = SplitLines(source);
+        const std::vector<std::string> new_rows = SplitLines(formatted_text);
+
+        Json edits = Json::array();
+        if (old_rows.size() != new_rows.size()) {
+            // 行结构被改写：只有"整文档替换"能表达
+            if (!formatted_text.empty()) {
+                Json edit = Json::object();
+                Json range = Json::object();
+                Json rstart = Json::object();
+                rstart["line"] = 0;
+                rstart["character"] = 0;
+                Json rend = Json::object();
+                rend["line"] = static_cast<int>(old_rows.empty() ? 0 : old_rows.size() - 1);
+                rend["character"] = static_cast<int>(old_rows.empty() ? 0 : old_rows.back().size());
+                range["start"] = std::move(rstart);
+                range["end"] = std::move(rend);
+                edit["range"] = std::move(range);
+                edit["newText"] = formatted_text;
+                edits.push_back(std::move(edit));
+            }
+        } else {
+            const int last = static_cast<int>(old_rows.size()) - 1;
+            const int stop = std::min(end, last);
+            for (int line = start; line <= stop; ++line) {
+                if (old_rows[static_cast<size_t>(line)] == new_rows[static_cast<size_t>(line)]) {
+                    continue;
+                }
+                if (Trim(new_rows[static_cast<size_t>(line)]).empty()) continue;
+                Json edit = Json::object();
+                Json range = Json::object();
+                Json rstart = Json::object();
+                rstart["line"] = line;
+                rstart["character"] = 0;
+                Json rend = Json::object();
+                rend["line"] = line;
+                rend["character"] = static_cast<int>(old_rows[static_cast<size_t>(line)].size());
+                range["start"] = std::move(rstart);
+                range["end"] = std::move(rend);
+                edit["range"] = std::move(range);
+                edit["newText"] = new_rows[static_cast<size_t>(line)];
+                edits.push_back(std::move(edit));
+            }
+        }
+        Json out = Json::object();
+        out["ok"] = true;
+        out["edits"] = std::move(edits);
+        out["changed"] = !out["edits"].empty();
+        return out;
+    }
+
+    // 整文档变体（对应 Python mcp_bridge.format 的非 range 分支）
+    if (formatted_text.empty() && !source.empty()) {
+        throw ToolError("No formatter available (Verible missing and fallback disabled)");
+    }
+    Json out = Json::object();
+    out["ok"] = true;
+    out["text"] = formatted_text;
+    out["changed"] = formatted_text != source;
+    return out;
+}
+
+Json Bridge::AnalysisRunTool(const Json& arguments) {
+    const project::Project& proj = ProjectFor(arguments);
+    return analysis::Run(proj, options_.td_path, [](std::string_view message) {
+        platform::default_logger().info(std::string(message));
+    });
+}
+
+Json Bridge::ProjectUpdateTool(const Json& arguments) {
+    const project::Project& proj = ProjectFor(arguments);
+    const std::string al = proj.al_path;
+    Json result = analysis::UpdateProject(proj, options_.td_path, [](std::string_view message) {
+        platform::default_logger().info(std::string(message));
+    });
+    // 对应 Python 的 invalidate_project_caches()：.al 可能被 TD 改写，缓存必须失效。
+    projects_.erase(al);
+    return result;
+}
+
+// =============================================================================
+//  B6c：code_actions / rename_edits
+// =============================================================================
+//  与 LSP 的 `textDocument/codeAction` / `textDocument/rename` **同一条实现**：
+//  B3 把逻辑放在 LspServer::FeatureCodeActions / FeatureRename 里，它们依赖服务层
+//  状态（ProjectForPath / IndexForProject / LoadText）。Bridge 这边不复制这套逻辑，
+//  而是持有一个"无 transport 的 LspServer"（见文件上方 NullTransport 的说明），
+//  懒构造 + 用 --root 初始化，之后转调 Feature*。
+//
+//  为什么不在 Bridge 里重写"索引 -> JSON"：B6 的教训是两份实现必然漂移
+//  （bridge.h 的文件头也写了同一句话）。代价只是多一个 LspServer 对象（不跑 serve
+//  循环、不注册 handler、不 publish 诊断），比重写一遍安全得多。
+// =============================================================================
+
+server::LspServer& Bridge::FeatureServer() {
+    // Phase 2 / B1：单 Engine 模式下直接复用宿主进程的 LspServer。
+    if (options_.shared_server != nullptr) return *options_.shared_server;
+    if (feature_server_) return *feature_server_;
+    feature_server_ = std::make_unique<server::LspServer>(NullTransportRef(), options_.td_path);
+    Json params = Json::object();
+    params["rootUri"] = platform::path_to_uri(root_);
+    // 只取"能力声明 + 设置根路径"这一半语义；不打开任何文档、不发通知。
+    feature_server_->FeatureInitialize(params);
+    return *feature_server_;
+}
+
+Json Bridge::CodeActionsTool(const Json& arguments) {
+    const project::Project& proj = ProjectFor(arguments);
+    const std::string path = ResolveFile(arguments.value("file", std::string()), proj);
+
+    int start_line = 1;
+    int start_column = 1;
+    int end_line = 0;
+    int end_column = 0;
+    if (const auto it = arguments.find("start_line");
+        it != arguments.end() && it->is_number_integer()) {
+        start_line = it->get<int>();
+    }
+    if (const auto it = arguments.find("start_column");
+        it != arguments.end() && it->is_number_integer()) {
+        start_column = it->get<int>();
+    }
+    end_line = start_line;
+    end_column = start_column;
+    if (const auto it = arguments.find("end_line");
+        it != arguments.end() && it->is_number_integer()) {
+        end_line = it->get<int>();
+    }
+    if (const auto it = arguments.find("end_column");
+        it != arguments.end() && it->is_number_integer()) {
+        end_column = it->get<int>();
+    }
+    bool include_edits = false;
+    if (const auto it = arguments.find("include_edits");
+        it != arguments.end() && it->is_boolean()) {
+        include_edits = it->get<bool>();
+    }
+
+    // 对应 Python _mcp_range(start_line, start_column, end_line, end_column)：1-based -> 0-based
+    Json range = Json::object();
+    Json range_start = Json::object();
+    range_start["line"] = std::max(0, start_line - 1);
+    range_start["character"] = std::max(0, start_column - 1);
+    Json range_end = Json::object();
+    range_end["line"] = std::max(0, end_line - 1);
+    range_end["character"] = std::max(0, end_column - 1);
+    range["start"] = std::move(range_start);
+    range["end"] = std::move(range_end);
+
+    Json context = Json::object();
+    context["diagnostics"] = Json::array();  // Python: {"diagnostics": []}
+
+    const Json actions = FeatureServer().FeatureCodeActions(path, range, context);
+
+    Json out_actions = Json::array();
+    int count = 0;
+    for (const Json& action : actions) {
+        if (count++ >= 200) break;  // Python: actions[:200]
+        Json item = Json::object();
+        item["title"] = action.value("title", std::string());
+        // Python: kind 可能是字符串或 {"value": ...}
+        std::string kind;
+        if (const auto it = action.find("kind"); it != action.end()) {
+            if (it->is_string()) {
+                kind = it->get<std::string>();
+            } else if (it->is_object() && it->contains("value") && (*it)["value"].is_string()) {
+                kind = (*it)["value"].get<std::string>();
+            }
+        }
+        item["kind"] = kind;
+        item["isPreferred"] = action.value("isPreferred", false);
+        if (include_edits) {
+            if (const auto edit = action.find("edit"); edit != action.end() && edit->is_object()) {
+                Json edits = Json::object();
+                if (const auto changes = edit->find("changes");
+                    changes != edit->end() && changes->is_object()) {
+                    for (auto it = changes->begin(); it != changes->end(); ++it) {
+                        // Python: uri -> 本地路径作为 key，changes 原样（LSP 0-based range）
+                        edits[platform::uri_to_path(it.key())] = it.value();
+                    }
+                }
+                item["edits"] = std::move(edits);
+            }
+        }
+        out_actions.push_back(std::move(item));
+    }
+
+    Json out = Json::object();
+    out["ok"] = true;
+    out["actions"] = std::move(out_actions);
+    return out;
+}
+
+Json Bridge::RenameEditsTool(const Json& arguments) {
+    const std::string new_name = arguments.value("new_name", std::string());
+    // 对应 Python mcp_bridge.rename_edits 的第一句：
+    //   if nav is None or not nav.valid_identifier(str(new_name)): raise ToolError(...)
+    if (!server::edit::IsValidVerilogIdentifier(new_name)) {
+        throw ToolError("Not a valid Verilog identifier: " + new_name);
+    }
+
+    const project::Project& proj = ProjectFor(arguments);
+    const std::string path = ResolveFile(arguments.value("file", std::string()), proj);
+    int line = 1;
+    int column = 1;
+    if (const auto it = arguments.find("line"); it != arguments.end() && it->is_number_integer()) {
+        line = it->get<int>();
+    }
+    if (const auto it = arguments.find("column"); it != arguments.end() && it->is_number_integer()) {
+        column = it->get<int>();
+    }
+
+    const Json renamed = FeatureServer().FeatureRename(path, std::max(0, line - 1),
+                                                       std::max(0, column - 1), new_name);
+    // Python: if not result: return {"ok": True, "changes": {}}
+    Json changes = Json::object();
+    if (renamed.is_object() && renamed.contains("changes") && renamed["changes"].is_object()) {
+        for (auto it = renamed["changes"].begin(); it != renamed["changes"].end(); ++it) {
+            Json edits = Json::array();
+            if (it.value().is_array()) {
+                for (const Json& edit : it.value()) {
+                    Json item = Json::object();
+                    // Python 的 rename_edits 把 range 转成 **1-based**（与 code_actions 不同！）
+                    item["range"] = OneBasedRange(edit.value("range", Json::object()));
+                    item["newText"] = edit.value("newText", std::string());
+                    edits.push_back(std::move(item));
+                }
+            }
+            changes[platform::uri_to_path(it.key())] = std::move(edits);
+        }
+    }
+
+    Json out = Json::object();
+    out["ok"] = true;
+    out["changes"] = std::move(changes);
     return out;
 }
 }  // namespace fpgalsp::mcp

@@ -208,6 +208,20 @@ struct Word {
 std::optional<Word> WordAt(std::string_view text, int line, int character);
 
 // -----------------------------------------------------------------------------
+//  LSP 符号 / hover / 补全（纯函数；对应 server.py 的 `.adc` 分支）
+// -----------------------------------------------------------------------------
+//  JSON 形状逐字段对齐 Python（documentSymbol 47 条 / hover markdown / completion
+//  {"isIncomplete":false,"items":[…]}）。三个函数都**不读磁盘、不抛异常**。
+//
+//  ports 是可选顶层端口表（Python 的 `_top_ports`）：只用于 `port` 上下文的
+//  hover / completion。传空表时行为与 Python 侧"拿不到端口表"一致。
+Json DocumentSymbols(std::string_view text);
+Json Hover(std::string_view text, int line, int character,
+           const std::vector<Port>& ports = {});
+Json Completion(std::string_view text, int line, int character,
+                const std::vector<Port>& ports = {});
+
+// -----------------------------------------------------------------------------
 //  JSON 序列化（与 Python dict 的 JSON 形状一致；用于与参考实现逐字段 diff）
 // -----------------------------------------------------------------------------
 

@@ -7,6 +7,7 @@
 
 add_library(fpga_lsp_hdl STATIC
     hdl_index.cpp
+    primitives.cpp
 )
 
 add_library(fpga_lsp::hdl ALIAS fpga_lsp_hdl)

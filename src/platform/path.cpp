@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <array>
+#include <filesystem>
 #include <cctype>
 #include <string>
 #include <vector>
@@ -293,6 +294,63 @@ std::string path_join(std::string_view a, std::string_view b) {
     if (b.empty()) return normalize_path(a);
     if (is_absolute_path(b)) return normalize_path(b);
     return normalize_path(std::string(a) + "/" + std::string(b));
+}
+
+// -----------------------------------------------------------------------------
+// 物理包含判定（B7 / S-04）
+// -----------------------------------------------------------------------------
+//  为什么需要：normalize_path 是**纯词法**的（本文件顶部 5-7 行的设计声明），
+//  因此 "工程目录内放一个指向 C:\Windows 的 junction" 在词法上完全合法，
+//  bridge 的 IsWithin 会放行。实测（audit/_db/probe_mcp_root.py 用例 A3）
+//  fpga_read_file 能读到 C:\Windows\System32\drivers\etc\hosts。
+//
+//  weakly_canonical 与 canonical 的区别：前者只要求"最长的存在前缀"能被解析，
+//  尾部不存在的成分原样保留 —— 正好适合"文件可能还不存在（新建/写盘）"的场景。
+
+namespace {
+
+std::filesystem::path to_fs_path(std::string_view utf8) {
+    // Windows 上 std::filesystem::path 的窄字符构造按 ACP 解释，必须显式走
+    // UTF-8 -> char8_t 的路径，否则非 ASCII 用户名下的工程会被解析成乱码。
+    return std::filesystem::path(std::u8string(reinterpret_cast<const char8_t*>(utf8.data()),
+                                               utf8.size()));
+}
+
+}  // namespace
+
+std::string canonical_path(std::string_view path) {
+    const std::string normalized = normalize_path(path);
+    if (normalized.empty()) return {};
+    try {
+        std::error_code ec;
+        const std::filesystem::path resolved =
+            std::filesystem::weakly_canonical(to_fs_path(normalized), ec);
+        if (ec || resolved.empty()) return normalized;  // never-throw：退化为词法结果
+        const std::u8string utf8 = resolved.u8string();
+        std::string out(reinterpret_cast<const char*>(utf8.data()), utf8.size());
+        for (char& c : out) {
+            if (c == '\\') c = '/';
+        }
+        // weakly_canonical 保留末尾分隔符的情况极少，仍按 normalize 规则收一下
+        while (out.size() > 1 && out.back() == '/' && !is_drive_root(out) && out != "/" &&
+               out != "//") {
+            out.pop_back();
+        }
+        return out;
+    } catch (...) {
+        return normalized;
+    }
+}
+
+bool path_is_within_canonical(std::string_view path, std::string_view root) {
+    const std::string target = path_key(canonical_path(path));
+    const std::string base = path_key(canonical_path(root));
+    if (base.empty()) return false;
+    if (target == base) return true;
+    if (target.size() <= base.size()) return false;
+    if (target.compare(0, base.size(), base) != 0) return false;
+    const char separator = target[base.size()];
+    return separator == '/' || separator == '\\';
 }
 
 // -----------------------------------------------------------------------------

@@ -4,6 +4,7 @@
 
 add_executable(fpgalsp-native
     main.cpp
+    mcp_tcp.cpp
 )
 
 target_include_directories(fpgalsp-native PRIVATE
@@ -18,6 +19,10 @@ target_link_libraries(fpgalsp-native PRIVATE
     # MCP 模式（--mcp）：39 个工具；依赖 feature 层，不依赖 server
     fpga_lsp::mcp
 )
+
+if(WIN32)
+    target_link_libraries(fpgalsp-native PRIVATE ws2_32)
+endif()
 
 target_compile_features(fpgalsp-native PRIVATE cxx_std_23)
 

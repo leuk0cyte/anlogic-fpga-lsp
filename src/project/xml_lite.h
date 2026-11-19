@@ -54,6 +54,21 @@ struct XmlParseResult {
     std::size_t error_offset = 0;  // 出错位置，便于定位损坏的 .al
 };
 
+// -----------------------------------------------------------------------------
+// 资源上限（B7 / S-05）
+// -----------------------------------------------------------------------------
+//  修复前：ParseElement 是递归下降，**没有任何深度或体积上限**，而 .al 的大小
+//  同样不受限。一个 700 KB、十万层嵌套的 .al 会把 1 MiB 的线程栈打爆
+//  （实测 0xC00000FD），在 LSP 里就是"语言服务器崩溃并反复重启"。
+//
+//  上限的取值理由：
+//   * 深度 512 —— 真实 .al 的嵌套不超过 10 层（Project/Source_Files/Verilog/File/
+//     FileInfo/Attr），512 有三个数量级余量，又远低于 1 MiB 栈的容量；
+//   * 体积 8 MiB —— TD 2026.2 的 .al 实测 5-40 KB，8 MiB 是"文件明显不是 .al"的
+//     界线，同时把"读进来"的峰值内存也钉住。
+inline constexpr std::size_t kMaxXmlDocumentBytes = 8u * 1024u * 1024u;
+inline constexpr int kMaxXmlDepth = 512;
+
 // 解析 XML 文本。never-throw：任何问题都通过 result.ok / result.error 反馈。
 XmlParseResult ParseXml(std::string_view xml);
 

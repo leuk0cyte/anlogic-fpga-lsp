@@ -86,6 +86,29 @@ std::vector<std::string_view> SplitLines(std::string_view text) {
     return out;
 }
 
+std::string_view LineAt(std::string_view text, int line) {
+    if (line < 0) return {};
+    int current = 0;
+    size_t start = 0;
+    size_t i = 0;
+    while (i < text.size()) {
+        const char c = text[i];
+        size_t next = i + 1;
+        if (c == '\r') {
+            if (i + 1 < text.size() && text[i + 1] == '\n') next = i + 2;
+        } else if (!IsLineBreakByte(c)) {
+            ++i;
+            continue;
+        }
+        if (current == line) return text.substr(start, i - start);
+        ++current;
+        start = next;
+        i = next;
+    }
+    if (current == line) return text.substr(start);
+    return {};
+}
+
 std::string UpperAscii(std::string_view s) {
     std::string out(s);
     for (char& c : out) {

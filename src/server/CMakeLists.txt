@@ -10,6 +10,18 @@ add_library(fpga_lsp_server STATIC
     commands.cpp
     features.cpp
     hdl_handlers.cpp
+    # Phase B：能力层的唯一实现（每个文件一个 owner；B1 先放 stub）
+    features_semantics.cpp
+    features_code_actions.cpp
+    features_rename.cpp
+    features_call_hierarchy.cpp
+    features_constraints.cpp
+    features_analysis.cpp
+    features_commands.cpp
+    ide_features.cpp
+    async_dispatcher.cpp
+    report_store.cpp
+    index_service.cpp
 )
 
 add_library(fpga_lsp::server ALIAS fpga_lsp_server)
@@ -37,6 +49,28 @@ if(TARGET fpga_lsp::flow)
     target_link_libraries(fpga_lsp_server PUBLIC fpga_lsp::flow)
 else()
     message(STATUS "src/server: 未找到 fpga_lsp::flow，flow 命令保持占位")
+endif()
+
+# DRC/CDC 后流程分析（Phase B / B5）。features_analysis.cpp 通过它实现 runAnalysis。
+if(TARGET fpga_lsp::analysis)
+    target_link_libraries(fpga_lsp_server PUBLIC fpga_lsp::analysis)
+    message(STATUS "src/server: analysis 已接入（fpgalsp.runAnalysis 为真实实现）")
+else()
+    message(STATUS "src/server: 未找到 fpga_lsp::analysis，runAnalysis 保持 stub")
+endif()
+
+# 语义高亮 / 折叠（Phase B / B2）。FeatureSemanticTokens 依赖它。
+if(TARGET fpga_lsp::semantics)
+    target_link_libraries(fpga_lsp_server PUBLIC fpga_lsp::semantics)
+    message(STATUS "src/server: semantics 已接入（semanticTokens/foldingRange 为真实实现）")
+else()
+    message(STATUS "src/server: 未找到 fpga_lsp::semantics，语义高亮保持 stub")
+endif()
+
+# .adc/.sdc 符号（Phase B / B10）。features_constraints.cpp 直接调 constraints::adc/sdc。
+if(TARGET fpga_lsp::constraints)
+    target_link_libraries(fpga_lsp_server PUBLIC fpga_lsp::constraints)
+    message(STATUS "src/server: constraints 已接入（.adc/.sdc 符号/悬停/补全为真实实现）")
 endif()
 
 # 内嵌 Verible 的可选能力桥（formatter）。

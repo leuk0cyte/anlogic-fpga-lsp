@@ -17,8 +17,10 @@
 // =============================================================================
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <filesystem>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -29,12 +31,14 @@
 #include <io.h>
 #endif
 
+#include "app/mcp_tcp.h"
 #include "jsonrpc/dispatcher.h"
 #include "jsonrpc/json_util.h"
 #include "jsonrpc/transport.h"
 #include "platform/log.h"
 #include "mcp/bridge.h"
 #include "mcp/mcp_server.h"
+#include "server/async_dispatcher.h"
 #include "server/lsp_server.h"
 
 namespace {
@@ -50,12 +54,17 @@ constexpr const char* kServerVersion = "0.1.0";
 struct Options {
     TransportMode mode = TransportMode::Lsp;
     bool mode_set = false;
+    bool help = false;
     std::string log_path;
     bool verbose = false;
     std::string td_path;  // 显式 TD 安装根（对应 Python serve(td_explicit=...)）
     // MCP 模式专用（对应 Python mcp.main 的 --root/--project/--allow-flow/--allow-write）
     std::string root;
     std::string project;
+    std::string verible_path;  // 与 Python 的 --verible 兼容；内嵌 formatter 不依赖它
+    // Phase 2 / B1：LSP 进程内 loopback MCP 端口（0 = 不启用）
+    int mcp_port = 0;
+    unsigned short attach_port = 0;
     bool allow_flow = false;
     bool allow_write = false;
 };
@@ -64,8 +73,11 @@ void PrintUsage() {
     std::fprintf(stderr,
                  "fpgalsp-native %s\n"
                  "用法:\n"
-                 "  fpgalsp-native.exe --stdio [--td <TD安装根>] [--log <path>] [--verbose]\n"
-                 "  fpgalsp-native.exe --mcp   [--log <path>] [--verbose]\n",
+                 "  fpgalsp-native.exe --stdio [--td <TD安装根>] [--project <AL>] [--mcp-port <n>] [--log <path>] [--verbose]\n"
+                 "  fpgalsp-native.exe --mcp   [--root <dir>] [--project <AL>] [--allow-flow] [--allow-write]\n"
+                 "                            [--verible <path>] [--log <path>] [--verbose]\n"
+                 "  fpgalsp-native.exe --mcp --attach-port <n>   （薄代理：接入 LSP 进程的 loopback MCP）\n"
+                 "  -h/--help 显示本帮助并以 0 退出\n",
                  kServerVersion);
 }
 
@@ -86,6 +98,13 @@ bool ParseArgs(int argc, char** argv, Options& out) {
             out.root = argv[++i];
         } else if (arg == "--project" && i + 1 < argc) {
             out.project = argv[++i];
+        } else if (arg == "--verible") {
+            // 与 Python 的 --verible 兼容：可带值也可不带值；内嵌 formatter 不依赖它。
+            if (i + 1 < argc && argv[i + 1][0] != '-') out.verible_path = argv[++i];
+        } else if (arg == "--mcp-port" && i + 1 < argc) {
+            out.mcp_port = std::atoi(argv[++i]);
+        } else if (arg == "--attach-port" && i + 1 < argc) {
+            out.attach_port = static_cast<unsigned short>(std::atoi(argv[++i]));
         } else if (arg == "--allow-flow") {
             out.allow_flow = true;
         } else if (arg == "--allow-write") {
@@ -93,8 +112,8 @@ bool ParseArgs(int argc, char** argv, Options& out) {
         } else if (arg == "--verbose") {
             out.verbose = true;
         } else if (arg == "-h" || arg == "--help") {
-            PrintUsage();
-            return false;
+            out.help = true;
+            return true;
         } else {
             std::fprintf(stderr, "未知参数: %s\n", std::string(arg).c_str());
             PrintUsage();
@@ -119,7 +138,8 @@ bool ParseArgs(int argc, char** argv, Options& out) {
 // -----------------------------------------------------------------------------
 
 int Serve(TransportBaseCommon& transport, Dispatcher& dispatcher, bool is_lsp,
-          fpgalsp::mcp::McpServer* mcp_server) {
+          fpgalsp::mcp::McpServer* mcp_server,
+          fpgalsp::server::AsyncDispatcher* async_dispatcher) {
     bool shutdown_requested = false;
     bool exit_requested = false;
 
@@ -181,7 +201,11 @@ int Serve(TransportBaseCommon& transport, Dispatcher& dispatcher, bool is_lsp,
             break;
         }
 
-        dispatcher.Dispatch(msg);
+        if (async_dispatcher != nullptr) {
+            async_dispatcher->Dispatch(msg);
+        } else {
+            dispatcher.Dispatch(msg);
+        }
     }
 
     return 0;
@@ -211,6 +235,43 @@ int main(int argc, char** argv) {
     if (!ParseArgs(argc, argv, options)) {
         return 2;
     }
+    if (options.help) {
+        PrintUsage();
+        return 0;
+    }
+
+    // Phase 2 / B1：MCP attach 代理只做字节泵；连接失败返回 3（扩展可回退独立 MCP）。
+    if (options.mode == TransportMode::Mcp && options.attach_port != 0) {
+        return fpgalsp::app::RunTcpAttachProxy(options.attach_port);
+    }
+
+    // Phase 2 / B1（WIP）：attach 代理尚未启用。
+
+    const bool is_lsp = (options.mode == TransportMode::Lsp);
+
+    // LSP 的 --project 对应 Python 的 os.environ["FPGALSP_PROJECT"]（lsp_server.cpp 读它）。
+    if (is_lsp && !options.project.empty()) {
+#ifdef _WIN32
+        _putenv_s("FPGALSP_PROJECT", options.project.c_str());
+#else
+        setenv("FPGALSP_PROJECT", options.project.c_str(), 1);
+#endif
+    }
+
+    // 默认日志路径与 Python 对齐：
+    //   LSP -> <cwd>/.fpgalsp/logs/server.log
+    //   MCP -> <root>/.fpgalsp/logs/mcp.log
+    if (options.log_path.empty()) {
+        std::error_code ec;
+        const std::filesystem::path base =
+            is_lsp ? std::filesystem::current_path(ec)
+                   : std::filesystem::path(options.root.empty() ? "." : options.root);
+        const std::filesystem::path logs = base / ".fpgalsp" / "logs";
+        std::filesystem::create_directories(logs, ec);
+        if (!ec) {
+            options.log_path = (logs / (is_lsp ? "server.log" : "mcp.log")).string();
+        }
+    }
 
     // 日志：绝不用 stdout。--log 指定文件；--verbose 额外写 stderr。
     {
@@ -221,7 +282,6 @@ int main(int argc, char** argv) {
         fpgalsp::platform::set_default_logger(fpgalsp::platform::create_logger(log_options));
     }
 
-    const bool is_lsp = (options.mode == TransportMode::Lsp);
     fpgalsp::platform::default_logger().info(is_lsp ? "fpgalsp-native 以 LSP 模式启动"
                                            : "fpgalsp-native 以 MCP 模式启动");
 
@@ -233,9 +293,31 @@ int main(int argc, char** argv) {
     std::unique_ptr<fpgalsp::server::LspServer> lsp_server;
     std::unique_ptr<fpgalsp::mcp::Bridge> mcp_bridge;
     std::unique_ptr<fpgalsp::mcp::McpServer> mcp_server;
+    // Phase 2 / A2：LSP 模式把重请求放到 worker 池；MCP 模式保持同步。
+    // 声明在 lsp_server 之后：析构顺序保证先停 worker，再销毁 server/transport。
+    std::unique_ptr<fpgalsp::server::AsyncDispatcher> async_dispatcher;
+    std::unique_ptr<fpgalsp::app::McpTcpHost> mcp_tcp_host;
     if (is_lsp) {
         lsp_server = std::make_unique<fpgalsp::server::LspServer>(*transport, options.td_path);
         lsp_server->RegisterAll(dispatcher);
+        async_dispatcher =
+            std::make_unique<fpgalsp::server::AsyncDispatcher>(dispatcher, *transport, 2);
+        if (options.mcp_port > 0) {
+            std::error_code ec;
+            const std::string root = std::filesystem::current_path(ec).string();
+            std::string mcp_error;
+            mcp_tcp_host = std::make_unique<fpgalsp::app::McpTcpHost>();
+            if (mcp_tcp_host->Start(static_cast<unsigned short>(options.mcp_port), *lsp_server,
+                                    root, options.allow_flow, options.allow_write,
+                                    &mcp_error)) {
+                fpgalsp::platform::default_logger().info(
+                    "mcp-tcp listening on 127.0.0.1:" +
+                    std::to_string(mcp_tcp_host->actual_port()));
+            } else {
+                fpgalsp::platform::default_logger().warn("mcp-tcp disabled: " + mcp_error);
+                mcp_tcp_host.reset();
+            }
+        }
     } else {
         // MCP 模式：Bridge（feature 层）+ McpServer（协议层）
         fpgalsp::mcp::BridgeOptions bridge_options;
@@ -258,7 +340,8 @@ int main(int argc, char** argv) {
 
     int exit_code = 0;
     try {
-        exit_code = Serve(*transport, dispatcher, is_lsp, mcp_server.get());
+        exit_code = Serve(*transport, dispatcher, is_lsp, mcp_server.get(),
+                          async_dispatcher.get());
     } catch (const std::exception& exc) {
         fpgalsp::platform::default_logger().error(std::string("fatal: ") + exc.what());
         std::fprintf(stderr, "fpgalsp-native fatal: %s\n", exc.what());
@@ -268,8 +351,10 @@ int main(int argc, char** argv) {
         exit_code = 1;
     }
 
-    // 三条退出路径（exit / EOF / 异常）统一在这里收尾：先关 TD（杀整棵进程树），
-    // 再让 transport/server 析构。析构里还会兜底调用一次 Shutdown（幂等）。
+    // 三条退出路径（exit / EOF / 异常）统一在这里收尾：先停异步 worker，再关 TD
+    // （杀整棵进程树），最后让 transport/server 析构。
+    if (async_dispatcher) async_dispatcher->Shutdown();
+    if (mcp_tcp_host) mcp_tcp_host->Shutdown();
     if (lsp_server) lsp_server->Shutdown();
     if (mcp_bridge) mcp_bridge->Shutdown();
     return exit_code;

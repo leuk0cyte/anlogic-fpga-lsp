@@ -51,6 +51,17 @@
       "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" }
     },
     {
+      "name": "windows-msvc-release-lto",
+      "displayName": "Windows / MSVC Release + LTO",
+      "description": "Phase 2 / B3：在 Release 基础上加全程序优化与函数/数据折叠（独立 preset，默认不切换）",
+      "inherits": "windows-msvc-release",
+      "cacheVariables": {
+        "CMAKE_INTERPROCEDURAL_OPTIMIZATION": "ON",
+        "CMAKE_CXX_FLAGS_RELEASE": "/O2 /Ob2 /DNDEBUG /GL /Gw /Gy",
+        "CMAKE_EXE_LINKER_FLAGS_RELEASE": "/LTCG /OPT:REF /OPT:ICF"
+      }
+    },
+    {
       "name": "windows-msvc",
       "displayName": "Windows / MSVC x64 (Release, 默认)",
       "description": "等价于 windows-msvc-release 的别名 preset，方便直接用 `cmake --preset windows-msvc`。",
@@ -61,6 +72,7 @@
     { "name": "windows-msvc-debug", "displayName": "Build: MSVC Debug", "configurePreset": "windows-msvc-debug", "configuration": "Debug", "jobs": 0 },
     { "name": "windows-msvc-release", "displayName": "Build: MSVC Release", "configurePreset": "windows-msvc-release", "configuration": "Release", "jobs": 0 },
     { "name": "windows-msvc-relwithdebinfo", "displayName": "Build: MSVC RelWithDebInfo", "configurePreset": "windows-msvc-relwithdebinfo", "configuration": "RelWithDebInfo", "jobs": 0 },
+    { "name": "windows-msvc-release-lto", "displayName": "Build: MSVC Release + LTO", "configurePreset": "windows-msvc-release-lto", "configuration": "Release", "jobs": 0 },
     { "name": "windows-msvc", "displayName": "Build: MSVC Release (默认)", "configurePreset": "windows-msvc", "configuration": "Release", "jobs": 0 }
   ],
   "testPresets": [

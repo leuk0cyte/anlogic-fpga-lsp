@@ -106,19 +106,34 @@ bool LspFramer::WriteFrame(std::ostream& out, std::string_view body) {
 // -----------------------------------------------------------------------------
 
 McpFramer::Status McpFramer::ReadFrame(std::istream& in, std::string& out) {
-    while (true) {
-        std::string line;
-        if (!std::getline(in, line)) {
-            return Status::EndOfStream;
+    // ⚠ B7 / S-08：**有界**读行。
+    //
+    //   旧实现是 `std::getline(in, line)`，先把整行读进内存、**之后**才比较
+    //   kMaxBodyBytes —— 一个不含 '\n' 的 4 GiB 流会在检查之前就把进程 OOM 掉
+    //   （LSP 路径相反：先判 Content-Length 再分配，transport.cpp:86-90）。
+    //
+    //   现在逐字符取、边取边比上限：峰值内存被钉在 kMaxBodyBytes 以内。
+    //   代价是每字节一次 streambuf 调用（缓冲区在 streambuf 里，正常小消息可忽略）。
+    //   超限时立即返回 TooLarge，不把剩余内容读进来；残留部分会在后续 ReadFrame
+    //   里继续被判超限，直到遇到 '\n' 自然重新同步（与 Python mcp.py 的行语义一致）。
+    std::string line;
+    line.reserve(4096);
+    for (;;) {
+        const int ch = in.get();
+        if (ch == std::char_traits<char>::eof()) {
+            StripTrailingCR(line);
+            if (line.empty()) return Status::EndOfStream;
+            out = std::move(line);
+            return Status::Body;
         }
-        StripTrailingCR(line);
-        if (line.empty()) continue;  // 空行：跳过（对应 mcp.py 的 continue）
-
-        if (line.size() > kMaxBodyBytes) {
-            return Status::TooLarge;
+        if (ch == '\n') {
+            StripTrailingCR(line);
+            if (line.empty()) continue;  // 空行：跳过（对应 mcp.py 的 continue）
+            out = std::move(line);
+            return Status::Body;
         }
-        out = std::move(line);
-        return Status::Body;
+        if (line.size() >= kMaxBodyBytes) return Status::TooLarge;
+        line.push_back(static_cast<char>(ch));
     }
 }
 

@@ -16,6 +16,7 @@
 #include <cctype>
 #include <cstddef>
 #include <filesystem>
+#include <fstream>
 #include <map>
 #include <optional>
 #include <set>
@@ -29,6 +30,9 @@
 #include "flow/programmer.h"
 #include "flow/strategy.h"
 #include "hdl/hdl_index.h"
+#include "reports/artifacts.h"
+#include "reports/reports_aggregate.h"
+#include "server/async_dispatcher.h"
 #include "server/features.h"
 #include "jsonrpc/json_util.h"
 #include "platform/log.h"
@@ -88,8 +92,8 @@ HandlerResult Failure(std::string error) {
     return OkObject(std::move(result));
 }
 
-// 占位命令的统一返回（参见文件头注释）
-HandlerResult NotImplemented() { return Failure("not implemented"); }
+// 占位命令的返回值现在由各 Feature stub 自己给（带 "not implemented: <缺什么>"），
+// 这里不再保留统一的 NotImplemented()，避免出现"看起来实现了"的死代码。
 
 std::string ToLower(std::string_view text) {
     std::string out(text);
@@ -254,37 +258,148 @@ Json LspServer::FeatureModuleTree(std::string_view uri, bool include_primitives)
     return result;
 }
 // =============================================================================
-//  fpgaLsp/reports（占位：reports 模块未实现，字段结构按协议预留）
+//  fpgaLsp/reports —— 真实报告（src/reports）+ 策略/路由库装饰
 // =============================================================================
 
-HandlerResult LspServer::HandleReports(const Json& params) {
-    Json result = Json::object();
-    result["ok"] = false;
-    result["error"] = "reports module not implemented";
+namespace {
 
+// 对应 Python analysis.newest_routed_db：<project>_Runs/phy_1 下最新的 *_pr.db。
+std::string NewestRoutedDb(const project::Project& project) {
+    const std::string phy =
+        reports::RunsDirectory(project.dir, project.name) + "/phy_1";
+    std::vector<std::string> candidates;
+    std::error_code ec;
+    for (const auto& entry : std::filesystem::directory_iterator(phy, ec)) {
+        if (ec) break;
+        if (!entry.is_regular_file(ec)) continue;
+        const std::string name = entry.path().filename().string();
+        if (name.size() >= 6 && name.compare(name.size() - 6, 6, "_pr.db") == 0) {
+            candidates.push_back(platform::normalize_path(entry.path().string()));
+        }
+    }
+    if (candidates.empty()) return "";
+    std::sort(candidates.begin(), candidates.end(), [](const std::string& a, const std::string& b) {
+        std::error_code ea;
+        std::error_code eb;
+        const auto ta = std::filesystem::last_write_time(std::filesystem::path(a), ea);
+        const auto tb = std::filesystem::last_write_time(std::filesystem::path(b), eb);
+        return !ea && !eb ? ta > tb : a > b;
+    });
+    return candidates.front();
+}
+
+}  // namespace
+
+HandlerResult LspServer::HandleReports(const Json& params) {
+    return OkObject(FeatureReports(params));
+}
+
+Json LspServer::FeatureReports(const Json& params) {
     const auto project = ProjectFromParams(params);
     if (!project.has_value()) {
-        result["error"] = "No Anlogic .al project found";
-    } else {
-        result["project"] = project->name;
-        result["al"] = project->al_path;
+        Json out = Json::object();
+        out["ok"] = false;
+        out["error"] = "No Anlogic .al project found";
+        out["flow"] = CurrentFlowObject(flow_runner());
+        return out;
     }
 
-    // PROTOCOL-V2.md §2 的全部字段都预留（客户端要能容忍缺字段，但结构先给全）
-    result["generatedAt"] = nullptr;
-    Json artifacts = Json::object();
-    artifacts["bit"] = nullptr;
-    artifacts["syn_db"] = nullptr;
-    artifacts["route_db"] = nullptr;
-    artifacts["runs"] = Json::array();
-    result["artifacts"] = std::move(artifacts);
-    result["flow"] = CurrentFlowObject(flow_runner());
-    result["qor"] = nullptr;
-    result["timing"] = nullptr;
-    result["area"] = nullptr;
-    result["flowStatus"] = Json::array();
-    result["files"] = Json::object();
-    return OkObject(std::move(result));
+    // Phase 2 / A3：按 section 走 ReportStore 缓存；默认 kAll = Phase 1 全量行为。
+    std::uint32_t mask = reports::sections::kAll;
+    std::string section_text;
+    if (const auto it = params.find("section"); it != params.end()) {
+        if (it->is_string()) {
+            section_text = it->get<std::string>();
+            bool ok = false;
+            mask = reports::sections::Parse(section_text, &ok);
+            if (!ok) mask = reports::sections::kAll;
+        } else if (it->is_array()) {
+            std::vector<std::string> names;
+            for (const Json& item : *it) {
+                if (item.is_string()) names.push_back(item.get<std::string>());
+            }
+            bool ok = false;
+            mask = reports::sections::MaskFromList(names, &ok);
+            if (!ok) mask = reports::sections::kAll;
+        }
+    }
+    Json data = report_store_->Get(*project, mask)->data;
+    if (!section_text.empty()) data["section"] = section_text;
+    // 可选 limit：只裁剪副本（快照共享不可变），用于 timing/area 的大表。
+    const int limit = jsonrpc::GetInt(params, "limit", 0);
+    if (limit > 0) {
+        const auto trim = [limit](auto&& self, Json& node) -> void {
+            if (!node.is_object()) return;
+            if (node.contains("paths") && node["paths"].is_array() &&
+                node["paths"].size() > static_cast<std::size_t>(limit)) {
+                node["paths"].erase(node["paths"].begin() + limit, node["paths"].end());
+                node["truncated"] = true;
+            }
+            for (const char* child : {"syn", "phy"}) {
+                if (node.contains(child) && node[child].is_object()) {
+                    self(self, node[child]);
+                }
+            }
+        };
+        trim(trim, data);
+    }
+    // 分节请求默认不带 raw 正文（timing/area 的原始报告可达 10 MB+）；
+    // 需要时显式 include_raw=true。全量请求（无 section）保持 Phase 1 行为。
+    const bool include_raw = jsonrpc::GetBool(params, "include_raw", false);
+    if (!include_raw && !section_text.empty()) {
+        const auto drop_raw = [](auto&& self, Json& node) -> void {
+            if (!node.is_object()) return;
+            node.erase("raw");
+            // 顶层与 syn/phy 内的分节对象都带 raw（timing/area/qor 各 ~10 MB）
+            for (const char* section : {"timing", "area", "qor"}) {
+                if (node.contains(section) && node[section].is_object()) {
+                    node[section].erase("raw");
+                }
+            }
+            for (const char* child : {"syn", "phy"}) {
+                if (node.contains(child) && node[child].is_object()) {
+                    self(self, node[child]);
+                }
+            }
+        };
+        drop_raw(drop_raw, data);
+    }
+    data["project"] = project->name;
+    data["al"] = project->al_path;
+    data["flow"] = CurrentFlowObject(flow_runner());
+    if (data["flow"].is_object() && !data["flow"].contains("ok")) {
+        data["flow"]["ok"] = nullptr;  // Python 的 _flow_state() 始终带 ok（未跑 flow 时为 null）
+    }
+
+    // Python _decorate_reports：路由库 + TD 策略清单 + 上次 DRC/CDC 缓存
+    data["routed_db"] = NewestRoutedDb(*project);
+    Json strategies = Json::object();
+    Json available = Json::array();
+    const std::string configured =
+        settings_.td_path.empty() ? td_explicit_ : settings_.td_path;
+    if (const std::optional<td::TdChoice> td = td::FindTd(configured); td.has_value()) {
+        for (const std::string& name :
+             flow::AvailableStrategies(td->root, project->family)) {
+            available.push_back(name);
+        }
+    }
+    strategies["available"] = std::move(available);
+    data["strategies"] = std::move(strategies);
+
+    // 上次 analysis 缓存（B5 会写；没有就保持缺省，与 Python 一致）
+    const std::string cache = platform::path_join(
+        platform::path_join(platform::path_join(project->dir, ".fpgalsp"), "cache"),
+        "analysis.json");
+    std::error_code ec;
+    if (std::filesystem::is_regular_file(cache, ec)) {
+        try {
+            std::ifstream input(cache, std::ios::binary);
+            if (input) data["analysis"] = Json::parse(input);
+        } catch (...) {
+            // 缓存损坏不影响报告主体
+        }
+    }
+    return data;
 }
 
 // =============================================================================
@@ -293,6 +408,10 @@ HandlerResult LspServer::HandleReports(const Json& params) {
 
 HandlerResult LspServer::HandleFlowStatus(const Json& params) {
     (void)params;
+    return OkObject(FeatureFlowStatus());
+}
+
+Json LspServer::FeatureFlowStatus() {
     const std::shared_ptr<flow::FlowRunner> runner = flow_runner();
 
     Json result = Json::object();
@@ -303,8 +422,28 @@ HandlerResult LspServer::HandleFlowStatus(const Json& params) {
         for (const std::string& line : runner->Status().log) log.push_back(line);
     }
     flow["log"] = std::move(log);
+    if (!flow.contains("ok")) flow["ok"] = nullptr;
     result["flow"] = std::move(flow);
-    return OkObject(std::move(result));
+
+    // Python 的 flowStatus 顶层还带 artifacts（runs[]），扩展的 FlowTree 会读
+    Json artifacts = Json::object();
+    Json runs = Json::array();
+    if (const auto project = CurrentProject(); project.has_value()) {
+        const std::string runs_dir = reports::RunsDirectory(project->dir, project->name);
+        std::error_code ec;
+        for (const auto& entry : std::filesystem::directory_iterator(runs_dir, ec)) {
+            if (ec) break;
+            if (!entry.is_directory(ec)) continue;
+            Json item = Json::object();
+            item["name"] = entry.path().filename().string();
+            item["dir"] = platform::normalize_path(entry.path().string());
+            item["exists"] = true;
+            runs.push_back(std::move(item));
+        }
+    }
+    artifacts["runs"] = std::move(runs);
+    result["artifacts"] = std::move(artifacts);
+    return result;
 }
 
 // =============================================================================
@@ -528,35 +667,9 @@ Json LspServer::FeatureInfo() {
 // =============================================================================
 //  workspace/executeCommand
 // =============================================================================
-//  已实现：fpgalsp.info / projects / setProject / tdInfo / device / check / restart
-//          fpgalsp.cancelFlow（flow 未接入，如实回答"没在跑"）
-//  占位  ：其余命令统一返回 {"ok": false, "error": "not implemented"}
-//          —— 必须显式返回，否则客户端会挂住等响应。
+//  Phase B 起所有命令都走 LspServer::Feature*（LSP 与 MCP 同一实现）；
+//  未完成的 Feature 由各自的 stub 返回 {ok:false,error:"not implemented: …"}。
 // =============================================================================
-
-namespace {
-
-// 占位命令白名单（COMMANDS.md 的两栏清单以此为准）
-const std::set<std::string>& PlaceholderCommands() {
-    static const std::set<std::string> commands = {
-        // flow / 烧录（阶段 4-δ）已实现，不在白名单里：
-        //   fpgalsp.runFlow / cancelFlow / compareStrategies / cables / program / svfgen
-        "fpgalsp.reports",
-        "fpgalsp.runAnalysis",
-        "fpgalsp.addSourceFile",
-        "fpgalsp.setProjectName",
-        "fpgalsp.updateProject",
-        "fpgalsp.instantiate",
-        "fpgalsp.copyInstantiation",
-        "fpgalsp.symbolPath",
-        "fpgalsp.duplicateModules",
-        "fpgalsp.searchHierarchy",
-        "fpgalsp.debugHighlight",
-    };
-    return commands;
-}
-
-}  // namespace
 
 HandlerResult LspServer::HandleExecuteCommand(const Json& params) {
     const std::string command = jsonrpc::GetString(params, "command");
@@ -799,9 +912,75 @@ HandlerResult LspServer::HandleExecuteCommand(const Json& params) {
         return OkObject(flow::GenerateSvf(*td, *project, program_options));
     }
 
-    // ---- 占位（必须显式返回 not implemented）----
-    if (PlaceholderCommands().count(command) != 0) {
-        return NotImplemented();
+    // ---- Phase B：IDE / 分析 / 报告类命令（统一走 Feature 层）----
+    const Json options =
+        args.empty() || !args.front().is_object() ? Json::object() : args.front();
+
+    if (command == "fpgalsp.reports") {
+        return OkObject(FeatureReports(params));
+    }
+    if (command == "fpgalsp.runAnalysis") {
+        return OkObject(FeatureRunAnalysis(options));
+    }
+    if (command == "fpgalsp.instantiate") {
+        return OkObject(FeatureInstantiation(options));
+    }
+    if (command == "fpgalsp.copyInstantiation") {
+        return OkObject(FeatureCopyInstantiation(options));
+    }
+    if (command == "fpgalsp.symbolPath") {
+        return OkObject(FeatureSymbolPath(options));
+    }
+    if (command == "fpgalsp.duplicateModules") {
+        return OkObject(FeatureDuplicateModules(options));
+    }
+    if (command == "fpgalsp.searchHierarchy") {
+        return OkObject(FeatureSearchHierarchy(options));
+    }
+    if (command == "fpgalsp.addSourceFile") {
+        return OkObject(FeatureAddSourceFile(options));
+    }
+    if (command == "fpgalsp.setProjectName") {
+        return OkObject(FeatureSetProjectName(options));
+    }
+    if (command == "fpgalsp.updateProject") {
+        return OkObject(FeatureUpdateProject(options));
+    }
+    if (command == "fpgalsp.debugHighlight") {
+        return OkObject(FeatureDebugHighlight(params));
+    }
+    if (command == "fpgalsp.metrics") {
+        const AsyncMetricsSnapshot metrics = GetAsyncMetrics();
+        Json result = Json::object();
+        result["ok"] = true;
+        result["queued"] = metrics.queued;
+        result["completed"] = metrics.completed;
+        result["cancelled"] = metrics.cancelled;
+        result["failed"] = metrics.failed;
+        result["slow"] = metrics.slow;
+        result["inflight"] = metrics.inflight;
+        result["maxQueueWaitMs"] = metrics.max_queue_wait_ms;
+        result["maxRunMs"] = metrics.max_run_ms;
+        if (index_service_) {
+            const IndexService::Stats stats = index_service_->stats();
+            Json index = Json::object();
+            index["generation"] = stats.generation;
+            index["rebuilds"] = stats.rebuilds;
+            index["fileUpdates"] = stats.file_updates;
+            index["files"] = index_service_->tracked_files();
+            result["index"] = std::move(index);
+        }
+        if (report_store_) {
+            const ReportStoreStats stats = report_store_->stats();
+            Json reports = Json::object();
+            reports["gets"] = stats.gets;
+            reports["snapshotHits"] = stats.snapshot_hits;
+            reports["builds"] = stats.builds;
+            reports["revisions"] = stats.revisions;
+            reports["lastBuildMs"] = stats.last_build_ms;
+            result["reports"] = std::move(reports);
+        }
+        return OkObject(std::move(result));
     }
 
     return Failure("unknown command " + command);

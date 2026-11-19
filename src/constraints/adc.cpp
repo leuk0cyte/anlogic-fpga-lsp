@@ -20,6 +20,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <deque>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -1217,6 +1218,240 @@ Json ToJson(const CoverageReport& coverage) {
     json["total_bits"] = coverage.total_bits;
     json["constrained_bits"] = coverage.constrained_bits;
     return json;
+}
+
+// =============================================================================
+//  LSP 符号 / hover / 补全（对应 server.py 的 .adc 分支）
+// =============================================================================
+//  这三个函数是**纯函数**：只吃「文档文本 + 光标位置（+ 可选顶层端口表）」，
+//  不读磁盘、不碰工程模型、不抛异常。JSON 形状逐字段对齐 Python：
+//    · on_textDocument_documentSymbol 的 `.adc` 分支（47 条 for CorpusAlpha 的 pin.adc）
+//    · _hover_adc
+//    · _complete_adc
+//
+//  ⚠ 与 Python 的两处**已知差异**（都因为本层拿不到器件引脚表）：
+//    1. hover 的 `pin` 分支（"**P87** - EF2L45LG144B pin / Clock capability …"）
+//       需要 device.pins；LspServer 只缓存 DeviceSummary（计数），没有引脚明细，
+//       所以这里走 Python 的**同一条回退路径**（整行属性 markdown）。
+//    2. 补全的 `pin` 分支同理 -> Python 在 device 为空时也是这一条
+//       （"Run fpgalsp.check to load the device pin table"）。
+//    也就是说：拿到 device 时 Python 更丰富，拿不到时两侧**逐字节一致**。
+// =============================================================================
+
+namespace {
+
+Json MakeRangeJson(int line, int start, int end) {
+    Json range = Json::object();
+    Json start_json = Json::object();
+    start_json["line"] = line;
+    start_json["character"] = start;
+    Json end_json = Json::object();
+    end_json["line"] = line;
+    end_json["character"] = end;
+    range["start"] = std::move(start_json);
+    range["end"] = std::move(end_json);
+    return range;
+}
+
+// 行内长度（列号用）：`max(1, len(row))`，row 不含行结束符
+int RowLength(std::string_view text, int line) {
+    const int length = static_cast<int>(text::LineAt(text, line).size());
+    return length > 1 ? length : 1;
+}
+
+// 光标所在 span 里的词（对应 server.py `_ctx_word`：优先用解析器给的 span）
+std::string ContextWord(std::string_view text, const std::optional<CursorContext>& context) {
+    if (!context.has_value()) return {};
+    const Span& span = context->span;
+    const std::string_view row = text::LineAt(text, span.line);
+    if (span.start >= 0 && span.start < span.end &&
+        static_cast<std::size_t>(span.end) <= row.size()) {
+        return std::string(row.substr(static_cast<std::size_t>(span.start),
+                                      static_cast<std::size_t>(span.end - span.start)));
+    }
+    return {};
+}
+
+// 属性按**首次出现顺序**输出（Python 的 dict 插入序），值取最后一次赋值（TD 顺序语义）。
+std::string AttributesMarkdown(const Entry& entry) {
+    std::string body;
+    std::set<std::string> seen;
+    for (const AttrItem& item : entry.attr_items) {
+        const std::string key = item.key_upper.empty() ? text::UpperAscii(item.key)
+                                                       : item.key_upper;
+        if (!seen.insert(key).second) continue;
+        const auto found = entry.attrs.find(key);
+        if (found == entry.attrs.end()) continue;
+        body += "- `" + key + "` = `" + found->second + "`\n";
+    }
+    if (!body.empty()) body.pop_back();  // 去掉末尾换行（Python 用 "\n".join）
+    return body;
+}
+
+// Python: FALLBACK_PULLTYPE / io_standards.json 的 pulltype（4 项）
+#include "constraints/data/adc_io.inc"
+
+// Python: ADC_ATTRS（attribute-key 补全的候选；顺序原样）
+constexpr std::string_view kAdcAttrs[] = {
+    "LOCATION", "IOSTANDARD", "PULLTYPE", "SLEWRATE", "DRIVE", "IN_TERM", "OUT_TERM",
+};
+
+// LSP CompletionItemKind
+constexpr int kKindFunction = 3;   // Method/Function
+constexpr int kKindField = 5;
+constexpr int kKindProperty = 10;
+constexpr int kKindValue = 12;
+constexpr int kKindKeyword = 14;
+
+// Python: `items[:1500]`
+constexpr std::size_t kMaxCompletionItems = 1500;
+
+Json CompletionItemJson(const std::string& label, int kind, const std::string& detail) {
+    Json item = Json::object();
+    item["label"] = label;
+    item["kind"] = kind;
+    item["detail"] = detail;
+    return item;
+}
+
+}  // namespace
+
+Json DocumentSymbols(std::string_view text) {
+    Json out = Json::array();
+    for (const Entry& entry : Parse(text)) {
+        const int line = entry.line;
+        const std::string name = entry.port.empty() ? "?" : entry.port;
+        const auto location = entry.attrs.find("LOCATION");
+
+        Json symbol = Json::object();
+        symbol["name"] = name;
+        symbol["detail"] = location == entry.attrs.end() ? std::string() : location->second;
+        symbol["kind"] = 8;  // SymbolKind::Field（Python 侧写死 8）
+        symbol["range"] = MakeRangeJson(line, 0, RowLength(text, line));
+        const int name_length = static_cast<int>(name.size());
+        symbol["selectionRange"] =
+            MakeRangeJson(line, 0, name_length > 1 ? name_length : 1);
+        out.push_back(std::move(symbol));
+    }
+    return out;
+}
+
+Json Hover(std::string_view text, int line, int character, const std::vector<Port>& ports) {
+    const std::optional<CursorContext> context = Context(text, line, character);
+    if (!context.has_value()) return Json(nullptr);
+    const Span span = context->span;
+    const Json range = MakeRangeJson(span.line, span.start, span.end);
+
+    // Python: kind == "port" -> 顶层端口定义（拿不到端口表就继续往下走）
+    if (context->kind == "port") {
+        const std::string name = ContextWord(text, context);
+        for (const Port& port : ports) {
+            if (port.name != name) continue;
+            const int width = port.width.value_or(1);
+            std::string value = "**" + name + "** — `" + port.direction + "` ";
+            if (width > 1) value += "[0:" + std::to_string(width - 1) + "]";
+            value += "\n\nDefinition: `" + port.file + ":" + std::to_string(port.line + 1) + "`";
+            Json contents = Json::object();
+            contents["kind"] = "markdown";
+            contents["value"] = std::move(value);
+            Json result = Json::object();
+            result["contents"] = std::move(contents);
+            result["range"] = range;
+            return result;
+        }
+    }
+
+    // 整行：解码后的属性（Python 的兜底分支，也是无 device 时 pin hover 的落点）
+    for (const Entry& entry : Parse(text)) {
+        if (entry.line != line) continue;
+        const std::string body = AttributesMarkdown(entry);
+        std::string value = "**" + (entry.port.empty() ? std::string() : entry.port) + "**";
+        if (!body.empty()) value += "\n\n" + body;
+        Json contents = Json::object();
+        contents["kind"] = "markdown";
+        contents["value"] = std::move(value);
+        Json result = Json::object();
+        result["contents"] = std::move(contents);
+        result["range"] = MakeRangeJson(line, 0, RowLength(text, line));
+        return result;
+    }
+    return Json(nullptr);
+}
+
+Json Completion(std::string_view text, int line, int character, const std::vector<Port>& ports) {
+    const std::optional<CursorContext> context = Context(text, line, character);
+    const std::string kind = context.has_value() ? context->kind : std::string();
+    Json items = Json::array();
+
+    if (kind == "pin") {
+        // 没有器件引脚表（见文件头差异说明）-> Python 的同一条回退
+        items.push_back(CompletionItemJson("LOCATION", kKindKeyword,
+                                           "Run fpgalsp.check to load the device pin table"));
+    } else if (kind == "iostandard" || kind == "pulltype") {
+        const bool io_standard = kind == "iostandard";
+        const std::string detail = text::UpperAscii(kind);
+        if (io_standard) {
+            for (const std::string_view value : kAdcIoStandards) {
+                items.push_back(CompletionItemJson(std::string(value), kKindValue, detail));
+            }
+        } else {
+            for (const std::string_view value : kAdcPulltypes) {
+                items.push_back(CompletionItemJson(std::string(value), kKindValue, detail));
+            }
+        }
+    } else if (kind == "attr_key") {
+        for (const std::string_view value : kAdcAttrs) {
+            Json item = CompletionItemJson(std::string(value), kKindProperty, "ADC attribute");
+            item["insertText"] = std::string(value) + " = ";
+            items.push_back(std::move(item));
+        }
+    } else if (kind == "port") {
+        const std::vector<Entry> entries = Parse(text);
+        const CoverageReport coverage = Coverage(entries, ports);
+        for (const Port& port : ports) {
+            if (port.name.empty()) continue;
+            const int width = port.width.value_or(1);
+            const std::string direction = port.direction.empty() ? "?" : port.direction;
+            if (width <= 1) {
+                if (coverage.covered.find(port.name) != coverage.covered.end()) continue;
+                items.push_back(CompletionItemJson(
+                    port.name, kKindField, direction + " · " + std::to_string(width) + " bit"));
+                continue;
+            }
+            const auto covered = coverage.covered.find(port.name);
+            const std::vector<int> empty;
+            const std::vector<int>& have = covered == coverage.covered.end() ? empty
+                                                                            : covered->second;
+            for (int bit = 0; bit < width; ++bit) {
+                if (std::find(have.begin(), have.end(), bit) != have.end()) continue;
+                items.push_back(CompletionItemJson(
+                    port.name + "[" + std::to_string(bit) + "]", kKindField,
+                    direction + " · [" + std::to_string(width - 1) + ":0] · unconstrained"));
+            }
+        }
+    } else if (kind == "command") {
+        // Python 硬编码两条（含 set_ippin_assignment —— 它不在 ADC 白名单里，
+        // 照补全写出来会立刻收到 ADC-CMD；见 PYTHON-BUGS.md，这里忠实复现）
+        for (const char* command : {"set_pin_assignment", "set_ippin_assignment"}) {
+            Json item = CompletionItemJson(command, kKindFunction, "TD ADC pin constraints");
+            item["insertText"] = std::string(command) +
+                                 "\t{ ${1:port} }\t{ LOCATION = ${2:pin}; IOSTANDARD = "
+                                 "${3:LVCMOS33}; }";
+            item["insertTextFormat"] = 2;
+            items.push_back(std::move(item));
+        }
+    }
+
+    if (items.size() > kMaxCompletionItems) {
+        Json capped = Json::array();
+        for (std::size_t i = 0; i < kMaxCompletionItems; ++i) capped.push_back(items[i]);
+        items = std::move(capped);
+    }
+
+    Json result = Json::object();
+    result["isIncomplete"] = false;
+    result["items"] = std::move(items);
+    return result;
 }
 
 }  // namespace adc

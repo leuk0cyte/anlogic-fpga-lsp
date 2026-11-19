@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdio>
+#include <iterator>
 #include <map>
 #include <string>
 #include <unordered_map>
@@ -1261,6 +1262,231 @@ std::vector<CompletionItem> Completion(std::string_view text, int line, int char
         return items;
     }
     return items;
+}
+
+// =============================================================================
+//  TD 命令表（vendored）
+// =============================================================================
+
+namespace {
+
+#include "constraints/data/td_commands.inc"
+
+}  // namespace
+
+std::span<const CommandUsage> CommandUsages() {
+    return std::span<const CommandUsage>(kSdcCommandUsages,
+                                         std::size(kSdcCommandUsages));
+}
+
+// =============================================================================
+//  LSP 符号 / hover / 补全（对应 server.py 的 .sdc 分支）
+// =============================================================================
+//  纯函数：只吃「文本 + 光标位置（+ 可选顶层端口表）」，不读磁盘、不抛异常。
+//  形状逐字段对齐 Python：
+//    · on_textDocument_documentSymbol 的 `.sdc` 分支（top.sdc -> 2 条）
+//    · _hover_sdc（命令 hover 用 TD help 的 usage 原文）
+//    · _complete_sdc
+// =============================================================================
+
+namespace {
+
+Json MakeRangeJson(int line, int start, int end) {
+    Json range = Json::object();
+    Json start_json = Json::object();
+    start_json["line"] = line;
+    start_json["character"] = start;
+    Json end_json = Json::object();
+    end_json["line"] = line;
+    end_json["character"] = end;
+    range["start"] = std::move(start_json);
+    range["end"] = std::move(end_json);
+    return range;
+}
+
+// Python: `max(1, len(row))`
+int RowLength(std::string_view text, int line) {
+    const int length = static_cast<int>(text::LineAt(text, line).size());
+    return length > 1 ? length : 1;
+}
+
+// server.py `_ctx_word`：优先按解析器给的 span 切词
+std::string ContextWord(std::string_view text, const std::optional<CursorContext>& context) {
+    if (!context.has_value()) return {};
+    const Span& span = context->span;
+    const std::string_view row = text::LineAt(text, span.line);
+    if (span.start >= 0 && span.start < span.end &&
+        static_cast<std::size_t>(span.end) <= row.size()) {
+        return std::string(row.substr(static_cast<std::size_t>(span.start),
+                                      static_cast<std::size_t>(span.end - span.start)));
+    }
+    return {};
+}
+
+// Python: `commands.get(word.lower())` —— 注意键是**原样**（可能含大写），
+// 所以 `JTAG_REG_ACCESS` 这类命令永远查不到（忠实复现）。
+const CommandUsage* FindCommand(const std::string& lowered_word) {
+    for (const CommandUsage& row : CommandUsages()) {
+        if (row.name == lowered_word) return &row;
+    }
+    return nullptr;
+}
+
+// LSP CompletionItemKind
+constexpr int kKindFunction = 3;
+constexpr int kKindField = 5;
+constexpr int kKindProperty = 10;
+constexpr int kKindKeyword = 14;
+constexpr int kKindConstant = 21;
+
+constexpr std::size_t kMaxCompletionItems = 1500;
+constexpr std::size_t kUsageDetailLength = 120;  // Python: `usage[:120]`
+
+std::string TruncatedUsage(std::string_view usage) {
+    if (usage.size() <= kUsageDetailLength) return std::string(usage);
+    return std::string(usage.substr(0, kUsageDetailLength));
+}
+
+Json CompletionItemJson(const std::string& label, int kind, const std::string& detail) {
+    Json item = Json::object();
+    item["label"] = label;
+    item["kind"] = kind;
+    item["detail"] = detail;
+    return item;
+}
+
+}  // namespace
+
+Json DocumentSymbols(std::string_view text) {
+    Json out = Json::array();
+    for (const Command& command : Parse(text)) {
+        const int line = command.line;
+        std::string detail;
+        for (std::size_t i = 0; i < command.args.size(); ++i) {
+            if (i != 0) detail += " ";
+            detail += command.args[i];
+        }
+        if (detail.size() > 60) detail.resize(60);  // Python: `" ".join(args)[:60]`
+
+        const std::string name = command.command.empty() ? "?" : command.command;
+        Json symbol = Json::object();
+        symbol["name"] = name;
+        symbol["detail"] = std::move(detail);
+        symbol["kind"] = kKindFunction;  // Python 侧写死 3
+        symbol["range"] = MakeRangeJson(line, 0, RowLength(text, line));
+        const int name_length = static_cast<int>(name.size());
+        symbol["selectionRange"] =
+            MakeRangeJson(line, 0, name_length > 1 ? name_length : 1);
+        out.push_back(std::move(symbol));
+    }
+    return out;
+}
+
+Json Hover(std::string_view text, int line, int character, const std::vector<Port>& ports) {
+    const std::optional<CursorContext> context = Context(text, line, character);
+    if (!context.has_value()) return Json(nullptr);
+    const Span span = context->span;
+    const Json range = MakeRangeJson(span.line, span.start, span.end);
+
+    if (context->kind == "command") {
+        const std::string word = ContextWord(text, context);
+        if (!word.empty()) {
+            if (const CommandUsage* info = FindCommand(LowerAscii(word))) {
+                std::string value = "**" + std::string(info->name) + "**\n\n```\n";
+                value += info->usage.empty() ? std::string() : std::string(info->usage);
+                value += "\n```";
+                Json contents = Json::object();
+                contents["kind"] = "markdown";
+                contents["value"] = std::move(value);
+                Json result = Json::object();
+                result["contents"] = std::move(contents);
+                result["range"] = range;
+                return result;
+            }
+        }
+    }
+
+    if (context->kind == "port") {
+        const std::string name = ContextWord(text, context);
+        for (const Port& port : ports) {
+            if (port.name != name) continue;
+            std::string value = "**" + name + "** `" + port.direction + "` width=" +
+                                std::to_string(port.width.value_or(1)) + "\n\ndef " + port.file +
+                                ":" + std::to_string(port.line + 1);
+            Json contents = Json::object();
+            contents["kind"] = "markdown";
+            contents["value"] = std::move(value);
+            Json result = Json::object();
+            result["contents"] = std::move(contents);
+            result["range"] = range;
+            return result;
+        }
+    }
+    return Json(nullptr);
+}
+
+Json LspCompletion(std::string_view text, int line, int character,
+                   const std::vector<Port>& ports) {
+    const std::optional<CursorContext> context = Context(text, line, character);
+    const std::string kind = context.has_value() ? context->kind : std::string();
+    Json items = Json::array();
+
+    if (kind == "command") {
+        // Python：前缀 = 行首标识符（转小写），再对**原始命令名**做 startswith
+        std::string prefix;
+        const std::string_view row = text::LineAt(text, line);
+        // Python: re.match(r"^\s*([A-Za-z_]\w*)", row)
+        const std::string_view leading = text::LeadingIdentifier(text::LStrip(row));
+        if (!leading.empty()) prefix = LowerAscii(leading);
+        for (const CommandUsage& row_entry : CommandUsages()) {
+            const std::string name(row_entry.name);
+            if (!prefix.empty() && name.rfind(prefix, 0) != 0) continue;
+            items.push_back(
+                CompletionItemJson(name, kKindFunction, TruncatedUsage(row_entry.usage)));
+        }
+    } else if (kind == "port") {
+        for (const Port& port : ports) {
+            if (port.name.empty()) continue;
+            char detail[96];
+            std::snprintf(detail, sizeof(detail), "%s · %d bit",
+                          port.direction.empty() ? "?" : port.direction.c_str(),
+                          port.width.value_or(1));
+            items.push_back(CompletionItemJson(port.name, kKindField, detail));
+        }
+    } else if (kind == "clock_name") {
+        for (const std::string& name : DefinedClockNames(text)) {
+            items.push_back(CompletionItemJson(name, kKindConstant, "clock"));
+        }
+    } else if (kind == "option") {
+        // Python 用 td_commands.json 的 options（原顺序）；这里同源
+        if (const CommandUsage* info = FindCommand(LowerAscii(context->command))) {
+            std::string_view rest = info->options;
+            while (!rest.empty()) {
+                const std::size_t space = rest.find(' ');
+                const std::string_view token =
+                    space == std::string_view::npos ? rest : rest.substr(0, space);
+                if (!token.empty()) {
+                    Json item = Json::object();
+                    item["label"] = std::string(token);
+                    item["kind"] = kKindProperty;
+                    items.push_back(std::move(item));
+                }
+                if (space == std::string_view::npos) break;
+                rest = rest.substr(space + 1);
+            }
+        }
+    }
+
+    if (items.size() > kMaxCompletionItems) {
+        Json capped = Json::array();
+        for (std::size_t i = 0; i < kMaxCompletionItems; ++i) capped.push_back(items[i]);
+        items = std::move(capped);
+    }
+
+    Json result = Json::object();
+    result["isIncomplete"] = false;
+    result["items"] = std::move(items);
+    return result;
 }
 
 // =============================================================================

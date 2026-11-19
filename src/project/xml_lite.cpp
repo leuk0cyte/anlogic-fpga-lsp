@@ -124,6 +124,15 @@ public:
     XmlParseResult Run() {
         XmlParseResult result;
 
+        // B7 / S-05：体积极限。放在最前面，避免对明显不是 .al 的输入做任何扫描
+        // （ParseAl 侧还会在**读文件之前**用 file_size 挡一次，见 al_project.cpp）。
+        if (s_.size() > kMaxXmlDocumentBytes) {
+            result.error = "document too large (" + std::to_string(s_.size()) + " bytes > " +
+                           std::to_string(kMaxXmlDocumentBytes) + ")";
+            result.error_offset = 0;
+            return result;
+        }
+
         // 跳过根元素之前的杂项（声明 / 注释 / DOCTYPE / 空白）
         if (!SkipMisc(&result.error, &result.error_offset)) {
             return result;
@@ -261,6 +270,19 @@ private:
     }
 
     bool ParseElement(XmlNode& node, std::string* error, std::size_t* error_offset) {
+        // B7 / S-05：深度上限。这里必须在**递归之前**判断，否则第 513 层已经进了栈。
+        // 超限返回结构化错误（ok=false + 原因），绝不崩溃。
+        if (depth_ >= kMaxXmlDepth) {
+            *error = "element nesting too deep (limit " + std::to_string(kMaxXmlDepth) + ")";
+            *error_offset = i_;
+            return false;
+        }
+        struct DepthGuard {
+            int& depth;
+            explicit DepthGuard(int& d) : depth(d) { ++depth; }
+            ~DepthGuard() { --depth; }
+        } depth_guard(depth_);
+
         if (i_ >= s_.size() || s_[i_] != '<') {
             *error = "expected '<'";
             *error_offset = i_;
@@ -367,6 +389,7 @@ private:
 
     std::string_view s_;
     std::size_t i_ = 0;
+    int depth_ = 0;  // B7 / S-05：当前递归深度
 };
 
 }  // namespace

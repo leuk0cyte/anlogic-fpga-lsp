@@ -23,8 +23,11 @@
 
 #pragma once
 
+#include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -37,6 +40,73 @@
 #include "reports/timing.h"
 
 namespace fpgalsp::reports {
+
+// -----------------------------------------------------------------------------
+// section 掩码（Phase 2 / A3）
+// -----------------------------------------------------------------------------
+//  fpgaLsp/reports 的 section 参数与 ReportStore 的懒构建都用这一套位。
+//  语义（重要）：
+//    * kQor / kTiming / kArea / kFlow 真正决定"要不要解析该段"（解析是热点）；
+//    * kFiles / kArtifacts 是**廉价元数据**：`ok/error` 判定依赖 runs 目录，
+//      且 ToJson 本来就会带 files/artifacts 两个键，所以这两位当前**不裁剪输出**
+//      （保留是为了参数兼容与将来做"严格裁剪"）。
+namespace sections {
+
+inline constexpr std::uint32_t kNone = 0u;
+inline constexpr std::uint32_t kFiles = 1u << 0;
+inline constexpr std::uint32_t kArtifacts = 1u << 1;
+inline constexpr std::uint32_t kQor = 1u << 2;
+inline constexpr std::uint32_t kTiming = 1u << 3;
+inline constexpr std::uint32_t kArea = 1u << 4;
+inline constexpr std::uint32_t kFlow = 1u << 5;
+inline constexpr std::uint32_t kAll =
+    kFiles | kArtifacts | kQor | kTiming | kArea | kFlow;
+// 解析热点段（用于"这次请求需不需要真的读/解析报告"的判断）
+inline constexpr std::uint32_t kHeavy = kQor | kTiming | kArea | kFlow;
+
+// "qor"/"timing"/"area"/"flow"/"files"/"artifacts"/"all" -> bit。
+// 不认识的名字返回 kNone 且 *ok=false（调用方应回 invalid-argument）。
+std::uint32_t Parse(std::string_view name, bool* ok);
+
+// 单个 bit 的名字（多 bit 或 kNone 返回空串）。
+std::string_view Name(std::uint32_t bit);
+
+// 名字列表 -> 掩码（空列表 = kAll，与 Python/插件的默认语义一致）。
+std::uint32_t MaskFromList(const std::vector<std::string>& names, bool* ok);
+
+}  // namespace sections
+
+// -----------------------------------------------------------------------------
+// 每文件解析结果的记忆化接口（Phase 2 / A3）
+// -----------------------------------------------------------------------------
+//  BuildReports 在解析每个报告文件前先问它；返回非空就用缓存结果，不再读盘/解析。
+//  ReportStore（src/server/report_store.*）是实现方；测试里可用计数实现来证明
+//  "同一文件只解析一次"。
+//
+//  约定：
+//    * 返回 `shared_ptr<const T>`：快照可以长期持有，调用方不需要拷贝。
+//    * 实现方**必须**按 (path, mtime, size) 校验；文件变了要重新解析。
+//    * 本接口不抛异常（实现内部 never-throw，失败返回 nullptr 让调用方走正常解析）。
+class ReportParseCache {
+  public:
+    virtual ~ReportParseCache() = default;
+    virtual std::shared_ptr<const QorReport> GetQor(const std::string& path,
+                                                    std::string_view step) = 0;
+    virtual std::shared_ptr<const TimingReport> GetTiming(const std::string& path,
+                                                          std::string_view filename) = 0;
+    virtual std::shared_ptr<const AreaReport> GetArea(const std::string& path) = 0;
+    virtual std::shared_ptr<const FlowStatusReport> GetFlowStatus(const std::string& path) = 0;
+    // TD 的 *_qor_suggestion.tcl（纯 set_param 处方）
+    virtual std::shared_ptr<const std::vector<QorSuggestion>> GetSuggestions(
+        const std::string& path) = 0;
+};
+
+// 构建参数：section 掩码 + 可选的每文件解析缓存。
+//   cache 为空时行为与旧版 `BuildReports(project)` **完全一致**（测试/工具/CLI 都不受影响）。
+struct ReportsBuildOptions {
+    std::uint32_t sections = sections::kAll;
+    ReportParseCache* cache = nullptr;
+};
 
 // 用到的报告文件路径（找不到的字段是空串）
 struct ReportsFiles {
@@ -87,6 +157,10 @@ struct ReportsBundle {
 
 // 汇总一个工程的最新一次 flow 的所有报告。
 // never-throw：没有任何 runs 目录时返回 ok=false + error，不抛异常。
-ReportsBundle BuildReports(const project::Project& project);
+//
+// options.sections 控制"解析哪几段"（懒构建）；options.cache 提供每文件解析记忆化。
+// 不传 options 时等价于"全量 + 无缓存"，与 Phase 1 的行为逐字节一致。
+ReportsBundle BuildReports(const project::Project& project,
+                          const ReportsBuildOptions& options = ReportsBuildOptions{});
 
 }  // namespace fpgalsp::reports

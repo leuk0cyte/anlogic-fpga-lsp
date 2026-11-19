@@ -14,6 +14,7 @@ endif()
 
 add_library(fpga_lsp_verible_bridge STATIC
     format_text.cpp
+    lint_text.cpp
 )
 add_library(fpga_lsp::verible_bridge ALIAS fpga_lsp_verible_bridge)
 
@@ -34,6 +35,16 @@ target_compile_features(fpga_lsp_verible_bridge PUBLIC cxx_std_23)
 target_link_libraries(fpga_lsp_verible_bridge PUBLIC
     verible_formatter_libs
 )
+
+# lint autofix（B3）：Verible 的 lint 规则靠静态全局对象自注册，必须整库 /WHOLEARCHIVE
+# 链入；否则规则静默消失（程序正常、退出码 0、autofix 永远为空）。
+if(TARGET verible_lint_rules_all)
+    target_link_libraries(fpga_lsp_verible_bridge PUBLIC verible_lint_rules_all)
+    message(STATUS "src/verible_bridge: lint autofix 已接入（内嵌规则库 + /WHOLEARCHIVE）")
+else()
+    message(FATAL_ERROR
+        "src/verible_bridge: 未找到 verible_lint_rules_all；lint autofix 需要完整规则库")
+endif()
 
 # 让 src/server 能用 `#if defined(FPGA_LSP_HAVE_VERIBLE_BRIDGE)` 决定是否走真实格式化。
 # 用 INTERFACE 定义，链接者自动获得。

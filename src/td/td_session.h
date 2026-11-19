@@ -38,7 +38,12 @@ public:
 
 struct TdSessionOptions {
     double startup_timeout_seconds = 40.0;  // 对应 Python startup_timeout=40.0
-    std::string work_dir;                   // cwd（会被创建）
+    // cwd（会被创建）。**留空是安全的默认值**（B7 / D-3）：不再让 TD 继承本进程
+    // 的 cwd（那会把 TD 的日志/中间文件撒到用户工作目录），而是每个会话一个
+    // %TEMP%/fpgalsp-td-<pid>-<n> 的独立 scratch 目录。
+    // 需要"产物落在工程里"的调用方（bridge / flow）应显式传
+    // <project>/.fpgalsp/run，而不是依赖继承。
+    std::string work_dir;
 };
 
 class TdSession {
@@ -81,6 +86,9 @@ public:
 
     // 进程句柄（测试/诊断用）
     unsigned long ProcessId() const;
+
+    // 本会话实际使用的 cwd（D-3：未显式指定时是 %TEMP%/fpgalsp-td-<pid>-<n>）。
+    const std::string& WorkDir() const;
 
     // 默认超时（对应 Python run(..., timeout=180.0)）
     static constexpr double kDefaultTimeout = 180.0;

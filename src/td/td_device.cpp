@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "td/td_output.h"
+#include "td/tcl_quote.h"
 
 namespace fpgalsp::td {
 namespace {
@@ -302,12 +303,19 @@ std::string SpeedArgSuffix(const std::optional<std::string>& speed) {
     while (i < value.size() && (value[i] == '+' || value[i] == '-')) ++i;
     value = value.substr(i);
     if (value.empty()) return {};
+    // ⚠ B7 / S-01：<Speed> 来自 .al，不是可信内容。非法值（含 `;` `[` 等）宁可不传
+    //   -speed，也不让它成为命令行的一部分。
+    if (!IsTclToken(value)) return {};
     return " -speed " + value;
 }
 
 std::string MakeImportDeviceCommand(std::string_view db_file, std::string_view package,
                                     const std::optional<std::string>& speed) {
-    return "import_device " + std::string(db_file) + " -package " + std::string(package) +
+    // ⚠ B7 / S-01：db_file 与 package 都可能来自 .al（<HardWare><Device>）或调用方，
+    //   一律经 TclQuote 变成单个 Tcl 单词。正常值（ef2_4.db / EF2L45LG144B）输出与
+    //   旧实现逐字节相同（裸写），所以 TD 行为与既有单测期望不变；
+    //   含 `;` `[` `$` `{` `}` 等 Tcl 元字符时会走引号/转义，不再是一条新命令。
+    return "import_device " + TclQuote(db_file) + " -package " + TclQuote(package) +
            SpeedArgSuffix(speed);
 }
 

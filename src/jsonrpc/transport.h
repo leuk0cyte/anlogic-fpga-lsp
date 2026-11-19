@@ -45,6 +45,8 @@ inline constexpr int kInvalidRequest = -32600;
 inline constexpr int kMethodNotFound = -32601;
 inline constexpr int kInvalidParams = -32602;
 inline constexpr int kInternalError = -32603;
+// LSP 3.17：请求被 $/cancelRequest 取消
+inline constexpr int kRequestCancelled = -32800;
 
 enum class TransportMode {
     Lsp,  // Content-Length framing

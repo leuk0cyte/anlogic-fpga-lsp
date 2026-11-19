@@ -468,11 +468,24 @@ Project ParseAlText(std::string_view al_path, std::string_view text) {
 
 Project ParseAl(std::string_view al_path) {
     const std::string normalized = plat::normalize_path(al_path);
-    const plat::ReadFileResult file = plat::read_file_utf8(normalized);
 
     Project proj;
     proj.al_path = normalized;
     proj.dir = plat::path_dirname(normalized);
+
+    // B7 / S-05：先看大小再读 —— 别把一个 4 GB 的"文件"整个读进内存才发现它不是 .al。
+    // （真正的深度/体积兜底在 ParseXml 里，这里只保护"读"这一步的峰值内存。）
+    {
+        std::error_code size_ec;
+        const auto size = std::filesystem::file_size(std::filesystem::path(normalized), size_ec);
+        if (!size_ec && size > static_cast<std::uintmax_t>(kMaxXmlDocumentBytes)) {
+            proj.warnings.push_back("Project file is too large to be a .al (" +
+                                    std::to_string(size) + " bytes): " + normalized);
+            return proj;
+        }
+    }
+
+    const plat::ReadFileResult file = plat::read_file_utf8(normalized);
 
     if (!file.ok) {
         proj.warnings.push_back("Cannot read .al: " + normalized);
@@ -632,10 +645,17 @@ std::pair<int, std::size_t> Affinity(std::string_view al_path, std::string_view 
     while (i < project_dir.size() && j < target.size()) {
         const std::size_t ni = project_dir.find('/', i);
         const std::size_t nj = target.find('/', j);
-        const std::string_view pi = project_dir.substr(
-            i, (ni == std::string::npos ? project_dir.size() : ni) - i);
-        const std::string_view pj = target.substr(
-            j, (nj == std::string::npos ? target.size() : nj) - j);
+        const std::size_t len_i = (ni == std::string::npos ? project_dir.size() : ni) - i;
+        const std::size_t len_j = (nj == std::string::npos ? target.size() : nj) - j;
+        // ⚠ B7 / S-06：这里曾经是
+        //      const std::string_view pi = project_dir.substr(i, len_i);
+        //   substr 返回的是**临时 std::string**，该语句结束即销毁，下一行 `if (pi != pj)`
+        //   已经在比较悬垂内存（clang-tidy `bugprone-dangling-handle` 命中
+        //   al_project.cpp:635/637）。这段代码决定"为某个文件挑哪个工程"，读脏值会
+        //   选错工程。现在把 view 直接指向 project_dir / target 本体（循环期间一直存活），
+        //   既修掉 UB 又省掉两次分配。
+        const std::string_view pi(project_dir.data() + i, len_i);
+        const std::string_view pj(target.data() + j, len_j);
         if (pi != pj) break;
         ++common;
         if (ni == std::string::npos || nj == std::string::npos) break;

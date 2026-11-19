@@ -54,6 +54,23 @@ std::string path_extension(std::string_view path);
 std::string path_join(std::string_view a, std::string_view b);
 
 // -----------------------------------------------------------------------------
+// 物理包含判定（B7 / S-04）
+// -----------------------------------------------------------------------------
+//  normalize_path 只做**词法**折叠：不 resolve 符号链接、不碰磁盘（见 .cpp 顶部
+//  的设计说明）。因此 "工程内一个指向 C:\\Windows 的 junction" 会通过纯词法的
+//  IsWithin —— 这不是理论问题，实测可读出 hosts 文件。
+//
+//  canonical_path() 用 std::filesystem::weakly_canonical 做**物理**解析
+//  （展开 symlink/junction、消解 . / ..、规范大小写与短名），失败时退化为
+//  normalize_path 的结果（never-throw）。
+//
+//  path_is_within_canonical(path, root) 在物理路径上做"大小写不敏感 + 分隔符
+//  边界"的包含判定。它与 bridge 里的 IsWithin 词法版本互补：
+//  **词法先行（便宜、无 I/O），物理复核（贵、但防符号链接）**。
+std::string canonical_path(std::string_view path);
+bool path_is_within_canonical(std::string_view path, std::string_view root);
+
+// -----------------------------------------------------------------------------
 // URI <-> 路径
 // -----------------------------------------------------------------------------
 

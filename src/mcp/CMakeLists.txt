@@ -45,4 +45,17 @@ target_link_libraries(fpga_lsp_mcp PUBLIC
     nlohmann_json::nlohmann_json
 )
 
+# Phase B / B6：
+#   * analysis：MCP format/analysis_run/project_update 与 LSP 共用同一实现
+#     （`fpga_analysis` 由 src/analysis 提供；缺失时退化为占位，保持可构建）。
+#   * verible_bridge：MCP format 与 LSP formatting 共用 Verible 桥；
+#     关闭构建（FPGA_LSP_VERIBLE_ENABLED=OFF）时 format 返回显式错误。
+if(TARGET fpga_lsp::analysis)
+    target_link_libraries(fpga_lsp_mcp PUBLIC fpga_lsp::analysis)
+    target_compile_definitions(fpga_lsp_mcp PUBLIC FPGA_LSP_HAVE_ANALYSIS=1)
+endif()
+if(TARGET fpga_lsp::verible_bridge)
+    target_link_libraries(fpga_lsp_mcp PUBLIC fpga_lsp::verible_bridge)
+endif()
+
 target_compile_features(fpga_lsp_mcp PUBLIC cxx_std_23)

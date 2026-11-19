@@ -37,6 +37,12 @@ std::string_view RStrip(std::string_view s);
 //     这条差异不会出现在真实输入里；为了不让字节级扫描去解码 UTF-8 我们不做。
 std::vector<std::string_view> SplitLines(std::string_view text);
 
+// 第 line 行（0-based，不含行结束符）；越界或负数返回空串。
+// 对应 Python 侧的 `line_at(text, line)`（server.py 的 LSP 符号/hover 用它算 range 的
+// 结束列：`make_range(line, 0, line, max(1, len(row)))`），所以**不要**在这一层做 strip，
+// 行尾空白是列号的一部分。
+std::string_view LineAt(std::string_view text, int line);
+
 // ASCII 大小写转换（Python .upper()/.lower() 对 ASCII 部分等价）
 std::string UpperAscii(std::string_view s);
 std::string LowerAscii(std::string_view s);

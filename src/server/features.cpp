@@ -17,6 +17,8 @@
 #include <vector>
 
 #include "platform/path.h"
+#include "hdl/primitives.h"
+#include "hdl/primitives.h"
 
 namespace fpgalsp::server::features {
 namespace {
@@ -229,7 +231,7 @@ Json BuildNode(const HdlIndex& index, const std::string& module_name,
         if (child->module.empty()) continue;
         if (child->line < definition->line || child->line > definition->end_line) continue;
         if (!include_primitives && index.ModuleByName(child->module) == nullptr &&
-            hdl::IsPrimitiveGate(child->module)) {
+            (hdl::IsPrimitiveGate(child->module) || hdl::IsDevicePrimitive(child->module))) {
             continue;
         }
         Json built = BuildNode(index, child->module, child, stack, depth + 1,
@@ -360,8 +362,28 @@ Json Completion(const HdlIndex& index, std::string_view path, std::string_view t
     const std::string prefix = PrefixIdentifier(line_text, character);
     const bool at_line_start =
         OnlyWhitespaceBefore(line_text, character - static_cast<int>(prefix.size()));
+    // Phase 2 / B2：用户已经键入前缀时只回匹配项（814 → 几项），
+    // 前缀为空时保持 Phase 1 的全量候选（探针/旧客户端契约不变）。
+    const auto matches = [&prefix](std::string_view label) {
+        if (prefix.empty()) return true;
+        if (label.size() < prefix.size()) return false;
+        for (std::size_t i = 0; i < prefix.size(); ++i) {
+            if (std::tolower(static_cast<unsigned char>(label[i])) !=
+                std::tolower(static_cast<unsigned char>(prefix[i]))) {
+                return false;
+            }
+        }
+        return true;
+    };
 
-    for (const std::string& name : index.ModuleNames()) {
+    // Python: `for name in sorted(names)` —— 索引的 ModuleNames() 是**文件/插入顺序**，
+    // 与 Python 的排序口径不同。这里排一次，保证「按 limit 截断」时 LSP 与 MCP
+    // 截到的窗口一致（MCP 默认 limit=50，顺序不一致会让窗口内容漂移）。
+    std::vector<std::string> names = index.ModuleNames();
+    std::sort(names.begin(), names.end());
+
+    for (const std::string& name : names) {
+        if (!matches(name)) continue;
         const Module* module = index.ModuleByName(name);
         Json item = Json::object();
         item["label"] = name;
@@ -386,7 +408,26 @@ Json Completion(const HdlIndex& index, std::string_view path, std::string_view t
     }
 
     Json result = Json::object();
-    result["isIncomplete"] = false;
+    result["isIncomplete"] = !prefix.empty();
+    // 器件原语（745，kind 3）+ Verilog 关键字（48，kind 14）
+    //   Python `_complete_verilog` 的尾部两个循环，**紧跟在模块候选之后**、顺序一致。
+    //   放在 features 层（而不是某个 handler 里）是必须的：LSP 的
+    //   textDocument/completion 与 MCP 的 fpga_completion 都调这一个函数，谁都不能少。
+    for (const std::string& primitive : hdl::DevicePrimitives()) {
+        if (!matches(primitive)) continue;
+        Json item = Json::object();
+        item["label"] = primitive;
+        item["kind"] = 3;  // Method/Function
+        item["detail"] = "Device primitive";
+        items.push_back(std::move(item));
+    }
+    for (const std::string& keyword : hdl::VerilogKeywords()) {
+        if (!matches(keyword)) continue;
+        Json item = Json::object();
+        item["label"] = keyword;
+        item["kind"] = 14;  // Keyword
+        items.push_back(std::move(item));
+    }
     result["items"] = std::move(items);
     return result;
 }

@@ -122,6 +122,22 @@ bool Dispatcher::Dispatch(const Json& message) {
     return true;
 }
 
+std::optional<HandlerResult> Dispatcher::Invoke(std::string_view method,
+                                                const Json& params) const {
+    const Handler* handler = nullptr;
+    for (const auto& [name, fn] : handlers_) {
+        if (name == method) {
+            handler = &fn;
+            break;
+        }
+    }
+    if (handler == nullptr) {
+        if (!fallback_.has_value()) return std::nullopt;
+        handler = &fallback_.value();
+    }
+    return (*handler)(params);
+}
+
 void Dispatcher::SendParseError(std::string_view detail) {
     transport_.WriteMessage(MakeError(std::string(), kParseError,
                                       detail.empty() ? "Parse error" : std::string(detail)));

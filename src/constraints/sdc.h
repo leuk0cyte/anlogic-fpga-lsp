@@ -38,6 +38,7 @@
 
 #include <optional>
 #include <set>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -140,6 +141,30 @@ struct CompletionItem {
 std::vector<CompletionItem> Completion(std::string_view text, int line, int character,
                                        const std::set<std::string>& known_commands,
                                        const std::vector<Port>& ports);
+
+// -----------------------------------------------------------------------------
+//  TD 命令表（vendored；completion / hover 的 usage 文案唯一来源）
+// -----------------------------------------------------------------------------
+//  数据在 `data/td_commands.inc`（生成文件，源 `fpgalsp/data/td_commands.json`）。
+//  864 项，顺序 = JSON 插入顺序（Python `_complete_sdc` 直接遍历该顺序）。
+struct CommandUsage {
+    std::string_view name;     // 命令名（原样，可能含大写）
+    std::string_view usage;    // TD help 原文；可能为空串（builtin 命令）
+    std::string_view options;  // 空格分隔的选项列表（Python `info["options"]` 原顺序）
+};
+std::span<const CommandUsage> CommandUsages();
+
+// -----------------------------------------------------------------------------
+//  LSP 符号 / hover / 补全（纯函数；对应 server.py 的 `.sdc` 分支）
+// -----------------------------------------------------------------------------
+//  ⚠ 与上面 `Completion(...)`（返回 CompletionItem 向量）**不是同一层**：
+//     那个是给测试/内部用的"候选结构"，下面这个直接产出 LSP 协议 JSON
+//     （`{"isIncomplete":false,"items":[…]}`），形状逐字段对齐 Python。
+Json DocumentSymbols(std::string_view text);
+Json Hover(std::string_view text, int line, int character,
+           const std::vector<Port>& ports = {});
+Json LspCompletion(std::string_view text, int line, int character,
+                   const std::vector<Port>& ports = {});
 
 // -----------------------------------------------------------------------------
 //  附加诊断（Python 版没有）：引用但从未定义的时钟名

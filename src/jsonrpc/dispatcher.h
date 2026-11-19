@@ -75,6 +75,11 @@ public:
     // never-raise：内部吞掉 handler 的所有异常。
     bool Dispatch(const Json& message);
 
+    // 直接调用已注册的 handler（不写 transport、不捕获异常）。
+    // 供异步调度器在 worker 线程里复用同一份 handler 表。
+    // 方法未注册时返回 nullopt；异常原样抛出，由调用方转 JSON-RPC error。
+    std::optional<HandlerResult> Invoke(std::string_view method, const Json& params) const;
+
     // 处理一条无法解析的帧：回 -32700 ParseError（id 为 null）。
     void SendParseError(std::string_view detail = {});
 

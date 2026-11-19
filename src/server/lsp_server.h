@@ -23,6 +23,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -40,6 +41,8 @@
 #include "lsp/diagnostic.h"
 #include "lsp/document_store.h"
 #include "project/al_project.h"
+#include "server/index_service.h"
+#include "server/report_store.h"
 
 namespace fpgalsp::td {
 class TdSession;
@@ -140,6 +143,33 @@ public:
     // 工程摘要（与 fpgalsp.info 同一实现）
     Json FeatureInfo();
 
+    // ---- Phase B：能力层（LSP 与 MCP 共用的唯一实现）----
+    //  这些方法的实现在 src/server/features_*.cpp；B2–B10 各自填充自己的模块，
+    //  但**签名与 dispatch 已在此固定**，避免并行改 lsp_server.cpp。
+    Json FeatureReports(const Json& params);
+    Json FeatureFlowStatus();
+    Json FeatureSemanticTokens(std::string_view path);
+    Json FeatureFoldingRanges(std::string_view path);
+    Json FeatureCodeActions(std::string_view path, const Json& range, const Json& context);
+    Json FeaturePrepareRename(std::string_view path, int line, int character);
+    Json FeatureRename(std::string_view path, int line, int character,
+                       std::string_view new_name);
+    Json FeatureCallHierarchyPrepare(std::string_view path, int line, int character);
+    Json FeatureCallHierarchyIncoming(const Json& item);
+    Json FeatureCallHierarchyOutgoing(const Json& item);
+    Json FeatureRangeFormatting(std::string_view path, const Json& range, const Json& options);
+    Json FeatureConstraintSymbols(std::string_view path);
+    Json FeatureDebugHighlight(const Json& params);
+    Json FeatureRunAnalysis(const Json& params);
+    Json FeatureUpdateProject(const Json& params);
+    Json FeatureInstantiation(const Json& params);
+    Json FeatureCopyInstantiation(const Json& params);
+    Json FeatureSymbolPath(const Json& params);
+    Json FeatureDuplicateModules(const Json& params);
+    Json FeatureSearchHierarchy(const Json& params);
+    Json FeatureAddSourceFile(const Json& params);
+    Json FeatureSetProjectName(const Json& params);
+
     // ---- 供调试/测试查询（不参与协议）----
     const Settings& settings() const { return settings_; }
     std::size_t OpenDocumentCount() const { return docs_.Size(); }
@@ -154,6 +184,7 @@ private:
     HandlerResult HandleDidSave(const Json& params);
     HandlerResult HandleDidClose(const Json& params);
     HandlerResult HandleDidChangeConfiguration(const Json& params);
+    HandlerResult HandleDidChangeWatchedFiles(const Json& params);
     HandlerResult HandleNoop(const Json& params);
 
     // 已声明能力对应的方法：本阶段一律返回**合法的空结果**（不返回 -32601，
@@ -162,6 +193,7 @@ private:
     HandlerResult HandleEmptyObject(const Json& params);
     HandlerResult HandleNull(const Json& params);
     HandlerResult HandleSemanticTokensFull(const Json& params);
+    HandlerResult HandleSemanticTokensDelta(const Json& params);
 
     // =========================================================================
     //  textDocument/formatting —— 内嵌 Verible formatter
@@ -190,6 +222,15 @@ private:
     HandlerResult HandleWorkspaceSymbol(const Json& params);
     HandlerResult HandleReferences(const Json& params);
     HandlerResult HandleInlayHint(const Json& params);
+
+    // ---- Phase B：标准方法（实现在 lsp_server.cpp，内部只调 Feature*）----
+    HandlerResult HandleCodeAction(const Json& params);
+    HandlerResult HandlePrepareRename(const Json& params);
+    HandlerResult HandleRename(const Json& params);
+    HandlerResult HandlePrepareCallHierarchy(const Json& params);
+    HandlerResult HandleIncomingCalls(const Json& params);
+    HandlerResult HandleOutgoingCalls(const Json& params);
+    HandlerResult HandleFoldingRange(const Json& params);
 
     // =========================================================================
     //  handler（自定义 v2 方法 / executeCommand）—— 定义在 commands.cpp
@@ -221,6 +262,9 @@ private:
 
     void PublishDiagnostics(std::string_view path, const lsp::DiagnosticList& diagnostics);
     void SendNotification(std::string_view method, Json params);
+    // Phase 2：索引/报告变化推送（插件定向刷新用；旧客户端会忽略未知通知）
+    void MaybeNotifyIndexChanged(const std::vector<std::string>& paths);
+    void SendReportsChanged(const project::Project& project);
     void LogMessage(int type, std::string_view message);
 
     // =========================================================================
@@ -306,12 +350,40 @@ private:
     mutable std::mutex discovery_mutex_;
     std::map<std::string, DiscoveryEntry> discovery_cache_;
 
+    // 工程解析缓存：al_path -> (mtime, size, Project)，对应 Python project.parse_al_cached。
+    // B8/PERF-01：发现缓存只记了 .al 路径，命中后原先仍每次 project::ParseAl()
+    //（读 .al 全文 + XML 解析 + 每条目 resolve/exists），200 文件工程每个请求多付 ~18 ms。
+    // 这里按 .al 的 (mtime, size) 缓存已解析的 Project，语义与 Python 的 mtime 缓存一致。
+    struct ParsedProjectEntry {
+        std::int64_t mtime = 0;
+        std::uintmax_t size = 0;
+        std::optional<project::Project> project;
+    };
+    std::optional<project::Project> ParseAlCached(const std::string& al_path);
+    mutable std::mutex project_cache_mutex_;
+    std::map<std::string, ParsedProjectEntry> project_cache_;
+
     // HDL 索引缓存：al_path -> (签名, 索引)。签名不变就复用。
     // 索引构建只读 DocumentStore 的快照 / 磁盘，不在 worker 线程里跑（handler 很轻）。
     std::mutex hdl_mutex_;
     std::map<std::string, HdlIndexEntry> hdl_cache_;
     // 解析缓存按 (path, 内容哈希)，跨工程重建也能命
     std::unique_ptr<hdl::ParseCache> hdl_parse_cache_;
+
+    // Phase 2 / A1：增量索引服务（不可变快照 + 单写者）。创建于构造期，
+    // loader 捕获 this 以复用 DocumentStore 的未保存缓冲区。
+    std::unique_ptr<IndexService> index_service_;
+    // Phase 2 / A3：报告缓存（文件级 stamp + 分节快照）
+    std::unique_ptr<ReportStore> report_store_;
+    // Phase 2 / B2：semanticTokens 增量（按 uri 记住上次 resultId/data）
+    struct SemanticCacheEntry {
+        std::string result_id;
+        Json data;
+    };
+    std::mutex semantic_mutex_;
+    std::map<std::string, SemanticCacheEntry> semantic_cache_;
+    // 上次推送过 indexChanged 的 generation（避免同一版本重复通知）
+    std::uint64_t last_index_generation_ = 0;
 
     // flow 引擎（src/flow）。runner 内部自带 worker 线程与 cancel/join 语义。
     std::mutex flow_mutex_;

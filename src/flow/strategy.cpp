@@ -24,6 +24,7 @@
 #include "td/td_device.h"
 #include "td/td_output.h"
 #include "td/td_session.h"
+#include "td/tcl_quote.h"
 
 namespace fpgalsp::flow {
 namespace {
@@ -343,7 +344,21 @@ jsonrpc::Json CompareStrategies(const project::Project& project, const td::TdCho
         result["error"] = "Failed to rewrite the project Path in the copy: " + al_copy;
         return result;
     }
+    // ⚠ B7 / S-01：约束集名来自副本 .al 的 <FileSet Name="...">，是不可信内容。
+    //   它不是标识符以外的任何东西，非法即安全失败（不发送任何 TD 命令）。
     const std::string constraint = ConstraintSetOf(al_copy);
+    if (!td::IsTclToken(constraint)) {
+        result["error"] = "Constraint set name \"" + constraint +
+                          "\" contains characters that cannot be passed to TD";
+        return result;
+    }
+    for (const std::string& name : wanted) {
+        if (!td::IsTclToken(name)) {
+            result["error"] = "Strategy name \"" + name +
+                              "\" contains characters that cannot be passed to TD";
+            return result;
+        }
+    }
 
     std::vector<std::string> run_names;
     for (std::size_t i = 0; i < wanted.size(); ++i) {
@@ -424,7 +439,7 @@ jsonrpc::Json CompareStrategies(const project::Project& project, const td::TdCho
         }
     }
 
-    run("open_project {" + al_copy + "}", options.command_timeout_seconds);
+    run("open_project " + td::TclQuoteGrouped(al_copy), options.command_timeout_seconds);
 
     // ---- 基线综合 ----
     run("reset_runs { syn_1 }", 120.0);
@@ -437,13 +452,14 @@ jsonrpc::Json CompareStrategies(const project::Project& project, const td::TdCho
 
     // ---- 建 run + 设策略 ----
     for (std::size_t i = 0; i < run_names.size(); ++i) {
-        out = run("create_run -constrset " + constraint + " -syn_run syn_1 " + run_names[i],
+        out = run("create_run -constrset " + td::TclQuote(constraint) + " -syn_run syn_1 " +
+                      td::TclQuote(run_names[i]),
                   options.command_timeout_seconds);
         if (td::HasError(out)) {
             session->Close();
             return session_error("create_run " + run_names[i] + " failed: " + FirstErrorLine(out));
         }
-        out = run("set_strategy -run " + run_names[i] + " " + wanted[i],
+        out = run("set_strategy -run " + td::TclQuote(run_names[i]) + " " + td::TclQuote(wanted[i]),
                   options.command_timeout_seconds);
         if (td::HasError(out)) {
             session->Close();

@@ -1,0 +1,113 @@
+// =============================================================================
+//  src/server/features_constraints.cpp —— .adc/.sdc 的符号 / hover / completion
+// =============================================================================
+//  OWNER: task B10 (parity-symbols)。
+//
+//  本文件是**协议 JSON 的唯一出口**：src/constraints/{adc,sdc}.cpp 里只有
+//  「文本 -> JSON」的纯函数，扩展名判定、文本装载后的分派都在这里。
+//
+//  与 Python 的对齐口径（探针 parity-lsp/raw.json boundaries[adc:*, sdc:*]）：
+//    · documentSymbol  pin.adc -> 47 条（kind 8，detail = LOCATION）
+//                      top.sdc  -> 2 条（kind 3，detail = 参数拼接前 60 字）
+//    · hover           非 null；命令/整行属性都是 markdown
+//    · completion      {"isIncomplete":false,"items":[…]}
+//
+//  为什么 hover/completion 是自由函数而不是 `LspServer::Feature*`：
+//    见 constraints_features.h 的说明（B1 只固定了 FeatureConstraintSymbols 一个签名，
+//    B10 不改 lsp_server.h）。
+// =============================================================================
+
+#include "server/constraints_features.h"
+
+#include <string>
+#include <string_view>
+#include <vector>
+
+#include "constraints/adc.h"
+#include "constraints/sdc.h"
+#include "server/lsp_server.h"
+
+namespace fpgalsp::server {
+namespace {
+
+std::string LowerAscii(std::string_view text) {
+    std::string lowered(text);
+    for (char& c : lowered) {
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+    }
+    return lowered;
+}
+
+bool EndsWith(std::string_view text, std::string_view suffix) {
+    return text.size() >= suffix.size() &&
+           text.compare(text.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
+enum class ConstraintKind { kNone, kAdc, kSdc };
+
+ConstraintKind KindOf(std::string_view path) {
+    const std::string lowered = LowerAscii(path);
+    if (EndsWith(lowered, ".adc")) return ConstraintKind::kAdc;
+    if (EndsWith(lowered, ".sdc")) return ConstraintKind::kSdc;
+    return ConstraintKind::kNone;
+}
+
+}  // namespace
+
+bool IsConstraintDocument(std::string_view path) {
+    return KindOf(path) != ConstraintKind::kNone;
+}
+
+Json ConstraintDocumentSymbols(std::string_view path, std::string_view text) {
+    switch (KindOf(path)) {
+        case ConstraintKind::kAdc:
+            return constraints::adc::DocumentSymbols(text);
+        case ConstraintKind::kSdc:
+            return constraints::sdc::DocumentSymbols(text);
+        case ConstraintKind::kNone:
+            break;
+    }
+    return Json::array();
+}
+
+Json ConstraintHover(std::string_view path, std::string_view text, int line, int character,
+                     const std::vector<constraints::Port>& ports) {
+    switch (KindOf(path)) {
+        case ConstraintKind::kAdc:
+            return constraints::adc::Hover(text, line, character, ports);
+        case ConstraintKind::kSdc:
+            return constraints::sdc::Hover(text, line, character, ports);
+        case ConstraintKind::kNone:
+            break;
+    }
+    return Json(nullptr);
+}
+
+Json ConstraintCompletion(std::string_view path, std::string_view text, int line, int character,
+                          const std::vector<constraints::Port>& ports) {
+    switch (KindOf(path)) {
+        case ConstraintKind::kAdc:
+            return constraints::adc::Completion(text, line, character, ports);
+        case ConstraintKind::kSdc:
+            return constraints::sdc::LspCompletion(text, line, character, ports);
+        case ConstraintKind::kNone:
+            break;
+    }
+    return Json::object();
+}
+
+// -----------------------------------------------------------------------------
+//  LspServer::FeatureConstraintSymbols —— B1 固定的唯一约束符号入口
+// -----------------------------------------------------------------------------
+//  只读**文本**（缓冲区优先）；工程/索引一概不碰：`.adc` 的 documentSymbol 与
+//  顶层端口表无关，这样才能在"工程还没索引完 / 单文件打开"时也给出符号。
+Json LspServer::FeatureConstraintSymbols(std::string_view path) {
+    if (path.empty()) return Json::array();
+    if (!IsConstraintDocument(path)) return Json::array();
+    const std::optional<std::string> text = LoadText(std::string(path));
+    const std::string_view view =
+        text.has_value() ? std::string_view(*text) : std::string_view();
+    return ConstraintDocumentSymbols(path, view);
+}
+
+}  // namespace fpgalsp::server

@@ -89,6 +89,10 @@ namespace fpgalsp::flow {
 class FlowRunner;
 }  // namespace fpgalsp::flow
 
+namespace fpgalsp::server {
+class LspServer;
+}  // namespace fpgalsp::server
+
 
 
 namespace fpgalsp::mcp {
@@ -108,6 +112,9 @@ struct BridgeOptions {
     std::string root;     // 工作区根（绝对，正斜杠）
     std::string project;  // 显式 .al / 目录 / 工程名（可空）
     std::string td_path;  // 显式 TD 安装根（可空）
+    // Phase 2 / B1：非空时直接复用宿主 LSP 进程的 Engine（单 Engine 多 transport）；
+    // 为空时保持旧行为（懒构造 NullTransport LspServer）。
+    server::LspServer* shared_server = nullptr;
 };
 
 class Bridge : public ToolDispatcher {
@@ -137,7 +144,7 @@ class Bridge : public ToolDispatcher {
 
     // ---- 器件 ----
     const td::DeviceInfo& EnsureDeviceInfo(const project::Project& proj, bool refresh);
-    td::TdSession& EnsureSession();
+    td::TdSession& EnsureSession(const project::Project& project);
 
     // ---- 报错工具 ----
     [[noreturn]] static void Fail(const std::string& message) { throw ToolError(message); }
@@ -166,6 +173,16 @@ class Bridge : public ToolDispatcher {
     Json InstantiationTool(const Json& arguments);
     Json ProjectRenameTool(const Json& arguments);
     Json ProjectAddSourceTool(const Json& arguments);
+    // Phase B / B6：真实实现（替换 MCP 占位）
+    Json FormatTool(const Json& arguments);
+    Json AnalysisRunTool(const Json& arguments);
+    Json ProjectUpdateTool(const Json& arguments);
+    // B6c：与 LSP 同一条实现（FeatureCodeActions / FeatureRename），
+    // 通过一个"无 transport 的 LspServer"上下文调用（见 bridge.cpp 的 NullTransport）。
+    Json CodeActionsTool(const Json& arguments);
+    Json RenameEditsTool(const Json& arguments);
+    // 懒构造的 feature 上下文（只在 code_actions / rename_edits 用到）
+    server::LspServer& FeatureServer();
 
     // ---- 符号类（A 批，11 个）----
     Json ProjectStructure(const Json& arguments);
@@ -211,6 +228,11 @@ class Bridge : public ToolDispatcher {
     std::unique_ptr<hdl::HdlIndex> hdl_index_;
     std::string hdl_project_;  // hdl_index_ 对应的 .al 路径
     std::unique_ptr<flow::FlowRunner> flow_runner_;
+    // B6c：code_actions / rename_edits 的 feature 上下文。
+    // LspServer 的 Feature* 需要 ProjectForPath / IndexForProject / LoadText 这些
+    // "服务层状态"，而 Bridge 侧只有自己的一份；为了**只保留一份实现**，这里持有一个
+    // 无 transport 的 LspServer（NullTransport），懒构造并只在两个工具里使用。
+    std::unique_ptr<server::LspServer> feature_server_;
 };
 
 }  // namespace fpgalsp::mcp

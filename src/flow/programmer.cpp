@@ -34,8 +34,10 @@
 
 #include <re2/re2.h>
 
+#include "platform/command_line.h"
 #include "platform/encoding.h"
 #include "platform/utf16.h"
+#include "td/tcl_quote.h"
 
 namespace fpgalsp::flow {
 namespace {
@@ -199,12 +201,16 @@ BwProcess::BwProcess(const std::string& exe, const std::string& cwd, double star
     si.hStdError = stdout_write;
 
     PROCESS_INFORMATION pi{};
-    std::wstring cmdline = Wide(exe);
+    // ⚠ B7 / S-02：同 td_session.cpp —— exe 走 lpApplicationName（权威），
+    //   lpCommandLine 里的 argv[0] 按 CRT 规则加引号。旧写法（nullptr + 裸 exe）
+    //   在 TD 装在带空格目录时会去执行 "C:\Program.exe"（CWE-428）。
+    const std::wstring exe_wide = Wide(exe);
+    std::wstring cmdline = platform::BuildWindowsCommandLine(exe_wide);
     std::vector<wchar_t> mutable_cmd(cmdline.begin(), cmdline.end());
     mutable_cmd.push_back(L'\0');
     work_dir_ = cwd.empty() ? std::wstring() : Wide(Slashes(cwd));
 
-    const BOOL ok = CreateProcessW(nullptr, mutable_cmd.data(), nullptr, nullptr, TRUE,
+    const BOOL ok = CreateProcessW(exe_wide.c_str(), mutable_cmd.data(), nullptr, nullptr, TRUE,
                                    CREATE_SUSPENDED | CREATE_NEW_PROCESS_GROUP, nullptr,
                                    work_dir_.empty() ? nullptr : work_dir_.c_str(), &si, &pi);
     CloseHandle(stdin_read);
@@ -792,8 +798,12 @@ jsonrpc::Json Program(const td::TdChoice& td, const project::Project& project,
         return refusal;
     }
 
+    // ⚠ B7 / S-01：bit 路径可能来自 LSP 参数或 `<project>/<Name>.bit`（<Name> 来自
+    //   .al），旧实现用裸 `{...}` 包，路径里一个 `}` 就能跳出并追加命令。
+    //   TclQuoteGrouped 对正常路径输出仍是 `{Y:/x.bit}`（与既有测试/契约一致）。
     const std::string command =
-        mode == "sram" ? "program {" + bit + "}" : "program_spi {" + bit + "}";
+        mode == "sram" ? "program " + td::TclQuoteGrouped(bit)
+                       : "program_spi " + td::TclQuoteGrouped(bit);
     const std::string label = mode == "sram" ? "SRAM (JTAG)" : "Flash (SPI)";
 
     std::string error;
@@ -852,8 +862,19 @@ jsonrpc::Json GenerateSvf(const td::TdChoice& td, const project::Project& projec
 
     const std::string scan_mode =
         effective.scan_mode.empty() ? std::string("prog_sram") : effective.scan_mode;
-    const std::string command =
-        "svfgen -bit {" + bit + "} -svf {" + svf + "} -scan_mode " + scan_mode;
+    // ⚠ B7 / S-01：scan_mode 直接来自 LSP 参数（fpgalsp.svfgen 的 scanMode），
+    //   旧实现裸拼 -> 一条 `prog_sram; exec ...` 就能注入。它不是路径，没有理由
+    //   含元字符：非法即安全失败（返回错误，不下发任何命令）。
+    if (!td::IsTclToken(scan_mode)) {
+        jsonrpc::Json out = jsonrpc::Json::object();
+        out["ok"] = false;
+        out["bit"] = bit;
+        out["error"] = "Invalid scanMode \"" + scan_mode +
+                       "\" (expected a plain token such as prog_sram)";
+        return out;
+    }
+    const std::string command = "svfgen -bit " + td::TclQuoteGrouped(bit) + " -svf " +
+                                td::TclQuoteGrouped(svf) + " -scan_mode " + scan_mode;
 
     std::string error;
     SessionScope scope(td, effective, &error);
