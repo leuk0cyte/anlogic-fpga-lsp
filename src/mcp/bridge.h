@@ -92,6 +92,7 @@ class FlowRunner;
 
 namespace fpgalsp::server {
 class LspServer;
+class ReportStore;
 }  // namespace fpgalsp::server
 
 
@@ -133,6 +134,10 @@ class Bridge : public ToolDispatcher {
     void Shutdown();
 
   private:
+    // 报告缓存：附着模式下用宿主 LspServer 的实例（P-D1），独立模式才自建。
+    // 以前每次 `fpga_project_reports` 都 `reports::BuildReports`（冷 768–784 ms）。
+    server::ReportStore& Reports();
+
     // ---- 工程 ----
     const project::Project& ActiveProject();
     const project::Project& ProjectFor(const Json& arguments);
@@ -240,6 +245,8 @@ class Bridge : public ToolDispatcher {
     // "服务层状态"，而 Bridge 侧只有自己的一份；为了**只保留一份实现**，这里持有一个
     // 无 transport 的 LspServer（NullTransport），懒构造并只在两个工具里使用。
     std::unique_ptr<server::LspServer> feature_server_;
+    // 报告解析/快照缓存（P-D1）。附着模式指向 host 的实例，独立模式自建。
+    std::unique_ptr<server::ReportStore> owned_report_store_;
 };
 
 }  // namespace fpgalsp::mcp

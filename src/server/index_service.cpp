@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <filesystem>
+#include <set>
 #include <utility>
 
 #include "platform/encoding.h"
@@ -198,7 +199,18 @@ void IndexService::OnFileChanged(std::string path, std::optional<std::string> te
     const std::string key = KeyOf(path);
     const State::ExpectedFile* expected = FindExpectedLocked(key);
     // 只有工程的 HDL 文件会影响索引；其它文件（含 .al）走 OnWatchedFiles。
-    if (expected == nullptr) return;
+    if (expected == nullptr) {
+        state_.last_changes = ChangeSet{};
+        return;
+    }
+
+    // P-C1：先记下变化前的模块名（用于判定"模块增删 = 拓扑变化"）。
+    std::vector<std::string> before_modules;
+    if (state_.snapshot != nullptr) {
+        for (const hdl::ModuleInfo* info : state_.snapshot->ModulesOfFile(path)) {
+            before_modules.push_back(info->module.name);
+        }
+    }
 
     // 没有缓冲区文本 = didSave / didClose：磁盘可能被别的进程改过（含 TD），
     // 下一请求强制做一次全量 stamp 校验。
@@ -207,7 +219,13 @@ void IndexService::OnFileChanged(std::string path, std::optional<std::string> te
     // 快照还没建、或者已经脏了（.al 刚变更过）：不做增量。
     // 下一次 Get 的全量重建会通过 loader（集成方传入缓冲区优先的 LoadText）
     // 拿到最新内容，结果与"先做一次增量再全量"相同。
-    if (state_.dirty || state_.snapshot == nullptr) return;
+    if (state_.dirty || state_.snapshot == nullptr) {
+        // 还没有快照可比对：让客户端整树重取（下一次 Get 会重建索引）。
+        state_.last_changes = ChangeSet{};
+        state_.last_changes.paths = {path};
+        state_.last_changes.full = true;
+        return;
+    }
 
     auto next = std::make_shared<hdl::HdlIndex>(state_.snapshot->Clone());
     if (text.has_value()) {
@@ -223,10 +241,50 @@ void IndexService::OnFileChanged(std::string path, std::optional<std::string> te
     }
     ++state_.stats.file_updates;
     InstallLocked(std::move(next));
+    RecordChangesLocked({path}, before_modules);
 
     // stamp 基线跟着走：记的是**磁盘当前状态**（缓冲区内容可能领先磁盘，
     // 用户保存后 mtime 变化会再触发一次重读，最多多解析一次，结果相同）。
     SyncStampLocked(*expected);
+}
+
+// P-C1：把"变化后这些文件定义的模块"记进 last_changes。
+// 判定口径：
+//   * 变化前有、变化后没有  -> 模块被删/改名 -> full（客户端整树重取）
+//   * 变化前没有、变化后有  -> 新模块        -> full（否则新节点插不进树）
+//   * 名字没变              -> modules 里带 portCount/defined，客户端就地打补丁
+void IndexService::RecordChangesLocked(const std::vector<std::string>& paths,
+                                       const std::vector<std::string>& before_modules) {
+    ChangeSet changes;
+    changes.paths = paths;
+    if (state_.snapshot != nullptr) {
+        std::set<std::string> before(before_modules.begin(), before_modules.end());
+        std::set<std::string> after;
+        for (const std::string& path : paths) {
+            for (const hdl::ModuleInfo* info : state_.snapshot->ModulesOfFile(path)) {
+                const std::string& name = info->module.name;
+                if (!after.insert(name).second) continue;  // 同名多份定义只报一次
+                ModuleDelta delta;
+                delta.module = name;
+                delta.port_count = static_cast<int>(info->module.ports.size());
+                delta.defined = state_.snapshot->ModuleByName(name) != nullptr;
+                changes.modules.push_back(std::move(delta));
+                if (before.count(name) == 0) changes.full = true;  // 新增模块
+            }
+        }
+        for (const std::string& name : before) {
+            if (after.count(name) == 0) {
+                changes.full = true;  // 模块消失（改名/删除）
+                break;
+            }
+        }
+    }
+    state_.last_changes = std::move(changes);
+}
+
+IndexService::ChangeSet IndexService::LastChanges() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return state_.last_changes;
 }
 
 void IndexService::OnWatchedFiles(const std::vector<std::string>& changed,
@@ -251,13 +309,31 @@ void IndexService::OnWatchedFiles(const std::vector<std::string>& changed,
         }
         SetExpectedLocked(ExpectedFiles(state_.project));
         state_.dirty = true;
+        // P-C1：工程文件集合可能变了 → 客户端必须整树重取。
+        state_.last_changes = ChangeSet{};
+        state_.last_changes.paths = changed;
+        state_.last_changes.paths.insert(state_.last_changes.paths.end(), deleted.begin(),
+                                         deleted.end());
+        state_.last_changes.full = true;
         return;
     }
 
     // watcher 报了变化：磁盘状态可能变过，下一次 Get 要重新校验（不受 TTL 限制）。
     RequestValidationLocked();
 
-    if (state_.dirty || state_.snapshot == nullptr) return;
+    if (state_.dirty || state_.snapshot == nullptr) {
+        state_.last_changes = ChangeSet{};
+        state_.last_changes.paths = changed;
+        state_.last_changes.full = true;
+        return;
+    }
+
+    std::vector<std::string> before_modules;
+    for (const std::string& path : changed) {
+        for (const hdl::ModuleInfo* info : state_.snapshot->ModulesOfFile(path)) {
+            before_modules.push_back(info->module.name);
+        }
+    }
 
     auto next = std::make_shared<hdl::HdlIndex>(state_.snapshot->Clone());
     DirStamps disk;
@@ -300,7 +376,13 @@ void IndexService::OnWatchedFiles(const std::vector<std::string>& changed,
         }
     }
 
-    if (touched) InstallLocked(std::move(next));
+    if (touched) {
+        InstallLocked(std::move(next));
+        // P-C1：变更摘要（含模块增删 → full）
+        RecordChangesLocked(changed, before_modules);
+    } else {
+        state_.last_changes = ChangeSet{};
+    }
 }
 
 void IndexService::InvalidateAll() {

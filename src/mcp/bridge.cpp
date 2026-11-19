@@ -42,6 +42,7 @@
 #include "reports/reports_aggregate.h"
 #include "server/features_rename_util.h"
 #include "server/lsp_server.h"
+#include "server/report_store.h"
 #include "td/td_device.h"
 #include "td/td_diagnostics.h"
 #include "td/td_session.h"
@@ -715,6 +716,19 @@ Bridge::Bridge(BridgeOptions options) : options_(std::move(options)) {
 }
 
 Bridge::~Bridge() = default;
+
+// P-D1：报告缓存。附着模式直接借用宿主（LSP 进程）的 ReportStore，
+// 这样 MCP 与编辑器命中的是同一份解析结果与快照；独立 stdio 模式才自建。
+server::ReportStore& Bridge::Reports() {
+    if (options_.shared_server != nullptr) {
+        if (server::ReportStore* shared = options_.shared_server->report_store();
+            shared != nullptr) {
+            return *shared;
+        }
+    }
+    if (!owned_report_store_) owned_report_store_ = std::make_unique<server::ReportStore>();
+    return *owned_report_store_;
+}
 
 void Bridge::Shutdown() {
     if (session_) {
@@ -2074,9 +2088,17 @@ Json Bridge::ProjectReports(const Json& arguments) {
     }
     limit = std::clamp(limit, 1, 1000);
 
-    const reports::ReportsBundle bundle = reports::BuildReports(proj);
-    const Json data = bundle.ToJson();
-    return SummarizeReports(data, proj.name, stage, section, limit, include_raw);
+    // P-D1：走 ReportStore（附着模式 = 与 LSP 同一份缓存）。
+    // 以前每次调用都 `reports::BuildReports`：冷构建审计实测 768–784 ms，
+    // 而第二次调用本该是亚毫秒的命中。
+    // 这里仍然用 kAll 掩码（SummarizeReports 需要哪段由 section 决定，掩码收窄留给 P-C3），
+    // 变化只在于"构建一次、之后命中"。
+    const auto snapshot = Reports().Get(proj, reports::sections::kAll);
+    if (snapshot == nullptr) {
+        const Json empty = Json::object();
+        return SummarizeReports(empty, proj.name, stage, section, limit, include_raw);
+    }
+    return SummarizeReports(snapshot->data, proj.name, stage, section, limit, include_raw);
 }
 
 // =============================================================================

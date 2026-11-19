@@ -78,6 +78,15 @@ struct ReportStoreStats {
     double total_build_ms = 0.0;
 };
 
+// 由"本次变化的文件路径"推断受影响的 section 掩码（纯函数、无锁、不碰缓存）。
+//
+// D9：`SendReportsChanged` 原来为了填 `sections` 去 `Get(project, kAll)`——报告刚变时
+// 那是一次**冷构建**（审计实测 768–784 ms，且在 IO 线程上）。通知只需要"哪些段受影响"，
+// 文件名就够：`.qor`→qor、`.area`→area、`.rpt|.timing`→timing、`flow.status`→flow、
+// 产物（`.db/.bit/.svf/.fsp`）→artifacts。
+// 冷缓存下也成立（不依赖解析缓存里有什么），未知扩展名返回 0。
+std::uint32_t SectionsForPaths(const std::vector<std::string>& paths);
+
 class ReportStore final : public reports::ReportParseCache {
   public:
     ReportStore();

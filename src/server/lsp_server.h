@@ -179,6 +179,16 @@ public:
     const Settings& settings() const { return settings_; }
     std::size_t OpenDocumentCount() const { return docs_.Size(); }
 
+    // =========================================================================
+    //  P-D1：给"附着模式"的 MCP 会话共享同一份缓存
+    // =========================================================================
+    //  MCP 以前每次都 `reports::BuildReports`（审计实测冷构建 768–784 ms），
+    //  与 LSP 侧完全无关。附着时（`--mcp-port` + `--attach-port`）让 Bridge 用这里的
+    //  实例，就能命中同一份解析结果与快照。
+    //  ⚠ 只允许"读"：调用方不得持有返回的指针跨请求，也不得调用会改变工程视图的接口。
+    IndexService* index_service() { return index_service_.get(); }
+    ReportStore* report_store() { return report_store_.get(); }
+
 private:
     // =========================================================================
     //  handler（标准 LSP）
@@ -284,7 +294,9 @@ private:
     void SendNotification(std::string_view method, Json params);
     // Phase 2：索引/报告变化推送（插件定向刷新用；旧客户端会忽略未知通知）
     void MaybeNotifyIndexChanged(const std::vector<std::string>& paths);
-    void SendReportsChanged(const project::Project& project);
+    // D9：paths = 本次变化/删除的报告文件；sections 由文件名推断，不再构建快照。
+    void SendReportsChanged(const project::Project& project,
+                            const std::vector<std::string>& paths = {});
     void LogMessage(int type, std::string_view message);
 
     // =========================================================================
@@ -463,5 +475,10 @@ lsp::DiagnosticList MergeDiagnosticSources(const lsp::DiagnosticList& lint,
 // 工程摘要（对应 project.py project_summary；注意 warnings 是**条数**不是列表）
 Json ProjectSummaryOf(const project::Project& project);
 Json ProjectSummaryOf(std::string_view al_path);
+
+// 已实现的 `workspace/executeCommand` 命令名（capability 声明与 dispatch 共用的唯一来源）。
+// 新增命令时必须同时登记；`tests/unit/commands_test.cpp` 会逐个断言"能分发"，
+// 防止出现"声明了但没实现"（B-A2 的验收条件）。
+const std::vector<std::string>& ExecuteCommandNames();
 
 }  // namespace fpgalsp::server

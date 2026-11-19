@@ -117,6 +117,26 @@ public:
 
     Stats stats() const;
 
+    // ------------------------------------------------------------------
+    //  P-C1：一次变化的摘要（供 `fpgaLsp/indexChanged` 携带可打补丁的数据）
+    // ------------------------------------------------------------------
+    //  客户端（vscode-extension/src/moduleTree.js:221-255）已经支持按模块打补丁：
+    //    modules[{module, portCount, defined}]  -> 就地更新节点
+    //    full === true                          -> 整树重取
+    //  以前服务端只发 {al, generation, paths}，于是每次保存都要一份全树（16,426 B）。
+    struct ModuleDelta {
+        std::string module;
+        int port_count = 0;
+        bool defined = false;
+    };
+    struct ChangeSet {
+        std::vector<std::string> paths;
+        std::vector<ModuleDelta> modules;  // 按发现顺序、按名字去重
+        bool full = false;                 // 模块增删（拓扑变化）→ 客户端必须整树重取
+    };
+    // 最近一次 OnFileChanged/OnWatchedFiles 的摘要（拷贝返回；没变化时为空）。
+    ChangeSet LastChanges() const;
+
     // R3（F2）：watcher 缺失时 stamp 校验的最小间隔。
     //   0 ms  = 每次 Get() 都校验（旧行为）；
     //   >0 ms = 同一间隔内复用上一次校验结果（外部改动最多晚这么久可见）。
@@ -169,6 +189,7 @@ private:
         bool truncated = false;
         std::size_t parse_errors = 0;
         Stats stats;
+        ChangeSet last_changes;  // P-C1：最近一次变化摘要（事件路径写，indexChanged 读）
 
         hdl::ParseCache cache;  // 跨重建复用（key = path + 内容哈希）
     };
@@ -185,6 +206,11 @@ private:
     const State::ExpectedFile* FindExpectedLocked(std::string_view key) const;
     // 把某个文件的磁盘 stamp 写回基线（事件路径用）
     void SyncStampLocked(const State::ExpectedFile& file) const;
+
+    // P-C1：把"本次变化的文件 → 受影响模块"记进 state_.last_changes。
+    // before_modules = 变化前这些文件定义的模块名（用来判定模块增删 = 拓扑变化）。
+    void RecordChangesLocked(const std::vector<std::string>& paths,
+                             const std::vector<std::string>& before_modules);
 
     bool IsExpected(std::string_view key) const;
     void RequestValidationLocked() const;  // = force_validation = true（下一次 Get 立刻校验）

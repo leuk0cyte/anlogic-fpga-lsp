@@ -111,6 +111,32 @@ ReportStore::FileStamp ReportStore::StatOf(const std::string& path, bool* ok) {
     return stamp;
 }
 
+// D9：纯文件名分类（不读缓存、不加锁），冷缓存下也给出正确段名。
+std::uint32_t SectionsForPaths(const std::vector<std::string>& paths) {
+    std::uint32_t mask = 0;
+    for (const std::string& raw : paths) {
+        if (raw.empty()) continue;
+        const std::string path = Lower(platform::normalize_path(raw));
+        const auto ends_with = [&path](std::string_view suffix) {
+            return path.size() >= suffix.size() &&
+                   path.compare(path.size() - suffix.size(), suffix.size(), suffix) == 0;
+        };
+        if (ends_with(".qor")) {
+            mask |= reports::sections::kQor;
+        } else if (ends_with(".area")) {
+            mask |= reports::sections::kArea;
+        } else if (ends_with(".rpt") || ends_with(".timing")) {
+            mask |= reports::sections::kTiming;
+        } else if (ends_with("flow.status")) {
+            mask |= reports::sections::kFlow;
+        } else if (ends_with(".db") || ends_with(".bit") || ends_with(".svf") ||
+                   ends_with(".fsp") || ends_with(".bin")) {
+            mask |= reports::sections::kArtifacts;
+        }
+    }
+    return mask;
+}
+
 bool ReportStore::SameStamp(const FileStamp& left, const FileStamp& right) {
     if (!left.valid || !right.valid) return left.valid == right.valid;
     return left.size == right.size && left.mtime_ns == right.mtime_ns;

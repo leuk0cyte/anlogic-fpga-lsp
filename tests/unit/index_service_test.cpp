@@ -959,3 +959,51 @@ TEST(IndexServiceBench, DidChangeToCompletion) {
 }
 
 }  // namespace
+// =============================================================================
+//  P-C1：indexChanged 的变化摘要（客户端据此就地打补丁）
+// =============================================================================
+TEST(IndexServiceTest, ChangeSetReportsPatchedModules) {
+    TinyProject tiny("changeset_patch");
+    IndexService service(DiskLoader);
+    service.SetProject(tiny.Parse());
+    ASSERT_NE(service.Get(), nullptr);
+
+    // 同一文件、同一模块名，只改端口集合 -> 可以就地打补丁（full=false）
+    service.OnFileChanged(tiny.File(1), VerilogModule("m2", "marker_b"));
+
+    const IndexService::ChangeSet changes = service.LastChanges();
+    ASSERT_EQ(changes.paths.size(), 1u);
+    EXPECT_FALSE(changes.full) << "模块名集合没变，不该要求整树重取";
+    ASSERT_EQ(changes.modules.size(), 1u);
+    EXPECT_EQ(changes.modules[0].module, "m2");
+    EXPECT_TRUE(changes.modules[0].defined);
+    // VerilogModule 声明了 clk / marker_b / q 三个端口
+    EXPECT_EQ(changes.modules[0].port_count, 3);
+}
+
+TEST(IndexServiceTest, ChangeSetMarksModuleRenameAsFull) {
+    TinyProject tiny("changeset_rename");
+    IndexService service(DiskLoader);
+    service.SetProject(tiny.Parse());
+    ASSERT_NE(service.Get(), nullptr);
+
+    // 同一文件里 m2 改名 -> 模块集合变化，客户端必须整树重取
+    service.OnFileChanged(tiny.File(1), VerilogModule("m2_renamed", "clk"));
+
+    const IndexService::ChangeSet changes = service.LastChanges();
+    EXPECT_TRUE(changes.full) << "模块消失/改名必须整树重取，否则树上留幽灵节点";
+}
+
+TEST(IndexServiceTest, ChangeSetMarksModuleAdditionAsFull) {
+    TinyProject tiny("changeset_addition");
+    IndexService service(DiskLoader);
+    service.SetProject(tiny.Parse());
+    ASSERT_NE(service.Get(), nullptr);
+
+    // 同一文件里多定义一个模块 -> 新节点插不进"就地补丁"，必须整树重取
+    const std::string two_modules = VerilogModule("m1", "clk") + VerilogModule("m4", "clk");
+    service.OnFileChanged(tiny.File(0), two_modules);
+
+    const IndexService::ChangeSet changes = service.LastChanges();
+    EXPECT_TRUE(changes.full) << "新增模块必须整树重取";
+}

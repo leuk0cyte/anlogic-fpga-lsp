@@ -99,6 +99,9 @@ fpgalsp_add_unit_test(constraint_symbols fpga_lsp::server fpga_lsp::constraints 
 # Phase 2 / A3：报告缓存（ReportStore 需要 server 层）
 fpgalsp_add_unit_test(report_store fpga_lsp::server)
 
+# B-A2：executeCommand 的声明与分发表一致（capability 由 ExecuteCommandNames() 生成）
+fpgalsp_add_unit_test(commands fpga_lsp::server)
+
 # Phase 2 / A1：增量索引（IndexService + hdl 增量 API）
 fpgalsp_add_unit_test(index_service fpga_lsp::server fpga_lsp::hdl)
 

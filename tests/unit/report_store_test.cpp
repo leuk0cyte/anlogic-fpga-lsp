@@ -422,3 +422,23 @@ TEST(ReportStore, LargeReportFirstParseVersusCached) {
     ::testing::Test::RecordProperty("report_mb", std::to_string(large.size() / (1024 * 1024)));
     EXPECT_LT(cached_ms, first_ms + 5.0);
 }
+
+// =============================================================================
+//  D9：由文件名推断受影响 section（`reportsChanged` 不再构建快照）
+// =============================================================================
+TEST(SectionsForPaths, MapsReportFilesToSectionBits) {
+    using fpgalsp::server::SectionsForPaths;
+    using namespace fpgalsp::reports::sections;
+
+    EXPECT_EQ(SectionsForPaths({}), 0u);
+    EXPECT_EQ(SectionsForPaths({"C:/p/proj_Runs/phy_1/route.qor"}), kQor);
+    EXPECT_EQ(SectionsForPaths({"C:/p/proj_Runs/phy_1/x_phy.area"}), kArea);
+    EXPECT_EQ(SectionsForPaths({"C:/p/proj_Runs/phy_1/final_timing.rpt"}), kTiming);
+    EXPECT_EQ(SectionsForPaths({"C:/p/proj_Runs/syn_1/x_gate.timing"}), kTiming);
+    EXPECT_EQ(SectionsForPaths({"C:/p/proj_Runs/phy_1/flow.status"}), kFlow);
+    EXPECT_EQ(SectionsForPaths({"C:/p/proj/proj.bit"}), kArtifacts);
+    // 混合输入按位或；未知扩展名不贡献任何段
+    EXPECT_EQ(SectionsForPaths({"a.qor", "b.area", "top.v", "readme.md"}), kQor | kArea);
+    // 大小写不敏感（TD 在 Windows 上可能给出混合大小写）
+    EXPECT_EQ(SectionsForPaths({"C:/P/X_RUNS/PHY_1/ROUTE.QOR"}), kQor);
+}

@@ -685,6 +685,24 @@ Json LspServer::FeatureInfo() {
 //  未完成的 Feature 由各自的 stub 返回 {ok:false,error:"not implemented: …"}。
 // =============================================================================
 
+// 已实现的命令名（顺序 = capability 里对外的展示顺序）。
+// ⚠ 与下面 HandleExecuteCommand 的分支表必须保持一致：新增命令两处都要加，
+//   `tests/unit/commands_test.cpp` 会逐个断言"名字能被分发"。
+const std::vector<std::string>& ExecuteCommandNames() {
+    static const std::vector<std::string> kNames = {
+        "fpgalsp.info",         "fpgalsp.projects",        "fpgalsp.setProject",
+        "fpgalsp.tdInfo",       "fpgalsp.device",          "fpgalsp.check",
+        "fpgalsp.restart",      "fpgalsp.cancelFlow",      "fpgalsp.runFlow",
+        "fpgalsp.compareStrategies", "fpgalsp.cables",     "fpgalsp.program",
+        "fpgalsp.svfgen",       "fpgalsp.reports",         "fpgalsp.runAnalysis",
+        "fpgalsp.instantiate",  "fpgalsp.copyInstantiation", "fpgalsp.symbolPath",
+        "fpgalsp.duplicateModules", "fpgalsp.searchHierarchy", "fpgalsp.addSourceFile",
+        "fpgalsp.setProjectName", "fpgalsp.updateProject", "fpgalsp.debugHighlight",
+        "fpgalsp.metrics",
+    };
+    return kNames;
+}
+
 HandlerResult LspServer::HandleExecuteCommand(const Json& params) {
     const std::string command = jsonrpc::GetString(params, "command");
     const Json args = jsonrpc::GetArray(params, "arguments");

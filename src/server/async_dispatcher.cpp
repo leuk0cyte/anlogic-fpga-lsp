@@ -43,6 +43,12 @@ bool IsHeavyMethod(std::string_view method) {
     // 只列「不依赖可变索引快照 / 自带锁」的方法；索引类方法等 A1 接入后再迁入。
     static const char* const kHeavy[] = {
         "fpgaLsp/reports",
+        // P-C6（M1）：索引类方法基于不可变快照（IndexService::Get 内部已加锁），
+        // 以前留在 IO 线程上，冷索引时会和 didChange 抢同一个线程。
+        // 迁入 worker 后 IO 线程只负责收发，语义不变（响应字节逐字节相同）。
+        "fpgaLsp/moduleTree",
+        "textDocument/semanticTokens/full",
+        "textDocument/semanticTokens/full/delta",
         "fpgalsp.runAnalysis",
         "fpgalsp.updateProject",
         "fpgalsp.runFlow",

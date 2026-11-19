@@ -379,6 +379,14 @@ Json LspServer::FeatureInitialize(const Json& params) {
 
     capabilities["callHierarchyProvider"] = true;
 
+    // B-A2：命令清单必须对第三方客户端可见（25 条已实现命令）。
+    // 表在 commands.cpp 的 ExecuteCommandNames()，与 dispatch 共用同一份来源。
+    Json execute = Json::object();
+    Json command_list = Json::array();
+    for (const std::string& name : ExecuteCommandNames()) command_list.push_back(name);
+    execute["commands"] = std::move(command_list);
+    capabilities["executeCommandProvider"] = std::move(execute);
+
     Json legend = Json::object();
     legend["tokenTypes"] = Json::array({"keyword", "type",      "class",   "property",
                                         "variable", "parameter", "function", "number",
@@ -450,7 +458,7 @@ HandlerResult LspServer::HandleDidChangeWatchedFiles(const Json& params) {
             // C1：只读使用 -> shared 访问器，省掉每事件的 Project 深拷贝。
             if (const std::shared_ptr<const project::Project> project = CurrentProjectShared();
                 project != nullptr) {
-                SendReportsChanged(*project);
+                SendReportsChanged(*project, all);
             }
         }
     }
@@ -462,31 +470,59 @@ HandlerResult LspServer::HandleDidChangeWatchedFiles(const Json& params) {
 }
 
 // Phase 2：索引快照 generation 变了才推送（插件据此定向刷新；旧客户端忽略）。
+// P-C1：带上 `modules[]` / `full` —— 客户端早已实现按模块打补丁
+// （vscode-extension/src/moduleTree.js:221-255），以前服务端只发提示，
+// 于是每次保存都要回传一份全树（实测 16,426 B）。
 void LspServer::MaybeNotifyIndexChanged(const std::vector<std::string>& paths) {
     if (!index_service_ || paths.empty()) return;
     const std::uint64_t generation = index_service_->stats().generation;
     if (generation == 0 || generation == last_index_generation_) return;
     last_index_generation_ = generation;
+    const IndexService::ChangeSet changes = index_service_->LastChanges();
     Json params = Json::object();
     params["al"] = index_service_->al_path();
     params["generation"] = generation;
     params["paths"] = paths;
+    if (changes.full) {
+        params["full"] = true;
+    } else if (!changes.modules.empty()) {
+        Json modules = Json::array();
+        for (const IndexService::ModuleDelta& delta : changes.modules) {
+            Json item = Json::object();
+            item["module"] = delta.module;
+            item["portCount"] = delta.port_count;
+            item["defined"] = delta.defined;
+            modules.push_back(std::move(item));
+        }
+        params["modules"] = std::move(modules);
+    }
     SendNotification("fpgaLsp/indexChanged", std::move(params));
 }
 
-void LspServer::SendReportsChanged(const project::Project& project) {
+void LspServer::SendReportsChanged(const project::Project& project,
+                                   const std::vector<std::string>& paths) {
     if (!report_store_) return;
-    const auto snapshot = report_store_->Get(project, reports::sections::kAll);
+    // D9：这里**不再** Get(kAll)。通知只需要"哪些段受影响" + revision，
+    // 而 Get(kAll) 在报告刚变时是一次冷构建（审计 768–784 ms，还在 IO 线程上）。
+    (void)project;  // 保留参数：调用点已有工程对象，日志/未来按工程过滤会用到
+    const std::uint32_t affected = SectionsForPaths(paths);
     Json params = Json::object();
-    params["stage"] = "all";
+    params["stage"] = "auto";
     Json sections = Json::array();
     for (const char* name : {"files", "artifacts", "qor", "timing", "area", "flow"}) {
         bool ok = false;
         const std::uint32_t bit = reports::sections::Parse(name, &ok);
-        if (ok && (snapshot->mask & bit) != 0) sections.push_back(name);
+        if (ok && (affected & bit) != 0) sections.push_back(name);
     }
     params["sections"] = std::move(sections);
-    params["generatedAt"] = snapshot->generated_at;
+    params["revision"] = report_store_->revision();
+    // 兼容字段：旧客户端只读 generatedAt 也不会因此构建快照（0 = 未构建）。
+    params["generatedAt"] = 0.0;
+    if (!paths.empty()) {
+        Json changed_paths = Json::array();
+        for (const std::string& path : paths) changed_paths.push_back(path);
+        params["paths"] = std::move(changed_paths);
+    }
     SendNotification("fpgaLsp/reportsChanged", std::move(params));
 }
 
