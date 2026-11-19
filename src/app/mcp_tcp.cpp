@@ -13,6 +13,7 @@
 #include <thread>
 
 #include "jsonrpc/json_util.h"
+#include "jsonrpc/transport.h"
 #include "mcp/bridge.h"
 #include "mcp/mcp_server.h"
 #include "platform/log.h"
@@ -208,6 +209,24 @@ class McpTcpHost::Impl {
                 const int read = recv(client, chunk, sizeof(chunk), 0);
                 if (read <= 0) break;
                 buffer.append(chunk, static_cast<std::size_t>(read));
+                // 单条消息上限：复用 stdio 路径已经在用的同一个常量
+                // （jsonrpc::kMaxBodyBytes，见 transport.h），不另造一个数字。
+                // 为什么必须有：对端只要一直发不带 '\n' 的字节且不关闭连接，
+                // buffer 就会无限增长 -> 进程 OOM。stdio 路径早有这条防线，
+                // 这条 TCP 路径是照着旧读循环抄的，之前漏了。
+                // 超限的处理原则：**明确失败**，不做静默截断/丢弃 ——
+                // 先回一条 JSON-RPC InvalidRequest，再记一条 error 并关连接。
+                if (buffer.size() > jsonrpc::kMaxBodyBytes) {
+                    const std::string error = jsonrpc::Serialize(
+                        jsonrpc::MakeError(std::string(), jsonrpc::kInvalidRequest,
+                                           "Message too large"),
+                        true);
+                    SendAll(client, error + "\n");
+                    platform::default_logger().error(
+                        std::string("mcp-tcp: message exceeds ") +
+                        std::to_string(jsonrpc::kMaxBodyBytes) + " bytes; closing connection");
+                    return;
+                }
                 for (;;) {
                     const std::size_t newline = buffer.find('\n');
                     if (newline == std::string::npos) break;

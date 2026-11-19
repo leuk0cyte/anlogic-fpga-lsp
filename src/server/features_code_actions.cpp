@@ -330,9 +330,10 @@ Json LspServer::FeatureCodeActions(std::string_view path, const Json& range,
     }
     if (!IsCodeActionHdlPath(lower_path)) return actions;
 
-    const std::optional<project::Project> project = ProjectForPath(path_string);
+    // C1：只读工程 -> shared 访问器。
+    const std::shared_ptr<const project::Project> project = ProjectForPathShared(path_string);
     const std::shared_ptr<const hdl::HdlIndex> index =
-        project.has_value() ? IndexForProject(*project) : nullptr;
+        project != nullptr ? IndexForProject(*project) : nullptr;
 
     // 1) 实例化 refactor
     if (index) {

@@ -20,7 +20,7 @@
 
 #include <algorithm>
 #include <cstddef>
-#include <cstdio>
+#include <format>
 #include <iterator>
 #include <map>
 #include <string>
@@ -1077,19 +1077,40 @@ std::vector<Diagnostic> UndefinedClockDiagnostics(const std::vector<Command>& co
 
 namespace {
 
-std::vector<Token> Flatten(const std::vector<Token>& tokens) {
-    std::vector<Token> flat;
+// 嵌套展开的深度上限。
+// 真实 SDC 里 `[...]` 的嵌套深度远小于此（常见 2~3 层，`[get_ports {...}]` 就一层），
+// 所以这个上限只会挡住恶意/损坏的输入，不会影响任何正常约束文件。
+// 为什么必须有：`[` 的嵌套在 Tokenize 里是扁平的（一个 token 装下整段），
+// 到这里才逐层递归展开 —— 一个含 20 万层 `[` 的文件会把递归栈直接打爆，
+// 结果是整个 LSP 服务器进程崩溃（编辑器侧表现为语言服务反复重启）。
+// 参照：xml_lite.cpp 深度上限 512、HDL 树 depth 24 + budget，同一类防护。
+constexpr int kMaxFlattenDepth = 64;
+
+// 就地展开：`*flat` 是累加结果，避免每层递归都新建 vector 再整段 copy（O(n·depth)）。
+void FlattenInto(const std::vector<Token>& tokens, int depth, std::vector<Token>* flat) {
     for (const Token& token : tokens) {
         if (token.kind == TokenKind::kBracket) {
+            if (depth >= kMaxFlattenDepth) {
+                // 超过上限：**有意降级** —— 把这个 kBracket token 原样收进结果
+                // （保留 token 身份与 span），不再往里递归展开。
+                // 后果只限于"光标落在超深层嵌套里时拿不到上下文/补全"，
+                // 这是可接受的，远好于栈溢出把进程带崩；也绝不静默丢弃 token。
+                flat->push_back(token);
+                continue;
+            }
             const TokenizeResult inner = Tokenize(token.inner_text, token.inner_start);
-            const std::vector<Token> nested = Flatten(inner.tokens);
-            flat.insert(flat.end(), nested.begin(), nested.end());
+            FlattenInto(inner.tokens, depth + 1, flat);
         } else if (token.kind == TokenKind::kSeparator) {
             continue;
         } else {
-            flat.push_back(token);
+            flat->push_back(token);
         }
     }
+}
+
+std::vector<Token> Flatten(const std::vector<Token>& tokens) {
+    std::vector<Token> flat;
+    FlattenInto(tokens, 0, &flat);
     return flat;
 }
 
@@ -1244,10 +1265,12 @@ std::vector<CompletionItem> Completion(std::string_view text, int line, int char
     if (context->kind == "port") {
         for (const Port& port : ports) {
             if (port.name.empty()) continue;
-            char detail[96];
-            std::snprintf(detail, sizeof(detail), "%s · %d bit",
-                          port.direction.empty() ? "?" : port.direction.c_str(),
-                          port.width.value_or(1));
+            // 用 std::format 而不是定长缓冲 + snprintf：端口方向来自用户 Verilog，
+            // 被 char[96] 截断时可能正好切在多字节 UTF-8 序列中间，
+            // 非法 UTF-8 会直接进 LSP 的 CompletionItem.detail。
+            const std::string detail =
+                std::format("{} · {} bit", port.direction.empty() ? "?" : port.direction.c_str(),
+                            port.width.value_or(1));
             items.push_back(CompletionItem{port.name, detail, "port"});
         }
         return items;
@@ -1447,10 +1470,10 @@ Json LspCompletion(std::string_view text, int line, int character,
     } else if (kind == "port") {
         for (const Port& port : ports) {
             if (port.name.empty()) continue;
-            char detail[96];
-            std::snprintf(detail, sizeof(detail), "%s · %d bit",
-                          port.direction.empty() ? "?" : port.direction.c_str(),
-                          port.width.value_or(1));
+            // 同上：端口方向是用户可控文本，绝不能被定长缓冲从中间截断成非法 UTF-8
+            const std::string detail =
+                std::format("{} · {} bit", port.direction.empty() ? "?" : port.direction.c_str(),
+                            port.width.value_or(1));
             items.push_back(CompletionItemJson(port.name, kKindField, detail));
         }
     } else if (kind == "clock_name") {

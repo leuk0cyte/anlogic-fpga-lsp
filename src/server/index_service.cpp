@@ -173,18 +173,19 @@ IndexService::Snapshot IndexService::EnsureFreshLocked() const {
 // 写路径
 // =============================================================================
 
-void IndexService::SetProject(project::Project project) {
+void IndexService::SetProject(const project::Project& project) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     // 工程模型没变（同一个 .al、同一批 HDL 文件）：只换字段，不动索引、不重算
     // 文件集合。集成方可以每个请求都调用（ProjectForPath 本来就是每请求一次）。
+    // C1：形参是 const&，下面这两处赋值就是每请求**唯一**一次 Project 深拷贝。
     if (state_.have_project && SameIndexInputs(project, state_.project)) {
-        state_.project = std::move(project);
+        state_.project = project;
         return;
     }
 
     std::vector<std::string> files = ExpectedFiles(project);
-    state_.project = std::move(project);
+    state_.project = project;
     state_.have_project = true;
     SetExpectedLocked(std::move(files));  // 里面会重算键 + 清空/重置 stamp 基线
     state_.dirty = true;

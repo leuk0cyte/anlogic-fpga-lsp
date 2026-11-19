@@ -395,6 +395,15 @@ TEST_F(BridgeTest, DocumentSymbolsReturnsModuleTreeWithOneBasedRanges) {
     EXPECT_FALSE(module.at("children").empty()) << "模块下应有端口子符号";
 }
 
+TEST_F(BridgeTest, DocumentSymbolsRejectsAbsoluteFileOutsideRoot) {
+    // SEC-02：ResolveFile 在边界判定这一层统一拦住越界读（11 个只读工具共用），
+    // 绝对路径不再"原样通过"。用例选**真实存在**的工程外文件，否则
+    // "File not found" 也会抛 ToolError，测不出包含校验是否真的生效。
+    Json arguments = Json::object();
+    arguments["file"] = std::string(FPGA_LSP_SOURCE_DIR) + "/CMakeLists.txt";
+    EXPECT_THROW(Call("document_symbols", arguments), ToolError);
+}
+
 TEST_F(BridgeTest, WorkspaceSymbolsFindsModulesByName) {
     Json arguments = Json::object();
     arguments["query"] = "pwm";
@@ -957,6 +966,32 @@ TEST_F(BridgeTest, FormatFileUsesProjectResolution) {
     ASSERT_TRUE(result.at("ok").get<bool>()) << result.dump(1);
     const std::string text = result.at("text").get<std::string>();
     EXPECT_NE(text.find("module trans"), std::string::npos) << text.substr(0, 200);
+}
+
+TEST_F(BridgeTest, FormatRejectsFilesOutsideProjectAndRoot) {
+    // SEC-02：format 过去在"绝对路径"和"工程解析失败"两条分支上绕过了 ResolveFile，
+    // 是整个越界读的全文读取原语。这里两条逃逸路径都必须抛 ToolError，且错误必须
+    // 来自包含校验而不是"文件不存在"（所以用例选真实存在的工程外文件）。
+    Json escaping = Json::object();
+    escaping["file"] = "../../../CMakeLists.txt";  // 仓库根，语料工程之外
+    try {
+        Call("format", escaping);
+        ADD_FAILURE() << "format 不应读出工程外的文件";
+    } catch (const ToolError& error) {
+        EXPECT_NE(std::string(error.what()).find("outside"), std::string::npos) << error.what();
+    }
+
+    Json absolute = Json::object();
+    absolute["file"] = std::string(FPGA_LSP_SOURCE_DIR) + "/CMakeLists.txt";
+    EXPECT_THROW(Call("format", absolute), ToolError);
+
+    // 边界是「工程目录或 --root」：落在 root 内的绝对路径必须仍然可用（否则会
+    // 把"工程在 root 下但不同目录"的既有用法一起改坏）。
+    Json inside = Json::object();
+    inside["file"] = std::string(kCorpusRoot) + "/src/top.v";
+    const Json in_root = Call("format", inside);
+    ASSERT_TRUE(in_root.at("ok").get<bool>()) << in_root.dump(1);
+    EXPECT_NE(in_root.at("text").get<std::string>().find("module top"), std::string::npos);
 }
 
 TEST_F(BridgeTest, FormatRequiresFileOrText) {

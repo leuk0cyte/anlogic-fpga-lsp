@@ -811,6 +811,52 @@ TEST(SdcCompletion, CommandSubstitutionIsOpaque) {
 }
 
 // =============================================================================
+//  嵌套深度加固（SEC-03）
+// =============================================================================
+//  Flatten() 逐层展开 `[...]`。它现在有 64 层上限：超限时停止展开、把该
+//  kBracket token 原样收进结果（有意降级），而不是继续递归把栈打爆。
+//  两条测试各钉住一半语义：上限内的嵌套照常展开；超深嵌套不死循环、不崩溃。
+TEST(SdcContext, NestedBracketsWithinLimitStillFlatten) {
+    // 三层嵌套，远小于上限：里面的 get_ports 仍应被展开成端口上下文
+    const std::string text = "set_false_path -from [foo [get_ports {wpwm}]]";
+    const int at = static_cast<int>(text.find("wpwm"));
+    const auto context = fpgalsp::constraints::sdc::Context(text, 0, at);
+    ASSERT_TRUE(context.has_value());
+    EXPECT_EQ(context->kind, "port");
+    EXPECT_EQ(context->span.start, at);
+    EXPECT_EQ(context->span.end, at + 4);
+
+    // 同一位置走补全入口也应给出端口候选（入口不崩、结果可预期）
+    const auto items = fpgalsp::constraints::sdc::Completion(
+        text, 0, at, fpgalsp::constraints::sdc::KnownCommands(), Ports());
+    ASSERT_FALSE(items.empty());
+    for (const auto& item : items) EXPECT_EQ(item.kind, "port");
+}
+
+TEST(SdcContext, ThousandNestedBracketsDegradesInsteadOfCrashing) {
+    // 1000 层 `[`：没上限时这会让 Flatten 递归 1000 层并每层重新 Tokenize 整段，
+    // 真实攻击输入是 20 万层 -> 栈溢出。上限 64 之后这里只展开 64 层。
+    constexpr int kDepth = 1000;
+    std::string text = "set_false_path -from ";
+    text.append(static_cast<std::size_t>(kDepth), '[');
+    text += "wpwm";
+    text.append(static_cast<std::size_t>(kDepth), ']');
+    const int at = static_cast<int>(text.find("wpwm"));
+    ASSERT_GT(at, 0);
+
+    // 能正常解析（不抛、不崩）
+    const std::vector<Command> commands = fpgalsp::constraints::sdc::Parse(text);
+    ASSERT_EQ(commands.size(), 1u);
+
+    // 降级语义：超限的 kBracket token 原样留在结果里，不再向内展开，
+    // 因此光标落在超深层嵌套内部时拿不到端口上下文（而不是崩溃）。
+    EXPECT_FALSE(fpgalsp::constraints::sdc::Context(text, 0, at).has_value());
+    EXPECT_TRUE(fpgalsp::constraints::sdc::Completion(
+                    text, 0, at, fpgalsp::constraints::sdc::KnownCommands(), Ports())
+                    .empty());
+}
+
+// =============================================================================
 //  JSON 形状
 // =============================================================================
 

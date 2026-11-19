@@ -340,6 +340,36 @@ TEST(IndexServiceTest, SetProjectWithSameFilesKeepsSnapshot) {
     EXPECT_EQ(service.stats().rebuilds, 1u);
 }
 
+// C1：SetProject 改为 `const project::Project&` 接收（每请求只留 state_.project 那一份拷贝）。
+// 集成方每请求都会以"同一工程"再调一次（LspServer 的 didOpen/didChange/didSave 与
+// IndexForProject 都是），这条 lvalue 路径必须仍是空操作：不重建、不换快照。
+TEST(IndexServiceTest, SetProjectByConstRefWithSameProjectKeepsSnapshot) {
+    TinyProject tiny("const_ref_same_project");
+    IndexService service(DiskLoader);
+
+    const Project project = tiny.Parse();
+    service.SetProject(project);  // lvalue -> const& 路径（热路径的实际形态）
+    const IndexService::Snapshot first = service.Get();
+    ASSERT_NE(first, nullptr);
+    EXPECT_EQ(service.tracked_files(), 3u);
+
+    const IndexService::Stats baseline = service.stats();
+    ASSERT_EQ(baseline.rebuilds, 1u);
+    ASSERT_EQ(baseline.file_updates, 0u);
+
+    // 模拟连续两个请求各设一次同一工程
+    service.SetProject(project);
+    service.SetProject(project);
+
+    EXPECT_EQ(service.Get().get(), first.get()) << "同一工程不得换快照";
+    const IndexService::Stats after = service.stats();
+    EXPECT_EQ(after.rebuilds, baseline.rebuilds) << "SetProject 不得触发全量重建";
+    EXPECT_EQ(after.generation, baseline.generation) << "SetProject 不得产生新快照";
+    EXPECT_EQ(after.file_updates, baseline.file_updates);
+    EXPECT_EQ(service.al_path(), project.al_path);
+    EXPECT_EQ(service.tracked_files(), 3u);
+}
+
 TEST(IndexServiceTest, SnapshotIsImmutableAcrossUpdates) {
     TinyProject tiny("snapshot_immutable");
     IndexService service(DiskLoader);

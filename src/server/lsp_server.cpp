@@ -20,6 +20,7 @@
 #include <cstdlib>
 #include <exception>
 #include <filesystem>
+#include <memory>
 #include <string>
 #include <system_error>
 #include <tuple>
@@ -446,7 +447,9 @@ HandlerResult LspServer::HandleDidChangeWatchedFiles(const Json& params) {
         std::vector<std::string> all = changed;
         all.insert(all.end(), deleted.begin(), deleted.end());
         if (report_store_->InvalidatePaths(all) != 0) {
-            if (const auto project = CurrentProject(); project.has_value()) {
+            // C1：只读使用 -> shared 访问器，省掉每事件的 Project 深拷贝。
+            if (const std::shared_ptr<const project::Project> project = CurrentProjectShared();
+                project != nullptr) {
                 SendReportsChanged(*project);
             }
         }
@@ -870,6 +873,7 @@ std::shared_ptr<const hdl::HdlIndex> LspServer::IndexForProject(const project::P
                                                                 std::size_t* parse_errors) {
     // Phase 2 / A1：IndexService 内部做增量更新；这里只负责把工程模型交给它。
     // 快照是不可变的，调用方可以在锁外安全查询。
+    // C1：SetProject 按 const& 接收，这里只发生一次拷贝（交给 state_.project）。
     index_service_->SetProject(project);
     std::shared_ptr<const hdl::HdlIndex> snapshot = index_service_->Get();
     if (truncated != nullptr) *truncated = index_service_->truncated();
@@ -896,7 +900,9 @@ HandlerResult LspServer::HandleDidOpen(const Json& params) {
     docs_.Open(uri, jsonrpc::GetString(document, "text"), version,
                jsonrpc::GetString(document, "languageId"), path);
     // Phase 2 / A1：用未保存缓冲区更新索引（只重解析这一份文件）
-    if (const auto project = ProjectForPath(path); project.has_value()) {
+    // C1：走 shared 访问器 —— 缓存命中时零 Project 拷贝，SetProject 只为 state_ 拷一份。
+    if (const std::shared_ptr<const project::Project> project = ProjectForPathShared(path);
+        project != nullptr) {
         index_service_->SetProject(*project);
     }
     index_service_->OnFileChanged(path, jsonrpc::GetString(document, "text"));
@@ -922,7 +928,9 @@ HandlerResult LspServer::HandleDidChange(const Json& params) {
     const lsp::DocumentSnapshot snapshot = docs_.Snapshot(uri);
     const std::string path = snapshot.valid() ? snapshot.path : platform::uri_to_path(uri);
     // Phase 2 / A1：先确保工程已绑定，否则首个 didChange 会被 IndexService 当作"非工程文件"
-    if (const auto project = ProjectForPath(path); project.has_value()) {
+    // C1：shared 访问器 + const& SetProject = 每请求只剩 state_.project 那一份拷贝。
+    if (const std::shared_ptr<const project::Project> project = ProjectForPathShared(path);
+        project != nullptr) {
         index_service_->SetProject(*project);
     }
     // Phase 2 / A1：增量更新该文件的索引快照
@@ -950,7 +958,9 @@ HandlerResult LspServer::HandleDidSave(const Json& params) {
     const std::string path = snapshot.valid() ? snapshot.path : platform::uri_to_path(uri);
 
     // Phase 2 / A1：保存后基于缓冲区（includeText=true）增量更新索引
-    if (const auto project = ProjectForPath(path); project.has_value()) {
+    // C1：shared 访问器 + const& SetProject = 每请求只剩 state_.project 那一份拷贝。
+    if (const std::shared_ptr<const project::Project> project = ProjectForPathShared(path);
+        project != nullptr) {
         index_service_->SetProject(*project);
     }
     if (const auto buffer = docs_.GetText(uri); buffer.has_value()) {
@@ -969,7 +979,10 @@ HandlerResult LspServer::HandleDidSave(const Json& params) {
     //   * 先清 —— 否则"改好了但旧错误还挂着"，用户会以为没生效
     //   * 再排队 —— 若上一轮还在跑，只置一个 pending 标志（不叠加线程）
     if (settings_.td_check_on_save && settings_.enable_td) {
-        if (auto project = ProjectForPath(path); project.has_value()) {
+        // C1：ClearTdPath / ScheduleTdCheck 都只读工程（TdService 内部自己拷一份），
+        // 用 shared 访问器省掉这次深拷贝；shared_ptr 持有到两次调用结束。
+        if (const std::shared_ptr<const project::Project> project = ProjectForPathShared(path);
+            project != nullptr) {
             ClearTdPath(*project, path);
             ScheduleTdCheck(*project);
         }
@@ -1200,7 +1213,10 @@ void LspServer::ClearTdPath(const project::Project& project, std::string_view pa
 }
 
 void LspServer::RunDiagnostics(std::string_view path, bool publish_all) {
-    if (auto project = ProjectForPath(path); project.has_value()) {
+    // C1：这是 didChange 每敲一次字都会走的路径 —— 用 shared 访问器，避免每次
+    // 为了发布诊断再深拷贝一份工程模型（PublishMerged 只读，shared_ptr 持有到调用结束）。
+    if (const std::shared_ptr<const project::Project> project = ProjectForPathShared(path);
+        project != nullptr) {
         if (publish_all) {
             PublishMerged(*project, nullptr);
         } else {
@@ -1297,8 +1313,9 @@ void LspServer::OnLintResult(const std::string& path, lsp::DiagnosticList diagno
         diag_lint_[path] = std::move(diagnostics);
     }
     // 发布该文件的并集（lint + TD）。找不到工程时只发 lint。
-    const std::optional<project::Project> owner = ProjectForPath(path);
-    PublishMergedPath(owner.has_value() ? &*owner : nullptr, path);
+    // C1：PublishMergedPath 只读工程 -> shared 访问器；shared_ptr 持有到调用返回。
+    const std::shared_ptr<const project::Project> owner = ProjectForPathShared(path);
+    PublishMergedPath(owner != nullptr ? owner.get() : nullptr, path);
 }
 
 // =============================================================================
@@ -1517,15 +1534,19 @@ std::string LspServer::RootPath() const {
     return platform::normalize_path(root_uri_);
 }
 
-std::optional<project::Project> LspServer::ParseAlCached(const std::string& al_path) {
+std::shared_ptr<const project::Project> LspServer::ParseAlCachedShared(
+    const std::string& al_path) {
     // 对应 Python project.parse_al_cached：按 .al 的 (mtime, size) 决定是否重新解析。
+    // C1：缓存条目持有 shared_ptr<const Project>，命缓存时只拷指针（零深拷贝）。
     std::error_code ec;
     const std::filesystem::path al_file(al_path);
     const std::uintmax_t size = std::filesystem::file_size(al_file, ec);
-    if (ec) return project::ParseAl(al_path);  // .al 不存在/不可读：不缓存，保持原行为
+    if (ec) {  // .al 不存在/不可读：不缓存，保持原行为
+        return std::make_shared<const project::Project>(project::ParseAl(al_path));
+    }
     const std::filesystem::file_time_type write_time =
         std::filesystem::last_write_time(al_file, ec);
-    if (ec) return project::ParseAl(al_path);
+    if (ec) return std::make_shared<const project::Project>(project::ParseAl(al_path));
     const std::int64_t mtime =
         static_cast<std::int64_t>(write_time.time_since_epoch().count());
 
@@ -1534,25 +1555,42 @@ std::optional<project::Project> LspServer::ParseAlCached(const std::string& al_p
         const auto it = project_cache_.find(al_path);
         if (it != project_cache_.end() && it->second.mtime == mtime &&
             it->second.size == size) {
-            return it->second.project;  // 返回副本：调用方语义（std::optional<Project>）不变
+            // 锁内只拷贝 shared_ptr（引用计数 +1），返回后对象由调用方共同持有。
+            return it->second.project;
         }
     }
 
-    std::optional<project::Project> parsed = project::ParseAl(al_path);
+    // 解析仍然在锁外（与旧实现一致：锁只保护缓存表）。
+    std::shared_ptr<const project::Project> parsed =
+        std::make_shared<const project::Project>(project::ParseAl(al_path));
     {
         std::lock_guard<std::mutex> lock(project_cache_mutex_);
         if (project_cache_.size() >= 8) project_cache_.clear();
         ParsedProjectEntry entry;
         entry.mtime = mtime;
         entry.size = size;
-        entry.project = parsed;
+        entry.project = parsed;  // 共享同一份模型：不再为缓存拷一份
         project_cache_[al_path] = std::move(entry);
     }
     return parsed;
 }
 
+std::optional<project::Project> LspServer::ParseAlCached(const std::string& al_path) {
+    // 旧的值语义入口：签名/行为保持不变（调用方拿到一份独立的副本）。
+    const std::shared_ptr<const project::Project> parsed = ParseAlCachedShared(al_path);
+    if (parsed == nullptr) return std::nullopt;  // 防御：正常路径不会发生
+    return *parsed;
+}
+
 std::optional<project::Project> LspServer::ProjectForPath(std::string_view path) {
-    if (path.empty()) return std::nullopt;
+    // 值语义包装：保留给既有调用者；每请求热路径改用 ProjectForPathShared。
+    const std::shared_ptr<const project::Project> project = ProjectForPathShared(path);
+    if (project == nullptr) return std::nullopt;
+    return *project;  // 1 份拷贝（旧签名要求按值返回）
+}
+
+std::shared_ptr<const project::Project> LspServer::ProjectForPathShared(std::string_view path) {
+    if (path.empty()) return nullptr;
 
     const std::string from_env = ReadEnv("FPGALSP_PROJECT");
 
@@ -1582,9 +1620,9 @@ std::optional<project::Project> LspServer::ProjectForPath(std::string_view path)
         if (const auto it = discovery_cache_.find(key); it != discovery_cache_.end()) {
             if (now - it->second.at < std::chrono::seconds(5)) {
                 it->second.last_used = now;
-                return it->second.al.empty()
-                           ? std::nullopt
-                           : std::optional<project::Project>(ParseAlCached(it->second.al));
+                if (it->second.al.empty()) return nullptr;
+                // 与旧实现一样在发现锁内解析（锁序不变）；命缓存只拷 shared_ptr。
+                return ParseAlCachedShared(it->second.al);
             }
         }
     }
@@ -1606,8 +1644,8 @@ std::optional<project::Project> LspServer::ProjectForPath(std::string_view path)
         entry.al = al.has_value() ? *al : std::string();
         discovery_cache_[key] = std::move(entry);
     }
-    if (!al.has_value()) return std::nullopt;
-    return ParseAlCached(*al);
+    if (!al.has_value()) return nullptr;
+    return ParseAlCachedShared(*al);
 }
 
 std::optional<std::string> LspServer::ResolveProjectAl(const std::string& root,
@@ -1652,12 +1690,17 @@ std::optional<std::string> LspServer::ResolveProjectAl(const std::string& root,
     return best;
 }
 
-std::optional<project::Project> LspServer::CurrentProject() {
+std::shared_ptr<const project::Project> LspServer::CurrentProjectShared() {
     const std::string root = RootPath();
-    if (root.empty()) {
-        return std::nullopt;
-    }
-    return ProjectForPath(root);
+    if (root.empty()) return nullptr;
+    return ProjectForPathShared(root);
+}
+
+std::optional<project::Project> LspServer::CurrentProject() {
+    // 值语义入口（签名不变）：只有这一处拷贝，保留给需要独立副本/长期持有的调用者。
+    const std::shared_ptr<const project::Project> project = CurrentProjectShared();
+    if (project == nullptr) return std::nullopt;
+    return *project;
 }
 
 std::optional<project::Project> LspServer::ProjectFromParams(const Json& params) {

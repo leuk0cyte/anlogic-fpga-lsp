@@ -330,29 +330,46 @@ Json LspServer::FeatureReports(const Json& params) {
     const int limit = jsonrpc::GetInt(params, "limit", 0);
     const std::uint32_t trim_limit =
         limit > 0 ? static_cast<std::uint32_t>(std::min(limit, 100000)) : 0u;
-    Json data = report_store_->Get(*project, mask, /*force=*/false, trim_limit)->data;
-    if (!section_text.empty()) data["section"] = section_text;
     // 分节请求默认不带 raw 正文（timing/area 的原始报告可达 10 MB+）；
     // 需要时显式 include_raw=true。全量请求（无 section）保持 Phase 1 行为。
     const bool include_raw = jsonrpc::GetBool(params, "include_raw", false);
-    if (!include_raw && !section_text.empty()) {
-        const auto drop_raw = [](auto&& self, Json& node) -> void {
-            if (!node.is_object()) return;
-            node.erase("raw");
-            // 顶层与 syn/phy 内的分节对象都带 raw（timing/area/qor 各 ~10 MB）
-            for (const char* section : {"timing", "area", "qor"}) {
-                if (node.contains(section) && node[section].is_object()) {
-                    node[section].erase("raw");
-                }
+    const auto snapshot = report_store_->Get(*project, mask, /*force=*/false, trim_limit);
+    // ⚠ C2（性能审计）：这里原来是「整份克隆快照 -> 再 erase("raw")」。分节请求下
+    //   raw 正文恰恰是最贵的那 10 MB，先拷一遍再立刻丢掉 = 246-267 ms/请求
+    //   （audit/2026-11-19/perf/CPU-PROFILE.md §0.6）。
+    //   改成「拷贝时就不带 raw」：遍历路径与旧的 drop_raw 完全一致（根一层、
+    //   timing/area/qor 各一层、syn/phy 递归），所以输出 JSON 逐字节不变，只是
+    //   不再为即将丢弃的字段付出拷贝代价。快照本身仍是不可变的共享对象，不动。
+    Json data = [&]() -> Json {
+        if (include_raw || section_text.empty() || !snapshot->data.is_object()) {
+            return snapshot->data;
+        }
+        // 只去掉这一层自己的 "raw"，与 drop_raw 的 node.erase("raw") 等价。
+        const auto shallow = [](const Json& object) {
+            Json out = Json::object();
+            for (auto it = object.begin(); it != object.end(); ++it) {
+                if (it.key() != "raw") out[it.key()] = it.value();
             }
-            for (const char* child : {"syn", "phy"}) {
-                if (node.contains(child) && node[child].is_object()) {
-                    self(self, node[child]);
-                }
-            }
+            return out;
         };
-        drop_raw(drop_raw, data);
-    }
+        const auto deep = [&shallow](auto&& self, const Json& node) -> Json {
+            Json out = Json::object();
+            for (auto it = node.begin(); it != node.end(); ++it) {
+                const std::string& key = it.key();
+                if (key == "raw") continue;
+                if (it->is_object() && (key == "timing" || key == "area" || key == "qor")) {
+                    out[key] = shallow(*it);
+                } else if (it->is_object() && (key == "syn" || key == "phy")) {
+                    out[key] = self(self, *it);
+                } else {
+                    out[key] = *it;
+                }
+            }
+            return out;
+        };
+        return deep(deep, snapshot->data);
+    }();
+    if (!section_text.empty()) data["section"] = section_text;
     data["project"] = project->name;
     data["al"] = project->al_path;
     data["flow"] = CurrentFlowObject(flow_runner());
@@ -538,15 +555,23 @@ std::optional<DeviceSummary> LspServer::LoadDeviceSummary(const project::Project
     }
 
     const std::string root = TdRootOf(session);
-    const std::string speed_suffix = td::SpeedArgSuffix(project.speed);
 
     std::string chosen;
     std::string import_output;
     for (const auto& candidate : td::DbCandidates(root, project.family)) {
+        // ⚠ SEC-01（B7 / S-01 的漏网点）：project.device 直接来自 .al 的
+        //   <HardWare><Device>（al_project.cpp:318 只做 Trim，无字符集校验），
+        //   不是可信内容。这里原来是"手抄"了 td_diagnostics 那份候选循环却没抄
+        //   引用处理，于是 `<Device>EF2L45LG144B; exec calc</Device>` 会被裸拼成
+        //   两条 Tcl 命令。统一走 MakeImportDeviceCommand（内部 TclQuote +
+        //   IsTclToken）：合法器件名输出与旧实现逐字节相同（裸写），非法值变成
+        //   一个被引用的单词，不再成为新命令。
+        //   同一份数据在 MCP 路径（td_diagnostics.cpp:394 / td_device.cpp:355）
+        //   一直是安全的，这里补齐即可，行为对合法输入零变化。
+        const std::string command =
+            td::MakeImportDeviceCommand(candidate, project.device, project.speed);
         try {
-            const std::string out = session.Run("import_device " + candidate + " -package " +
-                                                    project.device + speed_suffix,
-                                                90.0);
+            const std::string out = session.Run(command, 90.0);
             if (!td::HasError(out)) {
                 chosen = candidate;
                 import_output = out;

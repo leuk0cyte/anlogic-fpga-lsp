@@ -165,8 +165,9 @@ Json LspServer::FeaturePrepareRename(std::string_view path, int line, int charac
     // Python 的 HDL 索引里没有 .adc/.sdc -> symbol_at 恒为 None -> null
     if (!IsHdlPath(path_string)) return Json(nullptr);
 
-    const std::optional<project::Project> project = ProjectForPath(path_string);
-    if (!project.has_value()) return Json(nullptr);
+    // C1：只读工程 -> shared 访问器；shared_ptr 持有到函数结束。
+    const std::shared_ptr<const project::Project> project = ProjectForPathShared(path_string);
+    if (project == nullptr) return Json(nullptr);
     const std::shared_ptr<const hdl::HdlIndex> index = IndexForProject(*project);
     if (!index) return Json(nullptr);
 
@@ -198,8 +199,9 @@ Json LspServer::FeatureRename(std::string_view path, int line, int character,
     const std::string path_string(path);
     if (path_string.empty()) return Json(nullptr);
 
-    const std::optional<project::Project> project = ProjectForPath(path_string);
-    if (!project.has_value()) return Json(nullptr);
+    // C1：只读工程 -> shared 访问器；shared_ptr 持有到函数结束。
+    const std::shared_ptr<const project::Project> project = ProjectForPathShared(path_string);
+    if (project == nullptr) return Json(nullptr);
     const std::shared_ptr<const hdl::HdlIndex> index = IndexForProject(*project);
     if (!index) return Json(nullptr);
 

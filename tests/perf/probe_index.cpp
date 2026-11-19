@@ -874,7 +874,11 @@ void ScenarioAl(int iters, int warmup) {
   }
 
   // 4.4 热请求的固定开销（用真实文件工程，N=50/200/400）
-  std::printf("\n--- 热请求固定开销（复刻 IndexForProject：ParseAlCached 命中 + "
+  // C1 之后真实链路是：ParseAlCachedShared 命中（缓存条目是 shared_ptr<const Project>，
+  // 命中只拷指针 = 0 份 Project 深拷贝）-> SetProject(const Project&)（只做
+  // state_.project 的 1 份拷贝）-> Get()。旧版本这里手抄的 `Project copy = cached;`
+  // 复刻的是"cache → optional → 按值参数"的两份拷贝，已不代表现状。
+  std::printf("\n--- 热请求固定开销（真实链路：ParseAlCachedShared 命中 + "
               "SetProject + Get）---\n");
   std::printf("%-34s %7s %10s %10s\n", "case", "files", "p50(ms)", "p95(ms)");
   for (const int files : {50, 200, 400}) {
@@ -885,19 +889,20 @@ void ScenarioAl(int iters, int warmup) {
     const auto built = service.Get();
     if (built == nullptr) continue;
     const std::string al_path = synthetic.al;
-    const Project cached = synthetic.project;
+    // 模拟缓存条目：修复后缓存存的是 shared_ptr<const Project>，命中时只拷指针。
+    const std::shared_ptr<const Project> cached =
+        std::make_shared<const Project>(synthetic.project);
 
     const auto per_request = perf::Bench(
         "req_fixed_" + std::to_string(files), iters,
         [&] {
-          // (a) ParseAlCached 命中：2 次 stat + 拷贝
+          // (a) ParseAlCached 命中：2 次 stat（命中只拷 shared_ptr，不拷 Project）
           std::error_code ec;
           const fs::path path{al_path};
           (void)fs::file_size(path, ec);
           (void)fs::last_write_time(path, ec);
-          Project copy = cached;
-          // (b) IndexService：工程未变 -> O(N) 字符串比较后直接返回
-          service.SetProject(copy);
+          // (b) IndexService：工程未变 -> O(N) 比较 + state_.project 的唯一一次拷贝
+          service.SetProject(*cached);
           // (c) 快照（watcher 活跃 -> 只取指针）
           const IndexService::Snapshot s = service.Get();
           if (s == nullptr) std::printf("unreachable\n");
@@ -913,8 +918,8 @@ void ScenarioAl(int iters, int warmup) {
     const auto per_request_slow = perf::Bench(
         "req_fixed_no_watcher_" + std::to_string(files), iters,
         [&] {
-          Project copy = cached;
-          service.SetProject(copy);
+          // 同上：缓存命中 0 份 + state_.project 1 份，另加 stamp 校验
+          service.SetProject(*cached);
           const IndexService::Snapshot s = service.Get();
           if (s == nullptr) std::printf("unreachable\n");
         },

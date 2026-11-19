@@ -90,8 +90,9 @@ void ReadPosition(const Json& params, int* line, int* character) {
 
 Json LspServer::FeatureInstantiation(const Json& params) {
     try {
-        const auto project = CurrentProject();
-        if (!project.has_value()) return Failure(".al project not found");
+        // C1：只读工程 -> shared 访问器（shared_ptr 持有到 IndexForProject 返回）。
+        const std::shared_ptr<const project::Project> project = CurrentProjectShared();
+        if (project == nullptr) return Failure(".al project not found");
         const std::shared_ptr<const hdl::HdlIndex> index = IndexForProject(*project);
 
         // Python: indent = options.get("indent") if isinstance(..., str) else "    "
@@ -118,9 +119,10 @@ Json LspServer::FeatureCopyInstantiation(const Json& params) {
         const std::optional<std::string> path = DocumentPath(docs_, params, &error);
         if (!path.has_value()) return Failure(error);
 
-        const auto project = ProjectForPath(*path);
+        // C1：只读工程 -> shared 访问器。
+        const std::shared_ptr<const project::Project> project = ProjectForPathShared(*path);
         const std::shared_ptr<const hdl::HdlIndex> index =
-            project.has_value() ? IndexForProject(*project) : nullptr;
+            project != nullptr ? IndexForProject(*project) : nullptr;
         if (!index) return Failure("no project/index for " + *path);
 
         return ide::CopyInstantiation(*index, *path);
@@ -141,8 +143,9 @@ Json LspServer::FeatureSymbolPath(const Json& params) {
         const std::optional<std::string> path = DocumentPath(docs_, params, &error);
         if (!path.has_value()) return Failure(error);
 
-        const auto project = ProjectForPath(*path);
-        if (!project.has_value()) return Failure("no project/index");
+        // C1：只读工程 -> shared 访问器。
+        const std::shared_ptr<const project::Project> project = ProjectForPathShared(*path);
+        if (project == nullptr) return Failure("no project/index");
         const std::shared_ptr<const hdl::HdlIndex> index = IndexForProject(*project);
 
         int line = 0;
@@ -163,8 +166,9 @@ Json LspServer::FeatureSymbolPath(const Json& params) {
 
 Json LspServer::FeatureDuplicateModules(const Json& /*params*/) {
     try {
-        const auto project = CurrentProject();
-        if (!project.has_value()) return Failure("no project/index");
+        // C1：只读工程 -> shared 访问器。
+        const std::shared_ptr<const project::Project> project = CurrentProjectShared();
+        if (project == nullptr) return Failure("no project/index");
         const std::shared_ptr<const hdl::HdlIndex> index = IndexForProject(*project);
         return ide::DuplicateModules(*index);
     } catch (const std::exception& error) {
@@ -180,8 +184,9 @@ Json LspServer::FeatureDuplicateModules(const Json& /*params*/) {
 
 Json LspServer::FeatureSearchHierarchy(const Json& params) {
     try {
-        const auto project = CurrentProject();
-        if (!project.has_value()) return Failure("no project/index");
+        // C1：只读工程 -> shared 访问器。
+        const std::shared_ptr<const project::Project> project = CurrentProjectShared();
+        if (project == nullptr) return Failure("no project/index");
         const std::shared_ptr<const hdl::HdlIndex> index = IndexForProject(*project);
 
         // kind / limit 是 MCP 侧参数（Python mcp_bridge.search_hierarchy 有）；
@@ -227,8 +232,9 @@ Json LspServer::FeatureAddSourceFile(const Json& params) {
         }
         // Python: project = self._project(source or self._root_path())
         const std::string source = platform::normalize_path(file_value);
-        const auto project = ProjectForPath(source);
-        if (!project.has_value()) {
+        // C1：只读工程（只用到 al_path）-> shared 访问器，省掉整份深拷贝。
+        const std::shared_ptr<const project::Project> project = ProjectForPathShared(source);
+        if (project == nullptr) {
             return Failure("No .al project found or the file path is empty");
         }
 
@@ -248,8 +254,9 @@ Json LspServer::FeatureAddSourceFile(const Json& params) {
 
 Json LspServer::FeatureSetProjectName(const Json& params) {
     try {
-        const auto project = CurrentProject();
-        if (!project.has_value()) return Failure(".al project not found");
+        // C1：只读工程（只用到 al_path）-> shared 访问器。
+        const std::shared_ptr<const project::Project> project = CurrentProjectShared();
+        if (project == nullptr) return Failure(".al project not found");
 
         Json result = ide::SetProjectName(project->al_path, jsonrpc::GetString(params, "name"));
         if (result.value("ok", false)) InvalidateProjectCaches();

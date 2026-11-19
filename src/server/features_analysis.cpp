@@ -15,6 +15,7 @@
 // =============================================================================
 
 #include <exception>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -37,13 +38,15 @@ Json ToolFailure(std::string_view message) {
 // 对应 Python on_workspace_executeCommand("fpgalsp.runAnalysis")：
 //   project = self._project(self._root_path()); td_info = find_td(...); analysis.run(...)
 Json LspServer::FeatureRunAnalysis(const Json& /*params*/) {
-    std::optional<project::Project> project;
+    // C1：只读工程 -> shared 访问器；shared_ptr 持有到 analysis 调用结束
+    //（analysis 只收 const&，不保存引用，所以不存在悬垂）。
+    std::shared_ptr<const project::Project> project;
     try {
-        project = CurrentProject();
+        project = CurrentProjectShared();
     } catch (const std::exception& exc) {
         return ToolFailure(exc.what());
     }
-    if (!project.has_value()) return ToolFailure(".al project not found");
+    if (project == nullptr) return ToolFailure(".al project not found");
     try {
         return analysis::Run(*project, td_explicit_,
                              [this](std::string_view message) {
@@ -59,13 +62,15 @@ Json LspServer::FeatureRunAnalysis(const Json& /*params*/) {
 // 对应 Python on_workspace_executeCommand("fpgalsp.updateProject")：
 //   check_project_version -file <al>  +  open_project <al> -update
 Json LspServer::FeatureUpdateProject(const Json& /*params*/) {
-    std::optional<project::Project> project;
+    // C1：只读工程 -> shared 访问器；shared_ptr 持有到 analysis 调用结束
+    //（analysis 只收 const&，不保存引用，所以不存在悬垂）。
+    std::shared_ptr<const project::Project> project;
     try {
-        project = CurrentProject();
+        project = CurrentProjectShared();
     } catch (const std::exception& exc) {
         return ToolFailure(exc.what());
     }
-    if (!project.has_value()) return ToolFailure(".al project not found");
+    if (project == nullptr) return ToolFailure(".al project not found");
     try {
         return analysis::UpdateProject(*project, td_explicit_,
                                        [this](std::string_view message) {

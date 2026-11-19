@@ -90,7 +90,10 @@ public:
     // 设置/更新工程模型。**不立即构建**（懒到下一次 Get），因为 handler 里
     // "先拿工程再问索引"是两步，而很多请求最后并不需要索引。
     // 若 al_path 与 HDL 文件集合都没变，则只更新工程字段、保留快照（无任何解析）。
-    void SetProject(project::Project project);
+    //
+    // C1：按 const& 接收 —— 调用方（每请求一次）不再为形参付一次深拷贝，
+    // 这里只为 state_.project 付**唯一必需的一份**拷贝（索引服务拥有自己的模型）。
+    void SetProject(const project::Project& project);
 
     // didChange（或 didSave）之后的单文件更新。
     //   text.has_value() -> 用这份文本（未保存缓冲区）解析并安装；

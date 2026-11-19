@@ -45,6 +45,7 @@
 #include "td/td_install.h"      // FindTd / TdChoice
 #include "td/td_output.h"       // HasError
 #include "td/td_session.h"      // TdSession / TdSessionOptions
+#include "td/tcl_quote.h"       // TclQuoteGrouped（SEC-04：路径不得裸拼进 Tcl）
 
 namespace fpgalsp::analysis {
 namespace {
@@ -486,7 +487,7 @@ Json Run(const project::Project& project, std::string_view td_explicit, const Lo
             return result;
         }
 
-        std::string out = session.Run("import_db {" + db + "}", kImportDbTimeout);
+        std::string out = session.Run("import_db " + td::TclQuoteGrouped(db), kImportDbTimeout);
         if (td::HasError(out)) {
             result["error"] = "import_db failed: " + FirstError(out);
             session.Close();
@@ -496,7 +497,8 @@ Json Run(const project::Project& project, std::string_view td_explicit, const Lo
 
         // ---- DRC ----（对应 analysis.py:85-99）
         std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
-        out = session.Run("report_drc -name fpgalsp_drc -file {" + drc_path + "}", kDrcTimeout);
+        out = session.Run("report_drc -name fpgalsp_drc -file " + td::TclQuoteGrouped(drc_path),
+                         kDrcTimeout);
         result["drc"]["elapsed"] = RoundOne(SecondsSince(started));
         if (out.find("ERROR") != std::string::npos && out.find("report_drc") != std::string::npos) {
             result["drc"]["supported"] = false;
@@ -513,7 +515,7 @@ Json Run(const project::Project& project, std::string_view td_explicit, const Lo
 
         // ---- CDC ----（对应 analysis.py:101-114）
         started = std::chrono::steady_clock::now();
-        out = session.Run("check_cdc -file {" + cdc_path + "}", kCdcTimeout);
+        out = session.Run("check_cdc -file " + td::TclQuoteGrouped(cdc_path), kCdcTimeout);
         result["cdc"]["elapsed"] = RoundOne(SecondsSince(started));
         if (CdcUnsupportedByDevice(out)) {
             Json cdc = Json::object();
@@ -584,10 +586,11 @@ Json UpdateProject(const project::Project& project, std::string_view td_explicit
         options.work_dir = platform::path_join(platform::state_dir(project.dir), "run");
         td::TdSession session(*choice, options);
 
-        std::string output = session.Run("check_project_version -file {" + al + "}",
+        std::string output = session.Run("check_project_version -file " + td::TclQuoteGrouped(al),
                                          kCheckVersionTimeout);
         output += "\n";
-        output += session.Run("open_project {" + al + "} -update", kOpenProjectUpdateTimeout);
+        output += session.Run("open_project " + td::TclQuoteGrouped(al) + " -update",
+                                         kOpenProjectUpdateTimeout);
         session.Close();
 
         Json result = Json::object();

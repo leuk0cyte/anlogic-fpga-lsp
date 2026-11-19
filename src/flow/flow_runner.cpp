@@ -23,6 +23,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <format>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -678,8 +679,10 @@ struct FlowRunner::Impl {
         jsonrpc::Json extra = jsonrpc::Json::object();
         extra["run"] = run_name;
         extra["runElapsed"] = Round1(elapsed);
-        char message[160];
-        std::snprintf(message, sizeof(message), "%s complete (%.1fs)", run_name.c_str(), elapsed);
+        // std::format 而不是 char[160] + snprintf：run 名来自用户，定长缓冲截断
+        // 可能切在多字节 UTF-8 序列中间，坏字节会进 window/logMessage。
+        // 格式串与 printf 版逐字节一致（"%s complete (%.1fs)" -> "{} complete ({:.1f}s)"）。
+        const std::string message = std::format("{} complete ({:.1f}s)", run_name, elapsed);
         Emit("step", message, std::nullopt, extra);
         return Ok();
     }
@@ -941,9 +944,9 @@ struct FlowRunner::Impl {
                     if (!joined.empty()) joined += " + ";
                     joined += StageLabel(stage);
                 }
-                char message[256];
-                std::snprintf(message, sizeof(message), "TD job started: %s (jobs=%d)",
-                              joined.c_str(), jobs);
+                // 同上一处：stage 标签拼出来的文本不定长，char[256] 会截断在半路上
+                const std::string message =
+                    std::format("TD job started: {} (jobs={})", joined, jobs);
                 Emit("start", message);
             }
 

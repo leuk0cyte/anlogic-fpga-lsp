@@ -808,10 +808,29 @@ std::string Bridge::ResolveFile(const std::string& value, const project::Project
             candidate = in_project;
         } else {
             const std::string in_root = normalize_path(path_join(root_, candidate));
-            if (IsFile(in_root)) candidate = in_root;
+            // 两个基目录都没有这个文件时仍以 in_project 为准往下走边界判定，这样
+            // "相对名写错"报 File not found，而"用 .. 逃出边界"报越界（错误才可诊断）；
+            // 顺带去掉旧实现里"相对路径最终按进程 cwd 解析"这个隐含的第三个基目录。
+            candidate = IsFile(in_root) ? in_root : in_project;
         }
     }
     candidate = normalize_path(candidate);
+    // SEC-02（audit/2026-11-19/static/SECURITY.md）：11 个只读工具共用这里的返回值，
+    // 而 --root 是沙箱根（Bridge 构造时 root 不存在就直接抛错）。读文件的权利必须在这一层
+    // 统一约束：逐个调用点补校验必然漏（同一权利的重复实现正是本轮漏洞的成因）。
+    // 边界取「工程目录或 root_」而不是只取 proj.dir：root_ 下可能有与工程不同目录的
+    // 合法文件（--root 为信任根），只认 proj.dir 会破坏既有用例。
+    if (!IsWithin(candidate, proj.dir) && !IsWithin(candidate, root_)) {
+        throw ToolError("File is outside the project directory and the MCP root (" + root_ +
+                        "): " + candidate);
+    }
+    // B7 / S-04：词法包含挡不住符号链接/junction（工程内放一个 junction 就能读出外部
+    // 文件），所以和 SafeProjectFile 一样再补一次 canonical 物理复核。
+    if (!platform::path_is_within_canonical(candidate, proj.dir) &&
+        !platform::path_is_within_canonical(candidate, root_)) {
+        throw ToolError("File resolves outside the project directory and the MCP root (link): " +
+                        candidate);
+    }
     if (!IsFile(candidate)) throw ToolError("File not found: " + value);
     return candidate;
 }
@@ -3878,22 +3897,22 @@ Json Bridge::FormatTool(const Json& arguments) {
     std::string path;
     std::string source;
     if (!file_value.empty()) {
-        std::string resolved = file_value;
-        if (!platform::is_absolute_path(resolved)) {
-            // 有工程就按工程目录解析（与其它工具的 ResolveFile 同一口径），否则按 --root
-            bool resolved_with_project = false;
-            try {
-                const project::Project& proj = ProjectFor(arguments);
-                resolved = ResolveFile(file_value, proj);
-                resolved_with_project = true;
-            } catch (const ToolError&) {
-                resolved_with_project = false;
-            }
-            if (!resolved_with_project) resolved = normalize_path(path_join(root_, file_value));
+        // SEC-02：这里过去有两条绕过 ResolveFile 的读路径 —— 绝对路径 normalize 一下
+        // 就直接 ReadTextFile，以及"工程解析失败"时回退成 path_join(root_, file) 再读；
+        // 后者连词法边界都没有，于是 format 成了磁盘任意文件（含密钥）的全文读取原语。
+        // 现在两条分支都收敛到 ResolveFile（唯一的边界判定点），边界退化为 --root 本身。
+        project::Project root_only;  // 没有可用工程时，信任根只有 root_
+        root_only.dir = root_;
+        std::string resolved;
+        if (platform::is_absolute_path(file_value)) {
+            resolved = ResolveFile(file_value, root_only);
         } else {
-            resolved = normalize_path(resolved);
+            try {
+                resolved = ResolveFile(file_value, ProjectFor(arguments));
+            } catch (const ToolError&) {
+                resolved = ResolveFile(file_value, root_only);
+            }
         }
-        if (!IsFile(resolved)) throw ToolError("File not found: " + resolved);
         path = resolved;
         source = ReadTextFile(path);
         // Python 用文本模式读文件（universal newlines），doc.text 里 CRLF 已变成 LF；

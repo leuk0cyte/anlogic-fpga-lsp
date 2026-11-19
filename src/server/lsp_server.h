@@ -292,9 +292,13 @@ private:
     // =========================================================================
     std::string RootPath() const;
     // 对应 _project(path)：配置 > 向上查找 > 工作区递归扫描 + 亲和度
+    // 值语义入口（签名不变）；热路径请用 ProjectForPathShared 免掉这层拷贝。
     std::optional<project::Project> ProjectForPath(std::string_view path);
     // 对应 _project(self._root_path())：当前工程
     std::optional<project::Project> CurrentProject();
+    // CurrentProject 的共享版本（热路径用）：命中缓存时零 Project 拷贝。
+    // 与 ProjectForPathShared 一样，调用方必须把 shared_ptr 持有到使用点结束。
+    std::shared_ptr<const project::Project> CurrentProjectShared();
     // 对应 _project_from_params(params)：params.uri 所属工程，缺省回落当前工程
     std::optional<project::Project> ProjectFromParams(const Json& params);
     void InvalidateProjectCaches();
@@ -399,12 +403,22 @@ private:
     // B8/PERF-01：发现缓存只记了 .al 路径，命中后原先仍每次 project::ParseAl()
     //（读 .al 全文 + XML 解析 + 每条目 resolve/exists），200 文件工程每个请求多付 ~18 ms。
     // 这里按 .al 的 (mtime, size) 缓存已解析的 Project，语义与 Python 的 mtime 缓存一致。
+    //
+    // C1：条目持有 shared_ptr<const Project>，命中时只拷指针（引用计数 +1），
+    // 不再把整份模型深拷贝出来。shared_ptr 保证对象在任何使用者手里都不会悬垂。
     struct ParsedProjectEntry {
         std::int64_t mtime = 0;
         std::uintmax_t size = 0;
-        std::optional<project::Project> project;
+        std::shared_ptr<const project::Project> project;
     };
+    // 缓存命中时**零** Project 拷贝（只拷贝 shared_ptr）。永不返回 nullptr：
+    // 解析失败时 project::ParseAl 会给出带 warnings 的空工程（never-throw）。
+    std::shared_ptr<const project::Project> ParseAlCachedShared(const std::string& al_path);
+    // 旧的值语义入口（签名/行为保持不变）：内部走 ParseAlCachedShared + 一次拷贝。
     std::optional<project::Project> ParseAlCached(const std::string& al_path);
+    // 与 ProjectForPath 等价，但返回共享模型：命中缓存时零 Project 拷贝。
+    // ⚠ 调用方必须把 shared_ptr 持有到使用点结束（不要只留下 `const Project&` 引用）。
+    std::shared_ptr<const project::Project> ProjectForPathShared(std::string_view path);
     mutable std::mutex project_cache_mutex_;
     std::map<std::string, ParsedProjectEntry> project_cache_;
 

@@ -83,8 +83,9 @@ std::vector<constraints::Port> TopPortsForPath(const project::Project& project,
 Json LspServer::FeatureDocumentSymbols(std::string_view path) {
     // .adc / .sdc：约束文档（B10）
     if (IsConstraintDocument(path)) return FeatureConstraintSymbols(path);
-    auto project = ProjectForPath(path);
-    if (!project.has_value()) return Json::array();
+    // C1：本函数只读工程（传给 IndexForProject / features）-> shared 访问器，0 份拷贝。
+    const std::shared_ptr<const project::Project> project = ProjectForPathShared(path);
+    if (project == nullptr) return Json::array();
     const auto index = IndexForProject(*project);
     if (!index) return Json::array();
     return features::DocumentSymbols(*index, path);
@@ -101,8 +102,9 @@ HandlerResult LspServer::HandleDocumentSymbol(const Json& params) {
 // =============================================================================
 
 Json LspServer::FeatureWorkspaceSymbols(std::string_view query) {
-    auto project = CurrentProject();
-    if (!project.has_value()) return Json::array();
+    // C1：只读工程 -> shared 访问器。
+    const std::shared_ptr<const project::Project> project = CurrentProjectShared();
+    if (project == nullptr) return Json::array();
     const auto index = IndexForProject(*project);
     if (!index) return Json::array();
     return features::WorkspaceSymbols(*index, query);
@@ -117,8 +119,9 @@ HandlerResult LspServer::HandleWorkspaceSymbol(const Json& params) {
 // =============================================================================
 
 Json LspServer::FeatureDefinition(std::string_view path, int line, int character) {
-    auto project = ProjectForPath(path);
-    if (!project.has_value()) return Json(nullptr);
+    // C1：只读工程 -> shared 访问器。
+    const std::shared_ptr<const project::Project> project = ProjectForPathShared(path);
+    if (project == nullptr) return Json(nullptr);
     const auto index = IndexForProject(*project);
     if (!index) return Json(nullptr);
     return features::Definition(*index, path, line, character);
@@ -145,15 +148,18 @@ Json LspServer::FeatureHover(std::string_view path, int line, int character) {
         const std::string_view view =
             text.has_value() ? std::string_view(*text) : std::string_view();
         std::vector<constraints::Port> ports;
-        if (auto project = ProjectForPath(path); project.has_value()) {
+        // C1：只读工程 -> shared 访问器；shared_ptr 持有到 TopPortsForPath 返回。
+        if (const std::shared_ptr<const project::Project> project = ProjectForPathShared(path);
+            project != nullptr) {
             if (const auto index = IndexForProject(*project); index) {
                 ports = TopPortsForPath(*project, *index);
             }
         }
         return ConstraintHover(path, view, line, character, ports);
     }
-    auto project = ProjectForPath(path);
-    if (!project.has_value()) return Json(nullptr);
+    // C1：hover 每请求都走这里 —— shared 访问器，缓存命中时 0 份 Project 拷贝。
+    const std::shared_ptr<const project::Project> project = ProjectForPathShared(path);
+    if (project == nullptr) return Json(nullptr);
     const auto index = IndexForProject(*project);
     if (!index) return Json(nullptr);
     return features::Hover(*index, path, line, character);
@@ -174,8 +180,9 @@ HandlerResult LspServer::HandleHover(const Json& params) {
 
 Json LspServer::FeatureReferences(std::string_view path, int line, int character,
                                   bool include_declaration) {
-    auto project = ProjectForPath(path);
-    if (!project.has_value()) return Json::array();
+    // C1：只读工程 -> shared 访问器。
+    const std::shared_ptr<const project::Project> project = ProjectForPathShared(path);
+    if (project == nullptr) return Json::array();
     const auto index = IndexForProject(*project);
     if (!index) return Json::array();
     return features::References(*index, path, line, character, include_declaration);
@@ -198,8 +205,9 @@ HandlerResult LspServer::HandleReferences(const Json& params) {
 // =============================================================================
 
 Json LspServer::FeatureInlayHints(std::string_view path) {
-    auto project = ProjectForPath(path);
-    if (!project.has_value()) return Json::array();
+    // C1：只读工程 -> shared 访问器。
+    const std::shared_ptr<const project::Project> project = ProjectForPathShared(path);
+    if (project == nullptr) return Json::array();
     const auto index = IndexForProject(*project);
     if (!index) return Json::array();
     return features::InlayHints(*index, path);
@@ -224,7 +232,9 @@ Json LspServer::FeatureCompletion(std::string_view path, int line, int character
     // .adc / .sdc：约束文档（B10）
     if (IsConstraintDocument(path)) {
         std::vector<constraints::Port> ports;
-        if (auto project = ProjectForPath(path); project.has_value()) {
+        // C1：只读工程 -> shared 访问器；shared_ptr 持有到 TopPortsForPath 返回。
+        if (const std::shared_ptr<const project::Project> project = ProjectForPathShared(path);
+            project != nullptr) {
             if (const auto index = IndexForProject(*project); index) {
                 ports = TopPortsForPath(*project, *index);
             }
@@ -232,8 +242,9 @@ Json LspServer::FeatureCompletion(std::string_view path, int line, int character
         return ConstraintCompletion(path, view, line, character, ports);
     }
 
-    auto project = ProjectForPath(path);
-    if (!project.has_value()) return Json::object();
+    // C1：completion 每请求都走这里 —— shared 访问器，缓存命中时 0 份 Project 拷贝。
+    const std::shared_ptr<const project::Project> project = ProjectForPathShared(path);
+    if (project == nullptr) return Json::object();
     const auto index = IndexForProject(*project);
     if (!index) return Json::object();
     // 候选集（模块 + 实例化模板 + 745 器件原语 + 48 关键字）全在 features::Completion 里，

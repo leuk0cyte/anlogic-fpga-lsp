@@ -225,8 +225,9 @@ Json LspServer::FeatureCallHierarchyPrepare(std::string_view path, int line, int
     const std::string path_string(path);
     if (path_string.empty()) return result;
 
-    const std::optional<project::Project> project = ProjectForPath(path);
-    if (!project.has_value()) return result;
+    // C1：只读工程 -> shared 访问器（MakeCallItem 也只读 project）。
+    const std::shared_ptr<const project::Project> project = ProjectForPathShared(path);
+    if (project == nullptr) return result;
     const std::shared_ptr<const hdl::HdlIndex> index = IndexForProject(*project);
     if (!index) return result;
 
@@ -256,11 +257,12 @@ Json LspServer::FeatureCallHierarchyOutgoing(const Json& item) {
     if (CallItemModuleName(item, &module_name) == 0) return result;
 
     // 工程来源：item.uri 所在工程，回落到当前工程（Python 同样先看 doc.path 再看 root）
-    std::optional<project::Project> project;
+    // C1：只读工程 -> shared 访问器（uri 无工程时回落当前工程）。
+    std::shared_ptr<const project::Project> project;
     const std::string uri = jsonrpc::GetString(item, "uri");
-    if (!uri.empty()) project = ProjectForPath(platform::uri_to_path(uri));
-    if (!project.has_value()) project = CurrentProject();
-    if (!project.has_value()) return result;
+    if (!uri.empty()) project = ProjectForPathShared(platform::uri_to_path(uri));
+    if (project == nullptr) project = CurrentProjectShared();
+    if (project == nullptr) return result;
 
     const std::shared_ptr<const hdl::HdlIndex> index = IndexForProject(*project);
     if (!index) return result;
@@ -295,11 +297,12 @@ Json LspServer::FeatureCallHierarchyIncoming(const Json& item) {
     std::string module_name;
     if (CallItemModuleName(item, &module_name) == 0) return result;
 
-    std::optional<project::Project> project;
+    // C1：只读工程 -> shared 访问器（uri 无工程时回落当前工程）。
+    std::shared_ptr<const project::Project> project;
     const std::string uri = jsonrpc::GetString(item, "uri");
-    if (!uri.empty()) project = ProjectForPath(platform::uri_to_path(uri));
-    if (!project.has_value()) project = CurrentProject();
-    if (!project.has_value()) return result;
+    if (!uri.empty()) project = ProjectForPathShared(platform::uri_to_path(uri));
+    if (project == nullptr) project = CurrentProjectShared();
+    if (project == nullptr) return result;
 
     const std::shared_ptr<const hdl::HdlIndex> index = IndexForProject(*project);
     if (!index) return result;

@@ -43,8 +43,9 @@ Json LspServer::FeatureSemanticTokens(std::string_view path) {
     const std::string path_string(path);
     if (path_string.empty()) return result;
 
-    const std::optional<project::Project> project = ProjectForPath(path);
-    if (!project.has_value()) return result;  // Python: index is None -> {"data": []}
+    // C1：只读工程 -> shared 访问器；shared_ptr 持有到 IndexForProject 返回。
+    const std::shared_ptr<const project::Project> project = ProjectForPathShared(path);
+    if (project == nullptr) return result;  // Python: index is None -> {"data": []}
 
     const std::shared_ptr<const hdl::HdlIndex> index = IndexForProject(*project);
     if (!index) return result;
@@ -111,9 +112,10 @@ Json LspServer::FeatureDebugHighlight(const Json& params) {
         return result;
     }
 
-    const std::optional<project::Project> project = ProjectForPath(path);
+    // C1：只读工程 -> shared 访问器。
+    const std::shared_ptr<const project::Project> project = ProjectForPathShared(path);
     std::vector<semantics::SemToken> tokens;
-    if (project.has_value()) {
+    if (project != nullptr) {
         const std::shared_ptr<const hdl::HdlIndex> index = IndexForProject(*project);
         if (index) tokens = semantics::SemanticTokens(index.get(), path, *text);
     }
