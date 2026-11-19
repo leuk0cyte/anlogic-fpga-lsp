@@ -41,6 +41,7 @@
 #include "lsp/diagnostic.h"
 #include "lsp/document_store.h"
 #include "project/al_project.h"
+#include "td/td_service.h"
 #include "server/index_service.h"
 #include "server/report_store.h"
 
@@ -251,11 +252,16 @@ private:
     void PublishMerged(const project::Project& project, const std::string* only_path);
     // 对应 _clear_td_path：保存时立刻清掉该文件的 TD 诊断并重新发布
     void ClearTdPath(const project::Project& project, std::string_view path);
-    // 对应 _schedule_td_check
+    // 对应 _schedule_td_check：请求一轮 TD 检查（**非阻塞**）。
+    // W3：真正的调度交给 td::TdService（单飞 + 300 ms 去抖 + 取消），
+    //     这里只做 enable_td / shutting_down 的门禁。
     void ScheduleTdCheck(const project::Project& project);
-    // TD 线程主体（内部循环，处理 pending）
-    void TdCheckLoop(project::Project project);
-    // 执行一次完整检查（建会话 -> RunReadHdl -> 落表 -> 发布 -> 杀会话）
+    // W3：TdService 的 worker 线程回调 —— 一轮结果落地并按文件发布
+    //     （被取消的轮次不会进来：TdService 只在 !cancelled && !stop_ 时回调）。
+    void ApplyTdResult(const project::Project& project, td::TdCheckResult result);
+    // 保留下来的**同步单轮**实现（建会话 -> RunReadHdl -> 落表 -> 发布 -> 杀会话）。
+    // 异步路径已全部改走 TdService/ApplyTdResult；本函数当前无生产调用方，
+    // 仅作为"要同步等一轮"时的备用入口（A5 设计里同样保留）。
     void RunTdCheckOnce(const project::Project& project);
     // didOpen/didChange/didSave 之后重发该文件（或全部）的诊断
     void RunDiagnostics(std::string_view path, bool publish_all);
@@ -353,10 +359,11 @@ private:
     mutable std::mutex state_mutex_;
     std::map<std::string, std::map<std::string, lsp::DiagnosticList>> td_diags_;
     std::map<std::string, std::set<std::string>> published_;
-    bool td_running_ = false;
-    bool td_pending_ = false;
     bool shutting_down_ = false;
-    std::thread td_worker_;
+    // W3：TD 检查的单飞队列（300 ms 去抖 + 取消在跑的一轮）。
+    // 以前这里是 td_running_/td_pending_/td_worker_ 三个字段 + 手写 TdCheckLoop；
+    // 现在策略全部在 td::TdService 里（src/td/td_service.h），本类只剩"请求"和"落地"。
+    std::unique_ptr<td::TdService> td_service_;
 
     // 器件缓存（对应 server.device_mem，键为 device|family|speed）
     mutable std::mutex device_mutex_;

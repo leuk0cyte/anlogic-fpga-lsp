@@ -166,6 +166,28 @@ LspServer::LspServer(jsonrpc::TransportBaseCommon& transport, std::string td_exp
     index_service_ = std::make_unique<IndexService>(
         [this](const std::string& path) { return LoadText(path); });
     report_store_ = std::make_unique<ReportStore>();
+
+    // W3：TD 检查的**单飞队列 + 300 ms 去抖 + 取消**。
+    //   以前是 lsp_server 里手写的"跑着不取消、只排队一次"循环（TdCheckLoop），
+    //   A5（task-25）做好的 TdService 一直没接线 —— 这里把它接上。
+    //   * 工厂：每一轮新建 TdSessionRunner（read_hdl 之后会话不可复用，见 td_session.h）；
+    //   * use_project_work_dir=true：cwd = <project>/.fpgalsp/run，与旧 CreateSession 一致
+    //     （state-dir 外移由 platform 层负责，这里不比旧路径更"脏"）；
+    //   * TdServiceOptions{}：debounce 300 ms / 取消在跑的一轮 / 取消后不再等（默认值，
+    //     实测结论见 audit/2026-11-18/phase2/A5-REPORT.md §2）。
+    td_service_ = std::make_unique<td::TdService>(
+        [this]() -> std::unique_ptr<td::TdCheckRunner> {
+            const std::string configured =
+                settings_.td_path.empty() ? td_explicit_ : settings_.td_path;
+            const std::optional<td::TdChoice> choice = td::FindTd(configured);
+            if (!choice.has_value()) return nullptr;  // -> failed("no TD check runner")
+            return std::make_unique<td::TdSessionRunner>(*choice, td::TdSessionOptions{},
+                                                         /*use_project_work_dir=*/true);
+        },
+        [this](const project::Project& project, td::TdCheckResult result) {
+            ApplyTdResult(project, std::move(result));
+        },
+        td::TdServiceOptions{/*debounce_ms=*/300});
 }
 
 LspServer::~LspServer() { Shutdown(); }
@@ -174,10 +196,15 @@ void LspServer::Shutdown() {
     {
         std::lock_guard<std::mutex> lock(state_mutex_);
         shutting_down_ = true;
-        td_pending_ = false;
     }
 
-    // 1) 先停 flow：runner 归 server 所有，必须在 transport 还活着的时候取消并 join。
+    // 0) W3：先停 TD 服务 —— CancelActive + join。取消会 TerminateJobObject 杀掉
+    //    正在跑的 TD 进程树；被取消的轮次**不回调** ApplyTdResult（TdService 只在
+    //    !cancelled && !stop_ && !superseded 时回调），所以不会有"shutdown 之后
+    //    还往 transport 写诊断"的悬垂写。
+    if (td_service_) td_service_->Shutdown();
+
+    // 1) 再停 flow：runner 归 server 所有，必须在 transport 还活着的时候取消并 join。
     //    否则可能出现"进程退出时 flow worker 还在写 transport"的悬垂写。
     //    限时等待：取消后 worker 应在秒级退出，超时就交给 ~FlowRunner 兜底。
     {
@@ -201,12 +228,9 @@ void LspServer::Shutdown() {
         }
     }
 
-    // 2) 再杀 TD（Job Object 会带走整棵进程树），最后 join TD 线程 ——
-    //    否则 Run() 可能一直等超时。
+    // 2) 最后杀 device 查询用的会话（Job Object 会带走整棵进程树）。
+    //    TD 检查的会话由 TdService 的 runner 自己持有并在 Run 里 Kill，不经过这里。
     KillSession();
-    if (td_worker_.joinable()) {
-        td_worker_.join();
-    }
     platform::default_logger().flush();
 }
 
@@ -1136,41 +1160,63 @@ void LspServer::RunDiagnostics(std::string_view path, bool publish_all) {
 // =============================================================================
 
 void LspServer::ScheduleTdCheck(const project::Project& project) {
+    // W3：门禁放在这里（TdService 不认识 settings）。文案与旧实现一致。
+    if (!settings_.enable_td) {
+        LogMessage(2, "TD check skipped: fpgaLsp.enableTd = false");
+        return;
+    }
     {
         std::lock_guard<std::mutex> lock(state_mutex_);
         if (shutting_down_) return;
-        if (td_running_) {
-            // 检查期间又保存了：不丢弃，当前这轮结束后再跑一轮（只置一个标志）
-            td_pending_ = true;
-            platform::default_logger().info("TD 检查进行中，已排队一次重跑");
-            return;
-        }
-        td_running_ = true;
     }
-
-    // 上一轮的 thread 对象可能还没回收（它已把 td_running_ 置 false 并返回）
-    if (td_worker_.joinable()) td_worker_.join();
-
-    td_worker_ = std::thread([this, project]() { TdCheckLoop(project); });
+    if (!td_service_) return;
+    // 非阻塞：300 ms 去抖内合并；若已有检查在跑，TdService 会取消它（kill 进程树）
+    // 并只保留最后一次请求 —— 连续保存只跑 1 轮。
+    td_service_->Request(project);
 }
 
-void LspServer::TdCheckLoop(project::Project project) {
-    for (;;) {
-        RunTdCheckOnce(project);
+// W3：一轮 TD 检查的结果落地（TdService 的 worker 线程调用）。
+// 语义与旧的 RunTdCheckOnce 尾部逐字对齐：失败清表 + 全量发布；成功只发布变更文件；
+// 日志格式不变（"TD check complete: N problem(s) in X.XXs"）。
+void LspServer::ApplyTdResult(const project::Project& project, td::TdCheckResult result) {
+    if (result.cancelled) return;  // 防御：TdService 已保证被取消的轮次不回调
 
-        bool again = false;
+    // 保留旧的失败文案：工厂拿不到 TD 时给出与 CreateSession 相同的提示。
+    std::string error = result.error;
+    if (error == "no TD check runner available") {
+        error = "No TangDynasty installation found (set fpgaLsp.tdPath if it is not on PATH)";
+    }
+
+    if (result.failed) {
+        // 失败必须清掉旧表，否则上一版诊断会永远挂在 Problems 里。
         {
             std::lock_guard<std::mutex> lock(state_mutex_);
-            if (td_pending_ && !shutting_down_) {
-                td_pending_ = false;
-                again = true;
-            } else {
-                td_pending_ = false;
-                td_running_ = false;
-            }
+            td_diags_.erase(project.al_path);
         }
-        if (!again) return;
+        PublishMerged(project, nullptr);
+        LogMessage(1, "TD check failed: " + error);
+        return;
     }
+
+    std::map<std::string, lsp::DiagnosticList> before;
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        if (shutting_down_) return;
+        before = td_diags_[project.al_path];
+        td_diags_[project.al_path] = result.by_file;
+    }
+    // 只发布**变更**的文件（与旧实现同一个 ChangedDiagnosticFiles 口径），
+    // 避免每次保存整工程 Problems 闪烁。
+    for (const std::string& path : ChangedDiagnosticFiles(before, result.by_file)) {
+        PublishMerged(project, &path);
+    }
+
+    char buffer[256];
+    // 旧实现用"从建会话到发布的墙钟"，这里用 TD 轮次内部耗时（startup+import+read_hdl+parse），
+    // 差 ~1 ms（我们的分组/发布时间），格式与文案不变。
+    std::snprintf(buffer, sizeof(buffer), "TD check complete: %zu problem(s) in %.2fs",
+                  result.total(), result.timings.total_ms / 1000.0);
+    LogMessage(3, buffer);
 }
 
 void LspServer::RunTdCheckOnce(const project::Project& project) {
