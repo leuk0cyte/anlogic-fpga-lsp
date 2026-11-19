@@ -8,11 +8,15 @@
 #include "mcp/bridge.h"
 
 #include <algorithm>
-#include <cmath>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
+#include <list>
+#include <map>
+#include <memory>
+#include <mutex>
 #include <set>
 #include <sstream>
 #include <string>
@@ -179,6 +183,297 @@ std::vector<std::string> SplitLines(std::string_view text) {
     }
     lines.push_back(current);
     return lines;
+}
+
+// -----------------------------------------------------------------------------
+// F4 / R7：MCP 侧的两个进程内缓存（只影响延迟，不改变任何响应字段）
+// -----------------------------------------------------------------------------
+//  为什么放在 bridge.cpp 内部（匿名命名空间）而不是 Bridge 成员：
+//    * 本任务的写域只有 src/mcp/bridge.cpp（PLAN §2.1），不动 bridge.h；
+//    * Bridge 每个 MCP 连接/进程一个实例，缓存做成文件级单例后，同一进程内的
+//      多个连接（loopback TCP 每个连接新建 Bridge）也能共享，收益更大。
+//  上界（内存）：
+//    * 文本缓存：32 MiB 文本 + 4096 条，LRU 淘汰（200 文件工程实测占用 0.08 MB）；
+//    * 工程列表缓存：最多 8 个 root，每个只存 1 个 Json 数组（200 工程 ≈ 10 KB）。
+//  失效条件（明确，不依赖调用方）：
+//    * 文本：键 (规范化 path)，命中前 stat 比对 (size, mtime) —— 任何写文件立刻失效；
+//    * 工程列表：base 目录 mtime + 每个已发现 .al 的 (size, mtime) 比对；
+//      另有 5 s TTL 兜底"在已有子目录里新增 .al"（目录枚举本身 8 ms，不能每请求做）。
+
+// 取一个路径的 (mtime, size)；失败返回 false。
+// 注：用 char8_t 构造 path（C++20 的 u8path 已弃用），避免引入新的 C4996 告警。
+fs::path AsPath(const std::string& utf8) {
+    return fs::path(std::u8string(utf8.begin(), utf8.end()));
+}
+
+bool StatStamp(const std::string& path, std::int64_t* mtime_ns, std::uintmax_t* size) {
+    std::error_code ec;
+    const fs::path native = AsPath(path);
+    const std::uintmax_t bytes = fs::file_size(native, ec);
+    if (ec) return false;
+    const fs::file_time_type write_time = fs::last_write_time(native, ec);
+    if (ec) return false;
+    if (mtime_ns != nullptr) {
+        *mtime_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        write_time.time_since_epoch())
+                        .count();
+    }
+    if (size != nullptr) *size = bytes;
+    return true;
+}
+
+// 目录 mtime（用 last_write_time，目录也支持）。
+bool StatDirMtime(const std::string& path, std::int64_t* mtime_ns) {
+    std::error_code ec;
+    const fs::file_time_type write_time = fs::last_write_time(AsPath(path), ec);
+    if (ec) return false;
+    if (mtime_ns != nullptr) {
+        *mtime_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        write_time.time_since_epoch())
+                        .count();
+    }
+    return true;
+}
+
+// 按 '\n' 切行、返回视图（不复制）。与 SplitLines 的差异只有一个：
+// SplitLines 会丢掉所有 '\r'，视图做不到"中途删字符"——所以含 '\r' 的文本
+// 调用方必须回落到 SplitLines（见 SearchTextTool），保证匹配语义逐字节一致。
+std::vector<std::string_view> SplitLineViews(std::string_view text) {
+    std::vector<std::string_view> lines;
+    std::size_t start = 0;
+    while (true) {
+        const std::size_t pos = text.find('\n', start);
+        if (pos == std::string_view::npos) {
+            lines.push_back(text.substr(start));
+            break;
+        }
+        lines.push_back(text.substr(start, pos - start));
+        start = pos + 1;
+    }
+    return lines;
+}
+
+// 快速相对路径：proj.dir 与 file_path 都已规范化（正斜杠、绝对），
+// 前缀相减即可，不必走 fs::relative（它每次 canonicalize 两个路径，本机 ≈25–70 µs）。
+// 前缀不匹配（跨盘 / 大小写异常）时回落到原来的 RelativeTo，语义不变。
+std::string FastRelativeTo(const std::string& path, const std::string& base) {
+    if (!base.empty() && path.size() > base.size()) {
+        if (path.compare(0, base.size(), base) == 0 && (path[base.size()] == '/' || path[base.size()] == '\\')) {
+            return path.substr(base.size() + 1);
+        }
+    }
+    return RelativeTo(path, base);
+}
+
+// 目录级快照：一次 FindFirstFile 枚举拿到该目录下所有条目的 (size, mtime)。
+// 为什么不用"每文件 stat"：本机每次 stat 要 2 次 open（本机 Defender 使每次 open ~40–90 µs），
+// 200 文件 = 14 ms+，比读文件本身还贵；目录枚举 201 条目只要 0.6 ms（实测）。
+struct FileInfoLite {
+    std::uintmax_t size = 0;
+    std::int64_t mtime_ns = 0;
+};
+
+std::map<std::string, FileInfoLite> SnapshotDirectories(
+    const std::vector<std::string>& directories) {
+    std::map<std::string, FileInfoLite> info;
+    for (const std::string& directory : directories) {
+        std::error_code ec;
+        fs::directory_iterator iterator(AsPath(directory), ec);
+        if (ec) continue;
+        for (const fs::directory_entry& entry : iterator) {
+            const std::string path = normalize_path(ToUtf8(entry.path()));
+            std::error_code entry_ec;
+            const std::uintmax_t size = entry.file_size(entry_ec);
+            if (entry_ec) continue;
+            const fs::file_time_type write_time = entry.last_write_time(entry_ec);
+            if (entry_ec) continue;
+            FileInfoLite lite;
+            lite.size = size;
+            lite.mtime_ns =
+                std::chrono::duration_cast<std::chrono::nanoseconds>(write_time.time_since_epoch())
+                    .count();
+            info[path] = lite;
+        }
+    }
+    return info;
+}
+
+// 文本缓存（LRU，有界）。命中条件 = (size, mtime) 与缓存时一致。
+class TextCache {
+  public:
+    static TextCache& Instance() {
+        static TextCache instance;
+        return instance;
+    }
+
+    // 用**调用方给出的 stamp**（来自目录快照）判断命中，命中时不再碰文件系统。
+    std::shared_ptr<const std::string> Get(const std::string& path, std::uintmax_t size,
+                                           std::int64_t mtime_ns) {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            const auto it = entries_.find(path);
+            if (it != entries_.end() && it->second.size == size &&
+                it->second.mtime_ns == mtime_ns) {
+                Touch(it->second);
+                return it->second.text;
+            }
+        }
+        const platform::ReadFileResult read = platform::read_file_utf8(path);
+        if (!read.ok) return nullptr;
+        auto text = std::make_shared<const std::string>(read.content);
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto& entry = entries_[path];
+        if (entry.text) {
+            bytes_ -= entry.text->size();
+        } else {
+            order_.push_front(path);
+            entry.order_pos = order_.begin();
+        }
+        entry.size = size;
+        entry.mtime_ns = mtime_ns;
+        entry.text = text;
+        bytes_ += text->size();
+        Evict();
+        return text;
+    }
+
+    // 仅测试/诊断用（不进协议）。
+    std::size_t bytes() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return bytes_;
+    }
+    std::size_t count() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return entries_.size();
+    }
+
+  private:
+    struct Entry {
+        std::uintmax_t size = 0;
+        std::int64_t mtime_ns = 0;
+        std::shared_ptr<const std::string> text;
+        std::list<std::string>::iterator order_pos;
+    };
+
+    static constexpr std::size_t kMaxBytes = 32u * 1024u * 1024u;
+    static constexpr std::size_t kMaxEntries = 4096;
+
+    void Touch(Entry& entry) { order_.splice(order_.begin(), order_, entry.order_pos); }
+
+    void Evict() {
+        while ((bytes_ > kMaxBytes || entries_.size() > kMaxEntries) && !order_.empty()) {
+            const std::string victim = order_.back();
+            order_.pop_back();
+            const auto it = entries_.find(victim);
+            if (it != entries_.end()) {
+                bytes_ -= it->second.text ? it->second.text->size() : 0;
+                entries_.erase(it);
+            }
+        }
+    }
+
+    mutable std::mutex mutex_;
+    std::map<std::string, Entry> entries_;
+    std::list<std::string> order_;  // 前端 = 最近使用
+    std::size_t bytes_ = 0;
+};
+
+// 工程列表缓存：键 = 规范化后的搜索根（小写）。
+// 值 = 已构建好的 `projects` Json 数组 + 校验用的 stamp。
+struct ProjectListEntry {
+    std::int64_t base_mtime = 0;
+    std::vector<std::pair<std::string, std::pair<std::uintmax_t, std::int64_t>>> als;
+    Json projects = Json::array();
+    std::chrono::steady_clock::time_point refresh_after{};
+    std::chrono::steady_clock::time_point last_used{};
+};
+
+std::mutex g_project_list_mutex;
+std::map<std::string, ProjectListEntry> g_project_list_cache;
+
+constexpr std::size_t kProjectListMaxRoots = 8;
+constexpr std::chrono::seconds kProjectListTtl{5};
+
+// 对应 Python mcp_bridge.project_list 的循环体，带缓存：
+//   * 命中：base 目录 mtime + 每个已发现 .al 的 (size, mtime) 全部一致，且未过 TTL；
+//   * 未命中：DiscoverProjects + ParseAl 重建，并把结果替换进缓存。
+// 返回的 Json 数组是缓存值的**拷贝**（调用方要把它放进响应对象里）。
+Json CachedProjectListEntries(const std::string& base) {
+    const std::string key = LowerAscii(normalize_path(base));
+    const auto now = std::chrono::steady_clock::now();
+
+    {
+        std::lock_guard<std::mutex> lock(g_project_list_mutex);
+        const auto it = g_project_list_cache.find(key);
+        if (it != g_project_list_cache.end()) {
+            bool valid = now < it->second.refresh_after;
+            if (valid) {
+                std::int64_t base_mtime = 0;
+                valid = StatDirMtime(base, &base_mtime) && base_mtime == it->second.base_mtime;
+            }
+            if (valid) {
+                for (const auto& item : it->second.als) {
+                    std::int64_t mtime_ns = 0;
+                    std::uintmax_t size = 0;
+                    if (!StatStamp(item.first, &mtime_ns, &size) || mtime_ns != item.second.second ||
+                        size != item.second.first) {
+                        valid = false;
+                        break;
+                    }
+                }
+            }
+            if (valid) {
+                it->second.last_used = now;
+                return it->second.projects;
+            }
+        }
+    }
+
+    // 重建（不持锁，避免把 8–25 ms 的扫描串行化到其它请求上）
+    const std::vector<std::string> found = project::DiscoverProjects(base, 6);
+    Json projects = Json::array();
+    std::vector<std::pair<std::string, std::pair<std::uintmax_t, std::int64_t>>> als;
+    int index = 0;
+    for (const std::string& al : found) {
+        if (index++ >= 100) break;
+        const project::Project parsed = project::ParseAl(al);
+        Json item = Json::object();
+        item["name"] = parsed.name;
+        item["al"] = parsed.al_path;
+        item["dir"] = parsed.dir;
+        item["family"] = parsed.family;
+        item["device"] = parsed.device;
+        item["top"] = parsed.top;
+        item["hdl"] = static_cast<int>(parsed.HdlFiles().size());
+        item["warnings"] = static_cast<int>(parsed.warnings.size());
+        projects.push_back(std::move(item));
+
+        std::int64_t mtime_ns = 0;
+        std::uintmax_t size = 0;
+        (void)StatStamp(al, &mtime_ns, &size);
+        als.emplace_back(normalize_path(al), std::make_pair(size, mtime_ns));
+    }
+    std::int64_t base_mtime = 0;
+    (void)StatDirMtime(base, &base_mtime);
+
+    {
+        std::lock_guard<std::mutex> lock(g_project_list_mutex);
+        auto& slot = g_project_list_cache[key];
+        slot.base_mtime = base_mtime;
+        slot.als = std::move(als);
+        slot.projects = projects;
+        slot.last_used = now;
+        slot.refresh_after = now + kProjectListTtl;
+        while (g_project_list_cache.size() > kProjectListMaxRoots) {
+            auto victim = g_project_list_cache.begin();
+            for (auto it = g_project_list_cache.begin(); it != g_project_list_cache.end(); ++it) {
+                if (it->second.last_used < victim->second.last_used) victim = it;
+            }
+            if (victim == g_project_list_cache.end()) break;
+            g_project_list_cache.erase(victim);
+        }
+    }
+    return projects;
 }
 
 // Python fnmatch.fnmatch 的子集（* 与 ?）。MCP 的 glob 参数只用到这个程度。
@@ -1537,23 +1832,9 @@ Json Bridge::ProjectList(const Json& arguments) {
         }
         base = requested;
     }
-    const std::vector<std::string> found = project::DiscoverProjects(base, 6);
-    Json projects = Json::array();
-    int index = 0;
-    for (const std::string& al : found) {
-        if (index++ >= 100) break;
-        const project::Project parsed = project::ParseAl(al);
-        Json item = Json::object();
-        item["name"] = parsed.name;
-        item["al"] = parsed.al_path;
-        item["dir"] = parsed.dir;
-        item["family"] = parsed.family;
-        item["device"] = parsed.device;
-        item["top"] = parsed.top;
-        item["hdl"] = static_cast<int>(parsed.HdlFiles().size());
-        item["warnings"] = static_cast<int>(parsed.warnings.size());
-        projects.push_back(std::move(item));
-    }
+    // F4 / R7：走缓存（键 = base + 目录/.al stamp；失效条件见 CachedProjectListEntries）。
+    // 返回内容与改动前逐字节一致：缓存里存的就是原来那个 projects 数组。
+    Json projects = CachedProjectListEntries(base);
     Json out = Json::object();
     out["ok"] = true;
     out["root"] = base;
@@ -2129,7 +2410,7 @@ Json Bridge::ReadFileTool(const Json& arguments) {
     constexpr std::uintmax_t kMaxReadBytes = 16u * 1024u * 1024u;
     {
         std::error_code size_ec;
-        const auto size = fs::file_size(fs::u8path(path), size_ec);
+        const auto size = fs::file_size(AsPath(path), size_ec);
         if (!size_ec && size > kMaxReadBytes) {
             Json too_large = Json::object();
             too_large["ok"] = false;
@@ -2255,6 +2536,15 @@ Json Bridge::SearchTextTool(const Json& arguments) {
 
     const std::vector<std::string> suffixes = {".v",  ".sv",  ".vh",  ".svh", ".vhd",
                                                ".vhdl", ".adc", ".sdc", ".al",  ".tcl"};
+    // F4 / R7：先按目录做一次快照（一次 FindFirstFile 拿 size+mtime），
+    // 避免每文件 2 次 open 的 stat（本机 200 文件 ≈14 ms，比读文件还贵）。
+    std::set<std::string> directories;
+    for (const std::string& file_path : files) {
+        if (file_path.empty()) continue;
+        directories.insert(normalize_path(path_dirname(file_path)));
+    }
+    std::vector<std::string> directory_list(directories.begin(), directories.end());
+    const std::map<std::string, FileInfoLite> file_info = SnapshotDirectories(directory_list);
     Json matches = Json::array();
     int searched = 0;
     bool truncated = false;
@@ -2270,14 +2560,41 @@ Json Bridge::SearchTextTool(const Json& arguments) {
             }
         }
         if (!suffix_ok) continue;
-        std::error_code ec;
-        const auto size = fs::file_size(fs::u8path(file_path), ec);
-        if (ec || size > 8u * 1024u * 1024u) continue;
-        const std::string text = ReadTextFile(file_path);
-        const std::vector<std::string> rows = SplitLines(text);
+        // F4 / R7：用目录快照里的 (size, mtime) 做缓存校验；快照里没有（枚举失败 /
+        // 大小写或 8.3 短名差异 / 刚新建）就回落到**单文件 stat**，保证"跳过或读取"
+        // 的判断与改动前完全一致——不为性能牺牲语义。
+        const std::string& normalized_path = file_path;  // proj 解析时已规范化（见 al_project）
+        FileInfoLite info;
+        const auto info_it = file_info.find(normalized_path);
+        if (info_it != file_info.end()) {
+            info = info_it->second;
+        } else if (!StatStamp(normalized_path, &info.mtime_ns, &info.size)) {
+            continue;
+        }
+        if (info.size > 8u * 1024u * 1024u) continue;
         ++searched;
+        std::shared_ptr<const std::string> cached_text =
+            TextCache::Instance().Get(normalized_path, info.size, info.mtime_ns);
+        if (!cached_text) {
+            // 读失败：与改动前一致——用空文本继续（该文件记一次 searched，不产生匹配）
+            cached_text = std::make_shared<const std::string>(ReadTextFile(file_path));
+        }
+        const std::string& text = *cached_text;
+        // F4 / R7：相对路径**每文件算一次**（原实现是每个匹配算一次，而 RelativeTo 内部
+        // 会做两次 canonicalize，本机 ≈70 µs/次；200 个匹配就是 14 ms，占 search_text 大头）。
+        const std::string relative_path = FastRelativeTo(file_path, proj.dir);
+        const bool has_cr = text.find('\r') != std::string::npos;
+        std::vector<std::string> owned_rows;
+        std::vector<std::string_view> rows;
+        if (has_cr) {
+            owned_rows = SplitLines(text);
+            rows.reserve(owned_rows.size());
+            for (const std::string& row : owned_rows) rows.emplace_back(row);
+        } else {
+            rows = SplitLineViews(text);
+        }
         for (size_t index = 0; index < rows.size(); ++index) {
-            absl::string_view rest(rows[index].data(), rows[index].size());
+            std::string_view rest(rows[index]);
             re2::StringPiece found;
             while (true) {
                 re2::RE2::Arg arg_found(&found);
@@ -2290,7 +2607,7 @@ Json Bridge::SearchTextTool(const Json& arguments) {
                 const size_t match_start = match_end - found.size();
                 Json item = Json::object();
                 item["file"] = file_path;
-                item["relative"] = RelativeTo(file_path, proj.dir);
+                item["relative"] = relative_path;
                 item["line"] = static_cast<int>(index) + 1;
                 item["column"] = static_cast<int>(match_start) + 1;
                 item["text"] = Trim(rows[index].substr(0, 500));
@@ -2299,7 +2616,9 @@ Json Bridge::SearchTextTool(const Json& arguments) {
                     const int before = std::max<int>(0, static_cast<int>(index) - context);
                     const int after =
                         std::min<int>(static_cast<int>(rows.size()), static_cast<int>(index) + context + 1);
-                    for (int row = before; row < after; ++row) snippet.push_back(rows[static_cast<size_t>(row)]);
+                    for (int row = before; row < after; ++row) {
+                        snippet.push_back(std::string(rows[static_cast<size_t>(row)]));
+                    }
                     item["context"] = std::move(snippet);
                 }
                 matches.push_back(std::move(item));

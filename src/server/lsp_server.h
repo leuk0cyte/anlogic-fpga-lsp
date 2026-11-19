@@ -316,10 +316,26 @@ private:
     //  状态
     // =========================================================================
     // 工程查找结果缓存项（对应 Python discover_projects 的 5 秒缓存）
+    // F2/R3b：键从 path 改成 **dirname**（同目录文件共享一条），容量按 LRU 淘汰
+    // （原来是"满 64 条整体清空"，200 文件工程会被周期性清空 3 次）。
     struct DiscoveryEntry {
         std::chrono::steady_clock::time_point at;
+        std::chrono::steady_clock::time_point last_used;
         std::string al;  // 空串 = 上次查找"没有工程"
     };
+
+    // F2/R3b：工作区级 `DiscoverProjects` 结果缓存（TTL 5 s，键 = 规范化 root）。
+    // 非工程文件（不在任何 .al 之下）时，`FindProjectAl` 会递归扫全工作区
+    // （实测 18–77 ms），这一层缓存把它摊到每 5 秒一次，而不是每请求一次。
+    struct DiscoveredProjectsEntry {
+        std::chrono::steady_clock::time_point at;
+        std::vector<std::string> candidates;
+    };
+
+    // 与 `project::FindProjectAl` 逐句等价，但把"递归扫描"换成带 TTL 的缓存。
+    // ⚠ 若 al_project.cpp 的发现逻辑变化，这里要同步（报告 F2.md 已登记该耦合）。
+    std::optional<std::string> ResolveProjectAl(const std::string& root, const std::string& path,
+                                                const std::string& configured);
 
     jsonrpc::TransportBaseCommon& transport_;
     std::string td_explicit_;
@@ -347,8 +363,11 @@ private:
     std::map<std::string, DeviceSummary> device_mem_;
 
     // 工程查找结果缓存（5 秒 TTL；对应 Python discover_projects 的 5s 缓存）
+    // F2/R3b：键 = configured|root|dirname(path)，LRU 淘汰（容量 kDiscoveryCapacity）。
     mutable std::mutex discovery_mutex_;
     std::map<std::string, DiscoveryEntry> discovery_cache_;
+    std::map<std::string, DiscoveredProjectsEntry> discovered_cache_;
+    static constexpr std::size_t kDiscoveryCapacity = 256;
 
     // 工程解析缓存：al_path -> (mtime, size, Project)，对应 Python project.parse_al_cached。
     // B8/PERF-01：发现缓存只记了 .al 路径，命中后原先仍每次 project::ParseAl()

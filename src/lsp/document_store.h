@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <shared_mutex>
 #include <string>
@@ -128,9 +129,57 @@ private:
         std::string language_id;
     };
 
+    // -------------------------------------------------------------------------
+    //  F5 / R6：未打开文档的磁盘文本缓存
+    // -------------------------------------------------------------------------
+    //  为什么需要：completion 每次经 LspServer::LoadText -> GetText，未打开文档
+    //  直接读盘（100 KB 文件 0.828 ms，是补全算法本身的 4.5 倍）。
+    //
+    //  正确性的两条硬约束：
+    //   1) **打开中的文档永远不走缓存**（GetText 先查缓冲区，命中即返回）——
+    //      否则用户 edit 完会看到旧内容；
+    //   2) 缓存键带 (mtime, size)：文件被外部改动 -> stamp 不匹配 -> 重新读盘，
+    //      不会返回陈旧文本。
+    //
+    //  上界：64 条 / 32 MB 总字节 / 单条 8 MB，超出按 LRU 淘汰。
+    //  依据：本项目工程典型 20–200 个 HDL 文件、单个 1–100 KB（真实工程 21 个 .v
+    //  共 0.2 MB），200 个 100 KB 文件也只占 20 MB；32 MB 上限足够覆盖一个
+    //  1000 文件的大工程而不会让常驻内存失控。
+    struct FileStamp {
+        std::uint64_t size = 0;
+        std::int64_t mtime = 0;  // Windows: FILETIME (100ns since 1601)
+        bool valid = false;
+        bool operator==(const FileStamp&) const = default;
+    };
+    struct CachedText {
+        std::string text;
+        FileStamp stamp;
+        std::uint64_t last_used = 0;  // 单调递增的 LRU 时间戳
+    };
+
+    static constexpr std::size_t kMaxCacheEntries = 64;
+    static constexpr std::size_t kMaxCacheBytes = 32u * 1024u * 1024u;
+    static constexpr std::size_t kMaxEntryBytes = 8u * 1024u * 1024u;
+
+    // 单次系统调用拿 size+mtime（Windows: GetFileAttributesExW）。
+    // 失败（文件不存在/无权限/是目录）返回 valid=false -> 该次调用不参与缓存。
+    static FileStamp StatFile(const std::string& path);
+
+    // 缓存读写（只碰 cache_mutex_，与 documents_ 的 shared_mutex 分开，
+    // 避免缓存命中时还要拿文档表的写锁）。
+    bool TryGetCached(const std::string& path, const FileStamp& stamp, std::string* out) const;
+    void PutCached(const std::string& path, const FileStamp& stamp, std::string text) const;
+    // 丢弃某个路径的缓存条目（didSave / didClose 时调用，属于防御性失效）。
+    void EvictCached(const std::string& path) const;
+
     mutable std::shared_mutex mutex_;
     std::unordered_map<std::string, Document> documents_;
     DiskReader disk_reader_;
+
+    mutable std::mutex cache_mutex_;
+    mutable std::unordered_map<std::string, CachedText> text_cache_;
+    mutable std::size_t cache_bytes_ = 0;
+    mutable std::uint64_t cache_clock_ = 0;
 };
 
 }  // namespace fpgalsp::lsp

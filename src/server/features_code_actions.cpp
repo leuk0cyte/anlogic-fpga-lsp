@@ -37,6 +37,9 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
+#include <list>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -212,6 +215,89 @@ Json AdcCodeActions(std::string_view text, const std::string& uri, int line) {
     return actions;
 }
 
+#if defined(FPGA_LSP_HAVE_VERIBLE_BRIDGE)
+// -----------------------------------------------------------------------------
+//  lint 结果缓存（F1 / task-36）
+// -----------------------------------------------------------------------------
+//  为什么缓存的是**整份结果**而不是"动作"：codeAction 的 Verible 分支是
+//  `AutofixText(text) -> expand_comment_tabs -> 整篇替换`，结果只取决于
+//  (文件名, 规范化后的文本)；缓存这一层的产物，下面的分支代码可以**一字不改**，
+//  因此响应字节必然与未加缓存时相同。
+//
+//  键 = (文件名, 文本内容哈希)：
+//    * 文件名参与：Verible 有按文件名判定的规则（如 module-filename）；
+//    * 规则集是编译期固定的（BuildDefaultConfiguration 每次都构造同一份 default
+//      ruleset，`lint_text.cpp:61-77`），所以没有"可变配置哈希"。将来若规则集变成
+//      可配置，把配置版本号并进键即可（见 F1 报告 §风险）。
+//
+//  上界：8 条 LRU；单条 >2 MiB 的文本不进缓存（避免 8 × 超大文本吃内存）。
+//  线程安全：codeAction 现在跑在 AsyncDispatcher 的 worker 上（最多 2 个并发），
+//  缓存自身有锁；Verible 的 `AutofixText` 内部会建 LinterConfiguration+Analyzer，
+//  其全局状态的可重入性未验证，因此**执行**部分单独用一把锁串行化（命中不经过）。
+// -----------------------------------------------------------------------------
+namespace {
+
+constexpr std::size_t kLintCacheCapacity = 8;
+constexpr std::size_t kLintCacheMaxEntryBytes = 2u * 1024u * 1024u;
+
+struct LintCacheEntry {
+    std::string filename;
+    std::uint64_t text_hash = 0;
+    verible_bridge::LintAutofixResult result;
+};
+
+class LintCache {
+public:
+    // 命中：返回 true 并把结果**拷贝**给调用方（调用方会继续修改 fixed.text）。
+    bool TryGet(const std::string& filename, std::uint64_t text_hash,
+                verible_bridge::LintAutofixResult* out) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (auto it = entries_.begin(); it != entries_.end(); ++it) {
+            if (it->text_hash != text_hash || it->filename != filename) continue;
+            *out = it->result;
+            entries_.splice(entries_.begin(), entries_, it);  // 提升为 MRU
+            return true;
+        }
+        return false;
+    }
+
+    void Put(const std::string& filename, std::uint64_t text_hash,
+             verible_bridge::LintAutofixResult result) {
+        if (result.text.size() > kLintCacheMaxEntryBytes) return;
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (auto it = entries_.begin(); it != entries_.end(); ++it) {
+            if (it->text_hash == text_hash && it->filename == filename) {
+                it->result = std::move(result);
+                entries_.splice(entries_.begin(), entries_, it);
+                return;
+            }
+        }
+        LintCacheEntry entry;
+        entry.filename = filename;
+        entry.text_hash = text_hash;
+        entry.result = std::move(result);
+        entries_.push_front(std::move(entry));
+        while (entries_.size() > kLintCacheCapacity) entries_.pop_back();
+    }
+
+private:
+    std::mutex mutex_;
+    std::list<LintCacheEntry> entries_;  // front = 最近使用
+};
+
+LintCache& SharedLintCache() {
+    static LintCache cache;  // 函数内 static：C++11 起初始化线程安全
+    return cache;
+}
+
+std::mutex& LintExecutionMutex() {
+    static std::mutex mutex;
+    return mutex;
+}
+
+}  // namespace
+#endif  // FPGA_LSP_HAVE_VERIBLE_BRIDGE
+
 }  // namespace
 
 // =============================================================================
@@ -259,8 +345,19 @@ Json LspServer::FeatureCodeActions(std::string_view path, const Json& range,
 
     // 2) Verible lint autofix quickfix（整篇替换，内嵌规则集）
 #if defined(FPGA_LSP_HAVE_VERIBLE_BRIDGE)
-    const verible_bridge::LintAutofixResult fixed =
-        verible_bridge::AutofixText(text, path_string);
+    // F1：先查缓存（键 = 文件名 + 规范化文本的内容哈希）。命中时**不**跑 Verible；
+    // 未命中才在 LintExecutionMutex 保护下跑一次并回填。下面的分支逻辑与缓存前
+    // 完全一致 —— 缓存只影响"算多久"，不影响"算什么"。
+    const std::uint64_t text_hash = hdl::ContentHash(text);
+    verible_bridge::LintAutofixResult fixed;
+    const bool cache_hit = SharedLintCache().TryGet(path_string, text_hash, &fixed);
+    if (!cache_hit) {
+        {
+            std::lock_guard<std::mutex> lock(LintExecutionMutex());
+            fixed = verible_bridge::AutofixText(text, path_string);
+        }
+        SharedLintCache().Put(path_string, text_hash, fixed);
+    }
     if (fixed.ok) {
         // Python: fixed = expand_comment_tabs(fixed); changed = fixed != doc.text
         std::string new_text = edit::ExpandCommentTabs(edit::NormalizeNewlines(fixed.text));

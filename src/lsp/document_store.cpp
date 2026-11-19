@@ -5,12 +5,25 @@
 #include "lsp/document_store.h"
 
 #include <algorithm>
+#include <cstdint>
+#include <filesystem>
 #include <mutex>
+#include <system_error>
 #include <utility>
 
 #include "platform/encoding.h"
 #include "platform/path.h"
 #include "platform/utf16.h"
+
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
 
 namespace fpgalsp::lsp {
 namespace {
@@ -206,12 +219,28 @@ bool DocumentStore::Save(std::string_view uri, const std::optional<std::string>&
     if (text.has_value()) {
         it->second.text = *text;
     }
+    // didSave 之后磁盘内容可能刚被写新：丢掉该路径的缓存，下一次未打开读取走磁盘。
+    const std::string path = it->second.path;
+    lock.unlock();
+    EvictCached(path);
     return true;
 }
 
 bool DocumentStore::Close(std::string_view uri) {
-    std::unique_lock lock(mutex_);
-    return documents_.erase(std::string(uri)) > 0;
+    std::string path;
+    bool erased = false;
+    {
+        std::unique_lock lock(mutex_);
+        const auto it = documents_.find(std::string(uri));
+        if (it != documents_.end()) {
+            path = it->second.path;
+            documents_.erase(it);
+            erased = true;
+        }
+    }
+    // didClose 之后 GetText 回落读盘；先失效缓存，避免"关闭后读到关闭前的旧文本"。
+    if (erased) EvictCached(path);
+    return erased;
 }
 
 // -----------------------------------------------------------------------------
@@ -223,8 +252,89 @@ bool DocumentStore::IsOpen(std::string_view uri) const {
     return documents_.find(std::string(uri)) != documents_.end();
 }
 
+DocumentStore::FileStamp DocumentStore::StatFile(const std::string& path) {
+    FileStamp stamp;
+#ifdef _WIN32
+    // 一次 GetFileAttributesExW 同时拿到 size 与 mtime：比
+    // std::filesystem::file_size + last_write_time 少一次系统调用
+    // （本机单次 fs 调用 ~33 µs 量级，见 audit/2026-11-18 HOTSPOTS.md §0）。
+    const std::u16string wide16 = plat::utf8_to_utf16(path);
+    if (wide16.empty()) return stamp;
+    WIN32_FILE_ATTRIBUTE_DATA data{};
+    if (::GetFileAttributesExW(reinterpret_cast<LPCWSTR>(wide16.c_str()), GetFileExInfoStandard,
+                               &data) == FALSE) {
+        return stamp;
+    }
+    if ((data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) return stamp;
+    stamp.size = (static_cast<std::uint64_t>(data.nFileSizeHigh) << 32) | data.nFileSizeLow;
+    stamp.mtime = (static_cast<std::int64_t>(data.ftLastWriteTime.dwHighDateTime) << 32) |
+                  static_cast<std::int64_t>(data.ftLastWriteTime.dwLowDateTime);
+    stamp.valid = true;
+#else
+    std::error_code ec;
+    const auto size = std::filesystem::file_size(std::filesystem::path(path), ec);
+    if (ec) return stamp;
+    const auto mtime = std::filesystem::last_write_time(std::filesystem::path(path), ec);
+    if (ec) return stamp;
+    stamp.size = static_cast<std::uint64_t>(size);
+    stamp.mtime = static_cast<std::int64_t>(mtime.time_since_epoch().count());
+    stamp.valid = true;
+#endif
+    return stamp;
+}
+
+bool DocumentStore::TryGetCached(const std::string& path, const FileStamp& stamp,
+                                 std::string* out) const {
+    if (out == nullptr) return false;
+    std::lock_guard<std::mutex> lock(cache_mutex_);
+    const auto it = text_cache_.find(plat::path_key(path));
+    if (it == text_cache_.end()) return false;
+    if (!(it->second.stamp == stamp)) return false;  // 文件被改过 -> 当未命中
+    it->second.last_used = ++cache_clock_;
+    *out = it->second.text;  // 返回副本：调用方拿到独立字符串，缓存随时可被淘汰
+    return true;
+}
+
+void DocumentStore::PutCached(const std::string& path, const FileStamp& stamp,
+                              std::string text) const {
+    if (text.size() > kMaxEntryBytes || !stamp.valid) return;  // 单文件过大：不缓存
+    std::lock_guard<std::mutex> lock(cache_mutex_);
+    const std::string key = plat::path_key(path);
+    if (const auto it = text_cache_.find(key); it != text_cache_.end()) {
+        cache_bytes_ -= it->second.text.size();
+        text_cache_.erase(it);
+    }
+    // LRU 淘汰：先按条数，再按字节预算
+    while (!text_cache_.empty() &&
+           (text_cache_.size() >= kMaxCacheEntries ||
+            cache_bytes_ + text.size() > kMaxCacheBytes)) {
+        auto victim = text_cache_.begin();
+        for (auto p = text_cache_.begin(); p != text_cache_.end(); ++p) {
+            if (p->second.last_used < victim->second.last_used) victim = p;
+        }
+        cache_bytes_ -= victim->second.text.size();
+        text_cache_.erase(victim);
+    }
+    CachedText entry;
+    entry.text = std::move(text);
+    entry.stamp = stamp;
+    entry.last_used = ++cache_clock_;
+    cache_bytes_ += entry.text.size();
+    text_cache_.emplace(key, std::move(entry));
+}
+
+void DocumentStore::EvictCached(const std::string& path) const {
+    if (path.empty()) return;
+    std::lock_guard<std::mutex> lock(cache_mutex_);
+    const auto it = text_cache_.find(plat::path_key(path));
+    if (it == text_cache_.end()) return;
+    cache_bytes_ -= it->second.text.size();
+    text_cache_.erase(it);
+}
+
 std::optional<std::string> DocumentStore::GetText(std::string_view uri) const {
-    std::string path;
+    // ① 打开中的文档：**永远**返回缓冲区，绝不查缓存。
+    //    这是 R6 最容易踩的回归点（用户改完看不到新内容），所以放在最前面且不参与任何缓存逻辑。
     {
         std::shared_lock lock(mutex_);
         const auto it = documents_.find(std::string(uri));
@@ -234,9 +344,16 @@ std::optional<std::string> DocumentStore::GetText(std::string_view uri) const {
     }
 
     // 未打开：读磁盘。路径从 uri 反推。
-    path = plat::uri_to_path(std::string(uri));
+    const std::string path = plat::uri_to_path(std::string(uri));
     if (path.empty()) {
         return std::nullopt;
+    }
+
+    // ② 缓存命中判定带 (mtime, size)：stamp 一致才复用，文件改过就重读。
+    const FileStamp stamp = StatFile(path);
+    if (stamp.valid) {
+        std::string cached;
+        if (TryGetCached(path, stamp, &cached)) return cached;
     }
 
     DiskReader reader;
@@ -245,7 +362,11 @@ std::optional<std::string> DocumentStore::GetText(std::string_view uri) const {
         reader = disk_reader_;
     }
     if (!reader) return std::nullopt;
-    return reader(path);
+    std::optional<std::string> text = reader(path);
+    if (text.has_value() && stamp.valid) {
+        PutCached(path, stamp, *text);
+    }
+    return text;
 }
 
 std::optional<int64_t> DocumentStore::GetVersion(std::string_view uri) const {

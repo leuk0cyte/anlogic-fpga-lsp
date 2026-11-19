@@ -57,7 +57,9 @@ struct ReportsSnapshot {
     std::string project_name;
     double generated_at = 0.0;
     jsonrpc::Json data;              // BuildReports(...).ToJson()
-    std::size_t bytes = 0;           // data.dump().size()，便于定位"快照过大"
+    // data.dump().size() 的缓存。**F3 起不再计算**（为它做一次全量 dump 要 100–145 ms，
+    // 而全仓库没有任何读者）。0 = 未计算；需要真实字节数请用 jsonrpc::Serialize 现算。
+    std::size_t bytes = 0;           // 0 = 未计算（诊断字段，无人依赖）
 };
 
 // 统计（诊断/性能报告用；全部单调递增，除 last/total 耗时）。
@@ -85,10 +87,16 @@ class ReportStore final : public reports::ReportParseCache {
     ReportStore& operator=(const ReportStore&) = delete;
 
     // 取一份快照。mask 语义见 reports/sections。force=true 丢弃解析缓存并重建。
+    // limit > 0 时**构建期**就把 timing 的 paths 裁到 limit 条（快照本身变小 →
+    // 响应组装时的深拷贝/序列化也变小）。limit 参与快照键：(mask, limit) 各存一份。
     // 返回的 shared_ptr 可以跨线程持有；内容不会再变。
+    //
+    // F3 起构建在 `state_mutex_` **之外**执行（build_mutex_ 串行化构建），
+    // 所以冷构建期间同 store 的轻请求（如 section=summary）不再排队。
     std::shared_ptr<const ReportsSnapshot> Get(const project::Project& project,
                                               std::uint32_t mask = reports::sections::kAll,
-                                              bool force = false);
+                                              bool force = false,
+                                              std::uint32_t limit = 0);
 
     // 请求时检查（LSP 没有 watcher 事件时的兜底）：文件 stamp / runs 目录变化 -> revision++。
     // 返回 true = 本次检查让 revision 变了（调用方应推送 reportsChanged）。
@@ -144,10 +152,16 @@ class ReportStore final : public reports::ReportParseCache {
         std::map<std::string, Parsed<reports::AreaReport>> area;
         std::map<std::string, Parsed<reports::FlowStatusReport>> flow;
         std::map<std::string, Parsed<std::vector<reports::QorSuggestion>>> suggestions;
-        std::map<std::uint32_t, std::shared_ptr<const ReportsSnapshot>> snapshots;
+        // (mask, limit) -> 快照。limit 参与键，因为裁剪在构建期完成。
+        std::map<std::uint64_t, std::shared_ptr<const ReportsSnapshot>> snapshots;
         std::uint64_t revision = 0;
         bool initialised = false;
     };
+
+    // 快照槽位：高 32 位 mask，低 32 位 limit
+    static std::uint64_t SnapshotSlot(std::uint32_t mask, std::uint32_t limit) {
+        return (static_cast<std::uint64_t>(mask) << 32) | static_cast<std::uint64_t>(limit);
+    }
 
     static std::string KeyFor(const project::Project& project);
     static FileStamp StatOf(const std::string& path, bool* ok);
@@ -169,10 +183,16 @@ class ReportStore final : public reports::ReportParseCache {
                                            const std::string& path,
                                            const std::function<T()>& parse);
 
-    mutable std::shared_mutex state_mutex_;
-    mutable std::mutex cache_mutex_;
+    mutable std::shared_mutex state_mutex_;   // 快照 / 工程表 / revision
+    mutable std::mutex cache_mutex_;          // 解析结果表（qor/timing/area/flow/suggestions）
+    // F3：统计计数单独一把极短的锁。原来它们挂在 cache_mutex_ 上，一次 10 MB 解析
+    // 会在锁内跑 200+ ms，把**命中快路径**（也要 ++stats_）一起堵住。
+    mutable std::mutex stats_mutex_;
+    // F3：构建串行化。构建期间不再持 state_mutex_（请求不再排队），
+    // `current_` 与解析表由 build_mutex_ + cache_mutex_ 保护。
+    std::mutex build_mutex_;
     std::map<std::string, ProjectState> projects_;  // key = al_path 小写
-    ProjectState* current_ = nullptr;               // 构建期间指向 projects_ 中的元素
+    ProjectState* current_ = nullptr;               // 仅在持 build_mutex_ 的构建线程里有效
     ReportStoreStats stats_;
     std::atomic<std::uint64_t> global_revision_{0};
     std::atomic<std::uint64_t> build_serial_{0};

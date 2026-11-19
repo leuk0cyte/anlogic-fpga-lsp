@@ -323,26 +323,15 @@ Json LspServer::FeatureReports(const Json& params) {
             if (!ok) mask = reports::sections::kAll;
         }
     }
-    Json data = report_store_->Get(*project, mask)->data;
-    if (!section_text.empty()) data["section"] = section_text;
     // 可选 limit：只裁剪副本（快照共享不可变），用于 timing/area 的大表。
+    // F3：limit 现在是**构建期**生效（进 ReportStore 的快照键），所以要在 Get 之前解析；
+    //     原来在返回的副本上裁剪是 no-op（只找节点自己的 paths，而真实形状是
+    //     data.timing.paths / groups[].paths），见 audit/2026-11-19/fix/F3.md。
     const int limit = jsonrpc::GetInt(params, "limit", 0);
-    if (limit > 0) {
-        const auto trim = [limit](auto&& self, Json& node) -> void {
-            if (!node.is_object()) return;
-            if (node.contains("paths") && node["paths"].is_array() &&
-                node["paths"].size() > static_cast<std::size_t>(limit)) {
-                node["paths"].erase(node["paths"].begin() + limit, node["paths"].end());
-                node["truncated"] = true;
-            }
-            for (const char* child : {"syn", "phy"}) {
-                if (node.contains(child) && node[child].is_object()) {
-                    self(self, node[child]);
-                }
-            }
-        };
-        trim(trim, data);
-    }
+    const std::uint32_t trim_limit =
+        limit > 0 ? static_cast<std::uint32_t>(std::min(limit, 100000)) : 0u;
+    Json data = report_store_->Get(*project, mask, /*force=*/false, trim_limit)->data;
+    if (!section_text.empty()) data["section"] = section_text;
     // 分节请求默认不带 raw 正文（timing/area 的原始报告可达 10 MB+）；
     // 需要时显式 include_raw=true。全量请求（无 section）保持 Phase 1 行为。
     const bool include_raw = jsonrpc::GetBool(params, "include_raw", false);

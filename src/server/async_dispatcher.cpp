@@ -53,6 +53,11 @@ bool IsHeavyMethod(std::string_view method) {
         "fpgalsp.cables",
         "fpgalsp.device",
         "fpgalsp.reports",
+        // F1/R0：codeAction 要跑内嵌 Verible 的全量 parse+lint（实测 13 KB=43 ms、
+        // 100 KB=353 ms），以前和 didChange 一起挤在 IO 线程上 —— 实测把按键的
+        // didChange→publishDiagnostics p95 从 1 ms 拖到 343 ms。移到 worker 后
+        // IO 线程只负责收发，响应字节不变（F1 报告有 before/after 协议快照 diff）。
+        "textDocument/codeAction",
     };
     for (const char* name : kHeavy) {
         if (method == name) return true;

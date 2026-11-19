@@ -47,14 +47,14 @@ std::vector<std::string> ExpectedFiles(const project::Project& project) {
 
 // 一次目录枚举带回整目录的 (size, mtime)；与 LspServer::ProjectSignature 里的
 // DirStampCache 同策略（枚举不到就按"磁盘上没有"处理）。
+//
+// R2（F2）：调用方传**预计算好的** (dir, name)，这里不再做 substr / normalize / 小写。
+// 旧实现每个文件每次 Get() 都付一次 "find_last_of + substr + path_key"，1000 文件时
+// 光这一层就占 stamp 校验的 ~30%。
 class DirStamps {
 public:
-    const IndexService::FileStamp* Find(const std::string& path) {
-        const std::size_t slash = path.find_last_of("/\\");
-        if (slash == std::string::npos || slash + 1 >= path.size()) return nullptr;
-        const std::string dir = path.substr(0, slash);
-        const std::string name = platform::path_key(std::string_view(path).substr(slash + 1));
-
+    const IndexService::FileStamp* Find(const std::string& dir, const std::string& name) {
+        if (dir.empty() || name.empty()) return nullptr;
         auto it = dirs_.find(dir);
         if (it == dirs_.end()) it = dirs_.emplace(dir, LoadDir(dir)).first;
         const auto found = it->second.find(name);
@@ -157,8 +157,14 @@ IndexService::Snapshot IndexService::EnsureFreshLocked() const {
     if (!state_.have_project) return nullptr;
     if (state_.dirty) {
         RebuildAllLocked();
-    } else if (!state_.watcher_active) {
-        ValidateStampsLocked();
+    } else if (!state_.watcher_active && state_.snapshot != nullptr) {
+        // R3（F2）：TTL 门控。didChange 走缓冲区增量，不依赖磁盘 stamp；
+        // 只有 didSave / didClose / watcher 事件 / InvalidateAll 会请求强制校验。
+        const bool due =
+            state_.force_validation ||
+            (state_.stamp_ttl <= std::chrono::milliseconds(0)) ||
+            (std::chrono::steady_clock::now() - state_.last_validation >= state_.stamp_ttl);
+        if (due) ValidateStampsLocked();
     }
     return state_.snapshot;
 }
@@ -180,10 +186,8 @@ void IndexService::SetProject(project::Project project) {
     std::vector<std::string> files = ExpectedFiles(project);
     state_.project = std::move(project);
     state_.have_project = true;
-    SetExpectedLocked(std::move(files));
+    SetExpectedLocked(std::move(files));  // 里面会重算键 + 清空/重置 stamp 基线
     state_.dirty = true;
-    state_.stamps.clear();
-    state_.stamps_initialized = false;
 }
 
 void IndexService::OnFileChanged(std::string path, std::optional<std::string> text) {
@@ -191,8 +195,13 @@ void IndexService::OnFileChanged(std::string path, std::optional<std::string> te
     if (!state_.have_project || path.empty()) return;
 
     const std::string key = KeyOf(path);
+    const State::ExpectedFile* expected = FindExpectedLocked(key);
     // 只有工程的 HDL 文件会影响索引；其它文件（含 .al）走 OnWatchedFiles。
-    if (!IsExpected(key)) return;
+    if (expected == nullptr) return;
+
+    // 没有缓冲区文本 = didSave / didClose：磁盘可能被别的进程改过（含 TD），
+    // 下一请求强制做一次全量 stamp 校验。
+    if (!text.has_value()) RequestValidationLocked();
 
     // 快照还没建、或者已经脏了（.al 刚变更过）：不做增量。
     // 下一次 Get 的全量重建会通过 loader（集成方传入缓冲区优先的 LoadText）
@@ -216,11 +225,7 @@ void IndexService::OnFileChanged(std::string path, std::optional<std::string> te
 
     // stamp 基线跟着走：记的是**磁盘当前状态**（缓冲区内容可能领先磁盘，
     // 用户保存后 mtime 变化会再触发一次重读，最多多解析一次，结果相同）。
-    if (state_.stamps_initialized) {
-        DirStamps disk;
-        const FileStamp* now = disk.Find(path);
-        state_.stamps[key] = now != nullptr ? *now : FileStamp{};
-    }
+    SyncStampLocked(*expected);
 }
 
 void IndexService::OnWatchedFiles(const std::vector<std::string>& changed,
@@ -245,10 +250,11 @@ void IndexService::OnWatchedFiles(const std::vector<std::string>& changed,
         }
         SetExpectedLocked(ExpectedFiles(state_.project));
         state_.dirty = true;
-        state_.stamps.clear();
-        state_.stamps_initialized = false;
         return;
     }
+
+    // watcher 报了变化：磁盘状态可能变过，下一次 Get 要重新校验（不受 TTL 限制）。
+    RequestValidationLocked();
 
     if (state_.dirty || state_.snapshot == nullptr) return;
 
@@ -261,14 +267,20 @@ void IndexService::OnWatchedFiles(const std::vector<std::string>& changed,
             ++state_.stats.file_updates;
             touched = true;
         }
-        if (state_.stamps_initialized) {
-            state_.stamps[KeyOf(path)] = FileStamp{};  // 磁盘上已经没有了
+        if (const State::ExpectedFile* expected = FindExpectedLocked(KeyOf(path));
+            expected != nullptr) {
+            if (const auto it = state_.expected_index.find(expected->key);
+                it != state_.expected_index.end() && it->second < state_.stamps.size() &&
+                state_.stamps_initialized) {
+                state_.stamps[it->second] = FileStamp{};  // 磁盘上已经没有了
+            }
         }
     }
 
     for (const std::string& path : changed) {
         const std::string key = KeyOf(path);
-        if (!IsExpected(key) && next->File(path) == nullptr) continue;  // 与本工程无关
+        const State::ExpectedFile* expected = FindExpectedLocked(key);
+        if (expected == nullptr && next->File(path) == nullptr) continue;  // 与本工程无关
         const std::optional<std::string> text = LoadSafely(loader_, path);
         if (text.has_value()) {
             next->ReplaceFile(ParseOne(path, *text, &state_.cache));
@@ -277,9 +289,13 @@ void IndexService::OnWatchedFiles(const std::vector<std::string>& changed,
         }
         ++state_.stats.file_updates;
         touched = true;
-        if (state_.stamps_initialized) {
-            const FileStamp* now = disk.Find(path);
-            state_.stamps[key] = now != nullptr ? *now : FileStamp{};
+        if (expected != nullptr) {
+            if (const auto it = state_.expected_index.find(expected->key);
+                it != state_.expected_index.end() && it->second < state_.stamps.size() &&
+                state_.stamps_initialized) {
+                const FileStamp* now = disk.Find(expected->dir, expected->name);
+                state_.stamps[it->second] = now != nullptr ? *now : FileStamp{};
+            }
         }
     }
 
@@ -289,8 +305,9 @@ void IndexService::OnWatchedFiles(const std::vector<std::string>& changed,
 void IndexService::InvalidateAll() {
     std::lock_guard<std::mutex> lock(mutex_);
     state_.dirty = true;
-    state_.stamps.clear();
+    state_.stamps.assign(state_.expected.size(), FileStamp{});
     state_.stamps_initialized = false;
+    state_.force_validation = true;
 }
 
 void IndexService::SetWatcherActive(bool active) {
@@ -300,6 +317,26 @@ void IndexService::SetWatcherActive(bool active) {
     // 从"有 watcher"切到"没有"：此刻磁盘状态就是基线（索引刚构建/刚增量过），
     // 不等下一次 Get 再补 —— 否则切换瞬间的改动会被漏掉。
     if (!active) RefreshStampsLocked();
+}
+
+// =============================================================================
+// R3：stamp 校验 TTL（可用性 vs 外部改动可见性）
+// =============================================================================
+
+std::chrono::milliseconds IndexService::DefaultStampValidationInterval() {
+    return std::chrono::milliseconds(250);
+}
+
+void IndexService::SetStampValidationInterval(std::chrono::milliseconds interval) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    state_.stamp_ttl = interval < std::chrono::milliseconds(0) ? std::chrono::milliseconds(0)
+                                                               : interval;
+    state_.force_validation = true;  // 改了间隔，立刻按新设置校验一次
+}
+
+std::chrono::milliseconds IndexService::stamp_validation_interval() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return state_.stamp_ttl;
 }
 
 // =============================================================================
@@ -367,14 +404,17 @@ void IndexService::RebuildAllLocked() const {
     // stamp 基线：watcher 缺失时**立刻**建立（此刻索引内容就是刚读到的磁盘/缓冲区
     // 状态），否则基线会拖到下一次 Get 才建立 —— 那期间磁盘上的改动就会被漏掉。
     // watcher 可用时不需要基线（信任 didChangeWatchedFiles）。
-    state_.stamps.clear();
     state_.stamps_initialized = false;
+    state_.force_validation = false;
     if (!state_.watcher_active) RefreshStampsLocked();
 
     InstallLocked(std::move(next));
 }
 
 void IndexService::ValidateStampsLocked() const {
+    state_.last_validation = std::chrono::steady_clock::now();
+    state_.force_validation = false;
+
     if (!state_.stamps_initialized) {
         RefreshStampsLocked();  // 第一次：只取基线（索引内容就是按当时的磁盘/缓冲区建的）
         return;
@@ -382,26 +422,20 @@ void IndexService::ValidateStampsLocked() const {
     if (state_.snapshot == nullptr) return;
 
     DirStamps disk;
-    std::vector<std::string> changed;
-    std::vector<std::string> removed;
+    std::vector<std::size_t> changed;  // 下标，避免再按 key 反查
+    std::vector<std::size_t> removed;
     changed.reserve(4);
     removed.reserve(4);
 
-    for (const std::string& path : state_.expected) {
-        const std::string key = KeyOf(path);
-        const FileStamp* now = disk.Find(path);
+    for (std::size_t i = 0; i < state_.expected.size(); ++i) {
+        const State::ExpectedFile& file = state_.expected[i];
+        const FileStamp* now = disk.Find(file.dir, file.name);
         const FileStamp current = now != nullptr ? *now : FileStamp{};
-
-        const auto stored = state_.stamps.find(key);
-        if (stored == state_.stamps.end()) {
-            if (current.exists) changed.push_back(path);
-            continue;
-        }
-        if (stored->second == current) continue;
+        if (state_.stamps[i] == current) continue;
         if (current.exists) {
-            changed.push_back(path);
+            changed.push_back(i);
         } else {
-            removed.push_back(path);
+            removed.push_back(i);
         }
     }
 
@@ -410,25 +444,27 @@ void IndexService::ValidateStampsLocked() const {
     auto next = std::make_shared<hdl::HdlIndex>(state_.snapshot->Clone());
     bool touched = false;
 
-    for (const std::string& path : removed) {
-        if (next->RemoveFile(path)) {
+    for (const std::size_t i : removed) {
+        const State::ExpectedFile& file = state_.expected[i];
+        if (next->RemoveFile(file.path)) {
             ++state_.stats.file_updates;
             touched = true;
         }
-        state_.stamps[KeyOf(path)] = FileStamp{};
+        state_.stamps[i] = FileStamp{};  // 磁盘上已经没有了
     }
 
-    for (const std::string& path : changed) {
-        const std::optional<std::string> text = LoadSafely(loader_, path);
+    for (const std::size_t i : changed) {
+        const State::ExpectedFile& file = state_.expected[i];
+        const std::optional<std::string> text = LoadSafely(loader_, file.path);
         if (text.has_value()) {
-            next->ReplaceFile(ParseOne(path, *text, &state_.cache));
+            next->ReplaceFile(ParseOne(file.path, *text, &state_.cache));
         } else {
-            next->RemoveFile(path);
+            next->RemoveFile(file.path);
         }
         ++state_.stats.file_updates;
         touched = true;
-        const FileStamp* now = disk.Find(path);
-        state_.stamps[KeyOf(path)] = now != nullptr ? *now : FileStamp{};
+        const FileStamp* now = disk.Find(file.dir, file.name);
+        state_.stamps[i] = now != nullptr ? *now : FileStamp{};
     }
 
     if (touched) InstallLocked(std::move(next));
@@ -436,12 +472,14 @@ void IndexService::ValidateStampsLocked() const {
 
 void IndexService::RefreshStampsLocked() const {
     DirStamps disk;
-    state_.stamps.clear();
-    for (const std::string& path : state_.expected) {
-        const FileStamp* now = disk.Find(path);
-        state_.stamps[KeyOf(path)] = now != nullptr ? *now : FileStamp{};
+    state_.stamps.assign(state_.expected.size(), FileStamp{});
+    for (std::size_t i = 0; i < state_.expected.size(); ++i) {
+        const State::ExpectedFile& file = state_.expected[i];
+        const FileStamp* now = disk.Find(file.dir, file.name);
+        state_.stamps[i] = now != nullptr ? *now : FileStamp{};
     }
     state_.stamps_initialized = true;
+    state_.last_validation = std::chrono::steady_clock::now();
 }
 
 void IndexService::InstallLocked(std::shared_ptr<const hdl::HdlIndex> next) const {
@@ -450,12 +488,49 @@ void IndexService::InstallLocked(std::shared_ptr<const hdl::HdlIndex> next) cons
 }
 
 void IndexService::SetExpectedLocked(std::vector<std::string> files) {
-    state_.expected = std::move(files);
+    // R2（F2）：键只在这里算一次（SetProject 变集合 / .al 变更 / 重建时），
+    // 之后每个请求的 stamp 校验直接用它。
+    state_.expected.clear();
+    state_.expected.resize(files.size());
     state_.expected_index.clear();
-    for (std::size_t i = 0; i < state_.expected.size(); ++i) {
-        state_.expected_index.emplace(KeyOf(state_.expected[i]), i);
+    for (std::size_t i = 0; i < files.size(); ++i) {
+        State::ExpectedFile& entry = state_.expected[i];
+        entry.path = std::move(files[i]);
+        const std::string normalized = platform::normalize_path(entry.path);
+        entry.key = platform::path_key(normalized);
+        const std::size_t slash = normalized.find_last_of("/\\");
+        if (slash == std::string::npos || slash + 1 >= normalized.size()) {
+            entry.dir.clear();
+            entry.name = entry.key;
+        } else {
+            entry.dir = normalized.substr(0, slash);
+            entry.name = platform::path_key(std::string_view(normalized).substr(slash + 1));
+        }
+        state_.expected_index.emplace(entry.key, i);
     }
+    state_.stamps.assign(state_.expected.size(), FileStamp{});
+    state_.stamps_initialized = false;
+    state_.force_validation = true;
 }
+
+const IndexService::State::ExpectedFile* IndexService::FindExpectedLocked(
+    std::string_view key) const {
+    const auto it = state_.expected_index.find(std::string(key));
+    if (it == state_.expected_index.end()) return nullptr;
+    if (it->second >= state_.expected.size()) return nullptr;
+    return &state_.expected[it->second];
+}
+
+void IndexService::SyncStampLocked(const State::ExpectedFile& file) const {
+    if (!state_.stamps_initialized) return;
+    const auto it = state_.expected_index.find(file.key);
+    if (it == state_.expected_index.end() || it->second >= state_.stamps.size()) return;
+    DirStamps disk;
+    const FileStamp* now = disk.Find(file.dir, file.name);
+    state_.stamps[it->second] = now != nullptr ? *now : FileStamp{};
+}
+
+void IndexService::RequestValidationLocked() const { state_.force_validation = true; }
 
 bool IndexService::IsExpected(std::string_view key) const {
     return state_.expected_index.find(std::string(key)) != state_.expected_index.end();

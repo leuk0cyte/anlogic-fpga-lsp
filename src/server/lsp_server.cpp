@@ -1369,11 +1369,22 @@ std::optional<project::Project> LspServer::ProjectForPath(std::string_view path)
     // 查找结果做 5 秒记忆（对应 Python discover_projects 的 5s 缓存）。
     // 为什么必须缓存：didChange 每敲一个字都会走这里；工程上方没有 .al 时
     // FindProjectAl 会递归扫工作区根 —— 不缓存会让大工作区打字变卡。
-    const std::string key = configured + "|" + root + "|" + std::string(path);
+    //
+    // F2/R3b：键从 `path` 改成 `dirname(path)`。同一目录下的文件发现结果必然相同
+    // （`FindAl` 只看向上 6 层目录；`DiscoverProjects` + `Affinity` 对同目录文件给
+    // 相同 tier/分数 —— Affinity 只比较目录前缀），所以按目录键不改变结果，但把
+    // "每个文件一次" 变成 "每个目录一次"。
+    // 特例：path == root（CurrentProject）时用 root 本身做键，避免退化成父目录。
+    const std::string normalized_path = platform::normalize_path(path);
+    const std::string scope =
+        (normalized_path == root) ? root : platform::path_dirname(normalized_path);
+    const std::string key = configured + "|" + root + "|" + scope;
+    const auto now = clock_type::now();
     {
         std::lock_guard<std::mutex> lock(discovery_mutex_);
         if (const auto it = discovery_cache_.find(key); it != discovery_cache_.end()) {
-            if (clock_type::now() - it->second.at < std::chrono::seconds(5)) {
+            if (now - it->second.at < std::chrono::seconds(5)) {
+                it->second.last_used = now;
                 return it->second.al.empty()
                            ? std::nullopt
                            : std::optional<project::Project>(ParseAlCached(it->second.al));
@@ -1381,18 +1392,67 @@ std::optional<project::Project> LspServer::ProjectForPath(std::string_view path)
         }
     }
 
-    const auto al = project::FindProjectAl(root, path, configured);
+    const auto al = ResolveProjectAl(root, normalized_path, configured);
     {
         std::lock_guard<std::mutex> lock(discovery_mutex_);
+        // LRU 淘汰（原来"≥64 条整体清空"会让 200 文件工程周期性全失效）
+        if (discovery_cache_.size() >= kDiscoveryCapacity) {
+            auto victim = discovery_cache_.begin();
+            for (auto it = discovery_cache_.begin(); it != discovery_cache_.end(); ++it) {
+                if (it->second.last_used < victim->second.last_used) victim = it;
+            }
+            discovery_cache_.erase(victim);
+        }
         DiscoveryEntry entry;
-        entry.at = clock_type::now();
+        entry.at = now;
+        entry.last_used = now;
         entry.al = al.has_value() ? *al : std::string();
-        // 简单的容量控制：超过 64 条就整体清空（缓存只是加速，丢了不影响正确性）
-        if (discovery_cache_.size() >= 64) discovery_cache_.clear();
         discovery_cache_[key] = std::move(entry);
     }
     if (!al.has_value()) return std::nullopt;
     return ParseAlCached(*al);
+}
+
+std::optional<std::string> LspServer::ResolveProjectAl(const std::string& root,
+                                                       const std::string& path,
+                                                       const std::string& configured) {
+    // 1) 显式配置优先（与 project::FindProjectAl 第一步逐字一致）
+    if (!configured.empty()) {
+        const std::string al = platform::normalize_path(configured);
+        return project::DefaultFileExists(al) ? std::optional<std::string>(al) : std::nullopt;
+    }
+
+    // 2) 向上找
+    if (auto al = project::FindAl(path)) return al;
+
+    // 3) 工作区递归扫描 + 亲和度（F2：扫描结果按 root 缓存 5 s）
+    if (root.empty()) return std::nullopt;
+    std::vector<std::string> candidates;
+    {
+        std::lock_guard<std::mutex> lock(discovery_mutex_);
+        const auto it = discovered_cache_.find(root);
+        if (it != discovered_cache_.end() && clock_type::now() - it->second.at < std::chrono::seconds(5)) {
+            candidates = it->second.candidates;  // 拷贝：锁外做 affinity
+        }
+    }
+    if (candidates.empty()) {
+        candidates = project::DiscoverProjects(root);
+        std::lock_guard<std::mutex> lock(discovery_mutex_);
+        discovered_cache_[root] = DiscoveredProjectsEntry{clock_type::now(), candidates};
+    }
+    if (candidates.empty()) return std::nullopt;
+    if (candidates.size() == 1) return candidates[0];
+
+    std::string best = candidates[0];
+    auto best_score = project::Affinity(best, path);
+    for (std::size_t i = 1; i < candidates.size(); ++i) {
+        const auto score = project::Affinity(candidates[i], path);
+        if (score > best_score) {
+            best = candidates[i];
+            best_score = score;
+        }
+    }
+    return best;
 }
 
 std::optional<project::Project> LspServer::CurrentProject() {
@@ -1428,6 +1488,12 @@ void LspServer::InvalidateProjectCaches() {
         // 同上：已解析的 Project 也一起丢（下次按 (mtime, size) 重新解析）
         std::lock_guard<std::mutex> lock(project_cache_mutex_);
         project_cache_.clear();
+    }
+    {
+        // F2/R3b：工作区扫描结果与按目录的发现缓存也一起失效
+        std::lock_guard<std::mutex> lock(discovery_mutex_);
+        discovery_cache_.clear();
+        discovered_cache_.clear();
     }
 }
 

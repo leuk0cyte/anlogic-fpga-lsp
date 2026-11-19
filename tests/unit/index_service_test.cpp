@@ -449,6 +449,10 @@ TEST(IndexServiceTest, WatcherMissingDetectsDiskChange) {
     fs::last_write_time(target, fs::file_time_type::clock::now() + std::chrono::seconds(5), ec);
     ASSERT_FALSE(ec);
 
+    // F2/R3：默认 TTL（250 ms）内不会重复校验 —— 这是有意的最终一致语义
+    // （外部改动最迟 250 ms 可见）。这里把间隔归零，验证"校验本身仍能捡到变化"。
+    service.SetStampValidationInterval(std::chrono::milliseconds(0));
+
     const IndexService::Snapshot after = service.Get();
     ASSERT_NE(after, nullptr);
     EXPECT_EQ(service.stats().generation, generation + 1) << "目录 stamp 没有捡到磁盘变化";

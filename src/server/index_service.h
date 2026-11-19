@@ -34,6 +34,7 @@
 
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -113,6 +114,18 @@ public:
 
     Stats stats() const;
 
+    // R3（F2）：watcher 缺失时 stamp 校验的最小间隔。
+    //   0 ms  = 每次 Get() 都校验（旧行为）；
+    //   >0 ms = 同一间隔内复用上一次校验结果（外部改动最多晚这么久可见）。
+    // didSave / didClose / didChangeWatchedFiles / InvalidateAll 会强制下一次 Get() 校验，
+    // 不受 TTL 影响。默认值见 DefaultStampValidationInterval()。
+    void SetStampValidationInterval(std::chrono::milliseconds interval);
+    std::chrono::milliseconds stamp_validation_interval() const;
+
+    // 默认 TTL：250 ms（实测见 audit/2026-11-19/fix/F2.md §3：
+    // 200 文件下一次强制校验 ≈ 0.30 ms，250 ms 窗口覆盖"连续打字/连续请求"的绝大多数）。
+    static std::chrono::milliseconds DefaultStampValidationInterval();
+
     // ---- additive（不改变上面约定的语义，供集成/测试/诊断用）----
     bool has_project() const;         // 是否设置过工程
     std::string al_path() const;      // 当前工程 .al 路径（无工程时为空）
@@ -129,14 +142,25 @@ private:
 
         Snapshot snapshot;  // 不可变快照
 
-        // 工程参与索引的文件（Verilog + VHDL + IP 生成物），原样大小写；
-        // expected_keys 是同样集合的小写键，用于"这个路径属不属于本工程"的判定。
-        std::vector<std::string> expected;
+        // 工程参与索引的文件。R2（F2）：**键在建集合时算好**，每个请求的 stamp 校验
+        // 只做"查表 + 比较"，不再每次 normalize_path + 小写 + 拆目录（原来 2.2 µs/文件）。
+        struct ExpectedFile {
+            std::string path;  // 原样大小写（给 loader / 索引 / DocumentStore 用）
+            std::string key;   // normalize_path + 小写（= 旧 KeyOf(path)）
+            std::string dir;   // 目录部分（DirStamps 的目录枚举键）
+            std::string name;  // 文件名小写（DirStamps 的文件键）
+        };
+        std::vector<ExpectedFile> expected;
         std::map<std::string, std::size_t> expected_index;  // key -> expected 下标
 
-        // watcher 缺失时的比对基线：key -> 磁盘 stamp
-        std::map<std::string, FileStamp> stamps;
+        // watcher 缺失时的比对基线：与 expected 同下标（不再每个请求两次 map 查找）
+        std::vector<FileStamp> stamps;
         bool stamps_initialized = false;
+
+        // R3：TTL 窗口 + "下一次必须校验"标志（didSave/didClose/watcher 事件置位）
+        std::chrono::milliseconds stamp_ttl{DefaultStampValidationInterval()};
+        std::chrono::steady_clock::time_point last_validation{};
+        bool force_validation = true;
 
         bool watcher_active = false;
         bool truncated = false;
@@ -147,14 +171,20 @@ private:
     };
 
     // 以下 *Locked 方法都要求已持有 mutex_。
-    Snapshot EnsureFreshLocked() const;   // dirty -> 全量；无 watcher -> stamp 校验
+    Snapshot EnsureFreshLocked() const;   // dirty -> 全量；无 watcher -> stamp 校验（TTL 门控）
     void RebuildAllLocked() const;
     void ValidateStampsLocked() const;
     void RefreshStampsLocked() const;     // 只记录基线，不做增量更新
     void InstallLocked(std::shared_ptr<const hdl::HdlIndex> next) const;
     void SetExpectedLocked(std::vector<std::string> files);
 
+    // 按 key 找 expected 下标（没找到返回 nullptr）
+    const State::ExpectedFile* FindExpectedLocked(std::string_view key) const;
+    // 把某个文件的磁盘 stamp 写回基线（事件路径用）
+    void SyncStampLocked(const State::ExpectedFile& file) const;
+
     bool IsExpected(std::string_view key) const;
+    void RequestValidationLocked() const;  // = force_validation = true（下一次 Get 立刻校验）
 
     mutable std::mutex mutex_;
     mutable State state_;
