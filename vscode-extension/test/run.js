@@ -651,12 +651,22 @@ test('extension: activation wires views, commands, reports panel and flow events
     reportsHandler({ stage: 'all', sections: ['qor'] });
     reportsHandler({});
     await new Promise((resolve) => setTimeout(resolve, 300));
-    eq(countReports(), hiddenBefore, 'no refresh when no reports panel is visible');
+    // S1: the status bar also refreshes its WNS summary on reportsChanged, so one extra
+    // (single-flight, shared) request is expected. What must NOT happen is a per-event burst.
+    ok(countReports() - hiddenBefore <= 1, 'no panel repaint when nothing is visible');
 
     const flowChannel = mock.__state.outputChannels.find((channel) => channel.name === 'FPGA Flow');
     ok(flowChannel, 'FPGA Flow output channel exists');
     ok(flowChannel.lines.some((line) => line.includes('done')), 'flow done logged');
-    ok(mock.__state.statusBarItems[0] && /done/.test(mock.__state.statusBarItems[0].text), 'status bar updated');
+    // S1: multiple status items now exist (project/WNS + flow); assert that one shows done.
+    ok(mock.__state.statusBarItems.some((item) => /done/.test(item.text)), 'status bar updated');
+    // S1: the project status line must show the project/device from fpgalsp.info, not just "idle".
+    const projectStatus = mock.__state.statusBarItems.find((item) => /^FPGA: /.test(item.text || ''));
+    ok(projectStatus, 'a project status bar item exists');
+    ok(projectStatus.text.includes(sampleInfo.project),
+        'status bar shows the project name (got: ' + projectStatus.text + ')');
+    ok(projectStatus.text.includes(sampleInfo.device),
+        'status bar shows the device (got: ' + projectStatus.text + ')');
 
     await extension.deactivate();
 });

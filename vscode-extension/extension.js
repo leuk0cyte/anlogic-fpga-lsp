@@ -43,6 +43,10 @@ const {
 } = require('./src/mcpConfig');
 
 let client;
+// S5: crash recovery state (module scope: deactivate() must be able to stop it).
+let restartAttempts = 0;
+let shuttingDown = false;
+let restartTimer;
 let moduleProvider;
 let flowProvider;
 let flowController;
@@ -301,8 +305,36 @@ function activate(context) {
     };
 
     client = new LanguageClient('fpgalsp', 'Anlogic FPGA LSP', serverOptions, clientOptions);
+    // S5: the server used to die silently ("Server process exited" in a log nobody opens).
+    // Now: reset the view state, tell the user once, and restart with a small backoff.
+    restartAttempts = 0;
+    shuttingDown = false;
     try {
-        client.onDidChangeState((event) => diag(`client state: ${event.oldState} -> ${event.newState}`));
+        client.onDidChangeState((event) => {
+            diag(`client state: ${event.oldState} -> ${event.newState}`);
+            // State: 1 = Stopped, 2 = Running, 3 = Starting (vscode-languageclient enum)
+            if (event.newState === 2) {
+                restartAttempts = 0;
+                return;
+            }
+            if (event.newState !== 1 || shuttingDown) return;
+            if (restartAttempts >= 3) {
+                vscode.window.showErrorMessage(
+                    'FPGA: the language server stopped repeatedly. Run "FPGA: Show Logs" for details.');
+                return;
+            }
+            restartAttempts += 1;
+            const delay = 500 * restartAttempts;
+            vscode.window.showWarningMessage(
+                `FPGA: language server stopped; restarting (${restartAttempts}/3)…`);
+            if (restartTimer) clearTimeout(restartTimer);
+            restartTimer = setTimeout(() => {
+                restartTimer = undefined;
+                if (shuttingDown || !client) return;
+                diag(`restarting language server (attempt ${restartAttempts})`);
+                client.start().catch((err) => diag('restart failed: ' + ((err && err.message) || err)));
+            }, delay);
+        });
     } catch (_) { /* older client */ }
 
     // -------------------------------------------------------------- rpc adapter
@@ -331,6 +363,51 @@ function activate(context) {
             return undefined;
         }
     };
+
+    // S1: status bar — project / device / WNS / flow state at a glance.
+    // Previously the only status text was flowController's "FPGA: idle", so the user had no
+    // idea which project or device the extension was even looking at.
+    const statusItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
+    statusItem.command = VSCodeCommands.selectProject;
+    statusItem.text = 'FPGA: starting…';
+    statusItem.tooltip = 'Anlogic FPGA LSP — click to select a project';
+    statusItem.show();
+    context.subscriptions.push(statusItem);
+    const statusState = { project: '', device: '', wns: undefined, flow: '' };
+    const renderStatus = () => {
+        const parts = [statusState.project || 'no project'];
+        if (statusState.device) parts.push(statusState.device);
+        if (Number.isFinite(statusState.wns)) parts.push(`WNS ${statusState.wns} ns`);
+        if (statusState.flow) parts.push(statusState.flow);
+        statusItem.text = `FPGA: ${parts.join(' · ')}`;
+        statusItem.tooltip = statusState.project
+            ? `Project: ${statusState.project}${statusState.device ? `\nDevice: ${statusState.device}` : ''}`
+            : 'No Anlogic .al project found in this workspace';
+    };
+    const refreshStatus = async () => {
+        try {
+            const info = await getProjectInfo();
+            if (info && info.ok !== false) {
+                statusState.project = info.project || '';
+                statusState.device = info.device || '';
+            }
+        } catch (_) { /* server may still be starting */ }
+        renderStatus();
+        try {
+            const summary = await reportsService.getSummary();
+            const ps = summary && summary.flowStatus && summary.flowStatus.setup
+                ? summary.flowStatus.setup.wns_ps
+                : undefined;
+            if (Number.isFinite(Number(ps))) {
+                statusState.wns = (Number(ps) / 1000).toFixed(3);
+            } else {
+                statusState.wns = undefined;
+            }
+        } catch (_) { /* no reports yet */ }
+        renderStatus();
+    };
+    renderStatus();
+
 
     // ------------------------------------------------------------ MCP server definition
     // P-A3: the server writes <stateDir>/mcp-endpoint-<port>.json once its loopback
@@ -1398,10 +1475,15 @@ function activate(context) {
     // ------------------------------------------------------------------- startup
 
     client.start().then(async () => {
+        refreshStatus().catch(() => undefined);
         try {
             // Register after the connection is up so no custom notification is missed.
             client.onNotification(METHODS.flowEvent, (event) => {
                 if (flowController) flowController.onFlowEvent(event);
+                // S1: flow state in the same status line.
+                const done = event && (event.type === 'done' || event.type === 'error');
+                statusState.flow = done ? '' : ((event && (event.stage || 'running')) || 'running');
+                renderStatus();
             });
             // D2: the server's report store changed (flow wrote new reports / a watched report
             // file was touched). Drop the cached payloads so the next fetch is fresh, and repaint
@@ -1414,6 +1496,13 @@ function activate(context) {
                 if (reportsPanel && reportsPanel.visible) {
                     reportsPanel.requestRefresh({ force: true });
                 }
+                // S3: the Reports *tree* used to keep showing stale data forever -- only the
+                // webview was repainted. The tree goes through the same single-flight service,
+                // so this cannot double the request count.
+                if (reportsTreeProvider) {
+                    reportsTreeProvider.refresh().catch(() => undefined);
+                }
+                refreshStatus().catch(() => undefined);
                 if (reportsChangedCount <= 3 || reportsChangedCount % 20 === 0) {
                     diag(`reportsChanged (#${reportsChangedCount})`);
                 }
@@ -1492,7 +1581,12 @@ function deactivate() {
     try {
         flushLogSync();
     } catch (_) { /* logging must never break deactivation */ }
+    if (restartTimer) {
+        clearTimeout(restartTimer);
+        restartTimer = undefined;
+    }
     if (!client) return undefined;
+    shuttingDown = true;
     const instance = client;
     client = undefined;
     return instance.stop();
