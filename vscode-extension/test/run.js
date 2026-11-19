@@ -1121,6 +1121,49 @@ test('flow controller: 10 s fallback poll only, and it stops when the flow finis
 
 // ------------------------------------------------------------------ run
 
+// Wave 3 / W2：状态目录（原 `<workspace>/.fpgalsp`）必须落在系统 temp，且启动服务端时
+// 通过环境变量把同一个目录传下去。这两条以前只有"跑一遍看目录"的人工验证，
+// 这里补成回归断言，防止以后有人改回 path.join(cwd, '.fpgalsp', ...)。
+test('state dir: resolves under system temp and is passed to the server env', async () => {
+    const os = require('os');
+    const path = require('path');
+    const stateDir = require('../src/stateDir');
+    const mcpConfig = require('../src/mcpConfig');
+
+    const root = path.join(os.tmpdir(), 'fpgalsp-state-test-project');
+    const resolved = stateDir.resolveStateDir(root);
+    eq(path.isAbsolute(resolved), true, 'must be absolute');
+    eq(resolved.startsWith(path.join(os.tmpdir(), 'fpgalsp')), true,
+        'must live under <tmp>/fpgalsp');
+    eq(resolved.includes('.fpgalsp'), false, 'must not use the old workspace .fpgalsp path');
+    eq(/[0-9a-f]{8}$/.test(resolved), true, 'directory name ends with an 8-hex-digit hash');
+
+    // 环境变量优先（CI / 用户显式指定）
+    const previous = process.env[stateDir.STATE_ENV];
+    process.env[stateDir.STATE_ENV] = path.join(os.tmpdir(), 'fpgalsp-state-override');
+    try {
+        eq(stateDir.resolveStateDir(root), path.normalize(path.join(os.tmpdir(), 'fpgalsp-state-override')),
+            'FPGALSP_STATE_DIR must win');
+    } finally {
+        if (previous === undefined) delete process.env[stateDir.STATE_ENV];
+        else process.env[stateDir.STATE_ENV] = previous;
+    }
+
+    // MCP 定义：日志与 env 都要指向状态目录
+    const options = mcpConfig.buildMcpServerOptions({
+        nativeExe: 'C:/fake/fpgalsp-native.exe',
+        root,
+        allowFlow: false,
+        allowWrite: false,
+    });
+    eq(options.env && options.env[stateDir.STATE_ENV] !== undefined, true,
+        'native MCP server env must carry FPGALSP_STATE_DIR');
+    const logIndex = options.args.indexOf('--log');
+    eq(logIndex >= 0, true, 'must still pass --log explicitly');
+    eq(String(options.args[logIndex + 1]).includes('.fpgalsp'), false,
+        'mcp log must not be written into the workspace');
+});
+
 const TEST_TIMEOUT_MS = 5000;
 
 (async () => {
