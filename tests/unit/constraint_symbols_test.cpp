@@ -603,3 +603,33 @@ TEST(ConstraintDiagnosticsTest, AdcProblemsAreExposedThroughTheServerHelper) {
     // 非约束文档 -> 空（不能把 HDL 文件当成 .adc 解析）
     EXPECT_TRUE(fpgalsp::server::ConstraintDiagnostics("x.v", text, ports).empty());
 }
+
+// B-B5：未约束 IO 的覆盖率概览（ADC-COVERAGE，info 级；全部约束时不产生）
+TEST(ConstraintDiagnosticsTest, CoverageSummaryFlagsUnconstrainedPorts) {
+    std::vector<fpgalsp::constraints::Port> ports;
+    for (const char* name : {"a", "b"}) {
+        fpgalsp::constraints::Port port;
+        port.name = name;
+        port.direction = "input";
+        ports.push_back(port);
+    }
+    // 只约束 a[0]，b 完全没约束
+    const std::string text =
+        "set_pin_assignment\t{ a[0] }\t{ LOCATION = P76; IOSTANDARD = LVCMOS33; }";
+    const auto diagnostics = fpgalsp::server::ConstraintDiagnostics("x.adc", text, ports);
+    bool covered = false;
+    for (const auto& diagnostic : diagnostics) {
+        if (diagnostic.code == "ADC-COVERAGE") {
+            covered = true;
+            EXPECT_EQ(diagnostic.severity, fpgalsp::lsp::kInfo);
+            EXPECT_NE(diagnostic.message.find("b"), std::string::npos);
+        }
+    }
+    EXPECT_TRUE(covered) << "有未约束端口时必须给出覆盖率概览";
+
+    // 没有顶层端口表（例如索引还没建好）时不该凭空造覆盖率噪音
+    const auto quiet = fpgalsp::server::ConstraintDiagnostics("x.adc", text, {});
+    for (const auto& diagnostic : quiet) {
+        EXPECT_NE(diagnostic.code, "ADC-COVERAGE") << "没有端口表就不该有覆盖率概览";
+    }
+}

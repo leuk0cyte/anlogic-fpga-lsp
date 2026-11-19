@@ -243,13 +243,17 @@ function timingTab(timing) {
         }));
         const pathHtml = (group.paths || []).map((path, pathIndex) => {
             const details = path.details || {};
+            // M3c：时序端点已由后端解析到源码（begin_at/end_at 带 file/line），
+            // 这里渲染成可点击链接；未解析时退回原始文本（esc 过）。
+            const beginHtml = timingPointCell(path.begin_at, path.begin || '');
+            const endHtml = timingPointCell(path.end_at, path.end || '');
             const detailRows = Object.entries(details).map(([key, value]) => ({ key, value }));
             const delay = Array.isArray(path.delay) ? path.delay : [];
             const delayHtml = delay.length
                 ? `<div class="raw delay searchable">${delay.map((line) => `<div class="raw-line searchable">${esc(line) || '&nbsp;'}</div>`).join('')}</div>`
                 : '';
             return `<details class="path-card searchable">
-              <summary><b>Slack ${esc(fmtNum(path.slack))} ns</b> · ${esc(path.begin || '')} → ${esc(path.end || '')}</summary>
+              <summary><b>Slack ${esc(fmtNum(path.slack))} ns</b> · ${beginHtml} → ${endHtml}</summary>
               <p class="muted">Group: ${esc(group.name || '')} · Check: ${esc(path.check || '')} · Process: ${esc(path.process || '')}</p>
               ${delayHtml}
             </details>`;

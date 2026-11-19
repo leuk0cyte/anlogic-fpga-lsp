@@ -73,8 +73,12 @@ lsp::DiagnosticList ConstraintDiagnostics(std::string_view path, std::string_vie
     };
     if (ends_with(path, ".adc")) {
         const std::vector<constraints::adc::Entry> entries = constraints::adc::Parse(text);
+        // B-B5：顺便给出"未约束 IO"的覆盖率概览（一条 info；全部约束时不产生）。
+        constraints::adc::DiagnosticsOptions options;
+        options.text = text;
+        options.include_coverage = true;
         for (const lsp::Diagnostic& diagnostic :
-             constraints::adc::Diagnostics(entries, ports, nullptr, text)) {
+             constraints::adc::Diagnostics(entries, ports, options)) {
             // 落在顶层端口声明行的 bit 宽度提示由 HDL 层发布，这里不重复。
             if (diagnostic.code == "BIT-8123") continue;
             out.push_back(diagnostic);

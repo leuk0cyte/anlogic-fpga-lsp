@@ -339,19 +339,22 @@ class McpTcpHost::Impl {
                 continue;
             }
             platform::default_logger().info("mcp-tcp: client connected");
+            // ⚠ 必须**先**把连接计入 active_/clients_ 再起线程：会话线程可能在
+            // fetch_add 之前就开始服务（实测会让"第 N+1 个连接被拒"的判定漏掉，
+            // 表现为 max_clients 偶发不生效）。
             std::lock_guard<std::mutex> lock(sessions_mutex_);
+            clients_.insert(client);
+            active_.fetch_add(1);
             sessions_.emplace_back([this, client]() {
                 Serve(client);
                 closesocket(client);
-                active_.fetch_sub(1);
                 {
                     std::lock_guard<std::mutex> guard(sessions_mutex_);
                     clients_.erase(client);
                 }
+                active_.fetch_sub(1);
                 platform::default_logger().info("mcp-tcp: client disconnected");
             });
-            clients_.insert(client);
-            active_.fetch_add(1);
         }
     }
 

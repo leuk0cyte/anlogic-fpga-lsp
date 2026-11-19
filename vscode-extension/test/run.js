@@ -1329,3 +1329,31 @@ test('module tree: lazy children are fetched on expand, exactly once', async () 
     eq(again.length, 2, 'second expand reuses loaded children');
     eq(calls.filter((c) => c.method === 'fpgaLsp/moduleChildren').length, 1, 'no duplicate request');
 });
+
+
+// M3c: 时序端点可点击。后端解析成功（resolved + file/line）时必须渲染成
+// command:fpgaLsp.openTimingPoint 链接；未解析时退回原始文本。
+test('reports webview: resolved timing endpoints become clickable links', () => {
+    const reports = sampleReports();
+    reports.timing = {
+        groups: [{
+            name: 'clk_group',
+            statistics: {},
+            paths: [
+                {
+                    slack: -0.35, begin: 'u_a/reg_a/Q', end: 'u_b/reg_b/D',
+                    begin_at: { resolved: true, file: 'Y:/p/src/a.v', line: 41, signal: 'reg_a' },
+                    end_at: { resolved: false, reason: 'signal-not-in-module' },
+                    details: {}, delay: [],
+                },
+            ],
+        }],
+        paths: [],
+    };
+    const html = renderReportsHtml({ reports, nonce: 'n' });
+    const index = html.indexOf('openTimingPoint');
+    ok(index > 0, '定时端点必须生成 openTimingPoint 链接');
+    ok(html.includes('a.v:42'), '链接文本带 1-based 行号');
+    ok(html.includes('reg_a'), '链接标题/内容包含信号名');
+    ok(html.includes('u_b/reg_b/D'), '未解析的一侧保留原始文本');
+});
