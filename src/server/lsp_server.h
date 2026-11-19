@@ -153,6 +153,8 @@ public:
     Json FeatureWillRenameFiles(const Json& params);
     // B-B6：两次 run 的 QoR/时序差异
     Json FeatureCompareRuns(const Json& params);
+    // X-B2：run 列表与指标（趋势图数据源）
+    Json FeatureListRuns(const Json& params);
     // 工程摘要（与 fpgalsp.info 同一实现）
     Json FeatureInfo();
 

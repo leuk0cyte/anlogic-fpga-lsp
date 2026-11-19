@@ -71,6 +71,7 @@ const { FlowController } = require('../src/flowController');
 const { FALLBACK_POLL_MS } = require('../src/flowController');
 const { ReportsService, CancelledError } = require('../src/reportsService');
 const { renderReportsHtml } = require('../src/reportsHtml');
+const { renderTrendHtml } = require('../src/trendHtml');
 const { ReportsPanel } = require('../src/reportsPanel');
 const { appendLog, flushLogSync } = require('../src/launchCheck');
 
@@ -1388,4 +1389,26 @@ test('reports webview: resolved area modules link to their definition', () => {
     ok(html.includes('openSourceLocation'), 'resolved 的面积模块必须生成跳转链接');
     ok(html.includes('m2.v:10'), '链接文本带 1-based 行号');
     ok(html.includes('blackbox_x'), '未解析的模块仍然显示模块名');
+});
+
+
+// X-B2: 跨 run 趋势。3 个 run 必须有 3 个点，且每个点链接到该 run 的 QoR 文件。
+test('qor trend: three runs produce three linked points', () => {
+    const runs = [
+        { name: 'phy_1', dir: '/p/demo_Runs/phy_1', files: ['/p/demo_Runs/phy_1/route.qor'],
+          values: { 'Setup WNS': -861, 'Setup TNS': -23866, 'area:lut': 663 } },
+        { name: 'phy_2', dir: '/p/demo_Runs/phy_2', files: ['/p/demo_Runs/phy_2/route.qor'],
+          values: { 'Setup WNS': -947, 'Setup TNS': -24474, 'area:lut': 4923 } },
+        { name: 'phy_3', dir: '/p/demo_Runs/phy_3', files: ['/p/demo_Runs/phy_3/route.qor'],
+          values: { 'Setup WNS': 171, 'Setup TNS': 0, 'area:lut': 4321 } },
+    ];
+    const html = renderTrendHtml({ runs });
+    eq((html.match(/<circle/g) || []).length, 3, 'three points');
+    ok(html.includes('openReportFile'), 'points link to the run report');
+    ok(html.includes('phy_3'), 'run names are on the axis');
+    ok(html.includes('Setup WNS'), 'default metric is Setup WNS');
+
+    // 没有 run 时给可读提示，而不是空图
+    const empty = renderTrendHtml({ runs: [] });
+    ok(/No flow runs/i.test(empty), 'empty state is explained');
 });

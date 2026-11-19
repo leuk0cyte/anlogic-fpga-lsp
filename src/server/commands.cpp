@@ -820,7 +820,7 @@ const std::vector<std::string>& ExecuteCommandNames() {
         "fpgalsp.instantiate",  "fpgalsp.copyInstantiation", "fpgalsp.symbolPath",
         "fpgalsp.duplicateModules", "fpgalsp.searchHierarchy", "fpgalsp.addSourceFile",
         "fpgalsp.setProjectName", "fpgalsp.updateProject", "fpgalsp.debugHighlight",
-        "fpgalsp.metrics",      "fpgalsp.compareRuns",
+        "fpgalsp.metrics",      "fpgalsp.compareRuns", "fpgalsp.runs",
     };
     return kNames;
 }
@@ -995,6 +995,35 @@ HandlerResult LspServer::HandleDidRenameFiles(const Json& params) {
 }
 
 // B-B6：两次 run 的差异（QoR/时序/面积）。数据来自 <project>_Runs/<name>/。
+// B-B6/X-B2：run 列表 + 指标（趋势图的数据源）。与 CompareRuns 同源。
+Json LspServer::FeatureListRuns(const Json& params) {
+    const auto project = ProjectFromParams(params);
+    Json out = Json::object();
+    if (!project.has_value()) {
+        out["ok"] = false;
+        out["error"] = "No Anlogic .al project found";
+        return out;
+    }
+    const std::vector<reports::RunMetrics> runs = reports::ListRuns(*project);
+    out["ok"] = true;
+    out["project"] = project->name;
+    Json list = Json::array();
+    for (const reports::RunMetrics& run : runs) {
+        Json item = Json::object();
+        item["name"] = run.name;
+        item["dir"] = run.dir;
+        Json files = Json::array();
+        for (const std::string& file : run.files) files.push_back(file);
+        item["files"] = std::move(files);
+        Json values = Json::object();
+        for (const auto& [key, value] : run.values) values[key] = value;
+        item["values"] = std::move(values);
+        list.push_back(std::move(item));
+    }
+    out["runs"] = std::move(list);
+    return out;
+}
+
 Json LspServer::FeatureCompareRuns(const Json& params) {
     const auto project = ProjectFromParams(params);
     if (!project.has_value()) {
@@ -1284,6 +1313,9 @@ HandlerResult LspServer::HandleExecuteCommand(const Json& params) {
     }
     if (command == "fpgalsp.debugHighlight") {
         return OkObject(FeatureDebugHighlight(params));
+    }
+    if (command == "fpgalsp.runs") {
+        return OkObject(FeatureListRuns(params));
     }
     if (command == "fpgalsp.compareRuns") {
         return OkObject(FeatureCompareRuns(params));

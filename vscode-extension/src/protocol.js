@@ -98,6 +98,8 @@ const VSCodeCommands = Object.freeze({
     openTimingPoint: 'fpgaLsp.openTimingPoint',
     // B-B7：面积热点跳源码（与 openTimingPoint 同一实现，命名更通用）
     openSourceLocation: 'fpgaLsp.openSourceLocation',
+    // X-B2：跨 run 的 QoR 趋势面板
+    showRunTrend: 'fpgaLsp.showRunTrend',
     insertInstantiation: 'fpgaLsp.insertInstantiation',
     selectProject: 'fpgaLsp.selectProject',
     tdInfo: 'fpgaLsp.tdInfo',

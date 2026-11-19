@@ -35,6 +35,7 @@ const { FlowController } = require('./src/flowController');
 const { ReportsPanel } = require('./src/reportsPanel');
 const { ReportsService } = require('./src/reportsService');
 const { ReportsTreeProvider } = require('./src/reportsTree');
+const { renderTrendHtml } = require('./src/trendHtml');
 const {
     buildMcpServerOptions,
     buildPortableConfig,
@@ -1465,6 +1466,27 @@ function activate(context) {
             uri: vscode.Uri.file(String(target.file)),
             range: new vscode.Range(position, position),
         });
+    });
+
+    // X-B2: QoR trend across runs. Data comes from `fpgalsp.runs`; the panel is a pure
+    // renderer (src/trendHtml.js) so it stays testable without VS Code.
+    register(VSCodeCommands.showRunTrend, async () => {
+        const payload = await rpc.execute('fpgalsp.runs', []);
+        if (!payload || payload.ok === false) {
+            vscode.window.showInformationMessage(
+                `FPGA: ${(payload && payload.error) || 'no flow runs found'}`);
+            return;
+        }
+        const runs = Array.isArray(payload.runs) ? payload.runs : [];
+        if (!runs.length) {
+            vscode.window.showInformationMessage('FPGA: no flow runs under _Runs/ yet; run a flow first.');
+            return;
+        }
+        const panel = vscode.window.createWebviewPanel(
+            'fpgaLsp.runTrend', 'FPGA QoR Trend', vscode.ViewColumn.Active,
+            { enableCommandUris: true, retainContextWhenHidden: true });
+        panel.webview.html = renderTrendHtml({ runs });
+        context.subscriptions.push(panel);
     });
 
     // B-B7: 面积热点跳源码（与 openTimingPoint 同一个实现，只是提示语更通用）。

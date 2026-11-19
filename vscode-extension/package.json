@@ -381,6 +381,10 @@
                 "icon": "$(plug)"
             },
             {
+                "command": "fpgaLsp.showRunTrend",
+                "title": "FPGA: Show QoR Trend"
+            },
+            {
                 "command": "fpgaLsp.openSourceLocation",
                 "title": "FPGA: Open Source Location"
             },
