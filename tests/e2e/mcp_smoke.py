@@ -33,6 +33,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -48,6 +49,11 @@ class McpProcess:
     """最小的 MCP 客户端：一行一条 JSON-RPC。"""
 
     def __init__(self, exe: str, extra_args: list[str]):
+        # 默认日志会写 <cwd>/.fpgalsp/logs/mcp.log；用例显式给临时路径，
+        # 避免往仓库/语料目录写文件（Python 的默认行为同样如此）。
+        if "--log" not in extra_args:
+            extra_args = list(extra_args) + [
+                "--log", os.path.join(tempfile.gettempdir(), "fpgalsp-e2e-mcp.log")]
         command = [exe, "--mcp"] + extra_args
         self.process = subprocess.Popen(
             command,
@@ -219,8 +225,8 @@ def run_suite(exe: str) -> list[str]:
         data = structured(call_tool(client, "fpga_constraints_status",
                                     {"project": project_al}))
         check(data["ok"] is True, "constraints_status 失败：%s" % data)
-        check(data["portsSource"] == "hdl-index",
-              "端口应来自 HDL 索引（索引不可用时才回落 text-scan）：%s" % data["portsSource"])
+        # B6/D-2：Python 的 constraints_status 没有 portsSource 键，C++ 已对齐移除；
+        # 这里只断言端口数与既有字段。
         check(data["ports"] > 0, "constraints_status 没扫到顶层端口")
         check("missing" in data and "missingCount" in data, "constraints_status 字段缺失")
         check(len(data["sdc"]) >= 1, "constraints_status 没有 sdc 文件")
@@ -293,12 +299,14 @@ def run_suite(exe: str) -> list[str]:
               "instantiation 没生成模板：%s" % str(data)[:200])
         note("fpga_instantiation 生成 %d 行模板" % data["text"].count("\n"))
 
-        # ---- 4. 显式占位（仍未实现的能力）----
-        data = structured(call_tool(client, "fpga_project_update", {}))
-        check(data["ok"] is False, "未实现的能力应显式占位")
-        check(data["error"].startswith("not implemented:"),
-              "占位错误信息应说明缺什么：%s" % data["error"])
-        note("未实现能力显式占位（%s）" % data["error"][:48])
+        # ---- 4. Phase B 起不再有占位工具：抽查 fpga_format 真实可用 ----
+        data = structured(call_tool(client, "fpga_format",
+                                    {"text": "module m;\ninput a;\nendmodule\n"}))
+        check(data.get("ok") is True, "fpga_format 应返回真实结果：%s" % str(data)[:200])
+        check(isinstance(data.get("text"), str) and "module" in data["text"],
+              "fpga_format.text 应是格式化后的源码")
+        note("fpga_format 返回 %d 字节（changed=%s）"
+             % (len(data["text"]), data.get("changed")))
 
         # ---- 5. 未知工具 ----
         result = call_tool(client, "fpga_does_not_exist")

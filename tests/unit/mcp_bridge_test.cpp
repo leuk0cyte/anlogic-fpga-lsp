@@ -25,6 +25,7 @@
 #include "platform/encoding.h"
 #include "project/al_project.h"
 #include <filesystem>
+#include <fstream>
 #include <process.h>
 
 namespace {
@@ -145,8 +146,8 @@ TEST_F(BridgeTest, ConstraintsStatusScansTopPortsFromVerilog) {
     ASSERT_TRUE(result.at("ok").get<bool>());
     // 文本扫描必须得到 CorpusAlpha top.v 的 25 个端口（含注释里的 "output signal" 不被误认）
     EXPECT_EQ(result.at("ports").get<int>(), 25) << result.dump(1);
-    // 端口来自 HDL 索引（与 server 的符号工具同一数据源）；索引不可用时才回落 text-scan
-    EXPECT_EQ(result.at("portsSource").get<std::string>(), "hdl-index");
+    // D-2：Python 的 constraints_status 没有 portsSource（C++ 早期追加、已移除）
+    EXPECT_FALSE(result.contains("portsSource")) << result.dump(1);
     EXPECT_EQ(result.at("top").get<std::string>(), "top");
     // pin.adc 覆盖全部 47 bit -> 没有 missing
     EXPECT_EQ(result.at("missingCount").get<int>(), 0) << result.at("missing").dump(1);
@@ -167,7 +168,9 @@ TEST_F(BridgeTest, ConstraintAuditReportsFullCoverage) {
     EXPECT_DOUBLE_EQ(result.at("coveragePercent").get<double>(), 100.0);
     EXPECT_EQ(result.at("issueCount").get<int>(), 0) << result.at("issues").dump(1);
     EXPECT_FALSE(result.at("deviceLoaded").get<bool>());
-    EXPECT_EQ(result.at("portsSource").get<std::string>(), "hdl-index");
+    // D-2：Python 的 constraint_audit 没有 device / portsSource（C++ 早期追加、已移除）
+    EXPECT_FALSE(result.contains("portsSource")) << result.dump(1);
+    EXPECT_FALSE(result.contains("device")) << result.dump(1);
     ASSERT_EQ(result.at("adcFiles").size(), 1u);
     EXPECT_TRUE(result.at("duplicatePins").empty());
     EXPECT_TRUE(result.at("duplicatePorts").empty());
@@ -190,18 +193,22 @@ TEST_F(BridgeTest, DiagnosticsForConstraintSourcesIsCleanOnCorpus) {
     const Json result = Call("diagnostics", arguments);
     ASSERT_TRUE(result.at("ok").get<bool>());
     EXPECT_TRUE(result.at("diagnostics").empty()) << result.at("diagnostics").dump(1);
-    // 只请求了 adc/sdc：只有**请求了但做不到**的来源才进 unavailable
-    EXPECT_TRUE(result.at("unavailable").empty()) << result.at("unavailable").dump(1);
+    // D-2：键集合必须与 Python 的 {ok, project, file, diagnostics, truncated} 完全一致
+    // （C++ 早期追加的 portsSource / unavailable 已移除）
+    std::set<std::string> keys;
+    for (auto it = result.begin(); it != result.end(); ++it) keys.insert(it.key());
+    EXPECT_EQ(keys, (std::set<std::string>{"ok", "project", "file", "diagnostics", "truncated"}))
+        << result.dump(1);
 }
 
-TEST_F(BridgeTest, DiagnosticsReportsUnavailableTiers) {
+TEST_F(BridgeTest, DiagnosticsForUnimplementedTiersStaysSilentAndPythonShaped) {
+    // hdl / verible 两个来源在 MCP 层不可用；Python 用空数组 + 无附加键表达同一件事。
     Json arguments = Json::object();
     arguments["sources"] = Json::array({"hdl", "verible"});
     const Json result = Call("diagnostics", arguments);
     ASSERT_TRUE(result.at("ok").get<bool>());
-    EXPECT_TRUE(result.at("unavailable").contains("hdl"));
-    EXPECT_TRUE(result.at("unavailable").contains("verible"));
     EXPECT_TRUE(result.at("diagnostics").empty());
+    EXPECT_FALSE(result.contains("unavailable")) << result.dump(1);
 }
 
 // -------------------------------------------------------------- 文件 / 搜索
@@ -653,17 +660,50 @@ TEST_F(BridgeTest, InstantiationUnknownModuleFails) {
     arguments["module"] = "no_such_module";
     EXPECT_THROW(Call("instantiation", arguments), ToolError);
 }
-TEST_F(BridgeTest, OnlyEditingToolsRemainExplicitPlaceholders) {
-    // completion / instantiation 已实现（features::Completion + 纯文本模板）；
-    // 只剩"需要编辑构造层"的两个
-    for (const char* handler : {"code_actions", "rename_edits"}) {
+TEST_F(BridgeTest, FormerPlaceholdersAreGone) {
+    // B6/B6c 之后：format / code_actions / rename_edits / analysis_run 都不再返回
+    // `not implemented:`（project_update 会起真实 TD，单元测试不跑，见探针）。
+    struct Probe {
+        const char* handler;
+        Json arguments;
+    };
+    std::vector<Probe> probes;
+    {
+        Json arguments = Json::object();
+        arguments["text"] = "module m(input a);\nendmodule\n";
+        probes.push_back({"format", arguments});
+    }
+    {
         Json arguments = Json::object();
         arguments["file"] = "src/top.v";
-        arguments["module"] = "top";
-        const Json result = Call(handler, arguments);
-        EXPECT_FALSE(result.at("ok").get<bool>()) << handler << " 不该假装成功";
-        EXPECT_EQ(result.at("error").get<std::string>().rfind("not implemented:", 0), 0u)
-            << handler << ": " << result.at("error").get<std::string>();
+        arguments["start_line"] = 15;
+        arguments["start_column"] = 8;
+        probes.push_back({"code_actions", arguments});
+    }
+    {
+        Json arguments = Json::object();
+        arguments["file"] = "src/trans/trans.v";
+        arguments["line"] = 27;
+        arguments["column"] = 8;
+        arguments["new_name"] = "trans_x";
+        probes.push_back({"rename_edits", arguments});
+    }
+    probes.push_back({"analysis_run", Json::object()});
+
+    for (const Probe& probe : probes) {
+        Json result;
+        try {
+            result = Call(probe.handler, probe.arguments);
+        } catch (const ToolError& error) {
+            ADD_FAILURE() << probe.handler << " threw: " << error.what();
+            continue;
+        }
+        const std::string error_text =
+            result.contains("error") && result["error"].is_string()
+                ? result["error"].get<std::string>()
+                : std::string();
+        EXPECT_EQ(error_text.rfind("not implemented:", 0), std::string::npos)
+            << probe.handler << ": " << error_text;
     }
 }
 
@@ -821,13 +861,170 @@ TEST_F(BridgeTest, ProjectAddSourceRejectsPathOutsideProject) {
     arguments["file"] = "../../../../CONTRACT.md";
     EXPECT_THROW(bridge.Call("project_add_source", arguments), ToolError);
 }
-TEST_F(BridgeTest, RemainingActionsAreExplicitPlaceholders) {
-    for (const char* handler : {"project_update", "analysis_run", "format"}) {
-        const Json result = Call(handler);
-        EXPECT_FALSE(result.at("ok").get<bool>()) << handler;
-        EXPECT_EQ(result.at("error").get<std::string>().rfind("not implemented:", 0), 0u)
-            << handler << ": " << result.at("error").get<std::string>();
+// -------------------------------------------------------------- B6c：code actions / rename
+
+TEST_F(BridgeTest, CodeActionsReturnInstantiationRefactor) {
+    // corpus top.v：module 头在 1-based 第 15 行，模块名从第 8 列开始
+    Json arguments = Json::object();
+    arguments["file"] = "src/top.v";
+    arguments["start_line"] = 15;
+    arguments["start_column"] = 8;
+    const Json result = Call("code_actions", arguments);
+    ASSERT_TRUE(result.at("ok").get<bool>()) << result.dump(1);
+    ASSERT_TRUE(result.at("actions").is_array()) << result.dump(1);
+    ASSERT_FALSE(result.at("actions").empty()) << result.dump(1);
+    const Json& first = result.at("actions").at(0);
+    EXPECT_NE(first.at("title").get<std::string>().find("Insert instantiation of"),
+              std::string::npos) << first.dump(1);
+    EXPECT_EQ(first.at("kind").get<std::string>(), "refactor");
+    EXPECT_TRUE(first.at("isPreferred").get<bool>());
+    // 未请求 edits 时不应带 edits 字段（与 Python 一致）
+    EXPECT_FALSE(first.contains("edits")) << first.dump(1);
+}
+
+TEST_F(BridgeTest, CodeActionsIncludeEditsWhenAsked) {
+    Json arguments = Json::object();
+    arguments["file"] = "src/top.v";
+    arguments["start_line"] = 15;
+    arguments["start_column"] = 8;
+    arguments["include_edits"] = true;
+    const Json result = Call("code_actions", arguments);
+    ASSERT_TRUE(result.at("ok").get<bool>()) << result.dump(1);
+    ASSERT_FALSE(result.at("actions").empty()) << result.dump(1);
+    const Json& first = result.at("actions").at(0);
+    ASSERT_TRUE(first.contains("edits")) << first.dump(1);
+    EXPECT_TRUE(first.at("edits").is_object());
+    EXPECT_FALSE(first.at("edits").empty());
+    // key 必须是本地路径（Python: uri_to_path(uri)），不是 file:// URI
+    for (auto it = first.at("edits").begin(); it != first.at("edits").end(); ++it) {
+        EXPECT_EQ(it.key().rfind("file://", 0), std::string::npos) << it.key();
+        EXPECT_NE(it.key().find("top.v"), std::string::npos) << it.key();
     }
+}
+
+TEST_F(BridgeTest, RenameEditsUseOneBasedRanges) {
+    // trans.v 的 module 名（1-based line 27, column 8）
+    Json arguments = Json::object();
+    arguments["file"] = "src/trans/trans.v";
+    arguments["line"] = 27;
+    arguments["column"] = 8;
+    arguments["new_name"] = "trans_renamed";
+    const Json result = Call("rename_edits", arguments);
+    ASSERT_TRUE(result.at("ok").get<bool>()) << result.dump(1);
+    ASSERT_TRUE(result.at("changes").is_object()) << result.dump(1);
+    EXPECT_FALSE(result.at("changes").empty()) << result.dump(1);
+    for (auto file = result.at("changes").begin(); file != result.at("changes").end(); ++file) {
+        EXPECT_EQ(file.key().rfind("file://", 0), std::string::npos) << file.key();
+        ASSERT_FALSE(file.value().empty()) << file.key();
+        for (const Json& edit : file.value()) {
+            EXPECT_EQ(edit.at("newText").get<std::string>(), "trans_renamed");
+            const Json& range = edit.at("range");
+            // MCP 侧是 1-based：行/列都必须 ≥ 1（Python 用 _one_based_range）
+            EXPECT_GE(range.at("start").at("line").get<int>(), 1) << edit.dump(1);
+            EXPECT_GE(range.at("start").at("column").get<int>(), 1) << edit.dump(1);
+            EXPECT_GE(range.at("end").at("line").get<int>(), 1) << edit.dump(1);
+            EXPECT_GE(range.at("end").at("column").get<int>(), 1) << edit.dump(1);
+        }
+    }
+}
+
+TEST_F(BridgeTest, RenameEditsRejectInvalidIdentifier) {
+    Json arguments = Json::object();
+    arguments["file"] = "src/trans/trans.v";
+    arguments["line"] = 27;
+    arguments["column"] = 8;
+    arguments["new_name"] = "1bad-name";
+    EXPECT_THROW(Call("rename_edits", arguments), ToolError);
+}
+
+// -------------------------------------------------------------- Phase B / B6
+
+TEST_F(BridgeTest, FormatTextReturnsVeribleFormattedText) {
+    Json arguments = Json::object();
+    arguments["text"] = "module m(input a,output b);\nassign b=a;\nendmodule\n";
+    const Json result = Call("format", arguments);
+    ASSERT_TRUE(result.at("ok").get<bool>()) << result.dump(1);
+    EXPECT_TRUE(result.at("changed").get<bool>()) << result.dump(1);
+    const std::string text = result.at("text").get<std::string>();
+    EXPECT_NE(text.find("module m ("), std::string::npos) << text;
+    EXPECT_NE(text.find("endmodule"), std::string::npos) << text;
+}
+
+TEST_F(BridgeTest, FormatFileUsesProjectResolution) {
+    Json arguments = Json::object();
+    arguments["file"] = "src/trans/trans.v";  // 相对工程目录
+    const Json result = Call("format", arguments);
+    ASSERT_TRUE(result.at("ok").get<bool>()) << result.dump(1);
+    const std::string text = result.at("text").get<std::string>();
+    EXPECT_NE(text.find("module trans"), std::string::npos) << text.substr(0, 200);
+}
+
+TEST_F(BridgeTest, FormatRequiresFileOrText) {
+    EXPECT_THROW(Call("format"), ToolError);
+}
+
+TEST_F(BridgeTest, FormatRangeReturnsEdits) {
+    Json arguments = Json::object();
+    arguments["text"] =
+        "module m(input a,output b);\nassign b=a;\nendmodule\n";
+    arguments["start_line"] = 1;
+    arguments["end_line"] = 3;
+    const Json result = Call("format", arguments);
+    ASSERT_TRUE(result.at("ok").get<bool>()) << result.dump(1);
+    ASSERT_TRUE(result.at("edits").is_array()) << result.dump(1);
+    EXPECT_TRUE(result.at("changed").get<bool>());
+    ASSERT_FALSE(result.at("edits").empty());
+    const Json& edit = result.at("edits").at(0);
+    EXPECT_TRUE(edit.contains("range"));
+    EXPECT_TRUE(edit.contains("newText"));
+}
+
+TEST_F(BridgeTest, AnalysisRunWithoutRoutedDbReturnsActionableError) {
+    // 语料没有 *_Runs -> 不启动 TD，直接返回与 Python 逐字相同的错误
+    const Json result = Call("analysis_run");
+    ASSERT_TRUE(result.at("ok").is_boolean()) << result.dump(1);
+    EXPECT_FALSE(result.at("ok").get<bool>());
+    EXPECT_EQ(result.at("error").get<std::string>(),
+              "No placed/routed result yet (run Place & Route / Full Flow first)");
+    EXPECT_EQ(result.at("device").get<std::string>(), "EF2L45LG144B");
+    EXPECT_TRUE(result.at("drc").at("rules").empty());
+    EXPECT_TRUE(result.at("cdc").at("rows").empty());
+}
+
+// ---- B7 安全补丁（P1 / P1b / P3）的回归 ----
+
+TEST_F(BridgeTest, ProjectOutsideRootIsRejected) {
+    // S-03：--root 是安全边界；绝对路径同样必须落在 root 内
+    Json arguments = Json::object();
+    arguments["project"] = "%WORKSPACE%/CorpusAlpha/demo_project.al";
+    EXPECT_THROW(Call("project_info", arguments), ToolError);
+}
+
+TEST_F(BridgeTest, ProjectListRootOutsideRootIsRejected) {
+    Json arguments = Json::object();
+    arguments["root"] = "%WORKSPACE%";
+    EXPECT_THROW(Call("project_list", arguments), ToolError);
+}
+
+TEST_F(BridgeTest, ReadFileRejectsOversizedFile) {
+    // S-07：16 MiB 上限，先看大小再读
+    TempProjectCopy copy;
+    const fs::path big = fs::path(copy.Root()) / "big.v";
+    {
+        std::string chunk(1024 * 1024, 'x');  // 1 MiB
+        std::ofstream handle(big, std::ios::binary | std::ios::trunc);
+        for (int index = 0; index < 17; ++index) handle << chunk;
+    }
+    fpgalsp::mcp::BridgeOptions options;
+    options.root = copy.Root();
+    fpgalsp::mcp::Bridge bridge(options);
+    Json arguments = Json::object();
+    arguments["file"] = "big.v";
+    const Json result = bridge.Call("read_file", arguments);
+    ASSERT_TRUE(result.contains("ok")) << result.dump(1);
+    EXPECT_FALSE(result.at("ok").get<bool>());
+    EXPECT_NE(result.at("error").get<std::string>().find("too large"), std::string::npos)
+        << result.dump(1);
 }
 
 TEST_F(BridgeTest, UnknownHandlerThrows) {

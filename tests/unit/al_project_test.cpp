@@ -665,4 +665,109 @@ TEST_F(AlProjectTest, FindProjectAlConfiguredMissingReturnsNullopt) {
         FindProjectAl(root_.string(), target, (root_ / "nope.al").string()).has_value());
 }
 
+// =============================================================================
+//  B7 / S-05：xml_lite 的深度与体积上限
+// =============================================================================
+//  修复前 ParseElement 是**无上限**的递归下降，而 .al 的大小同样不受限：
+//  一个 700 KB、十万层嵌套的 .al 会让进程 0xC00000FD（栈溢出）——
+//  在 LSP 里表现为"语言服务器崩溃并反复重启"。
+// =============================================================================
+
+TEST(XmlLiteDepth, RealWorldDepthParses) {
+    // 真实 .al：Project/Source_Files/Verilog/File/FileInfo/Attr ≈ 6 层
+    const std::string xml =
+        "<Project><Name>p</Name><Source_Files><Verilog><File Path=\"a.v\">"
+        "<FileInfo><Attr Name=\"CompileOrder\" Val=\"1\"/></FileInfo></File></Verilog>"
+        "</Source_Files></Project>";
+    const XmlParseResult result = ParseXml(xml);
+    ASSERT_TRUE(result.ok) << result.error;
+    EXPECT_EQ(result.root.tag, "Project");
+}
+
+TEST(XmlLiteDepth, DeepNestingIsRejectedInsteadOfCrashing) {
+    const int depth = kMaxXmlDepth + 64;
+    std::string xml;
+    xml.reserve(static_cast<std::size_t>(depth) * 7);
+    for (int i = 0; i < depth; ++i) xml += "<a>";
+    for (int i = 0; i < depth; ++i) xml += "</a>";
+
+    XmlParseResult result;
+    EXPECT_NO_THROW(result = ParseXml(xml));
+    EXPECT_FALSE(result.ok);
+    EXPECT_NE(result.error.find("too deep"), std::string::npos) << result.error;
+}
+
+TEST(XmlLiteDepth, JustBelowLimitStillParses) {
+    const int depth = kMaxXmlDepth - 1;
+    std::string xml;
+    for (int i = 0; i < depth; ++i) xml += "<a>";
+    for (int i = 0; i < depth; ++i) xml += "</a>";
+    const XmlParseResult result = ParseXml(xml);
+    EXPECT_TRUE(result.ok) << result.error;
+}
+
+TEST(XmlLiteSize, OversizeDocumentRejectedBeforeScanning) {
+    // 8 MiB + 1 的空文档：不是 .al，必须在扫描前就被拒
+    const std::string xml(kMaxXmlDocumentBytes + 1, ' ');
+    const XmlParseResult result = ParseXml(xml);
+    EXPECT_FALSE(result.ok);
+    EXPECT_NE(result.error.find("too large"), std::string::npos) << result.error;
+}
+
+TEST(XmlLiteSize, ParseAlDoesNotReadAbsurdlyLargeFile) {
+    // ParseAl 侧先用 file_size 挡一道，避免把 4 GB 的"文件"读进内存
+    std::error_code ec;
+    const std::filesystem::path dir =
+        std::filesystem::temp_directory_path(ec) / "fpgalsp-b7-huge-al";
+    if (ec) GTEST_SKIP() << "no temp dir";
+    std::filesystem::remove_all(dir, ec);
+    std::filesystem::create_directories(dir, ec);
+    const std::filesystem::path path = dir / "huge.al";
+    {
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        out.seekp(static_cast<std::streamoff>(kMaxXmlDocumentBytes) + 1);
+        out.put('<');  // 稀疏文件，只占很少磁盘
+    }
+    const auto size = std::filesystem::file_size(path, ec);
+    if (ec || static_cast<std::size_t>(size) <= kMaxXmlDocumentBytes) {
+        std::filesystem::remove_all(dir, ec);
+        GTEST_SKIP() << "filesystem does not support sparse size here";
+    }
+    Project proj;
+    EXPECT_NO_THROW(proj = ParseAl(path.string()));
+    ASSERT_FALSE(proj.warnings.empty());
+    EXPECT_NE(proj.warnings.front().find("too large"), std::string::npos)
+        << proj.warnings.front();
+    std::filesystem::remove_all(dir, ec);
+}
+
+// =============================================================================
+//  B7 / S-06：Affinity 里的 string_view 悬垂（UB）回归
+// =============================================================================
+//  al_project.cpp:635-638 曾经把 `project_dir.substr(...)` 返回的**临时 string**
+//  绑到 string_view 上，下一条语句就悬垂比较（clang-tidy bugprone-dangling-handle）。
+//  这段路径决定"为某个文件挑哪个工程"，错乱会导致选错工程。
+// =============================================================================
+
+TEST(AlAffinity, ProjectMemberIsTier2) {
+    const auto inside = Affinity("Y:/proj/demo.al", "Y:/proj/src/a.v");
+    EXPECT_EQ(inside.first, 2);
+}
+
+TEST(AlAffinity, SiblingDirectoryIsTier1) {
+    const auto sibling = Affinity("Y:/proj/demo.al", "Y:/proj_other/a.v");
+    EXPECT_EQ(sibling.first, 1);
+    // 公共路径段只有盘符 "Y:" -> score 1（悬垂视图时代这里是不可预测值）
+    EXPECT_EQ(sibling.second, 1u);
+}
+
+TEST(AlAffinity, LongPathsDoNotDangle) {
+    // 深路径会被分配到堆上，正是悬垂 string_view 最容易"看起来正常"的场景
+    const std::string dir = "Y:/workspace/aaaaaaaaaaaaaaaaaaaa/bbbbbbbbbbbbbbbbbbbb/cccccccccccccccccccc";
+    const auto inside = Affinity(dir + "/demo.al", dir + "/rtl/a.v");
+    EXPECT_EQ(inside.first, 2);
+    const auto outside = Affinity(dir + "/demo.al", dir + "x/rtl/a.v");
+    EXPECT_EQ(outside.first, 1);
+}
+
 }  // namespace

@@ -62,6 +62,26 @@ python tests\golden\tools\collect.py
 | `--repo DIR` | 参考仓库路径（默认读 `cases.json` 的 `referenceRepository`） |
 | `--corpus FILE` | 语料清单路径 |
 | `--sandbox DIR` | 临时目录（日志 / synthesized 语料） |
+| `--server {python,native}` | 采集对象：Python 参考实现（默认）或 `fpgalsp-native.exe` |
+| `--native-exe FILE` | native 可执行文件路径（默认 `build/bin/fpgalsp-native.exe`，可用 `FPGALSP_NATIVE_EXE` 覆盖） |
+
+### 采集 C++ 原生实现（`--server native`）
+
+同一套语料与归一化规则也可以直接驱动 C++ 重写，用来做「同一输入 → 两侧快照结构 diff」：
+
+```bat
+python tests\golden\tools\collect.py --server native --no-td ^
+    --only project --only hdl --only semantics --only hierarchy --only mcp ^
+    --out tests\golden\runs\native
+python tests\golden\tools\compare.py tests\golden\snapshots tests\golden\runs\native
+```
+
+- native 的 argv 是 `fpgalsp-native.exe --stdio` / `--mcp --root <project>`，协议与 Python 侧相同
+  （`goldenlib.client.NativeLspClient` / `NativeMcpClient` 只换了 argv）。
+- native 模式的 sandbox 自动加 `-native` 后缀，日志不会和 Python 采集混在一起。
+- `_meta.json` 会记录 `server` 与 `nativeExe`，便于回溯本次快照来自哪个二进制。
+- 注意：MCP 默认只暴露只读工具（`--allow-write` / `--allow-flow` 未开），与 Python 的
+  `visible_tools` 规则一致；`tools/list` 数量少于 39 是预期行为。
 
 退出码：采集器自身健康即 **0**。个别用例采不到（工程不存在、TD 不可用、超时、JSON-RPC 报错）不会让整次
 采集失败，而是记进该类别快照的 `skipped` 数组并打印 `SKIP`/`ERROR` 行——环境抖动不能打断流水线。

@@ -13,6 +13,7 @@
 
 #include "td/td_diagnostics.h"
 #include "td/td_output.h"
+#include "td/tcl_quote.h"
 
 namespace {
 
@@ -447,6 +448,94 @@ TEST(TdFromOutput, NeverThrowsOnGarbage) {
     for (const char* junk : {"garbage", "\x00\x01", "HDL-", "| | |"}) {
         EXPECT_NO_THROW(DiagnosticsFromReadHdlOutput(junk, prj)) << junk;
     }
+}
+
+// =============================================================================
+//  B7 / S-01：TD Tcl 命令的安全拼装（td/tcl_quote.h + MakeReadHdlCommand）
+// =============================================================================
+//  修复前的注入形态（Python td.py:626 与本仓同源）：
+//      "read_hdl -file {%s} -top %s" % (files, project.top)
+//  一个 `<TOP_MODULE><MODULE>top; exec calc</MODULE>` 就是一条任意 Tcl 命令，
+//  而且保存文件就会自动触发 TD 检查（tdCheckOnSave 默认开）。
+// =============================================================================
+
+TEST(TclQuote, SafeTokensStayBare) {
+    EXPECT_EQ(TclQuote("top"), "top");
+    EXPECT_EQ(TclQuote("Y:/proj/a.v"), "Y:/proj/a.v");
+    EXPECT_EQ(TclQuote("ef2_4.db"), "ef2_4.db");
+    EXPECT_EQ(TclQuote("EF2L45LG144B"), "EF2L45LG144B");
+}
+
+TEST(TclQuote, GroupsValuesWithSpaces) {
+    // 与旧实现的 `{...}` 形态逐字节一致（TD 的 -file 列表就靠这个）
+    EXPECT_EQ(TclQuote("Y:/a b.v"), "{Y:/a b.v}");
+    EXPECT_EQ(TclQuoteGrouped("Y:/a.v"), "{Y:/a.v}");
+    EXPECT_EQ(TclQuoteGrouped(""), "{}");
+}
+
+TEST(TclQuote, EscapesTclMetacharacters) {
+    // Tcl 的分组有两种等价的"安全"形态：
+    //   * `{...}`：花括号内**不做任何替换**，所以 `;` `[` `$` 都是字面量（无需引号）
+    //   * `"..."`：只在值本身含 `\ { }` 或换行（会破坏 `{}`）时才用，逐字符转义
+    // 修复前的 bug 不是"少了引号"，而是**完全没分组**：`-top top; exec calc` 把
+    // 分号暴露给了解释器。所以这里断言的是"分号落在分组内部"。
+    EXPECT_EQ(TclQuote("top; exec calc"), "{top; exec calc}");
+    EXPECT_EQ(TclQuote("a[b]"), "{a[b]}");
+    EXPECT_EQ(TclQuote("a$b"), "{a$b}");
+    // `{}` 不平衡 / 反斜杠 / 换行 -> 必须退化成转义引号形态（否则能提前闭合分组）
+    EXPECT_EQ(TclQuote("a}b"), "\"a}b\"");
+    EXPECT_EQ(TclQuote("a{b"), "\"a{b\"");
+    EXPECT_EQ(TclQuote("a\\b"), "\"a\\\\b\"");
+    EXPECT_EQ(TclQuote("a\nb"), "\"a\\nb\"");
+}
+
+TEST(TclQuote, QuoteNeverLeavesCommandSeparatorUnquoted) {
+    // 任意含 ';' 的值，输出必须是"被引号或转义包住"的
+    for (const char* evil : {"top; exec calc", "x;y", "}; exec calc; #", "a;&b"}) {
+        const std::string quoted = TclQuote(evil);
+        const bool grouped = quoted.size() >= 2 && (quoted.front() == '"' || quoted.front() == '{');
+        EXPECT_TRUE(grouped) << evil << " -> " << quoted;
+        EXPECT_NE(quoted, std::string(evil)) << evil;
+    }
+}
+
+TEST(TclIdentifiers, RejectsInjectionShapedNames) {
+    EXPECT_TRUE(IsTclIdentifier("top"));
+    EXPECT_TRUE(IsTclIdentifier("_top1"));
+    EXPECT_TRUE(IsTclIdentifier("top$1"));  // Verilog 允许 $
+    EXPECT_FALSE(IsTclIdentifier("top; exec calc"));
+    EXPECT_FALSE(IsTclIdentifier("a b"));
+    EXPECT_FALSE(IsTclIdentifier("a}b"));
+    EXPECT_FALSE(IsTclIdentifier(""));  // 空名不可作为 -top 的值
+
+    EXPECT_TRUE(IsTclToken("EF2L45LG144B"));
+    EXPECT_TRUE(IsTclToken("prog_sram"));
+    EXPECT_TRUE(IsTclToken("2"));
+    EXPECT_FALSE(IsTclToken("2; exec calc"));
+    EXPECT_FALSE(IsTclToken("a b"));
+}
+
+TEST(TdReadHdlCommand, QuotesHostileTopModule) {
+    // 正常名字：形态不变（既有契约）
+    EXPECT_EQ(MakeReadHdlCommand({"Y:/a.v"}, "top"), "read_hdl -file {Y:/a.v} -top top");
+    // 注入形态：整段变成一个 Tcl 单词，分号被关在 `{}` 里（花括号内不做替换）
+    const std::string cmd = MakeReadHdlCommand({"Y:/a.v"}, "top; exec calc");
+    EXPECT_EQ(cmd, "read_hdl -file {Y:/a.v} -top {top; exec calc}");
+    EXPECT_NE(cmd.find("-top {top; exec calc}"), std::string::npos) << cmd;
+    // 关键断言：分号之后**没有**出现新的命令名（修复前是 "... -top top; exec calc"）
+    EXPECT_EQ(cmd.find("; exec"), cmd.find("; exec", cmd.find("-top"))) << cmd;
+}
+
+TEST(TdReadHdlCommand, QuotesBraceInFilePath) {
+    // 路径里的 `}` 会提前闭合 `-file {…}`；现在整段退化成转义引号形态
+    const std::string cmd = MakeReadHdlCommand({"Y:/a}.v"}, "top");
+    EXPECT_EQ(cmd, "read_hdl -file \"Y:/a}.v\" -top top");
+}
+
+TEST(TdReadHdlCommand, SkipsSpacePathsButQuotesTheList) {
+    // 既有行为：含空格的路径被跳过（TD 会在空白处切分 -file 列表）
+    EXPECT_EQ(MakeReadHdlCommand({"Y:/a b.v", "Y:/ok.v"}, "top"),
+              "read_hdl -file {Y:/ok.v} -top top");
 }
 
 }  // namespace

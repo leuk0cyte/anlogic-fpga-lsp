@@ -18,6 +18,7 @@
 #include "project/al_project.h"
 #include "td/td_diagnostics.h"
 #include "td/td_install.h"
+#include "td/td_service.h"
 #include "td/td_session.h"
 
 namespace {
@@ -237,6 +238,67 @@ TEST_F(TdDiagnosticsIntegrationTest, EmptyProjectReturnsNoDiagnostics) {
     EXPECT_NO_THROW(diags = RunReadHdl(empty, session));
     // 对应 Python: if not files: return []
     EXPECT_TRUE(diags.empty());
+}
+
+// -----------------------------------------------------------------------------
+// A5 / task-25：RunReadHdlCheck 的分段计时 + 按文件切分 + TdSessionRunner
+// -----------------------------------------------------------------------------
+
+TEST_F(TdDiagnosticsIntegrationTest, CheckResultCarriesTimingsAndPerFileSplit) {
+    TdSession session(td_, Options());
+    const TdCheckResult result = RunReadHdlCheck(project_, session, {});
+    session.Kill();
+
+    ASSERT_FALSE(result.cancelled);
+    ASSERT_FALSE(result.failed) << result.error;
+    EXPECT_FALSE(result.all.empty());
+    EXPECT_EQ(result.all.size(), result.total());
+
+    // 分段必须都真的量到（>0），且 total 覆盖各段之和
+    // 注意：直接调用 RunReadHdlCheck 时 startup_ms 恒为 0 —— 会话是调用方建的，
+    // 只有 TdSessionRunner 才知道 startup（见下面两个用例）。
+    EXPECT_DOUBLE_EQ(result.timings.startup_ms, 0.0);
+    EXPECT_GT(result.timings.import_ms, 0.0);
+    EXPECT_GT(result.timings.read_hdl_ms, 0.0);
+    EXPECT_GE(result.timings.parse_ms, 0.0);
+    EXPECT_GT(result.timings.total_ms, result.timings.read_hdl_ms);
+    EXPECT_LE(result.timings.accounted_ms(), result.timings.total_ms + 1.0)
+        << "分段之和不应超过 total（允许 1 ms 的打点误差）";
+
+    // 按文件切分：所有 key 都是绝对路径，且分组后的条数等于全量条数
+    std::size_t grouped = 0;
+    for (const auto& [path, list] : result.by_file) {
+        EXPECT_FALSE(path.empty());
+        EXPECT_FALSE(list.empty());
+        grouped += list.size();
+    }
+    EXPECT_EQ(grouped, result.total());
+}
+
+TEST_F(TdDiagnosticsIntegrationTest, SessionRunnerUsesProjectWorkDirAndFillsStartup) {
+    // use_project_work_dir=true（默认）= 与 lsp_server::CreateSession 的 RunDir(project) 一致
+    TdSessionRunner runner(td_, Options(), /*use_project_work_dir=*/true);
+    const CancelToken no_cancel;
+    const TdCheckResult result = runner.Run(project_, no_cancel);
+
+    ASSERT_FALSE(result.failed) << result.error;
+    EXPECT_GT(result.timings.startup_ms, 0.0) << "startup 必须由 runner 记下来";
+    EXPECT_GT(result.timings.total_ms, result.timings.startup_ms);
+    EXPECT_NE(runner.last_work_dir().find("/.fpgalsp/run"), std::string::npos)
+        << runner.last_work_dir();
+}
+
+TEST_F(TdDiagnosticsIntegrationTest, SessionRunnerCanUseScratchWorkDir) {
+    // use_project_work_dir=false -> 落到 %TEMP% 的 scratch（B7/D-3），完全不碰工程
+    TdSessionOptions options = Options();
+    options.work_dir.clear();
+    TdSessionRunner runner(td_, options, /*use_project_work_dir=*/false);
+    const CancelToken no_cancel;
+    const TdCheckResult result = runner.Run(project_, no_cancel);
+
+    ASSERT_FALSE(result.failed) << result.error;
+    EXPECT_NE(runner.last_work_dir().find("fpgalsp-td-"), std::string::npos)
+        << runner.last_work_dir();
 }
 
 // -----------------------------------------------------------------------------

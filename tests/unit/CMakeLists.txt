@@ -86,3 +86,18 @@ fpgalsp_add_unit_test(hdl_index fpga_lsp::hdl)
 fpgalsp_add_unit_test(mcp_server fpga_lsp::mcp)
 fpgalsp_add_unit_test(mcp_tools fpga_lsp::mcp)
 fpgalsp_add_unit_test(mcp_bridge fpga_lsp::mcp)
+
+# Phase B：能力层（LSP 与 MCP 共用实现）。B1 只建骨架，B2/B3/B4/B5/B10 填内容。
+#   server 库提供 LspServer::Feature*；hdl 提供索引；constraints 只给约束符号用例。
+fpgalsp_add_unit_test(semantics fpga_lsp::server fpga_lsp::hdl)
+fpgalsp_add_unit_test(code_actions fpga_lsp::server fpga_lsp::hdl)
+fpgalsp_add_unit_test(rename fpga_lsp::server fpga_lsp::hdl)
+fpgalsp_add_unit_test(call_hierarchy fpga_lsp::server fpga_lsp::hdl)
+fpgalsp_add_unit_test(analysis fpga_lsp::server)
+fpgalsp_add_unit_test(constraint_symbols fpga_lsp::server fpga_lsp::constraints fpga_lsp::hdl)
+
+# Phase 2 / A3：报告缓存（ReportStore 需要 server 层）
+fpgalsp_add_unit_test(report_store fpga_lsp::server)
+
+# Phase 2 / A1：增量索引（IndexService + hdl 增量 API）
+fpgalsp_add_unit_test(index_service fpga_lsp::server fpga_lsp::hdl)

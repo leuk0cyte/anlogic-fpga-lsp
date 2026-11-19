@@ -4,6 +4,12 @@
 
 #include <gtest/gtest.h>
 
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <string>
+
+#include "platform/command_line.h"
 #include "platform/path.h"
 
 namespace {
@@ -141,6 +147,107 @@ TEST(PathUri, MalformedUriDoesNotThrow) {
         // 畸形的百分号转义（%zz）原样保留，不整体丢弃、不抛
         EXPECT_EQ(uri_to_path("file:///%zz"), "/%zz");
     });
+}
+
+// =============================================================================
+//  B7 / S-02：Windows 命令行引用（platform/command_line.h）
+// =============================================================================
+//  回归目标：CreateProcessW 必须拿到"加过引号"的 argv[0]。
+//  修复前 td_session/programmer 把 exe 原样塞进 lpCommandLine 且
+//  lpApplicationName=nullptr，Windows 会按空白切分去猜 exe ->
+//  "C:\Program Files\..." 变成 "C:\Program.exe"（CWE-428）。
+// =============================================================================
+
+TEST(PlatformCommandLine, QuotesPathsWithSpaces) {
+    EXPECT_EQ(QuoteWindowsArgument(L"C:\\Program Files\\Anlogic\\td.exe"),
+              L"\"C:\\Program Files\\Anlogic\\td.exe\"");
+}
+
+TEST(PlatformCommandLine, LeavesSimpleArgumentsBare) {
+    EXPECT_EQ(QuoteWindowsArgument(L"C:\\td\\td.exe"), L"C:\\td\\td.exe");
+    EXPECT_EQ(QuoteWindowsArgument(L"prog_sram"), L"prog_sram");
+}
+
+TEST(PlatformCommandLine, EmptyArgumentBecomesEmptyQuotes) {
+    EXPECT_EQ(QuoteWindowsArgument(L""), L"\"\"");
+}
+
+TEST(PlatformCommandLine, DoublesBackslashesBeforeClosingQuote) {
+    // 末尾反斜杠必须翻倍，否则结尾的引号会被当成转义
+    EXPECT_EQ(QuoteWindowsArgument(L"C:\\dir with space\\"), L"\"C:\\dir with space\\\\\"");
+}
+
+TEST(PlatformCommandLine, EscapesEmbeddedQuotePerCrtRules) {
+    // a"b -> "a\"b"
+    EXPECT_EQ(QuoteWindowsArgument(L"a\"b"), L"\"a\\\"b\"");
+    // a\"b（反斜杠 + 引号）-> "a\\\"b"
+    EXPECT_EQ(QuoteWindowsArgument(L"a\\\"b"), L"\"a\\\\\\\"b\"");
+}
+
+TEST(PlatformCommandLine, BuildsExeAndArguments) {
+    const std::wstring line = BuildWindowsCommandLine(L"C:\\Program Files\\TD\\td.exe",
+                                                      {L"-x", L"a b"});
+    EXPECT_EQ(line, L"\"C:\\Program Files\\TD\\td.exe\" -x \"a b\"");
+    // argv[0] 一定以引号开头，这是 S-02 的核心断言
+    EXPECT_EQ(line.front(), L'"');
+}
+
+// =============================================================================
+//  B7 / S-04：物理包含判定（canonical_path / path_is_within_canonical）
+// =============================================================================
+//  normalize_path 是纯词法的，工程目录里一个指向外部的 junction 会通过纯词法
+//  包含判定（实测能读出 C:\Windows\...\hosts）。这里用一个真实 junction 回归。
+// =============================================================================
+
+TEST(PlatformPathCanonical, ResolvesDotDotAndTrailingSeparator) {
+    const std::string p = normalize_path("Y:\\proj\\sub\\..\\a.sv");
+    EXPECT_EQ(p, "Y:/proj/a.sv");
+    EXPECT_EQ(canonical_path(p), canonical_path("Y:/proj/a.sv"));
+}
+
+TEST(PlatformPathCanonical, LexicalContainmentIsNotPhysical) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const fs::path base = fs::temp_directory_path(ec) / "fpgalsp-b7-canon";
+    if (ec) {
+        GTEST_SKIP() << "no temp dir";
+    }
+    fs::remove_all(base, ec);
+    const fs::path proj = base / "proj";
+    const fs::path outside = base / "outside";
+    fs::create_directories(proj, ec);
+    fs::create_directories(outside, ec);
+    {
+        std::ofstream(outside / "secret.txt") << "OUTSIDE\n";
+    }
+    const fs::path link = proj / "jlink";
+    // mklink /J 不需要管理员权限（符号链接需要，所以这里用 junction）
+    const std::string cmd = "cmd /c mklink /J \"" + link.string() + "\" \"" + outside.string() +
+                            "\" >nul 2>&1";
+    const int rc = std::system(cmd.c_str());
+    if (rc != 0 || !fs::exists(link / "secret.txt", ec)) {
+        fs::remove_all(base, ec);
+        GTEST_SKIP() << "cannot create a directory junction here";
+    }
+
+    const std::string target = (link / "secret.txt").string();
+    const std::string root = proj.string();
+
+    // 1) 词法判定：通过（这就是 S-04 指出的缺口）
+    const std::string lexical = normalize_path(target);
+    EXPECT_EQ(lexical.rfind(normalize_path(root), 0), 0u)
+        << "lexical containment is expected to be fooled; got " << lexical;
+
+    // 2) 物理判定：被拒（canonical 展开 junction 后落在 root 之外）
+    EXPECT_FALSE(path_is_within_canonical(target, root));
+
+    // 3) 工程内真实文件仍然通过
+    {
+        std::ofstream(proj / "real.txt") << "INSIDE\n";
+    }
+    EXPECT_TRUE(path_is_within_canonical((proj / "real.txt").string(), root));
+
+    fs::remove_all(base, ec);
 }
 
 }  // namespace

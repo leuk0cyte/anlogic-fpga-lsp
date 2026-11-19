@@ -32,7 +32,10 @@ GOLDEN_DIR = os.path.dirname(TOOLS_DIR)
 if TOOLS_DIR not in sys.path:
     sys.path.insert(0, TOOLS_DIR)
 
-from goldenlib.client import LspClient, McpClient, TransportError, path_to_uri  # noqa: E402
+from goldenlib.client import (  # noqa: E402
+    LspClient, McpClient, NativeLspClient, NativeMcpClient, TransportError,
+    default_native_exe, path_to_uri,
+)
 from goldenlib.normalize import (  # noqa: E402
     Normalizer, build_snapshot, dump_json, write_snapshot, _digest, _measure,
 )
@@ -570,7 +573,9 @@ def compact_tool_result(payload):
     return out
 
 
-def collect_mcp(corpus_spec, corpus, recorder, normalizer, repo_root, sandbox_log_dir, allow_td):
+def collect_mcp(corpus_spec, corpus, recorder, normalizer, repo_root, sandbox_log_dir, allow_td,
+                mcp_factory=None):
+    mcp_factory = mcp_factory or (lambda root, log: McpClient(repo_root, root, log))
     tools_spec = corpus_spec.get("mcpTools") or {}
     read_only = tools_spec.get("readOnly") or []
     for project_id, info in corpus.projects.items():
@@ -580,8 +585,8 @@ def collect_mcp(corpus_spec, corpus, recorder, normalizer, repo_root, sandbox_lo
         log("  mcp %s" % project_id)
         client = None
         try:
-            client = McpClient(repo_root, info["root"],
-                               os.path.join(sandbox_log_dir, "mcp-%s.log" % project_id))
+            client = mcp_factory(info["root"],
+                                 os.path.join(sandbox_log_dir, "mcp-%s.log" % project_id))
             listing = client.list_tools()
             available = {tool.get("name") for tool in listing.get("tools") or []}
             entry = {"tools": {}, "toolCount": len(available)}
@@ -789,6 +794,11 @@ def main(argv=None):
     parser.add_argument("--keep-sandbox-projects", action="store_true",
                         help="keep the per-project sandbox copies after the diagnostics category "
                              "(they are deleted by default)")
+    parser.add_argument("--server", choices=("python", "native"), default="python",
+                        help="which backend to collect from: the Python reference (default) or "
+                             "the C++ native executable")
+    parser.add_argument("--native-exe", default="",
+                        help="path to fpgalsp-native.exe (default: <cpp repo>/build/bin/...)")
     args = parser.parse_args(argv)
 
     spec = load_corpus(args.corpus)
@@ -796,6 +806,27 @@ def main(argv=None):
     if not repo_root or not os.path.isdir(repo_root):
         log("reference repository not found (pass --repo): %s" % repo_root)
         return 2
+
+    native_exe = ""
+    if args.server == "native":
+        try:
+            native_exe = args.native_exe or default_native_exe()
+        except FileNotFoundError as exc:
+            log(str(exc))
+            return 2
+        if not os.path.isfile(native_exe):
+            log("native executable not found: %s" % native_exe)
+            return 2
+
+    def lsp_factory(log_path):
+        if args.server == "native":
+            return NativeLspClient(repo_root, log_path, native_exe)
+        return LspClient(repo_root, log_path)
+
+    def mcp_factory(root_path, log_path):
+        if args.server == "native":
+            return NativeMcpClient(repo_root, root_path, log_path, native_exe)
+        return McpClient(repo_root, root_path, log_path)
 
     selected = list(args.only) if args.only else list(CATEGORIES)
     for name in args.skip or []:
@@ -806,6 +837,8 @@ def main(argv=None):
         shutil.rmtree(args.out)
     os.makedirs(args.out, exist_ok=True)
     sandbox = args.sandbox
+    if args.server == "native":
+        sandbox = sandbox + "-native"
     if os.path.isdir(sandbox):
         shutil.rmtree(sandbox, ignore_errors=True)
     os.makedirs(sandbox, exist_ok=True)
@@ -839,6 +872,8 @@ def main(argv=None):
             "maxMcpPositions": MAX_MCP_POSITIONS,
         },
         "tdAvailable": has_td,
+        "server": args.server,
+        "nativeExe": native_exe,
     }
 
     for category in selected:
@@ -848,7 +883,7 @@ def main(argv=None):
         try:
             if category == "diagnostics":
                 collect_diagnostics(
-                    lambda root: LspClient(repo_root, os.path.join(
+                    lambda root: lsp_factory(os.path.join(
                         sandbox, "server-diagnostics.log")),
                     corpus, recorder, normalizer, has_td,
                     reference_root=repo_root,
@@ -857,9 +892,10 @@ def main(argv=None):
             elif category == "mcp":
                 # MCP manages its own process lifecycle per project; no shared LSP session.
                 collect_mcp(spec, corpus, recorder, normalizer, repo_root,
-                            os.path.join(sandbox, "mcp"), has_td)
+                            os.path.join(sandbox, "mcp"), has_td,
+                            mcp_factory=mcp_factory)
             else:
-                client = LspClient(repo_root, os.path.join(sandbox, "server-%s.log" % category))
+                client = lsp_factory(os.path.join(sandbox, "server-%s.log" % category))
                 try:
                     client.initialize(corpus.projects and
                                       next((i["root"] for i in corpus.projects.values()

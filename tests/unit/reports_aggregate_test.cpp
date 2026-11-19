@@ -10,7 +10,11 @@
 
 #include <filesystem>
 #include <fstream>
+#include <map>
+#include <memory>
+#include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -360,4 +364,172 @@ TEST(ReportsAggregate, JsonKeyShape) {
     // timing.paths 里带 v3 的端点字段
     EXPECT_TRUE(json["timing"]["paths"][0].contains("begin_at"));
     EXPECT_TRUE(json["timing"].contains("begin_end_resolved"));
+}
+
+// =============================================================================
+//  Phase 2 / A3：section 掩码 + 每文件解析缓存
+// =============================================================================
+//  这里只测 reports 层（不需要 server）：掩码是否真的少解析、分节结果是否与全量
+//  一致、同一个 ReportParseCache 在第二次构建时是否全命中。ReportStore 自己的
+//  快照/失效/revision/线程安全在 tests/unit/report_store_test.cpp。
+// =============================================================================
+
+namespace {
+
+// 记忆化 + 计数：用真实解析器，但记录"每个文件被解析了几次"。
+class CountingCache final : public fpgalsp::reports::ReportParseCache {
+  public:
+    std::shared_ptr<const fpgalsp::reports::QorReport> GetQor(
+        const std::string& path, std::string_view step) override {
+        requested.insert("qor:" + path);
+        ++calls_qor;
+        if (auto it = qor.find(path); it != qor.end()) return it->second;
+        auto value = std::make_shared<const fpgalsp::reports::QorReport>(
+            fpgalsp::reports::ParseQor(fpgalsp::reports::ReadReportFile(path), step));
+        qor.emplace(path, value);
+        ++parses;
+        return value;
+    }
+    std::shared_ptr<const fpgalsp::reports::TimingReport> GetTiming(
+        const std::string& path, std::string_view filename) override {
+        requested.insert("timing:" + path);
+        ++calls_timing;
+        if (auto it = timing.find(path); it != timing.end()) return it->second;
+        auto value = std::make_shared<const fpgalsp::reports::TimingReport>(
+            fpgalsp::reports::ParseTiming(fpgalsp::reports::ReadReportFile(path), filename));
+        timing.emplace(path, value);
+        ++parses;
+        return value;
+    }
+    std::shared_ptr<const fpgalsp::reports::AreaReport> GetArea(const std::string& path) override {
+        requested.insert("area:" + path);
+        ++calls_area;
+        if (auto it = area.find(path); it != area.end()) return it->second;
+        auto value = std::make_shared<const fpgalsp::reports::AreaReport>(
+            fpgalsp::reports::ParseArea(fpgalsp::reports::ReadReportFile(path)));
+        area.emplace(path, value);
+        ++parses;
+        return value;
+    }
+    std::shared_ptr<const fpgalsp::reports::FlowStatusReport> GetFlowStatus(
+        const std::string& path) override {
+        requested.insert("flow:" + path);
+        ++calls_flow;
+        if (auto it = flow.find(path); it != flow.end()) return it->second;
+        auto value = std::make_shared<const fpgalsp::reports::FlowStatusReport>(
+            fpgalsp::reports::ParseFlowStatusText(fpgalsp::reports::ReadReportFile(path)));
+        flow.emplace(path, value);
+        ++parses;
+        return value;
+    }
+    std::shared_ptr<const std::vector<fpgalsp::reports::QorSuggestion>> GetSuggestions(
+        const std::string& path) override {
+        requested.insert("sug:" + path);
+        ++calls_sug;
+        if (auto it = suggestions.find(path); it != suggestions.end()) return it->second;
+        auto value = std::make_shared<const std::vector<fpgalsp::reports::QorSuggestion>>(
+            fpgalsp::reports::ParseSuggestionsTcl(path));
+        suggestions.emplace(path, value);
+        ++parses;
+        return value;
+    }
+
+    int parses = 0;
+    int calls_qor = 0;
+    int calls_timing = 0;
+    int calls_area = 0;
+    int calls_flow = 0;
+    int calls_sug = 0;
+    std::set<std::string> requested;
+
+  private:
+    std::map<std::string, std::shared_ptr<const fpgalsp::reports::QorReport>> qor;
+    std::map<std::string, std::shared_ptr<const fpgalsp::reports::TimingReport>> timing;
+    std::map<std::string, std::shared_ptr<const fpgalsp::reports::AreaReport>> area;
+    std::map<std::string, std::shared_ptr<const fpgalsp::reports::FlowStatusReport>> flow;
+    std::map<std::string, std::shared_ptr<const std::vector<fpgalsp::reports::QorSuggestion>>>
+        suggestions;
+};
+
+std::string Canon(const fpgalsp::jsonrpc::Json& value) {
+    return value.dump();
+}
+
+}  // namespace
+
+TEST(ReportsAggregate, SectionMaskSkipsUnrequestedSections) {
+    ScopedTempDir temp("mask");
+    const std::string name = "CorpusBeta";
+    MakeFullProject(temp, name);
+
+    CountingCache cache;
+    fpgalsp::reports::ReportsBuildOptions options;
+    options.sections = fpgalsp::reports::sections::kTiming;
+    options.cache = &cache;
+    const auto json = BuildReports(MakeProject(temp.path(), name), options).ToJson();
+
+    // 只解析了 timing；qor/area/flow 一次都没问过
+    EXPECT_GT(cache.calls_timing, 0);
+    EXPECT_EQ(cache.calls_qor, 0);
+    EXPECT_EQ(cache.calls_area, 0);
+    EXPECT_EQ(cache.calls_flow, 0);
+    // 输出里只有被请求的段（files/artifacts 是廉价元数据，始终在）
+    EXPECT_TRUE(json.contains("timing"));
+    EXPECT_FALSE(json.contains("qor"));
+    EXPECT_FALSE(json.contains("area"));
+    EXPECT_FALSE(json.contains("flowStatus"));
+    EXPECT_TRUE(json.contains("files"));
+    EXPECT_TRUE(json.contains("artifacts"));
+}
+
+TEST(ReportsAggregate, SectionSubsetEqualsFullBuild) {
+    ScopedTempDir temp("subset");
+    const std::string name = "CorpusBeta";
+    MakeFullProject(temp, name);
+    const auto project = MakeProject(temp.path(), name);
+
+    const auto full = BuildReports(project).ToJson();
+    ASSERT_TRUE(full.contains("qor"));
+
+    const std::pair<std::uint32_t, const char*> cases[] = {
+        {fpgalsp::reports::sections::kQor, "qor"},
+        {fpgalsp::reports::sections::kTiming, "timing"},
+        {fpgalsp::reports::sections::kArea, "area"},
+        {fpgalsp::reports::sections::kFlow, "flowStatus"},
+        {fpgalsp::reports::sections::kFiles, "files"},
+        {fpgalsp::reports::sections::kArtifacts, "artifacts"},
+    };
+    for (const auto& [mask, key] : cases) {
+        fpgalsp::reports::ReportsBuildOptions options;
+        options.sections = mask;
+        const auto part = BuildReports(project, options).ToJson();
+        ASSERT_TRUE(part.contains(key)) << key;
+        EXPECT_EQ(Canon(part[key]), Canon(full[key])) << "section=" << key;
+    }
+}
+
+TEST(ReportsAggregate, SameCacheParsesEachFileOnlyOnce) {
+    ScopedTempDir temp("once");
+    const std::string name = "CorpusBeta";
+    MakeFullProject(temp, name);
+    const auto project = MakeProject(temp.path(), name);
+
+    CountingCache cache;
+    fpgalsp::reports::ReportsBuildOptions options;
+    options.sections = fpgalsp::reports::sections::kAll;
+    options.cache = &cache;
+
+    const auto first = BuildReports(project, options).ToJson();
+    const int parses_after_first = cache.parses;
+    EXPECT_GT(parses_after_first, 0);
+
+    const auto second = BuildReports(project, options).ToJson();
+    // 第二次构建：同一组文件全部命中缓存，解析次数不涨
+    EXPECT_EQ(cache.parses, parses_after_first);
+    // generatedAt 是时间戳，逐字节比较前先去掉
+    fpgalsp::jsonrpc::Json first_cmp = first;
+    fpgalsp::jsonrpc::Json second_cmp = second;
+    first_cmp.erase("generatedAt");
+    second_cmp.erase("generatedAt");
+    EXPECT_EQ(Canon(first_cmp), Canon(second_cmp));
 }

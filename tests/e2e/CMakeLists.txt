@@ -86,6 +86,7 @@ set_tests_properties(e2e.mcp_flow_smoke PROPERTIES
     TIMEOUT 600
     # 会拉起 TD 子进程；与 lsp_smoke 一样不并行（PID 差集断言 / TD 争用）
     RUN_SERIAL TRUE
+    RESOURCE_LOCK "td-process"
 )
 
 message(STATUS "tests/e2e: 已注册 e2e.mcp_flow_smoke（ctest -L e2e）")

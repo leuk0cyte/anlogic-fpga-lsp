@@ -279,6 +279,29 @@ TEST(TdImportCommand, AppendsSpeedWithoutSign) {
 }
 
 // -----------------------------------------------------------------------------
+// B7 / S-01：器件名/速度来自 .al，拼进 Tcl 之前必须被引用成单个单词
+// -----------------------------------------------------------------------------
+
+TEST(TdImportCommand, QuotesHostilePackageName) {
+    // <HardWare><Device>EF2; exec calc</Device> —— 修复前整条会变成两条 Tcl 命令；
+    // 现在 `-package` 的值被分组成一个 Tcl 单词（花括号内 `;` 是字面量）
+    EXPECT_EQ(MakeImportDeviceCommand("ef2_4.db", "EF2; exec calc", std::nullopt),
+              "import_device ef2_4.db -package {EF2; exec calc}");
+}
+
+TEST(TdImportCommand, QuotesHostileDbFileName) {
+    // db 名里的 '}' 会提前闭合 `-package` 之后的花括号（若调用方自己用 {} 包）
+    EXPECT_EQ(MakeImportDeviceCommand("a}b.db", "EF2L45LG144B", std::nullopt),
+              "import_device \"a}b.db\" -package EF2L45LG144B");
+}
+
+TEST(TdImportCommand, DropsNonTokenSpeed) {
+    // 非法 <Speed>：宁可不传 -speed，也不让它成为命令行的一部分
+    EXPECT_EQ(MakeImportDeviceCommand("ef2_4.db", "EF2L45LG144B", std::string("2; exec calc")),
+              "import_device ef2_4.db -package EF2L45LG144B");
+}
+
+// -----------------------------------------------------------------------------
 // 缓存键
 // -----------------------------------------------------------------------------
 

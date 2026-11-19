@@ -317,6 +317,35 @@ TEST_F(TdSessionTest, ReadHdlOnRealProject) {
 }
 
 // -----------------------------------------------------------------------------
+// B7 / D-3：未显式指定 work_dir 时给独立 scratch 目录
+// -----------------------------------------------------------------------------
+//  修复前：work_dir 为空 -> CreateProcessW 传 nullptr cwd -> TD 继承 LSP 的当前目录，
+//  把 td_*.logw 之类的文件写到用户工作区/IDE 启动目录里。
+//  修复后：%TEMP%/fpgalsp-td-<pid>，且可以通过 WorkDir() 取到。
+// -----------------------------------------------------------------------------
+
+TEST_F(TdSessionTest, DefaultWorkDirIsScratchDirectory) {
+    TdSessionOptions options = Options();
+    options.work_dir.clear();  // 关键：不指定
+
+    TdSession session(td_, options);
+    EXPECT_TRUE(session.Alive());
+
+    const std::string& dir = session.WorkDir();
+    ASSERT_FALSE(dir.empty()) << "未显式指定 work_dir 时应有 scratch 目录";
+    std::error_code ec;
+    EXPECT_TRUE(std::filesystem::is_directory(std::filesystem::u8path(dir), ec))
+        << dir << " / " << ec.message();
+    EXPECT_NE(dir.find("fpgalsp-td-"), std::string::npos) << dir;
+
+    // 不应等于进程当前目录（那正是修复前会发生的"继承 cwd"）
+    const std::string cwd = std::filesystem::current_path().string();
+    EXPECT_NE(std::filesystem::weakly_canonical(std::filesystem::u8path(dir), ec),
+              std::filesystem::weakly_canonical(std::filesystem::u8path(cwd), ec))
+        << "scratch 目录不应是进程 cwd";
+}
+
+// -----------------------------------------------------------------------------
 // 全局残留兜底（最后一个测试）
 // -----------------------------------------------------------------------------
 

@@ -11,6 +11,42 @@ if(NOT TARGET fpga_lsp::td)
     return()
 endif()
 
+# -----------------------------------------------------------------------------
+# A5 / task-25：单飞队列 / 取消 / 去抖 / 按文件切分（**不需要真实 TD**）
+#   用假 runner 把策略与 TD 进程解耦，毫秒级，标 LABEL "unit" 让默认 ctest 也跑。
+# -----------------------------------------------------------------------------
+add_executable(unit_td_service td_service_test.cpp)
+target_include_directories(unit_td_service PRIVATE "${CMAKE_SOURCE_DIR}/src")
+target_link_libraries(unit_td_service PRIVATE
+    fpga_lsp::warnings fpga_lsp::td fpga_lsp::project fpga_lsp::lsp
+    GTest::gtest GTest::gtest_main)
+target_compile_features(unit_td_service PRIVATE cxx_std_23)
+
+add_test(NAME unit.td_service COMMAND unit_td_service)
+set_tests_properties(unit.td_service PROPERTIES
+    LABELS "unit;td-unit"
+    TIMEOUT 120)
+
+# -----------------------------------------------------------------------------
+# A5 / task-25：分段计时 + 预热评估的真机基准（**需要真实 TD**，默认不跑）
+#   ctest -L bench --output-on-failure
+# -----------------------------------------------------------------------------
+add_executable(td_bench td_bench.cpp)
+target_include_directories(td_bench PRIVATE "${CMAKE_SOURCE_DIR}/src")
+target_link_libraries(td_bench PRIVATE
+    fpga_lsp::warnings fpga_lsp::td fpga_lsp::project fpga_lsp::lsp
+    fpga_lsp::platform)
+target_compile_features(td_bench PRIVATE cxx_std_23)
+target_compile_definitions(td_bench PRIVATE
+    FPGA_LSP_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+
+add_test(NAME td.bench COMMAND td_bench)
+set_tests_properties(td.bench PROPERTIES
+    LABELS "bench;td-process-bench"
+    TIMEOUT 1800
+    RUN_SERIAL TRUE
+    RESOURCE_LOCK "td-process")
+
 add_executable(unit_td_session td_session_test.cpp)
 
 target_include_directories(unit_td_session PRIVATE "${CMAKE_SOURCE_DIR}/src")

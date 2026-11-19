@@ -44,7 +44,10 @@ FALLBACK_SERVER = os.path.join(REPO_ROOT, "build", "bin", "fpgalsp-native.exe")
 
 class Client:
     def __init__(self, exe: str, root: str, allow_flow: bool = True):
-        args = [exe, "--mcp", "--root", root]
+        # --log 必须显式给：默认日志会写 <root>/.fpgalsp/logs/mcp.log，
+        # 而本用例会断言语料目录保持干净（Python 也有同样的默认行为）。
+        args = [exe, "--mcp", "--root", root,
+                "--log", os.path.join(tempfile.gettempdir(), "fpgalsp-e2e-mcp-flow.log")]
         if allow_flow:
             args.append("--allow-flow")
         self.process = subprocess.Popen(
@@ -120,6 +123,17 @@ def main() -> int:
     if not os.path.isdir(CORPUS):
         print("找不到语料 %s" % CORPUS)
         return 2
+
+    # 先清掉其它用例（e2e.lsp_smoke / td.*）可能留在共享语料里的派生目录。
+    # 这些目录是 TD/服务端运行时产物，不是语料内容；清理后本用例的
+    # "结束时不新增" 断言才是稳定的（ctest -j 下顺序不确定，不能依赖别人先清）。
+    for generated in (".fpgalsp",):
+        path = os.path.join(CORPUS, generated)
+        if os.path.isdir(path):
+            shutil.rmtree(path, ignore_errors=True)
+    for name in os.listdir(CORPUS):
+        if name.endswith("_Runs"):
+            shutil.rmtree(os.path.join(CORPUS, name), ignore_errors=True)
 
     clean_before, reason = corpus_is_clean()
     if not clean_before:

@@ -287,6 +287,15 @@ def main() -> int:
     fpgalsp_dir = project_dir / ".fpgalsp"
     tests_root = (repo_root / "tests").resolve()
     is_corpus = str(project_dir).lower().startswith(str(tests_root).lower())
+    # 先清掉上一次运行（或其它用例）留下的 TD 派生目录，再拍基线；
+    # 否则 corpus_before 里带着 .fpgalsp，本用例清理后会被误判为"消失"。
+    if is_corpus:
+        import shutil as _sh
+        for generated in (project_dir / ".fpgalsp",):
+            if generated.exists():
+                _sh.rmtree(generated, ignore_errors=True)
+        for runs in project_dir.glob("*_Runs"):
+            _sh.rmtree(runs, ignore_errors=True)
     corpus_before = snapshot_listing(project_dir)
     started_at = time.time()  # 用于"真实工程是否被写入"的判定基准
 
@@ -324,11 +333,12 @@ def main() -> int:
         sync = sync if isinstance(sync, dict) else {}
         check(sync.get("openClose") is True, "textDocumentSync.openClose == true")
         check(sync.get("change") == 2, "textDocumentSync.change == 2 (Incremental)")
-        check((sync.get("save") or {}).get("includeText") is False,
-              "textDocumentSync.save.includeText == false")
+        check((sync.get("save") or {}).get("includeText") is True,
+              "textDocumentSync.save.includeText == true（与 Python 一致）")
 
-        check((caps.get("completionProvider") or {}).get("triggerCharacters") == [".", "("],
-              'completionProvider.triggerCharacters == [".", "("]')
+        check((caps.get("completionProvider") or {}).get("triggerCharacters")
+              == ["{", "=", " ", "[", "\t", "|"],
+              'completionProvider.triggerCharacters 与 Python 一致')
         for name in (
             "hoverProvider",
             "definitionProvider",
@@ -356,7 +366,9 @@ def main() -> int:
               "semanticTokensProvider.legend.tokenTypes 顺序与协议一致")
         check((semantic.get("legend") or {}).get("tokenModifiers") == [],
               "semanticTokensProvider.legend.tokenModifiers == []")
-        check(semantic.get("full") is True, "semanticTokensProvider.full == true")
+        full = semantic.get("full")
+        check(full is True or (isinstance(full, dict) and full.get("delta") is True),
+              "semanticTokensProvider.full == true 或 {delta:true}")
 
         client.notify("initialized", {})
 
@@ -570,13 +582,17 @@ def main() -> int:
             check(restored.get("ok") is True and restored.get("selected") == "",
                   f"setProject 空串恢复自动发现（实际 {restored!r}）")
 
-        # 真正仍在占位的命令必须显式返回 not implemented（不能静默不返回）
+        # fpgalsp.runAnalysis 已在 Phase B 实现（B5）：必须是真实 drc/cdc 形状，
+        # 且没有跑过 flow 时给出可读的 error（不能挂住、不能返回占位）。
         response = client.request("workspace/executeCommand",
                                   {"command": "fpgalsp.runAnalysis", "arguments": []},
-                                  timeout=60.0)
-        placeholder = response.get("result") or {}
-        check(placeholder.get("ok") is False and placeholder.get("error") == "not implemented",
-              f"fpgalsp.runAnalysis 占位返回 not implemented（实际 {placeholder!r}）")
+                                  timeout=120.0)
+        analysis = response.get("result") or {}
+        check(isinstance(analysis.get("drc"), dict) and isinstance(analysis.get("cdc"), dict),
+              f"fpgalsp.runAnalysis 返回真实 drc/cdc 形状（实际 {analysis!r}）")
+        if analysis.get("ok") is False:
+            check(bool(analysis.get("error")),
+                  "runAnalysis 失败时必须带可读 error（实际缺 error）")
 
         response = client.request("fpgaLsp/doesNotExist", {}, timeout=60.0)
         check((response.get("error") or {}).get("code") == -32601,

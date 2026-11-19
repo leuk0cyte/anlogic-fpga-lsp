@@ -311,7 +311,9 @@ TEST(FlowTdIntegration, SharedCorpusStaysClean) {
         const std::string name = it->path().filename().string();
         const bool is_dir = it->is_directory();
         const bool runs_dir = name.size() >= 5 && name.compare(name.size() - 5, 5, "_Runs") == 0;
-        if (is_dir && (runs_dir || name == ".fpgalsp")) debris.push_back(name);
+        // `.fpgalsp/` 是服务端/TD 的运行时 scratch（Python 同样会写），不是 flow 产物；
+        // 共享语料的硬隔离只针对 *_Runs（flow 会写几百 MB），否则会与 e2e 用例互相误伤。
+        if (is_dir && runs_dir) debris.push_back(name);
     }
     for (const std::string& name : debris) {
         ADD_FAILURE() << "共享语料被污染了：" << CorpusDir() << "/" << name

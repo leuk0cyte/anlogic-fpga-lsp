@@ -334,4 +334,49 @@ TEST(TransportFactory, CreatesCorrectMode) {
     EXPECT_TRUE(mcp->compact_json());
 }
 
+// =============================================================================
+//  B7 / S-08：MCP 行读取必须**有界**
+// =============================================================================
+//  修复前 McpFramer::ReadFrame 用 std::getline(in, line)，先把整行读进内存、
+//  之后才比较 kMaxBodyBytes —— 一个不含 '\n' 的超大流会在检查之前把进程 OOM。
+// =============================================================================
+
+TEST(McpFraming, LastLineWithoutNewlineIsABody) {
+    std::istringstream in("{\"a\":1}");
+    std::ostringstream out;
+    McpTransport transport(in, out);
+    const auto rr = transport.ReadMessage();
+    EXPECT_EQ(rr.status, TransportBaseCommon::ReadStatus::Message);
+    EXPECT_EQ(rr.message["a"], 1);
+}
+
+TEST(McpFraming, EmptyLinesAreSkipped) {
+    std::istringstream in("\r\n\n{\"a\":2}\n");
+    std::ostringstream out;
+    McpTransport transport(in, out);
+    const auto rr = transport.ReadMessage();
+    ASSERT_EQ(rr.status, TransportBaseCommon::ReadStatus::Message);
+    EXPECT_EQ(rr.message["a"], 2);
+}
+
+TEST(McpFraming, OversizeLineIsRejectedWithoutReadingItAll) {
+    // 64 MiB + 8 个字符，无换行：必须返回 TooLarge 而不是把整行吃进内存
+    std::string huge(kMaxBodyBytes + 8, 'a');
+    std::istringstream in;
+    in.str(std::move(huge));
+    std::ostringstream out;
+    McpTransport transport(in, out);
+    const auto rr = transport.ReadMessage();
+    EXPECT_EQ(rr.status, TransportBaseCommon::ReadStatus::TooLarge);
+    EXPECT_TRUE(rr.message.is_null());
+}
+
+TEST(LspFraming, OversizeContentLengthIsTooLarge) {
+    std::istringstream in("Content-Length: " + std::to_string(kMaxBodyBytes + 1) + "\r\n\r\n");
+    std::ostringstream out;
+    LspTransport transport(in, out);
+    const auto rr = transport.ReadMessage();
+    EXPECT_EQ(rr.status, TransportBaseCommon::ReadStatus::TooLarge);
+}
+
 }  // namespace

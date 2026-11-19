@@ -274,6 +274,46 @@ class LspClient(_BaseClient):
         return last
 
 
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
+
+
+def default_native_exe():
+    """Locate ``fpgalsp-native.exe`` for the C++ rewrite.
+
+    Search order: ``FPGALSP_NATIVE_EXE``, the shared build directory, then the VSIX payload.
+    Raises ``FileNotFoundError`` listing every candidate so a broken path is obvious.
+    """
+    candidates = []
+    env = os.environ.get("FPGALSP_NATIVE_EXE")
+    if env:
+        candidates.append(env)
+    candidates.append(os.path.join(_PROJECT_ROOT, "build", "bin", "fpgalsp-native.exe"))
+    candidates.append(os.path.join(_PROJECT_ROOT, "vscode-extension", "server", "bin",
+                                   "fpgalsp-native.exe"))
+    for candidate in candidates:
+        if candidate and os.path.isfile(candidate):
+            return candidate
+    raise FileNotFoundError(
+        "fpgalsp-native.exe not found; tried: " + ", ".join(candidates))
+
+
+class NativeLspClient(LspClient):
+    """``fpgalsp-native.exe --stdio`` driven over Content-Length framed JSON-RPC.
+
+    The framing and convenience methods are inherited from :class:`LspClient`; only the
+    process argv differs.  ``repo_root`` is used as the working directory so relative paths
+    in the corpus mean the same thing for both servers.
+    """
+
+    def __init__(self, repo_root, log_path, exe_path=None, extra_args=None):
+        argv = [exe_path or default_native_exe(), "--stdio"]
+        if log_path:
+            argv += ["--log", log_path]
+        argv += list(extra_args or [])
+        _BaseClient.__init__(self, argv, cwd=repo_root, log_path=log_path)
+
+
 class McpClient(_BaseClient):
     """``python -m fpgalsp.mcp`` driven over newline-delimited JSON-RPC."""
 
@@ -337,3 +377,19 @@ class McpClient(_BaseClient):
             return json.loads(text), is_error
         except ValueError:
             return text, is_error
+
+
+class NativeMcpClient(McpClient):
+    """``fpgalsp-native.exe --mcp`` driven over newline-delimited JSON-RPC.
+
+    ``tools/list``/``tools/call`` are inherited; only argv and the handshake come from
+    :class:`McpClient`.
+    """
+
+    def __init__(self, repo_root, root_path, log_path, exe_path=None, extra_args=None):
+        argv = [exe_path or default_native_exe(), "--mcp", "--root", root_path]
+        if log_path:
+            argv += ["--log", log_path]
+        argv += list(extra_args or [])
+        _BaseClient.__init__(self, argv, cwd=repo_root, log_path=log_path)
+        self._handshake()
