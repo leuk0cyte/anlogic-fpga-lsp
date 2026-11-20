@@ -36,6 +36,9 @@ struct TdChoice {
     std::string version;
     std::string source;  // "explicit" | "auto" | "path"
     std::vector<TdInstall> alternatives;
+    // 本次结果是否来自**安装发现缓存**（见 td_install.cpp 的 ReadCache/WriteCache）。
+    // 只是可观测性字段：source 仍报告 "auto"，避免破坏既有的三值契约与单测。
+    bool from_cache = false;
 };
 
 // 对应 Python version_key：把 release 目录名转成可比较的数字序列。

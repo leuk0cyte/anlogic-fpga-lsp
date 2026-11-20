@@ -292,6 +292,29 @@ fpgalsp::project::Project MakeProject(const std::string& dir) {
     return project;
 }
 
+// 写一份"清单与 bit 完全一致"的探针配置（kRealCwc 里的两条 bus 各 16 位）。
+// 供 status / verify 的 ready 场景共用，避免两边手抄同一份 fixture 抄歪。
+std::vector<std::string> MatchingSignals() {
+    std::vector<std::string> signals;
+    for (const char* bus : {"pwm_reg0_i", "pwm_reg1_i"}) {
+        for (int bit = 0; bit < 16; ++bit) {
+            signals.push_back(std::string("WHG/") + bus + "[" + std::to_string(bit) + "]");
+        }
+    }
+    return signals;
+}
+
+std::string MarkDebugLine(const std::vector<std::string>& signals) {
+    std::string text = "mark_debug { ";
+    for (const std::string& signal : signals) {
+        if (signal.empty()) continue;
+        text += signal;
+        text += ' ';
+    }
+    text += "}\n";
+    return text;
+}
+
 }  // namespace
 
 TEST(ProbeStatus, ReportsNotReadyWithoutWatcher) {
@@ -411,4 +434,139 @@ TEST(ProbeConfigure, RefusesToWriteAnEmptyList) {
     const fpgalsp::jsonrpc::Json read = fpgalsp::probe::Configure(project, {}, false);
     EXPECT_TRUE(read.value("ok", false)) << read.dump();
     EXPECT_EQ(read.value("count", 0), 8);
+}
+
+// -----------------------------------------------------------------------------
+// sampling：采样时钟/深度是编译期属性（只读，editable 恒 false）
+// -----------------------------------------------------------------------------
+
+TEST(ProbeStatus, SamplingIsReportedAsImmutable) {
+    ScopedTempDir temp("status_sampling");
+    const fpgalsp::project::Project project = MakeProject(temp.path());
+    Write(fpgalsp::probe::MdnPath(project), MarkDebugLine(MatchingSignals()));
+    Write(fpgalsp::probe::CompiledCwc(project), kRealCwc);
+    Write(fpgalsp::probe::CompiledBit(project), "bit");
+
+    const fpgalsp::jsonrpc::Json status = fpgalsp::probe::Status(project);
+    ASSERT_TRUE(status.contains("sampling")) << status.dump();
+    const auto& sampling = status["sampling"];
+    ASSERT_TRUE(sampling.is_object());
+    EXPECT_EQ(sampling.value("clock", std::string()), "reg_init/clk");
+    EXPECT_EQ(sampling.value("depth", 0), 1024);
+    EXPECT_FALSE(sampling.value("editable", true)) << "采样时钟/深度不可在采集期改";
+    // reason 是给 agent 看的英文原句：必须点明"编译期 + CLI 没有 setter"
+    const std::string reason = sampling.value("reason", std::string());
+    EXPECT_NE(reason.find("compile-time"), std::string::npos) << reason;
+    EXPECT_NE(reason.find("never rewrites compiled.cwc"), std::string::npos) << reason;
+    // 平铺字段必须保留（测试与插件依赖）
+    EXPECT_EQ(status["watcher"].value("clock", std::string()), "reg_init/clk");
+    EXPECT_EQ(status["watcher"].value("sample_depth", 0), 1024);
+}
+
+// -----------------------------------------------------------------------------
+// Verify：逐位比对 mdn 与 compiled.cwc
+// -----------------------------------------------------------------------------
+
+TEST(ProbeVerify, ReportsNoBitstreamWhenWatcherIsMissing) {
+    ScopedTempDir temp("verify_nocwc");
+    const fpgalsp::project::Project project = MakeProject(temp.path());
+    Write(fpgalsp::probe::MdnPath(project), "mark_debug { WHG/cnt[0] WHG/cnt[1] }\n");
+
+    const fpgalsp::jsonrpc::Json result = fpgalsp::probe::Verify(project, false);
+    EXPECT_TRUE(result.value("ok", false)) << result.dump();
+    EXPECT_FALSE(result.value("stale", true));
+    const auto& signals = result["signals"];
+    EXPECT_EQ(signals.value("requested", 0), 2);
+    EXPECT_EQ(signals.value("embedded", 0), 0);
+    EXPECT_EQ(signals.value("missing", 0), 2);
+    ASSERT_EQ(result["buses"].size(), 1u);
+    EXPECT_EQ(result["buses"][0].value("name", std::string()), "cnt");
+    EXPECT_EQ(result["buses"][0].value("width", 0), 2);
+    EXPECT_EQ(result["buses"][0].value("status", std::string()), "dropped");
+    EXPECT_EQ(result["buses"][0].value("reason", std::string()), "no-bitstream");
+    EXPECT_EQ(result["missing_nets"].size(), 2u);
+    EXPECT_FALSE(result["sampling"].value("editable", true));
+    const std::string hints = result["hints"].dump();
+    EXPECT_NE(hints.find("run phy"), std::string::npos) << hints;
+}
+
+TEST(ProbeVerify, SplitsPartialAndDroppedBusesAndFlagsStale) {
+    ScopedTempDir temp("verify_partial");
+    const fpgalsp::project::Project project = MakeProject(temp.path());
+    // kRealMdn 请求 reg0(0,1,2,10) / reg1(0,1) / reg6[0] / reg7[0]，
+    // kRealCwc 只嵌了 reg0 全 16 位与 reg1 全 16 位 -> reg6/reg7 被丢。
+    Write(fpgalsp::probe::MdnPath(project), kRealMdn);
+    Write(fpgalsp::probe::CompiledCwc(project), kRealCwc);
+
+    const fpgalsp::jsonrpc::Json result = fpgalsp::probe::Verify(project, true);
+    EXPECT_TRUE(result.value("ok", false)) << result.dump();
+    EXPECT_TRUE(result.value("stale", false)) << "mdn 与 bit 不一致必须报 stale";
+    const auto& signals = result["signals"];
+    EXPECT_EQ(signals.value("requested", 0), 8);
+    EXPECT_EQ(signals.value("embedded", 0), 6);
+    EXPECT_EQ(signals.value("missing", 0), 2);
+
+    ASSERT_EQ(result["buses"].size(), 4u);
+    bool reg0_embedded = false;
+    bool reg6_dropped = false;
+    for (const auto& bus : result["buses"]) {
+        const std::string name = bus.value("name", std::string());
+        if (name == "pwm_reg0_i") {
+            reg0_embedded = bus.value("status", std::string()) == "embedded";
+            EXPECT_EQ(bus.value("embedded_bits", -1), 4);
+            EXPECT_EQ(bus.value("missing_bits", -1), 0);
+        }
+        if (name == "pwm_reg6_i") {
+            reg6_dropped = bus.value("status", std::string()) == "dropped";
+            EXPECT_EQ(bus.value("embedded_bits", -1), 0);
+            EXPECT_EQ(bus.value("missing_bits", -1), 1);
+            // 没传 known_name -> 无法判定名字是否存在，按 dropped-by-td 报
+            EXPECT_EQ(bus.value("reason", std::string()), "dropped-by-td");
+        }
+    }
+    EXPECT_TRUE(reg0_embedded) << result["buses"].dump();
+    EXPECT_TRUE(reg6_dropped) << result["buses"].dump();
+
+    const auto& missing = result["missing_nets"];
+    ASSERT_EQ(missing.size(), 2u) << result.dump();
+    EXPECT_EQ(missing[0].get<std::string>(), "WHG/pwm_reg6_i[0]");
+    EXPECT_EQ(missing[1].get<std::string>(), "WHG/pwm_reg7_i[0]");
+    EXPECT_FALSE(result.value("truncated", true));
+    EXPECT_NE(result["hints"].dump().find("cross-clock-domain"), std::string::npos);
+}
+
+TEST(ProbeVerify, KnownNameCallbackDistinguishesNotFoundFromDropped) {
+    ScopedTempDir temp("verify_known");
+    const fpgalsp::project::Project project = MakeProject(temp.path());
+    Write(fpgalsp::probe::MdnPath(project), "mark_debug { WHG/typo_sig[0] }\n");
+    Write(fpgalsp::probe::CompiledCwc(project), kRealCwc);
+
+    const auto result = fpgalsp::probe::Verify(
+        project, false, [](std::string_view name) { return name != "typo_sig"; });
+    ASSERT_EQ(result["buses"].size(), 1u);
+    EXPECT_EQ(result["buses"][0].value("reason", std::string()), "not-in-build");
+    EXPECT_NE(result["hints"].dump().find("fpga_symbol_path"), std::string::npos);
+
+    const auto dropped = fpgalsp::probe::Verify(
+        project, false, [](std::string_view) { return true; });
+    EXPECT_EQ(dropped["buses"][0].value("reason", std::string()), "dropped-by-td");
+}
+
+TEST(ProbeVerify, TruncatesMissingNetsUnlessIncludeBits) {
+    ScopedTempDir temp("verify_truncate");
+    const fpgalsp::project::Project project = MakeProject(temp.path());
+    std::vector<std::string> signals;
+    for (int bit = 0; bit < 40; ++bit) {
+        signals.push_back("WHG/gone[" + std::to_string(bit) + "]");
+    }
+    Write(fpgalsp::probe::MdnPath(project), MarkDebugLine(signals));
+    Write(fpgalsp::probe::CompiledCwc(project), kRealCwc);
+
+    const auto capped = fpgalsp::probe::Verify(project, false);
+    EXPECT_EQ(capped["missing_nets"].size(), 32u) << "默认只给前 32 条";
+    EXPECT_TRUE(capped.value("truncated", false));
+
+    const auto full = fpgalsp::probe::Verify(project, true);
+    EXPECT_EQ(full["missing_nets"].size(), 40u);
+    EXPECT_FALSE(full.value("truncated", true));
 }

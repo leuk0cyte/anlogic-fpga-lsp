@@ -1,7 +1,7 @@
 # 无上下文 agent 怎么用这套 MCP
 
 > 面向"第一次接触本仓库、手里没有任何背景资料"的 agent（以及替 agent 设计提示词的人）。
-> 目标是：**只看 MCP 本身**就能知道 47 个工具怎么串、哪些坑必踩。
+> 目标是：**只看 MCP 本身**就能知道 48 个工具怎么串、哪些坑必踩。
 
 ## 一、三条发现路径（按客户端能力从强到弱）
 
@@ -12,6 +12,10 @@
 | L3 | `prompts/list` + `prompts/get` | 支持 prompts 的客户端（可一键把流程喂进来） | 4 个工作流模板 |
 | L4 | 工具 `description` 里的 `Preconditions / Cost / Failure modes / Example` | 所有客户端 | `fpga_probe_config`、`fpga_probe_capture`、`fpga_flow_run` |
 
+> 探针相关三件套：`fpga_probe_status`（现状 + `sampling{clock,depth,editable:false,reason}`）、
+> `fpga_probe_verify`（逐位回答"哪几根被丢了、为什么"，`buses[].status/reason` + `hints`）、
+> `fpga_probe_capture`（`buses:[{name,op,value}]` 表达"计数器回绕到 0 时触发"这类条件）。
+
 **`fpga_guide` 的 7 个 topic**（每个 ≤ 2.4 KB，按需取，不占常驻上下文）：
 
 | topic | 回答什么问题 |
@@ -20,7 +24,7 @@
 | `project` | `.al` 工程结构、哪些文件真的参与编译 |
 | `index` | 符号树、跨模块跳转、诊断、作用域 |
 | `flow` | 综合/布局布线/位流：异步语义、stages、产物与报告 |
-| `probe` | ChipWatcher：探针清单、重编 bit、抓取、触发、常见静默失败 |
+| `probe` | ChipWatcher：探针清单、重编 bit、抓取、触发（含 per-bus 值）、`fpga_probe_verify` 逐位核对、常见静默失败 |
 | `program` | 烧录：MCP 能做什么、哪些必须走 LSP 命令 |
 | `troubleshoot` | `KIT-*`／`PRJ-*`／`HDL-*` 的判读、假成功形态 |
 
@@ -57,8 +61,11 @@
    `trigger_position / window_num / window_depth / trigger_*` 可改。
 6. **MCP 没有独立烧录工具**：SRAM/Flash 用 LSP 命令 `fpgalsp.program`；
    MCP 里只有 `fpga_probe_capture(download:true)` 会重下载 SRAM。
-7. **每次新建 MCP 进程约 20 s**（启动时扫盘找 TD 安装），单次工具调用本身通常 < 1 s；
-   phy 5–15 分钟。长跑任务必须留在同一个会话里。
+7. **进程启动很快（~0.1 s）**：TD 发现是一次 40 ms 的目录扫描，结果缓存在
+   `%TEMP%/fpgalsp/td-install-cache.txt`。之前记的"每次 20 s"是**客户端脚本的错**：
+   发完 `exit` 通知没关 stdin，服务端按规范等 EOF，客户端于是耗到自己的超时。
+   ⚠ 客户端务必在 `exit` 之后**关闭 stdin**（或直接 kill）。phy 仍要 5–15 分钟，
+   长跑任务必须留在同一个会话里。
 
 ## 四、和后端实现的关系
 

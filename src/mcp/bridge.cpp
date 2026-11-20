@@ -918,6 +918,10 @@ Json Bridge::TdSummary() const {
     out["root"] = choice->root;
     out["version"] = choice->version;
     out["source"] = choice->source;
+    // 本次是否命中"安装发现缓存"（%TEMP%/fpgalsp/td-install-cache.txt）。
+    // 自动发现要扫 C..J 盘，本机约 20 s；缓存命中时这个字段为 true，便于解释
+    // "为什么这次 initialize 快了"。source 仍是 auto，契约不变。
+    out["cached"] = choice->from_cache;
     Json alternatives = Json::array();
     for (const td::TdInstall& install : choice->alternatives) {
         Json item = Json::object();
@@ -1999,6 +2003,7 @@ Json Bridge::Call(std::string_view handler, const Json& arguments) {
     if (name == "cables") return CablesTool(arguments);
     if (name == "probe_status") return ProbeStatusTool(arguments);
     if (name == "probe_config") return ProbeConfigTool(arguments);
+    if (name == "probe_verify") return ProbeVerifyTool(arguments);
     if (name == "probe_capture") return ProbeCaptureTool(arguments);
     if (name == "completion") return CompletionTool(arguments);
     if (name == "instantiation") return InstantiationTool(arguments);
@@ -2149,10 +2154,20 @@ Json Bridge::ProjectFiles(const Json& arguments) {
         it != arguments.end() && it->is_boolean()) {
         include_excluded = it->get<bool>();
     }
+    // 被排除清单单独给（默认只给前 50 条）：agent 通常只需要"有几条、什么原因"，
+    // 全量塞进同一个 files 数组反而看不出哪条进了构建。
+    int excluded_limit = 50;
+    if (const auto it = arguments.find("limit"); it != arguments.end() && it->is_number_integer()) {
+        excluded_limit = std::clamp(it->get<int>(), 1, 2000);
+    }
 
     Json files = Json::array();
-    int total = 0;
+    Json excluded = Json::array();
     bool truncated = false;
+    bool excluded_truncated = false;
+    int in_build = 0;
+    int excluded_count = 0;
+    int missing_count = 0;
     for (const project::AlFile& file : proj.files) {
         const std::string file_kind(project::FileKindName(file.kind));
         if (kind == "hdl") {
@@ -2160,8 +2175,34 @@ Json Bridge::ProjectFiles(const Json& arguments) {
         } else if (kind != "all" && file_kind != kind) {
             continue;
         }
+        // reason 的优先级 = InBuild() 的短路顺序：先不存在，再没启用，最后才是 .al 里的排除标记。
+        // 一条文件同时满足多个条件时只报最"硬"的那个，保证 in_build/excluded/missing 三类互斥、
+        // 三个计数相加等于文件总数（agent 可以拿它做一致性检查）。
+        std::string reason;
+        if (!file.exists) {
+            reason = "missing";
+            ++missing_count;
+        } else if (!file.enabled) {
+            reason = "disabled";
+            ++excluded_count;
+        } else if (file.excluded) {
+            reason = "auto-excluded";
+            ++excluded_count;
+        } else {
+            ++in_build;
+        }
+        if (!file.InBuild()) {
+            if (static_cast<int>(excluded.size()) < excluded_limit) {
+                Json item = Json::object();
+                item["path"] = file.path;
+                item["kind"] = file_kind;
+                item["reason"] = reason;
+                excluded.push_back(std::move(item));
+            } else {
+                excluded_truncated = true;
+            }
+        }
         if (!include_excluded && !file.InBuild()) continue;
-        ++total;
         if (files.size() >= 2000) {
             truncated = true;
             continue;
@@ -2179,11 +2220,20 @@ Json Bridge::ProjectFiles(const Json& arguments) {
         files.push_back(std::move(item));
     }
 
+    // counts 覆盖**kind 过滤后**的全部文件（与 excluded 同口径），不受 include_excluded 影响。
+    Json counts = Json::object();
+    counts["in_build"] = in_build;
+    counts["excluded"] = excluded_count;
+    counts["missing"] = missing_count;
+
     Json out = Json::object();
     out["ok"] = true;
     out["project"] = proj.name;
     out["files"] = std::move(files);
     out["truncated"] = truncated;
+    out["counts"] = std::move(counts);
+    out["excluded"] = std::move(excluded);
+    out["excluded_truncated"] = excluded_truncated;
     return out;
 }
 
@@ -3716,6 +3766,53 @@ Json Bridge::ProbeConfigTool(const Json& arguments) {
     return probe::Configure(proj, signals, write);
 }
 
+Json Bridge::ProbeVerifyTool(const Json& arguments) {
+    const project::Project& proj = ProjectFor(arguments);
+    bool include_bits = false;
+    if (const auto it = arguments.find("include_bits");
+        it != arguments.end() && it->is_boolean()) {
+        include_bits = it->get<bool>();
+    }
+
+    // "名字在设计里到底有没有" 只有 HDL 索引能回答。这层已经在（EnsureHdlIndex），
+    // 所以不把 hdl 依赖塞进 flow/probe：判定逻辑留在 MCP 侧，probe::Verify 只收一个谓词。
+    // ⚠ 索引是懒构建的（大工程冷构建几百 ms），所以**第一次真正需要判定时**才建；
+    //   probe::Verify 只在确实缺 net 时才调这个谓词，"全嵌进去了"的常规路径零成本。
+    const hdl::HdlIndex* index = nullptr;
+    std::map<std::string, bool> cache;
+    const std::string top_prefix = proj.top.empty() ? std::string() : proj.top + "/";
+    const auto known = [this, &proj, &index, &cache,
+                        &top_prefix](std::string_view name) -> bool {
+        std::string base(name);
+        if (!top_prefix.empty() && base.rfind(top_prefix, 0) == 0) {
+            base.erase(0, top_prefix.size());
+        }
+        const std::size_t open = base.find_last_of('[');
+        if (open != std::string::npos) base.erase(open);
+        const std::size_t slash = base.find_last_of('/');
+        if (slash != std::string::npos) base.erase(0, slash + 1);
+        if (base.empty()) return false;
+        const auto hit = cache.find(base);
+        if (hit != cache.end()) return hit->second;
+        if (index == nullptr) index = &EnsureHdlIndex(proj);
+
+        bool found = index->ModuleByName(base) != nullptr;
+        if (!found) {
+            // SearchSymbols 是大小写不敏感子串匹配，必须再按原样精确比一次
+            //（Verilog 大小写敏感，`Foo` 不能因为存在 `foo` 就被判成"名字没写错"）。
+            for (const hdl::WorkspaceSymbol& symbol : index->SearchSymbols(base)) {
+                if (symbol.name == base) {
+                    found = true;
+                    break;
+                }
+            }
+        }
+        cache.emplace(base, found);
+        return found;
+    };
+    return probe::Verify(proj, include_bits, known);
+}
+
 Json Bridge::ProbeCaptureTool(const Json& arguments) {
     const project::Project& proj = ProjectFor(arguments);
     std::optional<td::TdChoice> choice = td::FindTd(options_.td_path);
@@ -3774,6 +3871,54 @@ Json Bridge::ProbeCaptureTool(const Json& arguments) {
     }
     if (const auto it = arguments.find("bus_op"); it != arguments.end() && it->is_string()) {
         capture_options.trigger.bus_op = it->get<std::string>();
+    }
+    // per-bus 触发值：`[{name, op, value}]`，value 是**二进制位串**（与采集 CSV 同格式）。
+    // 校验放在这里而不是后面：TD 对未知 op / 缺名字的元素不会报错，只会静默按默认处理，
+    // 那种失败在 agent 侧看起来就是"工具不支持这个条件"。
+    if (const auto it = arguments.find("buses"); it != arguments.end() && it->is_array()) {
+        for (const Json& item : *it) {
+            if (!item.is_object()) {
+                throw ToolError(
+                    "buses entries must be objects: {\"name\":\"pwm_reg0_i[15:0]\",\"op\":\"equal\","
+                    "\"value\":\"0000000000000000\"}");
+            }
+            const std::string name = item.value("name", std::string());
+            if (name.empty()) {
+                throw ToolError("buses entry is missing \"name\" (the watched bus, e.g. pwm_reg0_i[15:0])");
+            }
+            probe::CaptureOptions::Trigger::BusTrigger bus;
+            bus.name = name;
+            if (const auto op = item.find("op"); op != item.end()) {
+                if (!op->is_string()) {
+                    throw ToolError("buses entry \"" + name + "\": op must be a string");
+                }
+                bus.op = op->get<std::string>();
+                if (!probe::IsTriggerBusOp(bus.op)) {
+                    // 白名单与 schema 的 enum 逐字一致；故意不含 dont_care
+                    //（TD 里全局 bus op=dont_care 会让 per-net 条件失效）。
+                    throw ToolError(
+                        "buses entry \"" + name + "\": unsupported op \"" + bus.op +
+                        "\" (expected equal, not_equal, less, less_equal, greater, "
+                        "greater_equal or bit_trigger)");
+                }
+            }
+            if (const auto value = item.find("value"); value != item.end()) {
+                if (!value->is_string()) {
+                    throw ToolError("buses entry \"" + name +
+                                    "\": value must be a binary bit string, e.g. \"0000000000000000\"");
+                }
+                const std::optional<std::uint64_t> bits =
+                    probe::ParseBitString(value->get<std::string>());
+                if (!bits.has_value()) {
+                    throw ToolError("buses entry \"" + name +
+                                    "\": value must be a binary bit string, e.g. "
+                                    "\"0000000000000000\" (only 0/1, at most 64 significant bits)");
+                }
+                bus.value = *bits;
+                bus.has_value = true;
+            }
+            capture_options.trigger.buses.push_back(std::move(bus));
+        }
     }
     if (const auto it = arguments.find("timeout");
         it != arguments.end() && it->is_number_integer()) {

@@ -73,6 +73,7 @@ const char* const kExpectedNames[] = {
     "fpga_probe_status",
     "fpga_probe_config",
     "fpga_probe_capture",
+    "fpga_probe_verify",
     "fpga_flow_wait",
     "fpga_flow_log",
     "fpga_flow_issues",
@@ -119,10 +120,10 @@ void CheckEnumsAreStrings(const Json& schema, const std::string& path) {
 
 }  // namespace
 
-TEST(McpTools, TableHas47Tools) {
+TEST(McpTools, TableHas48Tools) {
     // 39 个 Python 对齐工具 + P-B5 的 job_status/job_cancel + probe_* 三个
-    // + run_diff/testbench/workspace_symbols + 本轮新增的 fpga_guide
-    EXPECT_EQ(fpgalsp::mcp::AllTools().size(), 47u);
+    // + run_diff/testbench/workspace_symbols + fpga_guide + fpga_probe_verify
+    EXPECT_EQ(fpgalsp::mcp::AllTools().size(), 48u);
 }
 
 TEST(McpTools, NamesMatchDeclaredOrder) {
@@ -138,7 +139,7 @@ TEST(McpTools, NamesAreUnique) {
     for (const Tool& tool : fpgalsp::mcp::AllTools()) {
         EXPECT_TRUE(names.insert(tool.name).second) << tool.name;
     }
-    EXPECT_EQ(names.size(), 47u);
+    EXPECT_EQ(names.size(), 48u);
 }
 
 TEST(McpTools, EveryToolHasTitleAndDescription) {
@@ -236,7 +237,7 @@ TEST(McpTools, VisibleToolsDefaultHidesGatedTools) {
     const std::vector<Json> visible = fpgalsp::mcp::VisibleTools(false, false);
     // 47 个工具减去 5 个 flow 门控、3 个 write 门控、外加 0.16.0 的
     // probe_config(write) 与 probe_capture(flow) => 37（fpga_guide 只读、默认可见）
-    EXPECT_EQ(visible.size(), 37u);
+    EXPECT_EQ(visible.size(), 38u);
     const std::set<std::string> gated = {"fpga_flow_run",   "fpga_flow_cancel", "fpga_analysis_run",
                                          "fpga_job_cancel",
                                          "fpga_strategy_compare", "fpga_project_update",
@@ -249,12 +250,12 @@ TEST(McpTools, VisibleToolsDefaultHidesGatedTools) {
 }
 
 TEST(McpTools, VisibleToolsAllIncludesEverything) {
-    EXPECT_EQ(fpgalsp::mcp::VisibleTools(true, true).size(), 47u);
+    EXPECT_EQ(fpgalsp::mcp::VisibleTools(true, true).size(), 48u);
     // flow 门控 5 个（flow_run/flow_cancel/job_cancel/analysis_run/strategy_compare）
     // + probe_capture；write 门控 3 个（project_update/project_add_source/project_rename）
     // + probe_config
-    EXPECT_EQ(fpgalsp::mcp::VisibleTools(true, false).size(), 43u);
-    EXPECT_EQ(fpgalsp::mcp::VisibleTools(false, true).size(), 41u);
+    EXPECT_EQ(fpgalsp::mcp::VisibleTools(true, false).size(), 44u);
+    EXPECT_EQ(fpgalsp::mcp::VisibleTools(false, true).size(), 42u);
 }
 
 TEST(McpTools, FindToolReturnsNullForUnknown) {

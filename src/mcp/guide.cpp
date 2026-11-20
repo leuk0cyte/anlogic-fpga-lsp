@@ -48,8 +48,11 @@ when the workspace holds more than one `.al`.
 * Read-only tools always work. Write tools need `--allow-write`, flow tools
   need `--allow-flow`. A gated tool is *absent* from `tools/list`, so
   "unknown tool" usually means "server started without the flag".
-* Each new MCP process costs ~20 s of TD startup. phy takes 5-15 min. Keep a
-  long run inside one session; exiting the process kills the TD children.
+* MCP startup is ~0.1 s (TD discovery is a 40 ms directory scan, and its result
+  is cached under %TEMP%/fpgalsp). phy takes 5-15 min. Keep a long run inside one
+  session; exiting the process kills the TD children. Always close stdin after
+  sending the `exit` notification, otherwise the server waits for EOF and your
+  client looks like it hung for its whole timeout.
 * Read `troubleshoot` before calling anything a failure: some TD `*-WARNING`
   lines are normal, and `ok:true` does not imply the artifact you want exists.
 )MD";

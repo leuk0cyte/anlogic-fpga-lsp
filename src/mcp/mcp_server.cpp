@@ -62,7 +62,7 @@ constexpr const char* kInstructions =
     "6. Sample clock and sample depth are compile-time values; MCP cannot change them (TD "
     "limitation). At capture time only trigger_position/window_*/trigger_* are adjustable.\n"
     "7. Permissions and cost: --allow-flow / --allow-write enable the gated tools; each new "
-    "MCP process costs ~20 s of startup, so keep long runs in one session; phy usually takes "
+    "MCP process starts in ~0.1 s (TD discovery is cached); keep long runs in one session (exiting the process kills TD children) and close stdin after the `exit` notification; phy usually takes "
     "5-15 min.";
 
 Json Response(const Json& id, Json result) {

@@ -6,7 +6,7 @@
 | --- | --- |
 | **全新目录干净构建** | configure 29 s → build 3.3 min → **844 个目标全部成功**（Release + 全量 LTO）；无 LTO 的 `windows-msvc-dev` 全新目录 **56 s** |
 | **`ctest` 全量** | **63/63 通过**（`unit` 43 · `td` 4 · `e2e` 5 · `formatgate` 4 · `lintgate` 3 · `gate` 2 · `generator` 1 · `mcp` 1）；preset 默认 **8 路并行**，实测 **62 s**（串行 92–104 s） |
-| **原生产物** | `build/bin/fpgalsp-native.exe`（**6,543,360 B**，全量 LTCG；SHA256 `091137DB…97D198`） |
+| **原生产物** | `build/bin/fpgalsp-native.exe`（**6,592,512 B**，全量 LTCG；SHA256 `D0857390…96BC72`） |
 | **单元测试规模** | 43 个 gtest target |
 
 > 构建/测试的并行度分析（为什么 192 线程帮不上忙、时间精确花在哪、日常该用哪个 preset）见
@@ -317,9 +317,9 @@ flash +0.5~0.7 %。
 
 | 项 | 值 |
 | --- | --- |
-| 扩展包 | `vscode-extension/fpga-lsp-anlogic-0.18.3.vsix`（230 文件，3,208,578 B） |
-| 打包内置的服务端 | `build/bin/fpgalsp-native.exe`（Release + 全量 LTO，6,543,360 B，SHA256 `091137DB…7D198`） |
-| 一致性校验 | 解包后 `extension/server/bin/fpgalsp-native.exe` 的 SHA256 与该二进制**逐字节相同**；`extension/package.json` 版本 = 0.18.3 |
+| 扩展包 | `vscode-extension/fpga-lsp-anlogic-0.18.4.vsix`（230 文件，3,231,689 B） |
+| 打包内置的服务端 | `build/bin/fpgalsp-native.exe`（Release + 全量 LTO，6,592,512 B，SHA256 `D0857390…6BC72`） |
+| 一致性校验 | 解包后 `extension/server/bin/fpgalsp-native.exe` 的 SHA256 与该二进制**逐字节相同**；`extension/package.json` 版本 = 0.18.4 |
 
 ### 升级后工程侧的变化
 
@@ -376,3 +376,30 @@ flash +0.5~0.7 %。
   `unit.mcp_server` 的 prompts 断言、`mcp_schema_consistency`）；插件 `node test/run.js` **43/43**。
 - MCP 手工核验：`instructions=1613` 字符、`tools/list` 47 个且首位 `fpga_guide`、
   `prompts/list` 4 项、`prompts/get` 可渲染、`fpga_guide` 7 个 topic 全部返回、未知 topic 回落 `overview`。
+
+## P1/P2 能力补齐（2026-11-21 深夜）
+
+### P1：探针可观测性的三块短板
+
+| 项 | 改动 | 验证 |
+| --- | --- | --- |
+| per-bus 触发值 | `fpga_probe_capture` 新增 `buses:[{name,op,value}]`（`op` 与 LSP 侧同一套枚举：`equal/not_equal/less/less_equal/greater/greater_equal/bit_trigger`），映射到 `CaptureOptions.trigger.buses`；非法 op/缺 name/value 非 0-1 → `ToolError`，不让 TD 去报 | 传 `op:"bogus"` 返回 `Error: buses entry "x": unsupported op "bogus" ...` |
+| 采样时钟/深度"不可改+原因" | `fpga_probe_status` / `fpga_probe_verify` 新增 `sampling:{clock,depth,editable:false,reason}`；平铺字段保留 | 实测返回 `editable:false` 与英文 reason（编译期量、CLI 无 setter、后端只 patch 临时 cwc 的 `<trigger>`） |
+| `fpga_probe_verify`（新工具，48 个） | 逐位回答"哪几根被丢了、为什么"：`signals{requested,embedded,missing}`、`buses[].{width,embedded_bits,missing_bits,status,reason}`、`missing_nets`、`hints`、`stale`。`reason` 优先级：`no-bitstream` → `partial` → `dropped-by-td`（HDL 索引能查到该名）→ `not-in-build`；默认前 32 条 + `truncated` | 真工程实测：`requested=64 / embedded=0 / missing=64`，`bus0.status=dropped, reason=no-bitstream`，hint 明确要求"改 mdn 后必须重跑 syn+phy" |
+
+### P2：启动、工程文件视图、引用
+
+| 项 | 改动 | 验证 |
+| --- | --- | --- |
+| 安装发现缓存 | 结果写入 `%TEMP%\fpgalsp\td-install-cache.txt`（root/exe/version/saved_at）；失效条件：`FPGALSP_NO_TD_CACHE=1`、exe 不存在、超过 TTL（默认 24 h，`FPGALSP_TD_CACHE_TTL` 秒）；显式 `--td`/`TD_ROOT` 不读缓存但仍刷新。`TdChoice.from_cache` + `fpga_td_info` 的 `cached` 字段暴露命中 | 单测 `TdInstallReal.SecondLookupIsServedFromCache`；实测第二次 `cached=true` |
+| `project_files` 默认区分构建/排除 | 默认响应就带 `counts{in_build,excluded,missing}` 与 `excluded[{path,kind,reason}]`（`reason` = auto-excluded/disabled/missing），`files` 仍只含参与构建的；`include_excluded:true` 保持旧行为；新增 `limit` 限 `excluded` 条数 | 真工程：`in_build=84, excluded=21`（`src/` 那棵废树一次性可见） |
+| `references` 支持端口/网 | **结论：hdl 索引层本来就支持**（文本级标识符匹配），之前"返回空"是文件不在构建索引里（`src/WHG.v` 不在 `.al`）。本轮把 `include_declaration` 过滤从 features 下沉到 `HdlIndex::References(path,line,char,bool)`，并补单测（端口 7 条、内部 net 3 条、端口连接 3 条；`include_declaration=false` 各减 1） | 旧二进制 + 真工程实测同结论 |
+
+### ⚠ 一条被纠正的旧结论：所谓"每次 MCP 调用 20 s"
+
+之前记的"每个新 MCP 进程约 20 s 启动开销"**是错的**。实测：`--help` 0.0 s、`initialize` 0.03 s、
+真正扫盘的 TD 发现 0.04 s。20 s 来自**我们自己的客户端脚本**——发完 `exit` 通知没关 stdin，
+服务端按 MCP 规范等 EOF，客户端于是耗到自己的 20 s 超时再 kill。
+修掉 `build/_probe_audit/mcp_call.py` 里这一行后，同一次调用从 **20 s 降到 0.2 s**。
+`fpga_guide` 的 overview、`initialize.instructions`、`doc/mcp-usage.md` 的相应文案都已改正；
+安装发现缓存仍保留（在磁盘多/网络盘的机器上仍有用），但本机收益接近 0。

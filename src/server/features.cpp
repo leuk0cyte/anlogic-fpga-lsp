@@ -322,13 +322,10 @@ Json Hover(const HdlIndex& index, std::string_view path, int line, int character
 Json References(const HdlIndex& index, std::string_view path, int line, int character,
                 bool include_declaration) {
     Json out = Json::array();
-    const std::optional<SymbolAtResult> symbol = index.SymbolAt(path, line, character);
-    for (const Location& location : index.References(path, line, character)) {
-        if (!include_declaration && symbol.has_value() && location.path == symbol->file &&
-            location.line == symbol->span.line &&
-            location.character == symbol->span.start_character) {
-            continue;
-        }
+    // 声明的取舍（include_declaration）已经下沉到 HdlIndex::References 的 4 参重载：
+    // 端口/net 与 module/instance 走同一条文本级路径，这里只做 Location 序列化。
+    for (const Location& location :
+         index.References(path, line, character, include_declaration)) {
         out.push_back(MakeLocation(location.path, location.line, location.character,
                                    location.end_character));
     }

@@ -818,6 +818,60 @@ TEST(HdlIndexQuery, IterateInstances) {
 }
 
 // -----------------------------------------------------------------------------
+// 10b. 引用：端口名 / 内部 net 名（P2-2）
+// -----------------------------------------------------------------------------
+//  之前怀疑"引用只认 module/instance"，实测不是：References 是**文本级 token 搜索**，
+//  光标处只要是标识符就能命中。这里把这条语义钉死 —— 端口 / 网 / 端口连接三种位置
+//  都必须有引用，且 include_declaration 只影响"声明本身"那一条。
+
+TEST(HdlIndexQuery, ReferencesOfPortNameAndIncludeDeclaration) {
+    SampleProject project;
+    // top.v 第 0 行第 17 列 = 端口 clk 的声明
+    const std::vector<fpgalsp::hdl::Location> all =
+        project.index.References("Y:/proj/src/top.v", 0, 17);
+    ASSERT_GE(all.size(), 2u) << "端口名应该同时命中声明与使用（assign w = {8{clk}}）";
+    int declarations = 0;
+    for (const auto& location : all) {
+        if (location.path == "Y:/proj/src/top.v" && location.line == 0 &&
+            location.character == 17) {
+            ++declarations;
+        }
+    }
+    EXPECT_EQ(declarations, 1) << "声明本身也应算一条引用（include_declaration 默认 true）";
+
+    const std::vector<fpgalsp::hdl::Location> uses =
+        project.index.References("Y:/proj/src/top.v", 0, 17, /*include_declaration=*/false);
+    EXPECT_EQ(uses.size() + 1, all.size()) << "false 只应掉掉声明那一条";
+    for (const auto& location : uses) {
+        EXPECT_FALSE(location.path == "Y:/proj/src/top.v" && location.line == 0 &&
+                     location.character == 17)
+            << "include_declaration=false 时声明不能出现在结果里";
+    }
+}
+
+TEST(HdlIndexQuery, ReferencesOfInternalNetAndPortConnection) {
+    SampleProject project;
+    // top.v 第 1 行第 13 列 = `wire [7:0] w;` 的内部 net 声明
+    const std::vector<fpgalsp::hdl::Location> all =
+        project.index.References("Y:/proj/src/top.v", 1, 13);
+    ASSERT_GE(all.size(), 3u) << "net 应命中 声明 + .d(w) 连接 + assign w";
+    const std::vector<fpgalsp::hdl::Location> uses =
+        project.index.References("Y:/proj/src/top.v", 1, 13, /*include_declaration=*/false);
+    EXPECT_EQ(uses.size() + 1, all.size());
+
+    // 光标停在例化的端口连接 `.d(` 上（端口连接位置），也要拿得到引用
+    const ParsedFile* file = project.index.File("Y:/proj/src/top.v");
+    ASSERT_NE(file, nullptr);
+    const Instance* instance = FindInstance(*file, "u_child");
+    ASSERT_NE(instance, nullptr);
+    ASSERT_FALSE(instance->connection_ports.empty());
+    const auto& position = instance->connection_ports[0].first;
+    const std::vector<fpgalsp::hdl::Location> connection =
+        project.index.References("Y:/proj/src/top.v", position.first, position.second);
+    EXPECT_GE(connection.size(), 1u) << "端口连接位置必须能拿到引用";
+}
+
+// -----------------------------------------------------------------------------
 // 11. BuildIndex（工程级：缓冲区优先 / VHDL / IP）
 // -----------------------------------------------------------------------------
 

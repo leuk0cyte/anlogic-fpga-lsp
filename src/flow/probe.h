@@ -33,6 +33,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -60,6 +61,11 @@ std::vector<std::string> NormaliseSignals(const std::vector<std::string>& signal
 // 把 `WHG/pwm_reg7_i[15:0]` / `[0:7]` 展开成逐位名字；其它形态原样返回。
 // 用户从 RTL 里复制的就是范围写法，而 mark_debug 要逐位网名。
 std::vector<std::string> ExpandSignalRanges(const std::vector<std::string>& signals);
+
+// `"0000000000000001"`（与采集 CSV 同格式的位串，**左高位**）-> 整数。
+// 返回 nullopt = 空串或含 0/1 以外的字符 —— MCP 层据此直接报 ToolError，
+// 而不是把这个值悄悄当 0 传给 TD（那会得到"永远不触发"却看不出原因）。
+std::optional<std::uint64_t> ParseBitString(std::string_view bits);
 
 struct MdnConfig {
     bool ok = false;
@@ -90,6 +96,10 @@ struct CwcBus {
     std::string instance;
     std::string type;  // MARK_DEBUG_PROBE / ...
     bool enabled = true;
+    // `<bus>` 下面挂的逐位 `<net name="pwm_reg0_i[15]" .../>`。
+    // 只有在 bus 名**不带** `[msb:lsb]` 时才需要它来还原位宽/位号
+    //（TD 不同版本的 compiled.cwc 两种写法都出现过）。
+    std::vector<std::string> nets;
 };
 
 struct CwcSnapshot {
@@ -159,7 +169,12 @@ std::string CompiledData(const project::Project& project);
 
 // { ok, project_target, chip_debugger, mdn:{exists,signals,count}, watcher:{present,
 //   compiled_cwc, compiled_bit, clock, sample_depth, buses, stale, missing_in_bit,
-//   extra_in_bit}, ready, matches_user_mdn, reason }
+//   extra_in_bit}, sampling:{clock,depth,editable,reason}, ready, matches_user_mdn, reason }
+//
+// ⚠ `sampling` 是"不可改 + 原因"的显式表达：采样时钟/深度在 TD 里是**编译期**
+//   属性（GUI 的 ChipWatcher 实例在 Gate 阶段写死），CLI 没有 setter，本后端也从不
+//   重写 compiled.cwc（只把 <trigger> patch 进临时副本）。所以 editable 恒为 false，
+//   reason 是给 agent 看的英文原句 —— 别翻译、别改成可编辑。
 //
 // ⚠ `stale:true` = 改了 `chip_debugger/user.mdn` 但没重跑**完整** Place & Route。
 //   增量布线（只跑 route）不会重新执行 opt_place 阶段的 insert_debugger，
@@ -195,6 +210,8 @@ struct CaptureOptions {
         std::vector<std::pair<std::string, std::string>> net_conds;  // 网名 -> cond
         // 按总线设置：op + 期望值（16 进制/十进制都行）。后端会把 value 展开成
         // 逐位 `cond="high"/"low"`（高位对应 msb）。这是"触发值"最自然的写法。
+        // ⚠ MCP 侧收的是**二进制位串**（与 CSV 同格式），由 ParseBitString 转成这里的整数，
+        //   所以 `has_value` 与 `value` 是"已解析"的状态，别在 MCP 层再算一遍。
         struct BusTrigger {
             std::string name;             // `pwm_reg0_i` 或 `pwm_reg0_i[15:0]`
             std::string op;               // 空 = 不单独指定（用 bus_op）
@@ -227,6 +244,27 @@ struct CaptureOptions {
 // 把一份 compiled.cwc 的触发字段改掉（纯文本替换，不动 <logic_eram> 的 depth，
 // 所以与 bit 仍然匹配、`Chipwatcher code` 不变）。返回新文本。
 std::string PatchTrigger(std::string_view cwc_text, const CaptureOptions::Trigger& trigger);
+
+// per-bus 比较器白名单（与 TD 的 bus op 取值一致）。
+// ⚠ 故意**不含** `dont_care`：TD 里全局 `bus op=dont_care` 会让 per-net 条件失效，
+//   所以 per-bus 上给 dont_care 没有意义，MCP 层直接判非法。
+bool IsTriggerBusOp(std::string_view op);
+
+// -----------------------------------------------------------------------------
+// 探针验收（只读）—— "我加的探针哪几根被丢了、为什么"
+// -----------------------------------------------------------------------------
+// 输入：chip_debugger/user.mdn 的 mark_debug 清单 + phy_1/cw/compiled.cwc 的 bus/net 清单，
+// 逐位比对（同一 bus 内按 bit index 对齐）。
+//
+// `known_name` 用来区分两种"缺"：名字在设计里存在 -> `dropped-by-td`（被 TD 丢了），
+// 不存在 -> `not-in-build`（名字写错 / 不在构建里）。传空 = 无法判定，
+// 一律按 `dropped-by-td` 报（避免为了判定把 hdl 依赖塞进 flow 层）。
+//
+// 返回 { ok, signals:{requested,embedded,missing}, buses:[{name,width,embedded_bits,
+//        missing_bits,status,reason}], missing_nets:[...], truncated, sampling:{...},
+//        stale, hints:[...] }
+jsonrpc::Json Verify(const project::Project& project, bool include_bits,
+                     const std::function<bool(std::string_view)>& known_name = {});
 
 // 返回 { ok, stage, reason, instance, clock, sample_depth, trigger_index,
 //        columns:[{bus,width}], signals:{bus:[值…]}, samples, csv, log }

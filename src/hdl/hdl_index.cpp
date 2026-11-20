@@ -2462,6 +2462,11 @@ std::vector<WorkspaceSymbol> HdlIndex::SearchSymbols(std::string_view query) con
 
 std::vector<Location> HdlIndex::References(std::string_view path, int line,
                                            int character) const {
+    return References(path, line, character, /*include_declaration=*/true);
+}
+
+std::vector<Location> HdlIndex::References(std::string_view path, int line, int character,
+                                           bool include_declaration) const {
     std::vector<Location> out;
     const ParsedFile* file = File(path);
     if (file == nullptr) return out;
@@ -2473,12 +2478,22 @@ std::vector<Location> HdlIndex::References(std::string_view path, int line,
     const std::string wanted = IdentKey(token->text);
     if (wanted.empty()) return out;
 
+    // 声明位置：只在 include_declaration=false 时需要。符号解析失败（例如光标在
+    // 一个只有隐式声明、索引里没有记录的网名上）就退化为"不过滤"，不吞掉真引用。
+    std::optional<SymbolAtResult> symbol;
+    if (!include_declaration) symbol = SymbolAt(path, line, character);
+
     for (const auto& candidate_ptr : files_) {
         if (!candidate_ptr) continue;
         const ParsedFile& candidate = *candidate_ptr;
         for (const Token& other : candidate.tokens) {
             if (other.kind != 'i') continue;
             if (IdentKey(other.text) != wanted) continue;
+            if (symbol.has_value() && candidate.path == symbol->file &&
+                other.line == symbol->span.line &&
+                other.character == symbol->span.start_character) {
+                continue;  // 声明本身
+            }
             out.push_back(LocationOf(candidate.path, other.line, other.character,
                                      other.text));
         }

@@ -1,5 +1,5 @@
 // =============================================================================
-//  src/mcp/tools.cpp —— 39 个工具的 schema 表（逐字来自 Python 参考实现）
+//  src/mcp/tools.cpp —— 48 个工具的 schema 表（逐字来自 Python 参考实现）
 // =============================================================================
 //  ⚠ 本文件的 schema 常量**不要手改**：任何改动都必须先改 Python 版
 //    (Y:\fpga-lsp\fpgalsp\mcp.py 的 TOOLS) 并同步契约，否则
@@ -70,7 +70,8 @@ Json Schema(std::vector<std::pair<std::string, Json>> properties,
 }
 
 // -----------------------------------------------------------------------------
-// 39 个工具（顺序与 Python TOOLS 完全一致 —— 客户端可能依赖首次出现的顺序）
+// 工具表（顺序是契约的一部分：Python 对齐的 39 个在前，C++ 独有工具紧跟其后，
+// 新增的 probe_verify 紧跟在 probe_capture 之后 —— 客户端可能依赖首次出现的顺序）
 // -----------------------------------------------------------------------------
 
 const std::vector<Tool>& AllTools() {
@@ -94,10 +95,11 @@ const std::vector<Tool>& AllTools() {
              "project_info", ""},
         Tool{"fpga_project_files",
              "Project build files",
-             "List HDL/ADC/SDC/IP files recorded in the .al with build/exclusion state.",
+             "List HDL/ADC/SDC/IP files recorded in the .al with build/exclusion state. `files` contains only the files that take part in the build; `counts` splits every (kind-filtered) file into in_build/excluded/missing and `excluded` says why each excluded or missing file is out (auto-excluded|disabled|missing).",
              Schema({{"project", Str("Optional .al path, project directory, or project name. Default: active project.")},
                                           {"kind", Str("Filter by file kind.", {"all", "hdl", "verilog", "vhdl", "adc", "sdc", "ip"})},
-                                          {"include_excluded", Bool("Include files excluded from or missing in the build.")}}, {}),
+                                          {"include_excluded", Bool("Include files excluded from or missing in the build.")},
+                                          {"limit", Int("Maximum entries in `excluded` (default 50).", 1, 2000)}}, {}),
              "project_files", ""},
         Tool{"fpga_project_structure",
              "Module hierarchy",
@@ -352,7 +354,7 @@ const std::vector<Tool>& AllTools() {
         //   status 纯读文件；config 改 chip_debugger/user.mdn；capture 碰真实硬件。
         Tool{"fpga_probe_status",
              "On-chip probe status",
-             "Report the ChipWatcher probe setup of the active project: the signals marked in chip_debugger/user.mdn and the compiled watcher (phy_1/cw/compiled.cwc): clock, sample depth, buses, and whether a probe-enabled bitstream exists. Read-only; no TD session, no hardware access.",
+             "Report the ChipWatcher probe setup of the active project: the signals marked in chip_debugger/user.mdn and the compiled watcher (phy_1/cw/compiled.cwc): clock, sample depth, buses, and whether a probe-enabled bitstream exists. The `sampling` object answers whether the sample clock/depth can be changed at capture time: `editable` is always false because they are compile-time (TD only writes them from the GUI ChipWatcher instance before the Gate stage). Read-only; no TD session, no hardware access.",
              Schema({}, {}),
              "probe_status", ""},
         Tool{"fpga_probe_config",
@@ -370,10 +372,11 @@ const std::vector<Tool>& AllTools() {
         Tool{"fpga_probe_capture",
              "Capture on-chip probe data",
              "Read the live values of the embedded probes over JTAG and return them per sample. Runs a TD session: import_device, open_project, config_chipwatcher, get_hw_cws, connect_cable, download (mode jtag_burst), run_hw_cw -trigger_now, wait_on_hw_cw, write_hw_cw_data. Requires a board and a probe-enabled bitstream. Refuses when chip_debugger/user.mdn no longer matches the probes embedded in the bitstream. download:true reprograms SRAM and therefore needs confirm:true.\n"
+             "Trigger values: global trigger_type/bus_op/window_* plus per-bus `buses:[{name,op,value}]` (value is a binary bit string, the same format as the capture CSV, e.g. \"0000000000000000\" = trigger when the counter wraps to 0). A per-bus condition only takes effect when bus_op (the global comparator) is also given AND trigger_enabled:true; in TD a bus op=dont_care disables the per-net conditions.\n"
              "Preconditions: phy_1/cw/compiled.cwc and compiled.bit from a phy run; a board on a cable; no other hardware operation. download auto/true needs confirm:true.\n"
              "Cost: ~20-60 s (17.4 s measured with the bit already loaded; a download adds the SRAM load); phy 5-15 min if a rebuild is needed first.\n"
              "Failure modes: ok:true means samples were read, not that they are the signals you marked - stale/missing_in_bit means the bit is older than user.mdn. Sample clock and depth are compile-time; only trigger_*/window_* are runtime.\n"
-             "Example: {\"download\":\"auto\",\"confirm\":true,\"trigger_now\":true,\"trigger_position\":512}",
+             "Example: {\"download\":\"auto\",\"confirm\":true,\"trigger_now\":false,\"bus_op\":\"equal\",\"trigger_enabled\":true,\"buses\":[{\"name\":\"WHG/e2e_cnt2l\",\"op\":\"equal\",\"value\":\"0000000000000000\"}]}",
              Schema({{"project", Str("Optional .al path, project directory, or project name.")},
                       {"instance", Str("Watcher instance name (default: read from compiled.cwc).")},
                       {"cable", Str("Cable index for -cable (default 0).")},
@@ -387,12 +390,28 @@ const std::vector<Tool>& AllTools() {
                       {"window_num", Int("Number of trigger windows (1..sample depth).", 1, 1024)},
                       {"window_depth", Int("Samples per window (<= sample depth).", 1, 65536)},
                       {"trigger_type", Str("Condition combinator.", {"basic_and", "basic_or"})},
-                      {"trigger_enabled", Bool("Enable or disable the trigger condition.")},
-                      {"bus_op", Str("Comparator applied to every watched bus.", {"dont_care", "equal", "not_equal", "less", "less_equal", "greater", "greater_equal", "bit_trigger"})},
+                      {"trigger_enabled", Bool("Enable or disable the trigger condition (required for per-bus conditions to take effect).")},
+                      {"bus_op", Str("Comparator applied to every watched bus (required for per-bus conditions; dont_care disables them in TD).", {"dont_care", "equal", "not_equal", "less", "less_equal", "greater", "greater_equal", "bit_trigger"})},
+                      {"buses", Arr("Per-bus trigger values. value is a binary bit string (left = msb), e.g. \"0000000000000000\" for 'counter wrapped to 0'. Empty array = no per-bus condition. Requires bus_op and trigger_enabled:true to take effect in TD.",
+                                    Schema({{"name", Str("Watched bus name as it appears in the watcher, e.g. WHG/e2e_cnt2l or WHG/pwm_reg0_i[15:0].")},
+                                            {"op", Str("Per-bus comparator (same vocabulary as bus_op, without dont_care).", {"equal", "not_equal", "less", "less_equal", "greater", "greater_equal", "bit_trigger"})},
+                                            {"value", Str("Expected value as a binary bit string, left = msb, same format as the capture CSV.")}},
+                                           {"name"}))},
                       {"timeout", Int("wait_on_hw_cw timeout in seconds (default 30).", 1, 600)},
                       {"csv", Str("Optional absolute CSV output path (default phy_1/cw/capture_<timestamp>.csv).")}},
                      {}),
              "probe_capture", "flow"},
+        Tool{"fpga_probe_verify",
+             "Verify probe coverage",
+             "Explain which requested probes made it into the bitstream and which were dropped, by comparing the mark_debug list in chip_debugger/user.mdn with phy_1/cw/compiled.cwc bit by bit. `buses` gives per-bus width/embedded_bits/missing_bits/status with a reason (no-bitstream | dropped-by-td | not-in-build | partial), `missing_nets` lists the exact net names to fix, `stale` says whether the bit still matches the mdn, and `hints` carries the one actionable next step. Read-only: no TD session, no hardware, no bitstream rewrite.\n"
+             "Preconditions: a readable .al project. Works without a compiled watcher (then every requested net is reported as no-bitstream).\n"
+             "Cost: milliseconds - it reads two text files; the HDL index is built lazily only when a requested net is actually missing.\n"
+             "Failure modes: ok:true means the comparison ran, not that the probes are in the bit - read signals.missing/stale. A reason of not-in-build means the name was not found in the project HDL (typo or file not in the build), not that TD dropped it.\n"
+             "Example: {\"include_bits\":true}",
+             Schema({{"project", Str("Optional .al path, project directory, or project name. Default: active project.")},
+                      {"include_bits", Bool("Return every missing net bit (default false: first 32 + truncated:true).")}},
+                     {}),
+             "probe_verify", ""},
         Tool{"fpga_flow_wait",
              "Wait for flow progress",
              "Wait for the active flow to finish and emit MCP progress notifications when the client supplies a progressToken. Read-only; does not start a flow.",

@@ -160,6 +160,24 @@ std::uint64_t BitsToValue(std::string_view bits) {
     return value;
 }
 
+// 采样时钟/深度的"不可改 + 原因"说明。**英文原句**：这是给 agent 读的，
+// 中文注释只解释为什么它必须这么说，字符串本身别翻译。
+constexpr std::string_view kSamplingImmutableReason =
+    "sample clock/depth are compile-time: TD writes them only from the GUI ChipWatcher "
+    "instance before the Gate stage; the CLI has no setter and this backend never rewrites "
+    "compiled.cwc (it only patches <trigger> into a temp copy for runtime trigger changes)";
+
+jsonrpc::Json SamplingJson(const CwcSnapshot& cwc) {
+    jsonrpc::Json out = jsonrpc::Json::object();
+    out["clock"] = cwc.clock;
+    out["depth"] = cwc.sample_depth;
+    // editable 恒 false：不是"暂时没有实现"，而是 TD 的语义里根本没有这条运行期通道。
+    out["editable"] = false;
+    // ⚠ nlohmann::json 直接吃 std::string_view 在不同版本上行为不一致，这里显式转 string。
+    out["reason"] = std::string(kSamplingImmutableReason);
+    return out;
+}
+
 std::string JsonStringList(const std::vector<std::string>& items) {
     jsonrpc::Json array = jsonrpc::Json::array();
     for (const std::string& item : items) array.push_back(item);
@@ -250,6 +268,20 @@ std::vector<std::string> ExpandSignalRanges(const std::vector<std::string>& sign
         }
     }
     return out;
+}
+
+std::optional<std::uint64_t> ParseBitString(std::string_view bits) {
+    std::string trimmed = Trim(bits);
+    if (trimmed.empty()) return std::nullopt;
+    for (const char c : trimmed) {
+        if (c != '0' && c != '1') return std::nullopt;
+    }
+    // 允许前导 0 超过 64 位（16 位总线一般是 16 个字符），超宽时直接判非法，
+    // 而不是静默截断成另一个值 —— 触发值错一位的后果是"抓不到/抓错点"。
+    std::size_t first_one = trimmed.find('1');
+    if (first_one == std::string::npos) return 0ULL;
+    if (trimmed.size() - first_one > 64) return std::nullopt;
+    return BitsToValue(trimmed);
 }
 
 std::vector<std::string> NormaliseSignals(const std::vector<std::string>& signals) {
@@ -394,6 +426,20 @@ CwcSnapshot ParseCwc(std::string_view text) {
         bus.type = Attr(body, "type");
         const std::string enabled = Attr(body, "is_enabled");
         bus.enabled = enabled.empty() || enabled == "yes" || enabled == "true";
+        // 这条 bus 自己的 `<net>` 子元素（到下一个 <bus> / </bus> 为止）。
+        // 有些 TD 版本的 <bus name> 不带 `[msb:lsb]`，位宽只能从这些 net 名还原。
+        {
+            const std::size_t next_bus = text.find("<bus ", open + 4);
+            const std::size_t close = text.find("</bus>", open + 4);
+            std::size_t end = text.size();
+            if (next_bus != std::string_view::npos) end = std::min(end, next_bus);
+            if (close != std::string_view::npos) end = std::min(end, close);
+            for (std::size_t i = text.find("<net ", open + 4);
+                 i != std::string_view::npos && i < end; i = text.find("<net ", i + 5)) {
+                const std::string net_name = Attr(TagBody(text, i), "name");
+                if (!net_name.empty()) bus.nets.push_back(net_name);
+            }
+        }
         if (!bus.name.empty()) {
             const auto found = bus_index.find(bus.name);
             if (found == bus_index.end()) {
@@ -407,6 +453,9 @@ CwcSnapshot ParseCwc(std::string_view text) {
                     existing.instance = bus.instance;
                 }
                 if (existing.type.empty() && !bus.type.empty()) existing.type = bus.type;
+                if (existing.nets.empty() && !bus.nets.empty()) {
+                    existing.nets = std::move(bus.nets);
+                }
             }
         }
         pos = open + 4;
@@ -690,6 +739,9 @@ jsonrpc::Json Status(const project::Project& project) {
     const bool stale = watcher.value("stale", false);
     out["watcher"] = std::move(watcher);
 
+    // 平铺的 clock/sample_depth 保留给现有测试与插件；sampling 是"能不能改"的显式答案。
+    out["sampling"] = SamplingJson(cwc);
+
     bool ready = cwc.ok && IsFile(CompiledBit(project)) && !stale;
     out["ready"] = ready;
     out["matches_user_mdn"] = !stale;
@@ -764,6 +816,290 @@ jsonrpc::Json Configure(const project::Project& project, const std::vector<std::
     out["reason"] =
         "user.mdn updated - run Place & Route (stages [\"phy\"]) so the probes get embedded; "
         "the incremental route does NOT re-insert the debugger";
+    return out;
+}
+
+// -----------------------------------------------------------------------------
+// 探针验收（只读）
+// -----------------------------------------------------------------------------
+
+namespace {
+
+// 一根总线的请求位集合 + 每个 bit 对应的**原始 mdn 名字**（报 missing_nets 时要逐字还回去）。
+struct RequestedBus {
+    std::set<int> bits;
+    std::map<int, std::string> names;
+    std::vector<std::string> scalars;  // 不带 `[n]` 的标量名
+};
+
+// 去掉工程顶层前缀（`WHG/pwm_reg0_i[15:0]` -> `pwm_reg0_i[15:0]`）。
+// mdn 里写的是层次名，compiled.cwc 里的 bus 名可能不带顶层 —— 两边都要归一化到同一侧，
+// 否则每条探针都会被判成 missing（Status 只剥 mdn 一侧，那是历史行为，这里不动它）。
+std::string StripTopPrefix(std::string name, std::string_view top) {
+    if (!top.empty()) {
+        const std::string prefix = std::string(top) + "/";
+        if (name.rfind(prefix, 0) == 0) name.erase(0, prefix.size());
+    }
+    return Trim(name);
+}
+
+// `pwm_reg0_i[3]` / `pwm_reg0_i[15:0]` / `pwm_reg0_i` -> base
+std::string BusBase(std::string_view name) {
+    const std::size_t open = name.find_last_of('[');
+    return Trim(open == std::string_view::npos ? name : name.substr(0, open));
+}
+
+// 解析 `base[bit]`；不是这个形态就返回 false。
+bool ParseBitName(std::string_view name, std::string* base, int* bit) {
+    const std::size_t open = name.find_last_of('[');
+    if (open == std::string_view::npos || name.empty() || name.back() != ']') return false;
+    const std::string_view index = name.substr(open + 1, name.size() - open - 2);
+    if (index.empty()) return false;
+    for (const char c : index) {
+        if (c < '0' || c > '9') return false;
+    }
+    *base = Trim(name.substr(0, open));
+    *bit = std::atoi(std::string(index).c_str());
+    return true;
+}
+
+// 解析 `base[msb:lsb]`；不是这个形态就返回 false。
+bool ParseBusRange(std::string_view name, std::string* base, int* msb, int* lsb) {
+    const std::size_t open = name.find_last_of('[');
+    if (open == std::string_view::npos || name.empty() || name.back() != ']') return false;
+    const std::string inner(name.substr(open + 1, name.size() - open - 2));
+    const std::size_t colon = inner.find(':');
+    if (colon == std::string::npos) return false;
+    const std::string a = Trim(inner.substr(0, colon));
+    const std::string b = Trim(inner.substr(colon + 1));
+    if (a.empty() || b.empty()) return false;
+    for (const char c : a) {
+        if (c < '0' || c > '9') return false;
+    }
+    for (const char c : b) {
+        if (c < '0' || c > '9') return false;
+    }
+    *base = Trim(name.substr(0, open));
+    *msb = std::atoi(a.c_str());
+    *lsb = std::atoi(b.c_str());
+    return true;
+}
+
+// mdn 清单 -> base -> 请求位（按位号对齐，这就是"逐位比对"的一半）。
+std::map<std::string, RequestedBus> CollectRequested(const MdnConfig& mdn,
+                                                     std::string_view top) {
+    std::map<std::string, RequestedBus> out;
+    for (const std::string& raw : mdn.signals) {
+        const std::string name = StripTopPrefix(raw, top);
+        if (name.empty()) continue;
+        std::string base;
+        int bit = 0;
+        if (ParseBitName(name, &base, &bit)) {
+            out[base].bits.insert(bit);
+            // 同一个 bit 写两次时保留第一次的写法（mdn 已去重，这里只是兜底）
+            out[base].names.emplace(bit, raw);
+        } else {
+            out[BusBase(name)].scalars.push_back(raw);
+        }
+    }
+    return out;
+}
+
+// compiled.cwc 的 bus/net 清单 -> base -> 真正嵌进 bit 的位（逐位比对的另一半）。
+// ⚠ bus 名带 `[msb:lsb]` 时直接用范围；不带时用它的 `<net name="base[i]">` 还原
+//   （两种写法都在真实 compiled.cwc 里出现过）。
+std::map<std::string, std::set<int>> CollectEmbedded(const CwcSnapshot& cwc,
+                                                    std::string_view top) {
+    std::map<std::string, std::set<int>> out;
+    for (const CwcBus& bus : cwc.buses) {
+        const std::string name = StripTopPrefix(bus.name, top);
+        std::string base;
+        int msb = 0;
+        int lsb = 0;
+        if (ParseBusRange(name, &base, &msb, &lsb)) {
+            std::set<int>& bits = out[base];
+            const int lo = std::min(msb, lsb);
+            const int hi = std::max(msb, lsb);
+            for (int bit = lo; bit <= hi && bit - lo <= 4096; ++bit) bits.insert(bit);
+            continue;
+        }
+        // 不带范围的写法：先按名字建条目（可能确实是标量），再从 net 名补位号
+        std::set<int>& bits = out[BusBase(name)];
+        for (const std::string& net_raw : bus.nets) {
+            const std::string net = StripTopPrefix(net_raw, top);
+            std::string net_base;
+            int bit = 0;
+            if (!ParseBitName(net, &net_base, &bit)) continue;
+            if (net_base == BusBase(name)) bits.insert(bit);
+        }
+    }
+    return out;
+}
+
+std::string JoinList(const std::vector<std::string>& items) {
+    std::string out;
+    for (const std::string& item : items) {
+        if (!out.empty()) out += ", ";
+        out += item;
+    }
+    return out;
+}
+
+}  // namespace
+
+jsonrpc::Json Verify(const project::Project& project, bool include_bits,
+                     const std::function<bool(std::string_view)>& known_name) {
+    jsonrpc::Json out = jsonrpc::Json::object();
+    out["ok"] = true;
+
+    const MdnConfig mdn = ReadMdn(MdnPath(project));
+    const std::string cwc_path = CompiledCwc(project);
+    const bool has_cwc_file = IsFile(cwc_path);
+    CwcSnapshot cwc;
+    if (has_cwc_file) cwc = ReadCwc(cwc_path);
+    // cwc 不存在**或**解析不出 bus：bit 里就是没有探针，所有请求都算 missing。
+    const bool no_bitstream = !has_cwc_file || !cwc.ok;
+
+    const auto requested = CollectRequested(mdn, project.top);
+    const auto embedded = no_bitstream ? std::map<std::string, std::set<int>>{}
+                                       : CollectEmbedded(cwc, project.top);
+
+    int requested_bits = 0;
+    int embedded_bits = 0;
+    std::vector<std::string> missing_nets;
+    std::vector<std::string> not_found_names;  // not-in-build 的那些 base（hints 用）
+
+    jsonrpc::Json buses = jsonrpc::Json::array();
+    for (const auto& [base, want] : requested) {
+        const auto found = embedded.find(base);
+        const std::set<int>* have = found == embedded.end() ? nullptr : &found->second;
+
+        int width = static_cast<int>(want.bits.size());
+        int hit = 0;
+        for (const int bit : want.bits) {
+            if (have != nullptr && have->count(bit) != 0) {
+                ++hit;
+            } else {
+                const auto name = want.names.find(bit);
+                if (name != want.names.end()) missing_nets.push_back(name->second);
+            }
+        }
+        // 标量（mdn 里没带 `[n]`）：只要 cwc 里有同名 bus 就算嵌进去了
+        for (const std::string& scalar : want.scalars) {
+            ++width;
+            if (have != nullptr) {
+                ++hit;
+            } else {
+                missing_nets.push_back(scalar);
+            }
+        }
+        requested_bits += width;
+        embedded_bits += hit;
+        const int missing = width - hit;
+
+        std::string status;
+        std::string reason;
+        if (missing == 0) {
+            status = "embedded";
+        } else if (hit > 0) {
+            status = "partial";
+            reason = "partial";
+        } else {
+            status = "dropped";
+            if (no_bitstream) {
+                reason = "no-bitstream";
+            } else if (known_name && !known_name(base)) {
+                // 名字在设计里找不到 —— 要么拼错，要么这个网根本没进构建
+                reason = "not-in-build";
+                not_found_names.push_back(base);
+            } else {
+                reason = "dropped-by-td";
+            }
+        }
+
+        jsonrpc::Json item = jsonrpc::Json::object();
+        item["name"] = base;
+        item["width"] = width;
+        item["embedded_bits"] = hit;
+        item["missing_bits"] = missing;
+        item["status"] = status;
+        item["reason"] = reason;
+        buses.push_back(std::move(item));
+    }
+
+    // 多出来的（bit 里有、mdn 里没写）= stale 的另一半
+    int extra_bits = 0;
+    for (const auto& [base, bits] : embedded) {
+        const auto want = requested.find(base);
+        if (want == requested.end()) {
+            extra_bits += static_cast<int>(bits.size()) + 1;  // +1：这条 bus 本身也算多
+            continue;
+        }
+        for (const int bit : bits) {
+            if (want->second.bits.count(bit) == 0) ++extra_bits;
+        }
+    }
+
+    const int missing_total = requested_bits - embedded_bits;
+    jsonrpc::Json signals = jsonrpc::Json::object();
+    signals["requested"] = requested_bits;
+    signals["embedded"] = embedded_bits;
+    signals["missing"] = missing_total;
+    out["signals"] = std::move(signals);
+    out["buses"] = std::move(buses);
+
+    // 逐位全量（include_bits:true）或前 32 条 + truncated（默认）—— 64+ 位的清单
+    // 整段塞进 MCP 响应没有意义，agent 需要的是"哪几根"而不是"全部 1024 根"。
+    constexpr std::size_t kMissingNetLimit = 32;
+    jsonrpc::Json missing = jsonrpc::Json::array();
+    bool truncated = false;
+    for (const std::string& name : missing_nets) {
+        if (!include_bits && missing.size() >= kMissingNetLimit) {
+            truncated = true;
+            break;
+        }
+        missing.push_back(name);
+    }
+    out["missing_nets"] = std::move(missing);
+    out["truncated"] = truncated;
+    out["sampling"] = SamplingJson(cwc);
+
+    const bool stale =
+        cwc.ok && mdn.exists && (missing_total > 0 || extra_bits > 0);
+    out["stale"] = stale;
+
+    // hints：一句话、可照做。顺序按"最该先做什么"排：先补配置，再重跑 phy，最后才是排错。
+    jsonrpc::Json hints = jsonrpc::Json::array();
+    if (!mdn.exists) {
+        hints.push_back(
+            "chip_debugger/user.mdn does not exist: mark the probe signals first "
+            "(fpga_probe_config) and rerun syn+phy.");
+    }
+    if (no_bitstream) {
+        hints.push_back(
+            "No ChipWatcher configuration yet: run phy (after changing the mdn you must rerun "
+            "syn+phy, not just route) so the probes get embedded into phy_1/cw/compiled.cwc.");
+    }
+    if (missing_total > 0 && !no_bitstream) {
+        hints.push_back(
+            "TD dropped these nets: cross-clock-domain (no derivable trigger clock) or "
+            "optimized away; add (* synthesis keep *) or use a same-domain mirror register.");
+    }
+    if (stale) {
+        hints.push_back(
+            "The probes in the bitstream do not match the current mdn; rerun phy so the bit "
+            "matches the mdn.");
+    }
+    if (!not_found_names.empty()) {
+        hints.push_back(
+            "Some requested names are not found in the project HDL index (" +
+            JoinList(not_found_names) +
+            "): confirm the spelling with fpga_symbol_path before rerunning phy.");
+    }
+    if (missing_total == 0 && !no_bitstream && mdn.exists) {
+        hints.push_back("All requested probes are embedded in the bitstream; capture is safe.");
+    }
+    out["hints"] = std::move(hints);
     return out;
 }
 
@@ -858,6 +1194,17 @@ std::string PatchTrigger(std::string_view cwc_text, const CaptureOptions::Trigge
         }
     }
     return text;
+}
+
+bool IsTriggerBusOp(std::string_view op) {
+    // 与 tools.cpp 里 fpga_probe_capture 的 buses[].op 枚举逐字一致；
+    // 这里做校验是为了让非法值在 MCP 层就变成 ToolError，而不是让 TD 报一句
+    // 读不懂的话（TD 对未知 op 的表现是"静默按默认处理"）。
+    static const std::set<std::string> kOps = {
+        "equal",   "not_equal",     "less", "less_equal",
+        "greater", "greater_equal", "bit_trigger",
+    };
+    return kOps.find(std::string(op)) != kOps.end();
 }
 
 // -----------------------------------------------------------------------------

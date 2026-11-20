@@ -7,6 +7,7 @@
 
 #include <gtest/gtest.h>
 
+#include <filesystem>
 #include <map>
 #include <string>
 #include <vector>
@@ -363,6 +364,35 @@ TEST(TdInstallReal, FindsThisMachineInstall) {
     // 这里要求结构化解析出来的键足够长，能挡住 "TD_Release_" 后面接垃圾名的情况。
     EXPECT_GE(VersionKey(choice->version).size(), 4u) << "版本串: " << choice->version;
     EXPECT_TRUE(choice->source == "auto" || choice->source == "explicit");
+}
+
+// 安装发现缓存（%TEMP%\fpgalsp\td-install-cache.txt）：
+//   第一次调用必须真的扫盘（from_cache=false），第二次必须命中缓存。
+//   这里刻意先删缓存文件，避免与同机其它测试进程互相影响。
+TEST(TdInstallReal, SecondLookupIsServedFromCache) {
+    std::error_code ec;
+    const std::filesystem::path temp = std::filesystem::temp_directory_path(ec);
+    if (ec) GTEST_SKIP() << "无法定位系统临时目录";
+    const std::filesystem::path cache = temp / "fpgalsp" / "td-install-cache.txt";
+    std::filesystem::remove(cache, ec);
+
+    _putenv_s("FPGALSP_NO_TD_CACHE", "");      // 确保缓存开启
+    _putenv_s("FPGALSP_TD_CACHE_TTL", "3600"); // 1 h，避免默认 24 h 受机器时间影响
+
+    const auto first = FindTd();
+    ASSERT_TRUE(first.has_value()) << "本机应能找到 TD 安装";
+    EXPECT_FALSE(first->from_cache) << "缓存文件刚删过，第一次必须是真扫描";
+    EXPECT_TRUE(std::filesystem::exists(cache)) << "扫描成功后应写出缓存: " << cache.string();
+
+    const auto second = FindTd();
+    ASSERT_TRUE(second.has_value());
+    EXPECT_TRUE(second->from_cache) << "第二次应命中缓存";
+    EXPECT_EQ(second->root, first->root);
+    EXPECT_EQ(second->exe, first->exe);
+    // 缓存命中时 source 仍是 "auto"：三值契约不变，缓存只通过 from_cache 体现
+    EXPECT_EQ(second->source, "auto");
+
+    _putenv_s("FPGALSP_TD_CACHE_TTL", "");
 }
 
 }  // namespace

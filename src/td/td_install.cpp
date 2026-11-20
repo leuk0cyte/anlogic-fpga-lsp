@@ -7,7 +7,9 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
+#include <ctime>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <system_error>
 #include <vector>
@@ -334,6 +336,122 @@ std::vector<TdInstall> InstallsWith(const TdEnv& env) {
     return found;
 }
 
+// -----------------------------------------------------------------------------
+// 安装发现缓存（系统临时目录）
+// -----------------------------------------------------------------------------
+// 目的：把"扫盘找 TD"的一次性成本（本机约 20 s）从**每个进程**降到**每次安装变化**。
+// 目录选 %TEMP%\fpgalsp\ 而不是工程目录：这是整机级事实（哪台机器装了哪个 TD），
+// 不该跟着某个工程走，也不该往用户工程里写文件。
+namespace {
+
+std::string CacheDir() {
+    std::error_code ec;
+    const std::filesystem::path temp = std::filesystem::temp_directory_path(ec);
+    if (ec || temp.empty()) return {};
+    return plat::normalize_path((temp / "fpgalsp").string());
+}
+
+std::string CachePath() {
+    const std::string dir = CacheDir();
+    if (dir.empty()) return {};
+    return plat::path_join(dir, "td-install-cache.txt");
+}
+
+bool CacheDisabled(const TdEnv& env) {
+    const std::string flag = env.get_env("FPGALSP_NO_TD_CACHE");
+    return !flag.empty() && flag != "0";
+}
+
+long long CacheTtlSeconds(const TdEnv& env) {
+    const std::string raw = env.get_env("FPGALSP_TD_CACHE_TTL");
+    if (!raw.empty()) {
+        long long value = 0;
+        bool digits = true;
+        for (const char c : raw) {
+            if (c < '0' || c > '9') {
+                digits = false;
+                break;
+            }
+            value = value * 10 + (c - '0');
+            if (value > 100000000) break;
+        }
+        if (digits) return value;  // 0 = 永不过期
+    }
+    return 24 * 60 * 60;  // 默认 1 天
+}
+
+long long NowSeconds() {
+    return static_cast<long long>(std::time(nullptr));
+}
+
+std::optional<TdChoice> ReadCache(const TdEnv& env) {
+    const std::string path = CachePath();
+    if (path.empty() || !env.is_file(path)) return std::nullopt;
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return std::nullopt;
+
+    std::string root;
+    std::string exe;
+    std::string version;
+    long long saved_at = 0;
+    std::string line;
+    while (std::getline(in, line)) {
+        if (line.empty() || line[0] == '#') continue;
+        const std::size_t eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        const std::string key = line.substr(0, eq);
+        const std::string value = line.substr(eq + 1);
+        if (key == "root") {
+            root = value;
+        } else if (key == "exe") {
+            exe = value;
+        } else if (key == "version") {
+            version = value;
+        } else if (key == "saved_at") {
+            saved_at = std::atoll(value.c_str());
+        }
+    }
+    if (root.empty() || exe.empty()) return std::nullopt;
+    // 卸载/换版本后缓存必须失效：exe 不在了就重新扫。
+    if (!env.is_file(exe)) return std::nullopt;
+    const long long ttl = CacheTtlSeconds(env);
+    if (ttl > 0 && saved_at > 0 && NowSeconds() - saved_at > ttl) return std::nullopt;
+
+    TdChoice choice;
+    choice.root = root;
+    choice.exe = exe;
+    choice.version = ReleaseOf(root).empty() ? version : ReleaseOf(root);
+    choice.source = "auto";   // 保持三值契约（explicit/auto/path），额外用 from_cache 标记
+    choice.from_cache = true;
+    return choice;
+}
+
+void WriteCache(const TdEnv& env, const TdChoice& choice) {
+    (void)env;
+    const std::string dir = CacheDir();
+    const std::string path = CachePath();
+    if (dir.empty() || path.empty()) return;
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);  // 已存在时 ec 为 0，可直接忽略
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    if (!out) return;
+    out << "# fpgalsp TD install discovery cache (auto-generated; delete to force a rescan)\n";
+    out << "root=" << choice.root << "\n";
+    out << "exe=" << choice.exe << "\n";
+    out << "version=" << choice.version << "\n";
+    out << "source=" << choice.source << "\n";
+    out << "saved_at=" << NowSeconds() << "\n";
+}
+
+void ClearCache() {
+    const std::string path = CachePath();
+    if (path.empty()) return;
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
+}  // namespace
+
 std::vector<TdInstall> Installs() { return InstallsWith(TdEnv::Default()); }
 
 std::vector<std::string> InstallRoots() { return InstallRootsWith(TdEnv::Default()); }
@@ -411,7 +529,40 @@ std::optional<TdChoice> FindTdWith(const TdEnv& env, std::string_view explicit_r
 }
 
 std::optional<TdChoice> FindTd(std::string_view explicit_root) {
-    return FindTdWith(TdEnv::Default(), explicit_root);
+    // ⚠ 为什么要有缓存：自动发现要扫 C..J 盘的 Anlogic 目录 + PATH，本机实测一次约
+    //   **20 s**（MCP 每次新建进程都要付一次）。而安装位置一年也不会变一次，所以把
+    //   发现结果按"路径 + 版本"记在系统临时目录里，命中就直接用。
+    //
+    //   失效条件（任一即重新扫描）：
+    //     * FPGALSP_NO_TD_CACHE=1
+    //     * 缓存里记录的 exe 已不存在（卸载/换版本）
+    //     * 超过 TTL（默认 24 h；FPGALSP_TD_CACHE_TTL=<秒> 可改，0 = 永不过期）
+    //   显式指定（参数 / TD_ROOT 等环境变量）时**不读缓存**（用户明确要求用哪一份），
+    //   但仍然会刷新缓存。
+    const TdEnv env = TdEnv::Default();
+    const auto explicit_roots = [&env]() {
+        std::vector<std::string> roots;
+        for (const char* name : {"TD_ROOT", "ANLOGIC_TD_ROOT", "TD_HOME", "TD_INSTALL_DIR"}) {
+            const std::string value = env.get_env(name);
+            if (!value.empty()) roots.push_back(value);
+        }
+        return roots;
+    };
+
+    const bool pinned = !explicit_root.empty() || !explicit_roots().empty();
+    if (!pinned && !CacheDisabled(env)) {
+        if (std::optional<TdChoice> cached = ReadCache(env); cached.has_value()) {
+            return cached;
+        }
+    }
+
+    std::optional<TdChoice> choice = FindTdWith(env, explicit_root);
+    if (choice.has_value()) {
+        WriteCache(env, *choice);
+    } else {
+        ClearCache();
+    }
+    return choice;
 }
 
 }  // namespace fpgalsp::td

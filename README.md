@@ -13,7 +13,7 @@ Python 版为规格对照，等价性证据见 [`doc/audit/`](doc/audit/)。
 
 - **LSP**：补全、悬停、定义、引用、文档/工作区符号、代码动作、格式化（全文档 + 区间）、
   重命名、调用层次、语义高亮、折叠、inlayHint、报告视图 —— 共 25 个方法。
-- **MCP**：47 个工具，覆盖工程结构、符号、诊断、报告、流程控制、约束审计、片上探针；自带面向无上下文 agent 的使用帮助（`initialize.instructions` + `fpga_guide` 工具 + 4 个工作流 prompt，见 [doc/mcp-usage.md](doc/mcp-usage.md)）；
+- **MCP**：48 个工具，覆盖工程结构、符号、诊断、报告、流程控制、约束审计、片上探针；自带面向无上下文 agent 的使用帮助（`initialize.instructions` + `fpga_guide` 工具 + 4 个工作流 prompt，见 [doc/mcp-usage.md](doc/mcp-usage.md)）；
   默认只读，`--allow-flow` / `--allow-write` 显式开启副作用。
 - **TD 集成**：TangDynasty 会话与诊断、Synthesis / Place&Route / BitWizard、
   报告解析（QoR / timing / area / DRC-CDC）。
@@ -54,7 +54,7 @@ fpgalsp-native.exe --help
 ## VS Code 扩展
 
 ```powershell
-code --install-extension vscode-extension\fpga-lsp-anlogic-0.18.3.vsix
+code --install-extension vscode-extension\fpga-lsp-anlogic-0.18.4.vsix
 ```
 
 扩展会优先使用随包内置的服务端。开发、测试与打包见
