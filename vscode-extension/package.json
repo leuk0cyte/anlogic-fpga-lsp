@@ -2,7 +2,7 @@
     "name": "fpga-lsp-anlogic",
     "displayName": "Anlogic FPGA LSP (TangDynasty)",
     "description": "Language support and IDE views for Anlogic TD FPGA projects: ADC pin constraints, SDC, project .al, Verilog index, TD-backed diagnostics, module hierarchy, syn/phy flow control and QoR/timing/area reports.",
-    "version": "0.14.0",
+    "version": "0.15.0",
     "publisher": "fpga-lsp",
     "license": "AGPL-3.0-or-later",
     "engines": {
@@ -30,7 +30,7 @@
         "test:integration": "node test/integration-server.js",
         "test:locate": "node test/locate-server.test.js",
         "bundle:server": "node scripts/bundle-server.js",
-        "package": "node scripts/bundle-server.js && vsce package --allow-missing-repository --skip-license",
+        "package": "node scripts/bundle-server.js && npx --yes @vscode/vsce@4 package --allow-missing-repository",
         "test:vscode": "powershell -ExecutionPolicy Bypass -File scripts/run-vscode-test.ps1",
         "test:verible": "node test/verible.test.js"
     },
@@ -803,10 +803,5 @@
     "devDependencies": {
         "vscode-oniguruma": "^2.0.1",
         "vscode-textmate": "^9.3.2"
-    },
-    "__metadata": {
-        "installedTimestamp": 1795000207028,
-        "targetPlatform": "undefined",
-        "size": 6287636
     }
 }

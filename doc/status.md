@@ -93,15 +93,16 @@ B-B13 波形联动、X-B4/B5/B6/B8 等）。
 第 7 条（二进制加固：CFG / CET / `/Qspectre` / `/sdl`）按要求**维持现状**：
 `DllCharacteristics` 仍为 `0x8160`（ASLR / DEP / HighEntropyVA / 终端服务感知 开，CFG 关）。
 
-## VS Code 扩展（0.14.0）
+## VS Code 扩展（0.15.0）
 
 ```
-vscode-extension/fpga-lsp-anlogic-0.14.0.vsix   224 files / 2.86 MB
-  └─ extension/server/bin/fpgalsp-native.exe    6,132,736 B（全量 LTCG）
+vscode-extension/fpga-lsp-anlogic-0.15.0.vsix   228 files / 2.96 MB
+  └─ extension/server/bin/fpgalsp-native.exe    6,317,568 B（全量 LTCG）
 ```
 
-打包：`npm run package`（= `node scripts/bundle-server.js && vsce package …`）。
-已核对包内 exe 与 `build/bin` 哈希一致。
+打包：`npm run package`（= `node scripts/bundle-server.js && npx --yes @vscode/vsce@4 package …`）。
+已核对包内 exe 与 `build/bin` 哈希一致（`59E4E2B9…74CB0`）。
+0.15.0 起随包附带 `LICENSE.txt`（AGPL-3.0-or-later），原先被 `--skip-license` 略过。
 
 ## 已知差异（有意保留 / 版本基线）
 
