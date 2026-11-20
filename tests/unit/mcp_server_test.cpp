@@ -157,9 +157,9 @@ TEST_F(McpServerTest, PingReturnsEmptyResult) {
 
 // --------------------------------------------------------------- tools/list
 
-TEST_F(McpServerTest, ToolsListAllModesReturns46) {
+TEST_F(McpServerTest, ToolsListAllModesReturns47) {
     const Json response = Call(Request("tools/list", Json::object()));
-    EXPECT_EQ(response.at("result").at("tools").size(), 46u);
+    EXPECT_EQ(response.at("result").at("tools").size(), 47u);
 }
 
 TEST_F(McpServerTest, ToolsListDefaultHidesFlowAndWriteTools) {
@@ -167,7 +167,7 @@ TEST_F(McpServerTest, ToolsListDefaultHidesFlowAndWriteTools) {
     McpServer restricted_server(dispatcher, restricted);
     const Json response = *restricted_server.Handle(Request("tools/list", Json::object()));
     const Json& tools = response.at("result").at("tools");
-    EXPECT_EQ(tools.size(), 36u);
+    EXPECT_EQ(tools.size(), 37u);
     for (const Json& tool : tools) {
         const std::string name = tool.at("name").get<std::string>();
         EXPECT_NE(name, "fpga_flow_run") << "flow 工具默认不该出现";
@@ -187,9 +187,11 @@ TEST_F(McpServerTest, ToolsListStripsInternalFields) {
 
 TEST_F(McpServerTest, ToolsListKeepsTableOrder) {
     const Json tools = Call(Request("tools/list", Json::object())).at("result").at("tools");
-    ASSERT_GE(tools.size(), 2u);
-    EXPECT_EQ(tools.at(0).at("name").get<std::string>(), "fpga_project_list");
-    EXPECT_EQ(tools.at(1).at("name").get<std::string>(), "fpga_project_info");
+    ASSERT_GE(tools.size(), 3u);
+    // 表头刻意是"说明书"：agent 第一眼应该看到 fpga_guide，再是工程类工具。
+    EXPECT_EQ(tools.at(0).at("name").get<std::string>(), "fpga_guide");
+    EXPECT_EQ(tools.at(1).at("name").get<std::string>(), "fpga_project_list");
+    EXPECT_EQ(tools.at(2).at("name").get<std::string>(), "fpga_project_info");
 }
 
 // ------------------------------------------------------------------ 通知
@@ -224,7 +226,7 @@ TEST_F(McpServerTest, ShutdownReturnsNullResult) {
     EXPECT_TRUE(response.at("result").is_null());
 }
 
-TEST_F(McpServerTest, ResourcesAndPromptsAreEmpty) {
+TEST_F(McpServerTest, ResourcesAreEmptyButPromptsAreProvided) {
     EXPECT_TRUE(Call(Request("resources/list", Json::object()))
                     .at("result")
                     .at("resources")
@@ -233,7 +235,15 @@ TEST_F(McpServerTest, ResourcesAndPromptsAreEmpty) {
                     .at("result")
                     .at("resourceTemplates")
                     .empty());
-    EXPECT_TRUE(Call(Request("prompts/list", Json::object())).at("result").at("prompts").empty());
+    // prompts/list 不再是空数组：4 个工作流模板，供客户端一键把正确流程喂给模型
+    const Json prompts =
+        Call(Request("prompts/list", Json::object())).at("result").at("prompts");
+    EXPECT_EQ(prompts.size(), 4u);
+    EXPECT_NE(Call(Request("prompts/get", Json::object({{"name", "probe-on-board"}})))
+                  .at("result")
+                  .at("messages")
+                  .size(),
+              0u);
     EXPECT_TRUE(Call(Request("logging/setLevel", Json::object())).at("result").is_object());
 }
 

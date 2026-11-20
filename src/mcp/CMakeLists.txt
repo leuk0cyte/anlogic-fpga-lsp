@@ -10,6 +10,7 @@
 
 add_library(fpga_lsp_mcp STATIC
     bridge.cpp
+    guide.cpp
     mcp_server.cpp
     tools.cpp
 )

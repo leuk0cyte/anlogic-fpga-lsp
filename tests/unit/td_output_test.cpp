@@ -306,6 +306,72 @@ TEST(TdHasFatal, WordBoundaryRequired) {
     EXPECT_FALSE(HasFatal("1USR-8001 ERROR: boom"));  // 前面是数字，无 \b
 }
 
+// ---- has_notice / notice_lines（P0-2：没有 severity 词的 TD 消息）----
+//  实测（TD 2026.2，agent 改完探针清单后跑 flow）：
+//      KIT-2501 : No mark_debug exists in the netlist.
+//  这一行里没有 ERROR / CRITICAL-WARNING，HasError / HasFatal 都看不见，
+//  所以 flow 会"自信地成功"。Notice 专门捞这种行。
+
+TEST(TdHasNotice, Kit2501IsNotice) {
+    const std::string text = "KIT-2501 : No mark_debug exists in the netlist.";
+    EXPECT_TRUE(HasNotice(text));
+    EXPECT_EQ(NoticeLines(text), "KIT-2501 : No mark_debug exists in the netlist.");
+}
+
+TEST(TdHasNotice, OtherKitCodesAreNoticesToo) {
+    // 实测同形态的其它信息码（KIT-1004 / KIT-8414）
+    EXPECT_TRUE(HasNotice("KIT-1004 : no ChipWatcher instance"));
+    EXPECT_TRUE(HasNotice("KIT-8414 : missing instance name"));
+    EXPECT_EQ(NoticeLines("KIT-1004 : a\r\nKIT-8414 : b"), "KIT-1004 : a / KIT-8414 : b");
+}
+
+TEST(TdHasNotice, SeverityLinesAreNotNotices) {
+    // 同一行已经带 severity -> 只算 error/warning 行，不能算 notice（否则重复计数）
+    EXPECT_FALSE(HasNotice("PRJ-8001 ERROR: Invalid device_db name"));
+    EXPECT_FALSE(HasNotice("USR-8128 CRITICAL-WARNING: some warning"));
+    EXPECT_FALSE(HasNotice("HDL-5007 WARNING: could not find top-level module"));
+}
+
+TEST(TdHasNotice, NoticeLinesSkipsSeverityLines) {
+    const std::string text =
+        "PRJ-8001 ERROR: Invalid device_db name\r\n"
+        "KIT-2501 : No mark_debug exists in the netlist.\r\n"
+        "USR-8128 CRITICAL-WARNING: some warning\r\n";
+    EXPECT_TRUE(HasNotice(text));
+    EXPECT_EQ(NoticeLines(text), "KIT-2501 : No mark_debug exists in the netlist.");
+}
+
+TEST(TdHasNotice, PlainInfoCodeWithColonIsNotice) {
+    // 实测普通信息行（analyze verilog file …）也是 `<CODE> :` 形态：
+    // 如实断言"算 notice"，不要猜成 warning/error。
+    EXPECT_TRUE(HasNotice("HDL-1007 : analyze verilog file Y:/a/b.v"));
+    EXPECT_TRUE(HasNotice("HDL-1007 : b"));
+    EXPECT_EQ(NoticeLines("HDL-1007 : b"), "HDL-1007 : b");
+}
+
+TEST(TdHasNotice, LineWithBareColonlessCodeIsNotNotice) {
+    // 没有冒号（`HDL-7144 CRITICAL-WARNING:` 已在上面覆盖；这里是没有冒号的闲聊）
+    EXPECT_FALSE(HasNotice("just some text"));
+    EXPECT_FALSE(HasNotice(""));
+    EXPECT_FALSE(HasNotice("td > "));
+}
+
+TEST(TdHasNotice, LimitKeepsFirstN) {
+    const std::string text =
+        "KIT-2501 : one\r\n"
+        "KIT-2502 : two\r\n"
+        "KIT-2503 : three\r\n";
+    EXPECT_EQ(NoticeLines(text), "KIT-2501 : one / KIT-2502 : two / KIT-2503 : three");
+    EXPECT_EQ(NoticeLines(text, 2), "KIT-2501 : one / KIT-2502 : two");
+    EXPECT_EQ(NoticeLines(text, 0), "");
+}
+
+TEST(TdHasNotice, TrimsEachLine) {
+    const std::string text = "  KIT-2501 : No mark_debug exists in the netlist.  \r\n";
+    EXPECT_TRUE(HasNotice(text));
+    EXPECT_EQ(NoticeLines(text, 1), "KIT-2501 : No mark_debug exists in the netlist.");
+}
+
 // ---- ⚠ 已知缺陷：全局替换 "td > " ----
 // 这是 Python 版 td.py 第 237 行 `text.replace("td > ", "")` 的既有行为。
 // 本实现保持一致；若将来要修正，本测试会变红并提醒。

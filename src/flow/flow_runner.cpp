@@ -24,6 +24,7 @@
 #include <cstring>
 #include <filesystem>
 #include <format>
+#include <map>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -33,6 +34,7 @@
 #include <re2/re2.h>
 
 #include "flow/flow_logic.h"
+#include "flow/probe.h"
 #include "platform/encoding.h"
 #include "reports/reports_aggregate.h"
 #include "td/td_device.h"
@@ -149,6 +151,47 @@ std::string BaseName(std::string_view path) {
 bool EndsWith(std::string_view text, std::string_view suffix) {
     return text.size() >= suffix.size() &&
            text.compare(text.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
+// 扩展名比对要不区分大小写：TD 自己有时候写 .MDN（Windows 文件系统不区分）
+bool EndsWithNoCase(std::string_view text, std::string_view suffix) {
+    if (text.size() < suffix.size()) return false;
+    const std::size_t offset = text.size() - suffix.size();
+    for (std::size_t i = 0; i < suffix.size(); ++i) {
+        char a = text[offset + i];
+        char b = suffix[i];
+        if (a >= 'A' && a <= 'Z') a = static_cast<char>(a - 'A' + 'a');
+        if (b >= 'A' && b <= 'Z') b = static_cast<char>(b - 'A' + 'a');
+        if (a != b) return false;
+    }
+    return true;
+}
+
+bool HasNonSpace(std::string_view text) {
+    for (const char c : text) {
+        if (!(c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\f' || c == '\v')) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// -----------------------------------------------------------------------------
+// 工程到底有没有配探针？
+// -----------------------------------------------------------------------------
+// 唯一依据是 TD 自己的约定位置 `<project>/chip_debugger/*.mdn`（probe.h 里已经
+// 声明过这层约定，不要再发明一份配置）。判定用"非空"而不是"存在"：
+//   * TD 会建占位的空 mdn；
+//   * 普通（没配探针）工程必须继续走"不强制 watcher"的老路径 —— 这是回归红线。
+bool HasProbeMdn(const project::Project& project) {
+    const std::string dir = probe::ChipDebuggerDir(project);
+    for (const std::string& name : ListDir(dir)) {
+        if (!EndsWithNoCase(name, ".mdn")) continue;
+        const std::string path = Join(dir, name);
+        if (!IsFile(path)) continue;
+        if (HasNonSpace(ReadTextFile(path))) return true;
+    }
+    return false;
 }
 
 double Round1(double value) { return std::nearbyint(value * 10.0) / 10.0; }
@@ -341,6 +384,11 @@ struct FlowRunner::Impl {
 
     std::mutex session_mutex;
     std::unique_ptr<FlowSession> session;
+
+    // P0-3：run_name -> 是否成功设置 tcl_beforestep 钩子。
+    // key 存在 = 已经尝试过（成功或判定不支持），避免每次 RunStage 重复发 set_param。
+    std::mutex hook_mutex;
+    std::map<std::string, bool> probe_hook_state;
 
     std::string run_dir;
     std::string stage_run;
@@ -624,12 +672,100 @@ struct FlowRunner::Impl {
         return Fail("import_device failed: " + last_error);
     }
 
+    // -------------------------------------------------------------------------
+    // P0-3：别依赖裸 `insert_debugger`
+    // -------------------------------------------------------------------------
+    // 实测（TD 2026.2，同一台机器、同一个工程，三种写法结果完全不同）：
+    //   * `insert_debugger {<project>/chip_debugger}` 在 elaborate 设计上**正常工作**，
+    //     会回显 mark_debug 列表；
+    //   * 裸 `insert_debugger` —— DefaultFlow.tcl 走的正是这条（chipDebugger 变量没设）
+    //     —— **零输出、静默空操作**；
+    //   * 在 gate 网表上调 -> KIT-2501。
+    // 所以必须在 run 的对应步骤前自己 source 一条**带参数**的 insert_debugger。
+    // 钩子走工程模式（TD 2026.2 实测 `RUN-1002 : start command "source_tcl ..."`），
+    // 非工程模式下 set_param -run 不生效 —— 失败时降级，不让 flow 失败。
+    void EnsureProbeHook(const std::string& run_name) {
+        if (!HasProbeMdn(owner->project_)) return;  // 没配探针就什么都不做
+        // 综合只做到 gate：在 rtl 步骤前插探针；布局布线的 place 步骤前再插一次
+        // （两次 run 是两条独立的流程，钩子不会自动继承）。
+        const std::string step =
+            run_name == "syn_1" ? "rtl" : (run_name == "phy_1" ? "place" : std::string());
+        if (step.empty()) return;
+
+        {
+            std::lock_guard<std::mutex> lock(hook_mutex);
+            if (probe_hook_state.find(run_name) != probe_hook_state.end()) return;
+        }
+
+        // 脚本里的路径必须正斜杠：TD 的 Tcl 会把反斜杠当转义符吃掉。
+        const std::string debugger_dir = probe::ChipDebuggerDir(owner->project_);
+        const std::string insert_hook = Join(RunDir(), "probe_insert.tcl");
+        const std::string setup_hook = Join(RunDir(), "probe_setup.tcl");
+
+        // 写一个钩子脚本；失败返回空字符串（调用方只留痕、不判死）。
+        const auto write_hook = [this](const std::string& path, const std::string& body) {
+            if (WriteTextFile(path, body)) return true;
+            Emit("log", "无法写入钩子脚本 " + path + "，退回 TD 默认的裸调用（可能是静默空操作）");
+            return false;
+        };
+
+        // 挂一个步骤钩子；老版本 TD 不认这个参数，只留痕、不判死。
+        const auto set_hook = [this, &run_name](const std::string& step_name,
+                                                const std::string& keyword,
+                                                const std::string& hook_path) {
+            const std::string command = "set_param -run " + run_name + " " + step_name + " " +
+                                        keyword + " " + td::TclQuoteGrouped(hook_path);
+            const std::string out = RunCommand(command, 120.0);
+            const bool applied = !td::HasFatal(out);
+            if (!applied) {
+                Emit("log", run_name + ": 本机 TD 不支持 " + step_name + " " + keyword +
+                                "，退回 TD 默认的裸调用"
+                                "（DefaultFlow.tcl 在 chipDebugger 未设置时可能是静默空操作）：" +
+                                ErrorLines(out, 2));
+            }
+            return applied;
+        };
+
+        if (!write_hook(insert_hook, "insert_debugger {" + debugger_dir + "}\n")) {
+            std::lock_guard<std::mutex> lock(hook_mutex);
+            probe_hook_state[run_name] = false;
+            return;
+        }
+
+        bool applied = set_hook(step, "tcl_beforestep", insert_hook);
+
+        // phy 还差一步：`setup_debugger` 才是真正生成 cw/compiled.cwc 的那个命令，
+        // 而 DefaultFlow 同样是"有 chipDebugger 才带路径、否则裸调用"。实测（2026-11-21）：
+        // 只挂 insert_debugger 时 gate 报告里 mark_debug 为 64，但 phy 跑完**没有** cwc ——
+        // 因为 setup_debugger 那一步拿不到 chip_debugger 路径。它在 bitgen 之后被调用，
+        // 所以用 bitgen 的 afterstep 钩子补一次带路径的调用。
+        if (run_name == "phy_1") {
+            const std::string setup_body = "setup_debugger {" + debugger_dir + "} -prj {" +
+                                           owner->project_.name + "}\n";
+            if (write_hook(setup_hook, setup_body)) {
+                applied = set_hook("bitgen", "tcl_afterstep", setup_hook) && applied;
+            }
+        }
+        {
+            std::lock_guard<std::mutex> lock(hook_mutex);
+            probe_hook_state[run_name] = applied;
+        }
+        if (applied) {
+            Emit("log", run_name + ": 探针钩子已设置（insert_debugger {" + debugger_dir +
+                            "}" + (run_name == "phy_1" ? " + bitgen 后 setup_debugger" : "") + "）");
+        }
+    }
+
     Failure RunStage(const std::string& run_name, int jobs) {
         ClearStopFlags();
         Emit("progress", "reset_runs {" + run_name + "}");
         // B7 / S-01：run_name 目前都是内部常量（syn_1/phy_1），但仍按"不可信"处理，
         // 走 TclQuoteGrouped —— 正常名字输出与旧实现逐字节相同（`{ syn_1 }`）。
         Record(RunCommand("reset_runs " + td::TclQuoteGrouped(" " + run_name + " "), 120.0));
+
+        // ⚠ 必须放在 reset_runs **之后**：reset 会把 run 重新初始化，钩子要在
+        //   launch 之前重新挂上（set_param 本身幂等，见 EnsureProbeHook 的短路）。
+        EnsureProbeHook(run_name);
 
         Emit("progress", "launch_runs {" + run_name + "} -jobs " + std::to_string(jobs));
         const std::string launch = "launch_runs " + td::TclQuoteGrouped(" " + run_name + " ") +
@@ -695,9 +831,72 @@ struct FlowRunner::Impl {
             return Fail(run_name + " failed: " + outcome.failure_detail);
         }
 
+        // TD 的信息级消息（`KIT-2501 : ...`）不带 severity 词，HasError/HasFatal 都
+        // 看不见，但它们往往正是"探针没进 bit"的唯一线索 —— 留痕，但**不**判失败。
+        if (td::HasNotice(out)) {
+            Emit("log", run_name + ": TD notices (not errors): " + td::NoticeLines(out, 3));
+        }
+
+        // ---------------------------------------------------------------------
+        // P0-1：phy 跑完必须确认"探针真的进 bit 了吗"
+        // ---------------------------------------------------------------------
+        // 实测：agent 改完探针清单跑 flow，TD 的 insert_debugger 静默不生效
+        // （KIT-2501 : No mark_debug exists in the netlist），但 flow 仍返回
+        // ok:true、时序正常、bit 照常产出 —— 板上根本抓不到数据，agent 却查不出
+        // 原因。能拿到的事实只有产物：<runs>/phy_1/cw/compiled.cwc（ChipWatcher 配置），
+        // 它不存在或解析不出 net 就说明探针没编进 bit。
+        bool watcher_present = false;
+        int watcher_net_count = 0;
+        std::string cwc_path;
+        if (run_name == "phy_1") {
+            cwc_path = probe::CompiledCwc(owner->project_);
+            watcher_present = IsFile(cwc_path);
+            if (watcher_present) watcher_net_count = probe::ReadCwc(cwc_path).net_count;
+
+            // ⚠ 只有**确实配了探针**（chip_debugger 下有非空 *.mdn）的工程才强制；
+            //   没配探针的普通工程必须继续成功 —— 回归红线。
+            if (HasProbeMdn(owner->project_) && (!watcher_present || watcher_net_count == 0)) {
+                // 优先带出 `KIT-*`：那才是"探针为什么没进去"的真正诊断。
+                // RUN-/PRJ-/ARC- 这些运行时噪声（start command / Waiting for run）只会误导。
+                std::string said;
+                {
+                    const std::string all = td::NoticeLines(out, 24);
+                    std::size_t start = 0;
+                    while (start < all.size()) {
+                        const std::size_t sep = all.find(" / ", start);
+                        const std::string one =
+                            all.substr(start, sep == std::string::npos ? std::string::npos
+                                                                      : sep - start);
+                        if (one.find("KIT-") != std::string::npos) {
+                            said = said.empty() ? one : said + " / " + one;
+                            if (said.size() > 400) break;
+                        }
+                        if (sep == std::string::npos) break;
+                        start = sep + 3;
+                    }
+                    if (said.empty()) said = td::NoticeLines(out, 2);
+                }
+                return Fail(
+                    run_name + " finished but the ChipWatcher probe is not in the bitstream (" +
+                    cwc_path + (watcher_present ? " parsed to 0 nets)" : " is missing)") +
+                    ": TD said: " +
+                    (said.empty() ? std::string("no mark_debug exists in the netlist") : said) +
+                    " —— 探针没有编进 bit；请确认 chip_debugger 目录被 insert_debugger 实际采用（" +
+                    probe::ChipDebuggerDir(owner->project_) + "）");
+            }
+        }
+
         jsonrpc::Json extra = jsonrpc::Json::object();
         extra["run"] = run_name;
         extra["runElapsed"] = Round1(elapsed);
+        if (run_name == "phy_1") {
+            // 无条件透出事实（present/net_count）：agent 不必再去猜 compiled.cwc 在不在。
+            // 失败路径上面已经 return，那里 watcher 必然是 present=false 或 net_count=0。
+            jsonrpc::Json watcher = jsonrpc::Json::object();
+            watcher["present"] = watcher_present;
+            watcher["net_count"] = watcher_net_count;
+            extra["watcher"] = watcher;
+        }
         // std::format 而不是 char[160] + snprintf：run 名来自用户，定长缓冲截断
         // 可能切在多字节 UTF-8 序列中间，坏字节会进 window/logMessage。
         // 格式串与 printf 版逐字节一致（"%s complete (%.1fs)" -> "{} complete ({:.1f}s)"）。
@@ -942,6 +1141,13 @@ struct FlowRunner::Impl {
         const std::string dir = Join(owner->options_.flow_root, run_id);
         SetRunDir(dir);
         if (owner->options_.write_run_logs) (void)MakeDirs(dir);
+
+        // 同一个 FlowRunner 可以被反复 Start，而每次 Worker 都会新建一个 TD 会话 ——
+        // 上一次 flow 里的 set_param 不继承到新会话，所以钩子状态必须清空重设。
+        {
+            std::lock_guard<std::mutex> lock(hook_mutex);
+            probe_hook_state.clear();
+        }
 
         std::thread heartbeat_thread;
         // ⚠⚠ 必须用 RAII 保证 join：Worker 里有**7 处**提前 return

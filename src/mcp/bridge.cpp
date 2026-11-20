@@ -34,6 +34,7 @@
 #include "flow/strategy.h"
 #include "hdl/hdl_index.h"
 #include "jsonrpc/dispatcher.h"
+#include "mcp/guide.h"
 #include "server/features.h"
 #include "constraints/sdc.h"
 #include "platform/encoding.h"
@@ -1922,12 +1923,40 @@ Json Bridge::CallHierarchyTool(const Json& arguments) {
                           : Json::array();
     return out;
 }
+
+// =============================================================================
+//  fpga_guide
+// =============================================================================
+//  唯一一个不碰工程、不碰 TD、不碰硬件的"工具"：按 topic 返回一段固定 Markdown。
+//  正文在 guide.cpp（每个 topic ≤3 KB），这里只做参数归一化与响应整形。
+//  刻意**不**走 ProjectFor()：没有工程也应该能读帮助（新手上来的第一步）。
+namespace {
+
+Json GuideTool(const Json& arguments) {
+    std::string requested = "overview";
+    if (const auto it = arguments.find("topic"); it != arguments.end() && it->is_string()) {
+        requested = it->get<std::string>();
+    }
+    // 未知/空 topic 回落到 overview；回填的是**归一化之后**的值，避免 agent 以为
+    // 自己拿到的是某个不存在的 topic 的正文。
+    const std::string_view topic = ResolveGuideTopic(requested);
+    Json out = Json::object();
+    out["ok"] = true;
+    out["topic"] = topic;
+    out["text"] = GuideText(topic);
+    return out;
+}
+
+}  // namespace
+
 // =============================================================================
 //  工具分派
 // =============================================================================
 
 Json Bridge::Call(std::string_view handler, const Json& arguments) {
     const std::string name(handler);
+    // 帮助排在最前：agent 拿不准顺序时，这一条应该是它第一个看到的实现分支。
+    if (name == "guide") return GuideTool(arguments);
     if (name == "project_list") return ProjectList(arguments);
     if (name == "project_info") return ProjectInfo(arguments);
     if (name == "project_files") return ProjectFiles(arguments);

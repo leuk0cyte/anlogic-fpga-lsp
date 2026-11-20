@@ -48,6 +48,22 @@ const RE2& FatalRe() {
     return re;
 }
 
+// 只有代码 + 冒号、没有 severity 词：`KIT-2501 : No mark_debug exists in the netlist.`
+// ⚠ 不能退化成 `(?:ERROR|CRITICAL-WARNING)?` 那种可选写法 —— 那会把错误行也吃进来，
+//   于是同一条消息在 flow 里既算 error 又算 notice。
+const RE2& NoticeRe() {
+    static const RE2 re(R"(\b[A-Z][A-Z0-9]{1,5}-[0-9]{3,5}\s*:)");
+    return re;
+}
+
+// 一行是否算 notice：含 `<CODE> :`，且**不含** ERROR / CRITICAL-WARNING。
+// 排除是必须的：`RUN-1002 : start command "read_hdl ..."` 这类行里可能嵌着别的
+// 错误码（`... PRJ-8001 ERROR: ...`），不排除就会重复计数。
+bool IsNoticeLine(const std::string& line) {
+    if (!RE2::PartialMatch(line, NoticeRe())) return false;
+    return !RE2::PartialMatch(line, ErrorRe());
+}
+
 int SeverityOf(std::string_view name) {
     if (name == "ERROR") return kSeverityError;
     if (name == "CRITICAL-WARNING") return kSeverityWarning;
@@ -250,6 +266,27 @@ bool HasError(std::string_view text) {
 
 bool HasFatal(std::string_view text) {
     return RE2::PartialMatch(std::string(text), FatalRe());
+}
+
+bool HasNotice(std::string_view text) {
+    for (const std::string& line : CleanLines(text)) {
+        if (IsNoticeLine(line)) return true;
+    }
+    return false;
+}
+
+std::string NoticeLines(std::string_view text, int limit) {
+    std::string out;
+    if (limit <= 0) return out;
+    int used = 0;
+    for (const std::string& line : CleanLines(text)) {
+        if (used >= limit) break;
+        if (!IsNoticeLine(line)) continue;
+        if (!out.empty()) out += " / ";
+        out += Strip(line);  // CleanLines 只 rstrip，行首缩进在这里去掉
+        ++used;
+    }
+    return out;
 }
 
 std::string StripSentinelsAndPrompt(std::string_view raw, std::string_view tag) {

@@ -6,7 +6,7 @@
 | --- | --- |
 | **全新目录干净构建** | configure 29 s → build 3.3 min → **844 个目标全部成功**（Release + 全量 LTO）；无 LTO 的 `windows-msvc-dev` 全新目录 **56 s** |
 | **`ctest` 全量** | **63/63 通过**（`unit` 43 · `td` 4 · `e2e` 5 · `formatgate` 4 · `lintgate` 3 · `gate` 2 · `generator` 1 · `mcp` 1）；preset 默认 **8 路并行**，实测 **62 s**（串行 92–104 s） |
-| **原生产物** | `build/bin/fpgalsp-native.exe`（**6,486,016 B**，全量 LTCG；SHA256 `78744ADE…88E25F`） |
+| **原生产物** | `build/bin/fpgalsp-native.exe`（**6,543,360 B**，全量 LTCG；SHA256 `091137DB…97D198`） |
 | **单元测试规模** | 43 个 gtest target |
 
 > 构建/测试的并行度分析（为什么 192 线程帮不上忙、时间精确花在哪、日常该用哪个 preset）见
@@ -317,9 +317,9 @@ flash +0.5~0.7 %。
 
 | 项 | 值 |
 | --- | --- |
-| 扩展包 | `vscode-extension/fpga-lsp-anlogic-0.18.2.vsix`（230 文件，3,185,310 B） |
-| 打包内置的服务端 | `build/bin/fpgalsp-native.exe`（Release + 全量 LTO，6,486,016 B，SHA256 `7C089F71…23B08`） |
-| 一致性校验 | 解包后 `extension/server/bin/fpgalsp-native.exe` 的 SHA256 与该二进制**逐字节相同**；`extension/package.json` 版本 = 0.18.2 |
+| 扩展包 | `vscode-extension/fpga-lsp-anlogic-0.18.3.vsix`（230 文件，3,208,578 B） |
+| 打包内置的服务端 | `build/bin/fpgalsp-native.exe`（Release + 全量 LTO，6,543,360 B，SHA256 `091137DB…7D198`） |
+| 一致性校验 | 解包后 `extension/server/bin/fpgalsp-native.exe` 的 SHA256 与该二进制**逐字节相同**；`extension/package.json` 版本 = 0.18.3 |
 
 ### 升级后工程侧的变化
 
@@ -338,3 +338,41 @@ flash +0.5~0.7 %。
 - 采样时钟 / 采样深度仍是编译期量、改不动（三组隔离实验见
   [`doc/design/on-chip-probe.md`](design/on-chip-probe.md)）；SP1 的 `DefaultFlow.tcl`
   与 210850 **逐字节相同**（9452 B，SHA256 `4FC07E5E…`），所以该结论在新版本上继续成立。
+
+## 探针闭环加固 + MCP 帮助层（2026-11-21）
+
+前一轮的端到端实测（[doc/mcp-usage.md](mcp-usage.md) 的坑清单就是它的产出）暴露了三个真问题：
+探针静默不生效、`KIT-*` 诊断不可见、agent 没有使用说明。这一轮全部补齐。
+
+### P0：三处后端加固
+
+| # | 改动 | 实测证据 |
+| --- | --- | --- |
+| P0-1 | `flow_runner.cpp`：phy 跑完若**配了探针**（`chip_debugger/` 下有非空 `*.mdn`）却没产出 `cw/compiled.cwc`（或解析出 0 net），**直接失败**，并把 TD 的 `KIT-*` 原文带进错误；成功时 step JSON 增 `watcher:{present,net_count}` | 触发实测：`phy_1 finished but the ChipWatcher probe is not in the bitstream (...compiled.cwc is missing): TD said: ... —— 探针没有编进 bit；请确认 chip_debugger 目录被 insert_debugger 实际采用` |
+| P0-2 | `td_output.{h,cpp}`：新增 `HasNotice()` / `NoticeLines()`，收 `<CODE> :` 这种**没有 severity 词**的 TD 消息（`KIT-2501` 就是这种），`HasError`/`HasFatal` 语义不变 | 8 条单测；`KIT-2501` 命中、`ERROR`/`CRITICAL-WARNING` 不重复计数 |
+| P0-3 | `flow_runner.cpp`：不再依赖裸 `insert_debugger`。配了探针时写 `probe_insert.tcl` / `probe_setup.tcl` 并用**工程模式步骤钩子**挂到 `syn_1 rtl`、`phy_1 place` 的 `tcl_beforestep` 与 `phy_1 bitgen` 的 `tcl_afterstep`；TD 不支持时只留痕不判死 | syn 的 `run.log` 实证：`source_tcl .../probe_insert.tcl` → `insert_debugger <chip_debugger>` → `mark_debug WHG/e2e_cnt2l[0] …`（64 网全部被接收），报告里 `#mark_debug 64` |
+
+**仍未闭环**：即使 mark_debug 进了网表，`setup_debugger` 仍没有产出 `cw/compiled.cwc`
+（syn 报告同时给出 `SYN-1001 : … 48 dangling mark_debug insts`）。目前行为是
+**P0-1 大声失败**，不再有"自信地成功"。下一步应查 dangling mark_debug 的成因
+（很可能是镜像寄存器在优化后网名变了）。
+
+### 帮助层 L1–L4：让无上下文的 agent 能自己学会用
+
+| 层 | 内容 | 规模 |
+| --- | --- | --- |
+| L1 | `initialize.instructions` 作战手册（三套流程 / 硬规则 / 成本 / 权限） | 1613 字符 |
+| L2 | **`fpga_guide` 工具**（工具表第 1 位，只读、默认可见）7 个 topic：`overview`/`project`/`index`/`flow`/`probe`/`program`/`troubleshoot` | 1.4–2.4 KB/topic |
+| L3 | `prompts/list` + `prompts/get`：`onboard-project` / `run-flow-to-bit` / `probe-on-board` / `debug-failed-flow` | 4 个模板 |
+| L4 | `fpga_probe_config` / `fpga_probe_capture` / `fpga_flow_run` 的 description 追加 `Preconditions / Cost / Failure modes / Example` | 585–1073 字符 |
+
+工具总数 **46 → 47**；默认可见 **36 → 37**。相关文档：[doc/mcp-usage.md](mcp-usage.md)。
+`schema` 门禁（`ctest -L mcp`）放宽为"description 允许在 Python 原文之后**追加**说明"，
+反向缺失仍算漂移。
+
+### 验证
+
+- 干净重建 0 error；`ctest --preset windows-msvc-release` **63/63**（含 `unit.mcp_tools` 47 条断言、
+  `unit.mcp_server` 的 prompts 断言、`mcp_schema_consistency`）；插件 `node test/run.js` **43/43**。
+- MCP 手工核验：`instructions=1613` 字符、`tools/list` 47 个且首位 `fpga_guide`、
+  `prompts/list` 4 项、`prompts/get` 可渲染、`fpga_guide` 7 个 topic 全部返回、未知 topic 回落 `overview`。

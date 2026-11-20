@@ -140,6 +140,9 @@ def additive_only(cpp_tool: dict, py_tool: dict) -> bool:
     用户已明确放弃 Python 接口契约（2026-11），但 schema 门禁仍有价值：它能抓住
     "少字段/改语义/顺序漂移"。所以规则收敛为：
       * 顶层字段集合必须一致，除 inputSchema 外逐字段相等；
+      * **description 允许"在 Python 原文之后追加说明"**（cpp 以 py 原文为前缀）：
+        这是有意给 agent 补的前置条件/成本/失败形态/示例，属于"只增不减"，
+        与新增可选参数同一类；反过来（python 有而 cpp 少了内容）仍算 DIFF。
       * inputSchema 除 properties 外逐字段相等（required/type/additionalProperties 等）；
       * py 的每个 property 定义必须逐字相等；
       * cpp 多出的 property 允许存在，但**不能出现在 required 里**（保持向后兼容）。
@@ -148,6 +151,12 @@ def additive_only(cpp_tool: dict, py_tool: dict) -> bool:
         return False
     for key in cpp_tool:
         if key == "inputSchema":
+            continue
+        if key == "description":
+            cpp_desc = cpp_tool.get(key) or ""
+            py_desc = py_tool.get(key) or ""
+            if cpp_desc != py_desc and not cpp_desc.startswith(py_desc):
+                return False
             continue
         if canonical(cpp_tool[key]) != canonical(py_tool[key]):
             return False

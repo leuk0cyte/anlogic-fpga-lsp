@@ -74,7 +74,15 @@ Json Schema(std::vector<std::pair<std::string, Json>> properties,
 // -----------------------------------------------------------------------------
 
 const std::vector<Tool>& AllTools() {
-    static const std::vector<Tool> kTools = {        Tool{"fpga_project_list",
+    static const std::vector<Tool> kTools = {
+        // 放在表头：tools/list 按声明序输出，agent 第一眼就能看到"先读我"。
+        // 只读（requires 为空 -> readOnlyHint=true），默认档也可见。
+        Tool{"fpga_guide",
+             "Usage guide",
+             "Return the worked-through usage guide for one topic: the tool call sequence, the key arguments, the preconditions and the failure modes to check. Read this before improvising a multi-step task. Default topic: overview.",
+             Schema({{"topic", Str("Guide topic.", {"overview", "project", "index", "flow", "probe", "program", "troubleshoot"})}}),
+             "guide", ""},
+        Tool{"fpga_project_list",
              "List FPGA projects",
              "Discover Anlogic TangDynasty .al projects under a workspace root.",
              Schema({{"root", Str("Optional root directory. Default: MCP server root.")}}, {}),
@@ -116,7 +124,14 @@ const std::vector<Tool>& AllTools() {
              "flow_status", ""},
         Tool{"fpga_flow_run",
              "Run FPGA flow",
-             "Start synthesis / place&route / full flow in the background and return a runId. Requires --allow-flow or fpgaLsp.mcp.allowFlow.",
+             // L4：前置条件 / 成本 / 失败判据 / 可照抄的参数对象。
+             // 只加在 description 文本里 —— inputSchema 不动（单测要求 schema 里
+             // 每个数组都声明 items，加 examples 会红）。
+             "Start synthesis / place&route / full flow in the background and return a runId. Requires --allow-flow or fpgaLsp.mcp.allowFlow.\n"
+             "Preconditions: --allow-flow; a detected TD install; a valid device and top module in the .al; no other flow running for this project.\n"
+             "Cost: syn ~2-5 min, phy 5-15 min, all 8-20 min; returns immediately (async) - call fpga_flow_wait in the SAME MCP session.\n"
+             "Failure modes: ok:true means only the requested stages finished, not that timing/DRC is clean or that probes are in the bit. A phy-only run reuses the old netlist.\n"
+             "Example: {\"stages\":[\"all\"],\"jobs\":6}",
              Schema({{"project", Str("Optional .al path, project directory, or project name. Default: active project.")},
                                           {"stages", Arr("Stages to run.", Str("Stage.", {"syn", "phy", "all", "route"}))},
                                           {"jobs", Int("Parallel TD jobs (default 6).", 1, 64)}}, {}),
@@ -342,7 +357,11 @@ const std::vector<Tool>& AllTools() {
              "probe_status", ""},
         Tool{"fpga_probe_config",
              "Configure on-chip probes",
-             "Read or replace the probe signal list in chip_debugger/user.mdn (the file Anlogic TangDynasty insert_debugger reads). Without write:true this is a dry run that only reports added/removed signals. Writing changes what the next phy flow embeds into the bitstream; it does not touch the board.",
+             "Read or replace the probe signal list in chip_debugger/user.mdn (the file Anlogic TangDynasty insert_debugger reads). Without write:true this is a dry run that only reports added/removed signals. Writing changes what the next phy flow embeds into the bitstream; it does not touch the board.\n"
+             "Preconditions: a readable project; write:true needs --allow-write and a non-empty signals list.\n"
+             "Cost: milliseconds. It only edits chip_debugger/user.mdn - no TD session, no hardware, no bitstream.\n"
+             "Failure modes: ok:true with written:true does NOT mean the probes are in the bitstream; rerun phy and confirm with fpga_probe_status (stale/missing_in_bit). An empty list is refused.\n"
+             "Example: {\"signals\":[\"WHG/pwm_reg0_i[15:0]\"],\"write\":true}",
              Schema({{"signals", Arr("Replacement probe signals, e.g. WHG/pwm_reg0_i[0]. Omit to read the current list.",
                                       StrNoDesc())},
                       {"write", Bool("Actually rewrite chip_debugger/user.mdn (default false = dry run).")}},
@@ -350,7 +369,11 @@ const std::vector<Tool>& AllTools() {
              "probe_config", "write"},
         Tool{"fpga_probe_capture",
              "Capture on-chip probe data",
-             "Read the live values of the embedded probes over JTAG and return them per sample. Runs a TD session: import_device, open_project, config_chipwatcher, get_hw_cws, connect_cable, download (mode jtag_burst), run_hw_cw -trigger_now, wait_on_hw_cw, write_hw_cw_data. Requires a board and a probe-enabled bitstream. Refuses when chip_debugger/user.mdn no longer matches the probes embedded in the bitstream. download:true reprograms SRAM and therefore needs confirm:true.",
+             "Read the live values of the embedded probes over JTAG and return them per sample. Runs a TD session: import_device, open_project, config_chipwatcher, get_hw_cws, connect_cable, download (mode jtag_burst), run_hw_cw -trigger_now, wait_on_hw_cw, write_hw_cw_data. Requires a board and a probe-enabled bitstream. Refuses when chip_debugger/user.mdn no longer matches the probes embedded in the bitstream. download:true reprograms SRAM and therefore needs confirm:true.\n"
+             "Preconditions: phy_1/cw/compiled.cwc and compiled.bit from a phy run; a board on a cable; no other hardware operation. download auto/true needs confirm:true.\n"
+             "Cost: ~20-60 s (17.4 s measured with the bit already loaded; a download adds the SRAM load); phy 5-15 min if a rebuild is needed first.\n"
+             "Failure modes: ok:true means samples were read, not that they are the signals you marked - stale/missing_in_bit means the bit is older than user.mdn. Sample clock and depth are compile-time; only trigger_*/window_* are runtime.\n"
+             "Example: {\"download\":\"auto\",\"confirm\":true,\"trigger_now\":true,\"trigger_position\":512}",
              Schema({{"project", Str("Optional .al path, project directory, or project name.")},
                       {"instance", Str("Watcher instance name (default: read from compiled.cwc).")},
                       {"cable", Str("Cable index for -cable (default 0).")},

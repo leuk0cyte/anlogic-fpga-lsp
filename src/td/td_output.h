@@ -16,6 +16,7 @@
 //                    errors   （忽略大小写）
 //  ERROR_RE      = \b[A-Z][A-Z0-9]{1,5}-\d{3,5}\s+(?:ERROR|CRITICAL-WARNING)\b
 //  FATAL_RE      = \b[A-Z][A-Z0-9]{1,5}-\d{3,5}\s+ERROR\b
+//  NOTICE_RE     = \b[A-Z][A-Z0-9]{1,5}-\d{3,5}\s*:   （C++ 版新增，见 HasNotice）
 //  SEVERITY      = {"ERROR": 1, "CRITICAL-WARNING": 2, "WARNING": 2, "INFO": 3}
 //
 //  ---- 实测样本（TD 2026.2，%WORKSPACE%\CorpusAlpha 真实工程）----
@@ -66,6 +67,24 @@ bool HasError(std::string_view text);
 
 // 对应 Python has_fatal：文本里是否含 <CODE> ERROR（不含 CRITICAL-WARNING）
 bool HasFatal(std::string_view text);
+
+// -----------------------------------------------------------------------------
+// 「只有代码 + 冒号、没有 severity 词」的消息（P0-2）
+// -----------------------------------------------------------------------------
+//  为什么需要：TD 大量**关键**信息就是这个形态，实测 2026.2：
+//      KIT-2501 : No mark_debug exists in the netlist.   <- insert_debugger 静默失败的唯一线索
+//      KIT-1004 : ...    KIT-8414 : ...    HDL-1007 : ...
+//  它们既不含 "ERROR" 也不含 "CRITICAL-WARNING"，所以 HasError() / HasFatal()
+//  一律看不见：agent 改了探针清单、TD 的 insert_debugger 其实什么都没干，flow
+//  却照旧 ok:true、时序正常、bit 也照常产出 —— "自信地成功"，板上却抓不到数据。
+//  Notice 是信息级（**不**判失败），只是让这类消息可见、可留痕。
+//
+//  注意：已经有 ERROR / CRITICAL-WARNING 的行**不算** notice（同一行两个码时
+//  否则会被算两遍）。HasError / HasFatal 的语义不受影响 —— 大量既有调用点依赖它们。
+bool HasNotice(std::string_view text);
+
+// 前 limit 条 notice 行（逐行 Trim，用 " / " 连接，与 flow::ErrorLines 同风格）
+std::string NoticeLines(std::string_view text, int limit = 3);
 
 // 对应 Python run() 的后处理：截取 __B<tag>__ 与 __E<tag>__ 之间，
 // 然后**全局**替换 "td > "。

@@ -6,28 +6,64 @@
 //    WrapToolResult()  <- _tool_result()
 //    WrapToolError()   <- _error_result()
 //    CallTool()        <- _call()（含 required 校验与 ToolError）
+//
+//  ---- 与 Python 参考实现的差异（刻意的）----
+//  1. `instructions` 是 C++ 侧的**增强版作战手册**（≤2000 字符），不是 Python 那
+//     三句话的逐字复刻：Python 版没写"flow 是异步的""改了 RTL 必须重跑 syn"
+//     "写 user.mdn 不改板子"这些实测坑，导致 agent 反复踩。协议形状不变，只有
+//     这段文案加强。
+//  2. 新增 `prompts/list` + `prompts/get`（4 个模板）与 capabilities.prompts：
+//     Python 版返回空数组且没有 prompts/get，客户端只能看到"没有模板"。
+//  3. 其余方法（tools/*、resources/*、initialize、取消、截断）逐字对齐。
 // =============================================================================
 
 #include "mcp/mcp_server.h"
 
 #include "jsonrpc/json_util.h"
+#include "jsonrpc/transport.h"
 
 #include <algorithm>
 #include <exception>
 #include <string>
+#include <string_view>
 #include <utility>
+#include <vector>
 
 #include "mcp/tools.h"
 
 namespace fpgalsp::mcp {
 namespace {
 
-// Python mcp.py 的 instructions 原文（客户端会展示给用户，逐字复现）
+// -----------------------------------------------------------------------------
+//  instructions —— 只给"没有任何上下文的 agent"看的作战手册
+// -----------------------------------------------------------------------------
+//  预算：MCP 客户端会把 instructions 塞进系统提示，超过 2000 字符就有被截断/挤掉
+//  其它上下文的风险。所以七条压成七段，每条 1–2 句，只写"必须知道、否则一定踩"
+//  的东西；细节走 fpga_guide。
 constexpr const char* kInstructions =
-    "Tools for Anlogic TangDynasty FPGA projects. Line/column arguments are 1-based. "
+    "Tools for Anlogic TangDynasty (TD) FPGA projects. Line/column arguments are 1-based. "
     "Pass a project (.al path, directory or name) when the workspace has several projects. "
-    "Only read-only tools are enabled unless the server was started with --allow-flow/"
-    "--allow-write.";
+    "Call fpga_guide for a topic-level walkthrough "
+    "(overview/project/index/flow/probe/program/troubleshoot).\n"
+    "\n"
+    "1. Three routes: read the project and its index (fpga_project_list, fpga_project_info, "
+    "fpga_project_files, then fpga_document_symbols / fpga_search_text / fpga_symbol_path / "
+    "fpga_diagnostics); build (fpga_flow_run -> fpga_flow_wait -> fpga_project_reports); "
+    "on-board (fpga_probe_config -> rerun phy -> fpga_probe_status -> fpga_probe_capture).\n"
+    "2. Disk *.v files are NOT the build file set: call fpga_project_files first, and "
+    "include_excluded:true to see what the .al excludes.\n"
+    "3. flow_run is asynchronous: call fpga_flow_wait in the SAME MCP session. Exiting the "
+    "process kills the TD children, so a later session sees \"ok\" with no flow.\n"
+    "4. After an RTL edit rerun syn (stages:[\"all\"] is the safest); stages:[\"phy\"] alone "
+    "reuses the old netlist.\n"
+    "5. Writing chip_debugger/user.mdn changes nothing on the board: rerun phy to compile it "
+    "into the bit, and note that a successful flow does NOT prove the probes are in the bit - "
+    "check fpga_probe_status (present/net_count/missing_in_bit).\n"
+    "6. Sample clock and sample depth are compile-time values; MCP cannot change them (TD "
+    "limitation). At capture time only trigger_position/window_*/trigger_* are adjustable.\n"
+    "7. Permissions and cost: --allow-flow / --allow-write enable the gated tools; each new "
+    "MCP process costs ~20 s of startup, so keep long runs in one session; phy usually takes "
+    "5-15 min.";
 
 Json Response(const Json& id, Json result) {
     Json out = Json::object();
@@ -97,6 +133,240 @@ bool MissingRequired(const Json* value) {
     if (value->is_null()) return true;
     if (value->is_string() && value->get<std::string>().empty()) return true;
     return false;
+}
+
+// -----------------------------------------------------------------------------
+//  prompts —— 4 个模板（prompts/list + prompts/get）
+// -----------------------------------------------------------------------------
+//  为什么要有模板：`instructions` 只有 2000 字符，写不下"某个具体任务该怎么串"。
+//  模板是**任务入口**（onboard / build / probe / debug），正文 2–5 行，只推 agent
+//  到正确的工具序列 + 关键前提上，细节留给 fpga_guide 的对应 topic —— 两处都写
+//  全套必然漂移。
+//
+//  ⚠ 缺省参数必须代入**可读的默认值**而不是留空：留空会让 agent 生成
+//    `{"stages":[]}` / `{"job":""}` 这种非法调用，比不填模板更糟。
+struct PromptArg {
+    const char* name;
+    const char* description;
+    bool required;
+};
+
+struct PromptDef {
+    const char* name;
+    const char* description;
+    std::vector<PromptArg> args;
+};
+
+const std::vector<PromptDef>& PromptTable() {
+    // 顺序即 prompts/list 的输出顺序：先入门，再构建，再上板，最后排错。
+    static const std::vector<PromptDef> kPrompts = {
+        {"onboard-project",
+         "Bootstrap an unfamiliar project: discover it, read the real build file set, "
+         "then report structure, constraints and risks.",
+         {{"project",
+           "Optional .al path, project directory, or project name. Default: active project.",
+           false}}},
+        {"run-flow-to-bit",
+         "Take the active project from RTL to a bitstream and report QoR, timing and any "
+         "failure with its log evidence.",
+         {{"stages",
+           "Stages to run: all, syn, phy or a comma list such as syn,phy. Default: all.",
+           false}}},
+        {"probe-on-board",
+         "Mark signals for on-chip capture, rebuild phy so they enter the bitstream, verify "
+         "with probe_status, then capture on the board.",
+         {{"signals",
+           "Signals to mark, e.g. WHG/pwm_reg0_i[15:0], comma separated.",
+           true},
+          {"trigger",
+           "Optional capture-time trigger arguments as a JSON fragment, e.g. "
+           "\"trigger_position\":512 or \"bus_op\":\"equal\". Default: trigger_now.",
+           false}}},
+        {"debug-failed-flow",
+         "Diagnose a failed or suspicious flow run from its issues, logs and artifacts before "
+         "rerunning anything.",
+         {{"run", "Flow run id (flow_xxxxxxxx). Default: the newest run.", false}}},
+    };
+    return kPrompts;
+}
+
+std::string Trimmed(std::string_view value) {
+    std::size_t begin = 0;
+    std::size_t end = value.size();
+    while (begin < end && (value[begin] == ' ' || value[begin] == '\t' || value[begin] == ',')) {
+        ++begin;
+    }
+    while (end > begin &&
+           (value[end - 1] == ' ' || value[end - 1] == '\t' || value[end - 1] == ',')) {
+        --end;
+    }
+    return std::string(value.substr(begin, end - begin));
+}
+
+std::string JsonEscaped(std::string_view value) {
+    std::string out;
+    out.reserve(value.size() + 2);
+    for (const char c : value) {
+        if (c == '"' || c == '\\') out.push_back('\\');
+        out.push_back(c);
+    }
+    return out;
+}
+
+// "all" / "syn,phy" / '["all"]' -> JSON 数组**文本**（已含方括号）。
+// 已经写成 JSON 数组的原样透传：agent 从 schema 抄过来的就是这种形态。
+std::string JsonArrayText(std::string_view value, std::string_view fallback) {
+    std::string trimmed = Trimmed(value);
+    if (trimmed.empty()) trimmed = Trimmed(fallback);
+    if (trimmed.empty()) return "[]";
+    if (trimmed.front() == '[') return trimmed;
+    std::string out = "[";
+    std::size_t start = 0;
+    bool first = true;
+    while (start <= trimmed.size()) {
+        const std::size_t comma = trimmed.find(',', start);
+        const std::string item = Trimmed(comma == std::string::npos
+                                             ? std::string_view(trimmed).substr(start)
+                                             : std::string_view(trimmed).substr(start,
+                                                                                comma - start));
+        if (!item.empty()) {
+            if (!first) out.push_back(',');
+            out += "\"" + JsonEscaped(item) + "\"";
+            first = false;
+        }
+        if (comma == std::string::npos) break;
+        start = comma + 1;
+    }
+    if (first) return "[]";
+    out.push_back(']');
+    return out;
+}
+
+void ReplaceAllInPlace(std::string* text, std::string_view needle, std::string_view value) {
+    if (needle.empty()) return;
+    std::size_t pos = 0;
+    while ((pos = text->find(needle, pos)) != std::string::npos) {
+        text->replace(pos, needle.size(), value);
+        pos += value.size();
+    }
+}
+
+// 取一个字符串参数（缺失/非字符串 -> 空串）
+std::string StringArg(const Json& arguments, const char* key) {
+    if (!arguments.is_object()) return {};
+    const auto it = arguments.find(key);
+    if (it == arguments.end() || !it->is_string()) return {};
+    return it->get<std::string>();
+}
+
+// 未知 name 返回空串（调用方转成 -32602）。
+std::string PromptText(std::string_view name, const Json& arguments) {
+    if (name == "onboard-project") {
+        const std::string project = StringArg(arguments, "project");
+        std::string text =
+            "Onboard {{project}}: discover it, read the real build file set, then report.\n"
+            "1. Call fpga_td_info, fpga_project_info and fpga_project_files with "
+            "include_excluded:true - the .al build file set is what compiles, not every .v on "
+            "disk.\n"
+            "2. Call fpga_project_structure with include_ports:true, fpga_duplicate_modules {} "
+            "and fpga_diagnostics {\"limit\":2000}: report top module, hierarchy depth and "
+            "blocking issues.\n"
+            "3. Call fpga_constraints_status and fpga_device_info: ADC pin coverage, SDC clock "
+            "constraints, device/package.\n"
+            "4. Report the risks (excluded files, duplicate modules, missing constraints) and "
+            "the next step; fpga_guide {\"topic\":\"project\"} has the details.\n";
+        ReplaceAllInPlace(&text, "{{project}}",
+                          project.empty() ? "the active project" : "project \"" + project + "\"");
+        return text;
+    }
+    if (name == "run-flow-to-bit") {
+        const std::string stages = StringArg(arguments, "stages");
+        const std::string stages_json = JsonArrayText(stages, "[\"all\"]");
+        std::string text =
+            "Take the active project from RTL to a bitstream with stages {{stages}}.\n"
+            "1. Call fpga_project_files first: confirm the RTL you edited is in the build "
+            "set.\n"
+            "2. Call fpga_flow_run {\"stages\":{{stages_json}},\"jobs\":6}, then fpga_flow_wait "
+            "in this SAME session - exiting the MCP process kills the TD children.\n"
+            "3. Call fpga_project_reports {\"stage\":\"all\",\"section\":\"summary\"}; on "
+            "failure call fpga_flow_issues and fpga_flow_log.\n"
+            "4. ok:true is not a timing sign-off, and a phy-only run reuses the old netlist: "
+            "after an RTL edit use stages [\"all\"]. Details: fpga_guide {\"topic\":\"flow\"}.\n";
+        ReplaceAllInPlace(&text, "{{stages_json}}", stages_json);
+        ReplaceAllInPlace(&text, "{{stages}}", Trimmed(stages).empty() ? "all" : Trimmed(stages));
+        return text;
+    }
+    if (name == "probe-on-board") {
+        const std::string signals = StringArg(arguments, "signals");
+        const std::string trigger = Trimmed(StringArg(arguments, "trigger"));
+        const std::string signals_json = JsonArrayText(signals, "[\"<signal>\"]");
+        std::string text =
+            "Mark and capture on-chip probes for {{signals}}.\n"
+            "1. Call fpga_probe_status: record clock, sample_depth (compile-time, MCP cannot "
+            "change them) and ready.\n"
+            "2. Call fpga_probe_config {\"signals\":{{signals_json}},\"write\":true} (needs "
+            "--allow-write; dry-run without write first to see added/removed), then "
+            "fpga_flow_run {\"stages\":[\"phy\"]} + fpga_flow_wait in this session - an "
+            "incremental route does NOT re-insert the debugger.\n"
+            "3. fpga_probe_status must show ready:true, stale:false, missing_in_bit:[] before "
+            "fpga_probe_capture {\"download\":\"auto\",\"confirm\":true,{{trigger}}}.\n"
+            "4. Only trigger_position/window_*/trigger_* are runtime; capture-time hint: "
+            "{{trigger_hint}}. KIT-* failure shapes are in fpga_guide "
+            "{\"topic\":\"probe\"}.\n";
+        ReplaceAllInPlace(&text, "{{signals_json}}", signals_json);
+        ReplaceAllInPlace(&text, "{{signals}}", Trimmed(signals).empty() ? "the signals you need" : signals);
+        ReplaceAllInPlace(&text, "{{trigger}}", trigger.empty() ? "\"trigger_now\":true" : trigger);
+        ReplaceAllInPlace(&text, "{{trigger_hint}}",
+                          trigger.empty() ? "default trigger_now:true" : trigger);
+        return text;
+    }
+    if (name == "debug-failed-flow") {
+        const std::string run = Trimmed(StringArg(arguments, "run"));
+        const bool has_run = !run.empty();
+        std::string text =
+            "Debug the flow run: {{run}}.\n"
+            "1. Call fpga_flow_status and fpga_job_status {{job_args}}: is it running, failed, "
+            "or done-but-unexpected?\n"
+            "2. Call fpga_flow_issues {{issue_args}} and fpga_flow_log {{log_args}}; quote the "
+            "exact *-ERROR / *-WARNING lines.\n"
+            "3. Check the artifacts, not just ok:true - ok does NOT mean "
+            "phy_1/cw/compiled.cwc exists or that the probes are in the bit; call "
+            "fpga_probe_status.\n"
+            "4. Classify before rerunning: PRJ-8806/PRJ-5303 are tolerated when artifacts "
+            "exist, HDL-7225-style CRITICAL-WARNING is not a failure; see fpga_guide "
+            "{\"topic\":\"troubleshoot\"}.\n";
+        ReplaceAllInPlace(&text, "{{run}}", has_run ? run : "the newest one");
+        ReplaceAllInPlace(&text, "{{job_args}}",
+                          has_run ? "{\"job\":\"" + JsonEscaped(run) + "\"}" : "{}");
+        ReplaceAllInPlace(&text, "{{issue_args}}",
+                          has_run ? "{\"run_id\":\"" + JsonEscaped(run) + "\"}" : "{}");
+        ReplaceAllInPlace(&text, "{{log_args}}",
+                          has_run ? "{\"run_id\":\"" + JsonEscaped(run) +
+                                        "\",\"kind\":\"both\",\"tail\":400}"
+                                  : "{\"kind\":\"both\",\"tail\":400}");
+        return text;
+    }
+    return {};
+}
+
+Json PromptsListJson() {
+    Json prompts = Json::array();
+    for (const PromptDef& def : PromptTable()) {
+        Json item = Json::object();
+        item["name"] = def.name;
+        item["description"] = def.description;
+        Json args = Json::array();
+        for (const PromptArg& arg : def.args) {
+            Json arg_json = Json::object();
+            arg_json["name"] = arg.name;
+            arg_json["description"] = arg.description;
+            arg_json["required"] = arg.required;
+            args.push_back(std::move(arg_json));
+        }
+        item["arguments"] = std::move(args);
+        prompts.push_back(std::move(item));
+    }
+    return prompts;
 }
 
 }  // namespace
@@ -477,8 +747,12 @@ std::optional<Json> McpServer::HandleSingle(const Json& message) {
 
         Json tools_cap = Json::object();
         tools_cap["listChanged"] = false;
+        // L3：声明 prompts 能力，否则客户端不会去调 prompts/list（模板等于不存在）。
+        Json prompts_cap = Json::object();
+        prompts_cap["listChanged"] = false;
         Json capabilities = Json::object();
         capabilities["tools"] = std::move(tools_cap);
+        capabilities["prompts"] = std::move(prompts_cap);
 
         Json server_info = Json::object();
         server_info["name"] = "fpga-lsp-mcp";
@@ -541,7 +815,40 @@ std::optional<Json> McpServer::HandleSingle(const Json& message) {
     }
     if (method == "prompts/list") {
         Json result = Json::object();
-        result["prompts"] = Json::array();
+        result["prompts"] = PromptsListJson();
+        return Response(id, std::move(result));
+    }
+    // L3：prompts/get —— 按 name 取模板并把 arguments 代入。
+    // 未知 name 是**协议级错误**（不是工具失败）：参数非法，回 -32602。
+    if (method == "prompts/get") {
+        const std::string name = jsonrpc::GetString(params, "name");
+        Json arguments = Json::object();
+        if (const Json* args = GetMember(params, "arguments");
+            args != nullptr && args->is_object()) {
+            arguments = *args;
+        }
+        const std::string text = PromptText(name, arguments);
+        if (text.empty()) {
+            return ErrorResponse(id, jsonrpc::kInvalidParams, "Unknown prompt: " + name);
+        }
+        std::string description;
+        for (const PromptDef& def : PromptTable()) {
+            if (name == def.name) {
+                description = def.description;
+                break;
+            }
+        }
+        Json content = Json::object();
+        content["type"] = "text";
+        content["text"] = text;
+        Json message = Json::object();
+        message["role"] = "user";
+        message["content"] = std::move(content);
+        Json messages = Json::array();
+        messages.push_back(std::move(message));
+        Json result = Json::object();
+        result["description"] = std::move(description);
+        result["messages"] = std::move(messages);
         return Response(id, std::move(result));
     }
     if (method == "logging/setLevel") return Response(id, Json::object());
