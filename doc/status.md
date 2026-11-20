@@ -6,7 +6,7 @@
 | --- | --- |
 | **全新目录干净构建** | configure 29 s → build 3.3 min → **844 个目标全部成功**（Release + 全量 LTO）；无 LTO 的 `windows-msvc-dev` 全新目录 **56 s** |
 | **`ctest` 全量** | **63/63 通过**（`unit` 43 · `td` 4 · `e2e` 5 · `formatgate` 4 · `lintgate` 3 · `gate` 2 · `generator` 1 · `mcp` 1）；preset 默认 **8 路并行**，实测 **62 s**（串行 92–104 s） |
-| **原生产物** | `build/bin/fpgalsp-native.exe`（**6,686,720 B**，全量 LTCG；SHA256 `38886350…A1395C`） |
+| **原生产物** | `build/bin/fpgalsp-native.exe`（**6,714,368 B**，全量 LTCG；SHA256 `E71C1984…F79E9`） |
 | **单元测试规模** | 43 个 gtest target |
 
 > 构建/测试的并行度分析（为什么 192 线程帮不上忙、时间精确花在哪、日常该用哪个 preset）见
@@ -317,9 +317,9 @@ flash +0.5~0.7 %。
 
 | 项 | 值 |
 | --- | --- |
-| 扩展包 | `vscode-extension/fpga-lsp-anlogic-0.18.7.vsix`（230 文件，3,276,807 B） |
-| 打包内置的服务端 | `build/bin/fpgalsp-native.exe`（Release + 全量 LTO，6,686,720 B，SHA256 `38886350…1395C`） |
-| 一致性校验 | 解包后 `extension/server/bin/fpgalsp-native.exe` 的 SHA256 与该二进制**逐字节相同**；`extension/package.json` 版本 = 0.18.7 |
+| 扩展包 | `vscode-extension/fpga-lsp-anlogic-0.18.8.vsix`（230 文件，3,289,003 B） |
+| 打包内置的服务端 | `build/bin/fpgalsp-native.exe`（Release + 全量 LTO，6,714,368 B，SHA256 `E71C1984…F79E9`） |
+| 一致性校验 | 解包后 `extension/server/bin/fpgalsp-native.exe` 的 SHA256 与该二进制**逐字节相同**；`extension/package.json` 版本 = 0.18.8 |
 
 ### 升级后工程侧的变化
 
@@ -504,3 +504,30 @@ command 级 Flow Statistics 表（含每步 wall/cpu/mem）从来没被翻译成
 TD 会按我们的配置编译 watcher（2048 深度那组实验已经证明 `-cwc` 被认），如果它同时把
 `compiled.cwc` 写出来，sidecar 问题就彻底消失，而且顺带获得采样时钟/深度的控制权。
 这需要一次带 `-cwc` 的完整 syn+phy 实验，留到下一轮。
+
+### 第三轮：sidecar 能自动写了，但"自写 cwc 用于抓取"还没打通（诚实记录）
+
+**已证实并落地**
+- `insert_debugger <chip_debugger> -cwc <配置>` 在 **gate 之后**确实被 TD 采纳：把 depth=2048 写进配置传进去，
+  新的 `syn_1/cw/auto_created_cwc1_watcherInst.sv` 里 `RAM_DATA_DEPTH = 2048`。
+  也就是说"采样深度/时钟可配置"在机理上成立，只是还需稳定的写法。
+- **phy 跑完后后端自动补 sidecar**：`probe::WriteCompiledCwcAfterPhy` 用 mdn + 指定的 clock/depth +
+  **新位流的 `_inst.bid` ERAM 行**写 `phy_1/cw/compiled.cwc`，并把 `compiled.bit` 一起同步。
+  实测（2026-11-21 06:49，一次完整的 `stages:["all"]`）：`cw/` 下同时出现
+  `compiled.cwc` 10,313 B 与 `compiled.bit` 5,356,814 B，**全程没有 GUI 参与**；
+  随后 `probe_status` 给出 `present:true / net_count:53 / clock:reg_init/clk`。
+  ⚠ 只在**缺失**时写，不覆盖已有 cwc（TD/GUI 留下的那份是验证过的）。
+- `fpga_probe_config` 新增 `clock` / `depth`（落盘到 `.fpgalsp/probe/config.txt`）与
+  `apply_build_config`（默认 false，见下）。
+
+**没打通的部分（所以默认关闭）**
+- 自写的 cwc 拿去 **抓取** 仍会让 TD 会话在 `wait_on_hw_cw` / `write_hw_cw_data` 阶段挂掉；
+  带 depth=2048 的 `-cwc` 进 place 也连续两次 `Run phy_1 has exited unexpectedly`。
+  结论：cwc 里除了总线/时钟/深度，**`<logic_eram>` 的字段必须与位流严格一致**，我们这份还有偏差
+  （对照组：干净 agent 用同一套元数据手工拼的那份在 04:40 抓到过数据，说明方向对、细节差）。
+- 因此 `apply_build_config` 默认 false（不把自写 cwc 交给 gate）；`WriteCompiledCwcAfterPhy`
+  只补缺失、不覆盖。**可靠路径仍是**：用一份 TD/GUI 或历史成功抓取留下的 cwc。
+
+**下一步（明确）**：在 GUI 里保存一次 ChipWatcher，拿到一份**TD 亲笔**的 cwc，
+与我们生成的逐字段 diff（`logic_eram` 的 width/data_offset/working_mode 等），把差异固化进生成器；
+再跑一次 place 验证 depth 可调。这是最后一个"必须人参与"的点。

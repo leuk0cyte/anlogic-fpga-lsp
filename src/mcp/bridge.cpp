@@ -3763,7 +3763,30 @@ Json Bridge::ProbeConfigTool(const Json& arguments) {
     if (const auto it = arguments.find("write"); it != arguments.end() && it->is_boolean()) {
         write = it->get<bool>();
     }
-    Json out = probe::Configure(proj, signals, write);
+    // 采样时钟/深度：TD 只在 "Optimize Gate 之后" 的 insert_debugger 里采纳，且必须通过
+    // `-cwc <配置>` 传入（实测 depth 2048 生效）。这里只收参数，flow 负责生成配置。
+    bool has_clock = false;
+    std::string clock;
+    if (const auto it = arguments.find("clock"); it != arguments.end() && it->is_string()) {
+        clock = it->get<std::string>();
+        has_clock = !clock.empty();
+    }
+    int depth = 0;
+    if (const auto it = arguments.find("depth"); it != arguments.end() && it->is_number_integer()) {
+        depth = it->get<int>();
+    }
+    bool apply_build_config = false;
+    if (const auto it = arguments.find("apply_build_config");
+        it != arguments.end() && it->is_boolean()) {
+        apply_build_config = it->get<bool>();
+    }
+    Json out = probe::Configure(proj, signals, write, has_clock, clock, depth);
+    if (apply_build_config) {
+        probe::ProbeBuildConfig config = probe::ReadProbeBuildConfig(proj);
+        config.apply_build_config = true;
+        probe::WriteProbeBuildConfig(proj, config);
+        out["apply_build_config"] = true;
+    }
     // ---- 名字预检（非阻塞）----
     // 写进 user.mdn 的名字若在 RTL 里根本不存在，TD 只会在跑完一轮 syn+phy 之后
     // 静默丢掉（KIT-2501 / empty watcher）。这里用 HDL 索引先看一眼：找不到的放进

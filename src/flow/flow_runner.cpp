@@ -812,7 +812,37 @@ struct FlowRunner::Impl {
             return applied;
         };
 
-        if (!write_hook(insert_hook, "insert_debugger {" + debugger_dir + "}\n")) {
+        // 采样时钟/深度：只有在 `-cwc <配置>` 里给 TD 才会被采纳（实测 depth 2048 生效）。
+        // 参数来自 `fpga_probe_config{clock,depth}` 落盘的那份 config。
+        std::string insert_body = "insert_debugger {" + debugger_dir + "}";
+        {
+            const probe::ProbeBuildConfig build = probe::ReadProbeBuildConfig(owner->project_);
+            if (build.apply_build_config && (build.has_depth || build.has_clock)) {
+                const probe::MdnConfig mdn = probe::ReadMdn(probe::MdnPath(owner->project_));
+                std::string config_error;
+                jsonrpc::Json config_info = jsonrpc::Json::object();
+                // ⚠ gate 阶段的输入 cwc **不能**带 <logic_eram>：ERAM 行是 place 之后
+                // 才有的（由位流决定）。带上旧位流的 ERAM 行会让 place 直接
+                // "Run phy_1 has exited unexpectedly"（实测 2026-11-21）。
+                const std::string cwc_text = probe::BuildCwcFromConfig(
+                    owner->project_, mdn, build, &config_error, &config_info, /*include_eram=*/false);
+                const std::string config_path = Join(RunDir(), "probe_config.cwc");
+                if (!cwc_text.empty() && WriteTextFile(config_path, cwc_text)) {
+                    insert_body += " -cwc {" + config_path + "}";
+                    Emit("log", run_name + ": 探针构建参数 clock=" +
+                                    (build.has_clock ? build.clock : std::string("<from cwc>")) +
+                                    " depth=" + std::to_string(build.depth) +
+                                    " (-cwc " + config_path + ")");
+                } else {
+                    Emit("log", run_name + ": 无法生成探针配置，忽略 clock/depth：" +
+                                    (config_error.empty() ? std::string("write failed")
+                                                          : config_error));
+                }
+            }
+        }
+        insert_body += "\n";
+
+        if (!write_hook(insert_hook, insert_body)) {
             std::lock_guard<std::mutex> lock(hook_mutex);
             probe_hook_state[run_name] = false;
             return;
@@ -942,6 +972,24 @@ struct FlowRunner::Impl {
                 if (name.find("cwc") == std::string::npos) continue;
                 watcher_built = true;
                 break;
+            }
+
+            // phy 完成后用**新**位流的 ERAM + 我们指定的 clock/depth 写回 sidecar
+            // （批量 launch_runs 不写 compiled.cwc，而 capture 需要它）。
+            if (HasProbeMdn(owner->project_)) {
+                const jsonrpc::Json written = probe::WriteCompiledCwcAfterPhy(owner->project_);
+                if (written.value("ok", false)) {
+                    Emit("log", run_name + ": wrote phy_1/cw/compiled.cwc (depth " +
+                                    std::to_string(written.value("depth", 0)) + ", " +
+                                    std::to_string(written.value("net_count", 0)) + " nets)");
+                    if (!watcher_present) {
+                        watcher_present = true;
+                        watcher_net_count = written.value("net_count", 0);
+                    }
+                } else {
+                    Emit("log", run_name + ": could not write compiled.cwc: " +
+                                    written.value("reason", std::string("unknown")));
+                }
             }
 
             // ⚠ 只有**确实配了探针**（chip_debugger 下有非空 *.mdn）的工程才强制；

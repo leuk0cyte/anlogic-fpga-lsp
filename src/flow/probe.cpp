@@ -17,6 +17,8 @@
 #include <set>
 #include <string>
 #include <utility>
+
+#include "platform/path.h"
 #include <vector>
 
 #include <re2/re2.h>
@@ -1100,7 +1102,8 @@ std::string BuildCwcFromWatcher(const project::Project& project, const MdnConfig
                (eram.wm_ecc == "0" ? "disable" : "enable") + "\" working_mode_num_byte=\"" +
                eram.wm_num_byte + "\" working_mode_super_wide=\"disable\"/>\n";
     }
-    out += "\t\t</logic_eram>\n\t</instance>\n</chipwatcher>\n";
+    out += "\t\t</logic_eram>\n";
+    out += "\t</instance>\n</chipwatcher>\n";
 
     if (info != nullptr) {
         (*info)["ok"] = true;
@@ -1112,6 +1115,251 @@ std::string BuildCwcFromWatcher(const project::Project& project, const MdnConfig
         (*info)["bits"] = total;
         (*info)["eram"] = static_cast<int>(erams.size());
     }
+    return out;
+}
+
+// =============================================================================
+// 探针构建参数 + 按参数生成 cwc
+// =============================================================================
+namespace {
+
+std::string StateProbeDir(const project::Project& project) {
+    return fpgalsp::platform::state_dir(project.dir) + "/probe";
+}
+
+// 极简 key=value 落盘（避免为一个 3 字段配置引入 JSON 依赖）
+}  // namespace
+
+std::string ProbeConfigPath(const project::Project& project) {
+    return StateProbeDir(project) + "/config.txt";
+}
+
+ProbeBuildConfig ReadProbeBuildConfig(const project::Project& project) {
+    ProbeBuildConfig config;
+    const std::string path = ProbeConfigPath(project);
+    if (!IsFile(path)) return config;
+    const std::string text = ReadText(path);
+    std::size_t start = 0;
+    while (start < text.size()) {
+        const std::size_t end = text.find('\n', start);
+        const std::string line =
+            text.substr(start, end == std::string::npos ? std::string::npos : end - start);
+        start = end == std::string::npos ? text.size() : end + 1;
+        const std::size_t eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        const std::string key = line.substr(0, eq);
+        const std::string value = line.substr(eq + 1);
+        if (key == "clock" && !value.empty()) {
+            config.has_clock = true;
+            config.clock = value;
+        } else if (key == "depth") {
+            const int depth = std::atoi(value.c_str());
+            if (depth > 0) {
+                config.has_depth = true;
+                config.depth = depth;
+            }
+        } else if (key == "trigger_position") {
+            const int pos = std::atoi(value.c_str());
+            if (pos >= 0) config.trigger_position = pos;
+        } else if (key == "apply") {
+            config.apply_build_config = value != "0";
+        }
+    }
+    return config;
+}
+
+bool WriteProbeBuildConfig(const project::Project& project, const ProbeBuildConfig& config) {
+    std::error_code ec;
+    std::filesystem::create_directories(std::filesystem::path(StateProbeDir(project)), ec);
+    std::string text;
+    if (config.has_clock) text += "clock=" + config.clock + "\n";
+    if (config.has_depth) text += "depth=" + std::to_string(config.depth) + "\n";
+    text += "trigger_position=" + std::to_string(config.trigger_position) + "\n";
+    if (config.apply_build_config) text += "apply=1\n";
+    return fpgalsp::platform::write_file_utf8(ProbeConfigPath(project), text);
+}
+
+std::string BuildCwcFromConfig(const project::Project& project, const MdnConfig& mdn,
+                               const ProbeBuildConfig& config, std::string* error,
+                               jsonrpc::Json* info, bool include_eram) {
+    const auto fail = [error](const std::string& why) {
+        if (error != nullptr) *error = why;
+        return std::string();
+    };
+    if (!mdn.exists || mdn.signals.empty()) return fail("no probes marked in user.mdn");
+
+    std::vector<std::pair<std::string, int>> buses;
+    for (const std::string& signal : mdn.signals) {
+        std::string base = signal;
+        const std::size_t open = signal.rfind('[');
+        if (open != std::string::npos) base = signal.substr(0, open);
+        if (buses.empty() || buses.back().first != base) buses.emplace_back(base, 0);
+        ++buses.back().second;
+    }
+    int total = 0;
+    for (const auto& bus : buses) total += bus.second;
+
+    const std::string clock =
+        config.has_clock ? config.clock : ResolveSampleClock(project);
+    if (clock.empty()) {
+        return fail("cannot determine the sample clock - pass clock (e.g. reg_init/clk) to "
+                    "fpga_probe_config, or save the ChipWatcher once from the TD GUI");
+    }
+    const int depth = config.has_depth ? config.depth : 1024;
+
+    // ERAM 行：优先用当前位流的 `_inst.bid`；没有就留空（TD 编译时会自己补）
+    std::vector<BidEram> erams;
+    const std::string bid_path =
+        project.dir + "/" + project.name + "_Runs/phy_1/" + project.name + "_inst.bid";
+    if (IsFile(bid_path)) {
+        std::string inst_name = "auto_created_cwc1";
+        if (const std::string dir = NewestWatcherDir(project); !dir.empty()) {
+            inst_name = std::filesystem::path(dir).filename().string();
+        }
+        erams = ParseBidErams(ReadText(bid_path), inst_name);
+    }
+
+    const std::string top_prefix = project.top.empty() ? std::string() : project.top + "/";
+    const auto rel = [&top_prefix](const std::string& name) {
+        if (!top_prefix.empty() && name.rfind(top_prefix, 0) == 0) {
+            return name.substr(top_prefix.size());
+        }
+        return name;
+    };
+    std::string inst = "auto_created_cwc1";
+    if (erams.empty()) {
+        if (const std::string dir = NewestWatcherDir(project); !dir.empty()) {
+            inst = std::filesystem::path(dir).filename().string();
+        }
+    } else {
+        // ERAM 名字里带实例前缀，取第一段
+        const std::size_t slash = erams.front().name.find('/');
+        if (slash != std::string::npos) inst = erams.front().name.substr(0, slash);
+    }
+
+    std::string out;
+    out += "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n";
+    out += "<chipwatcher version=\"3.070000\" project_name=\"" + project.name + "\" chip_name=\"" +
+           project.device + "\">\n\t<watcher_nodes>\n";
+    for (const auto& bus : buses) {
+        out += "\t\t<bus name=\"" + rel(bus.first) + "[" + std::to_string(bus.second - 1) +
+               ":0]\" clock=\"" + clock + "\" inst=\"" + inst +
+               "\" type=\"MARK_DEBUG_PROBE\" is_enabled=\"yes\">\n";
+        for (int bit = bus.second - 1; bit >= 0; --bit) {
+            out += "\t\t\t<net name=\"" + rel(bus.first) + "[" + std::to_string(bit) +
+                   "]\" const=\"false\" data=\"enable\" trig=\"enable\"/>\n";
+        }
+        out += "\t\t</bus>\n";
+    }
+    out += "\t</watcher_nodes>\n\t<instance name=\"" + inst +
+           "\" id=\"0\" ipgen=\"false\" inst_enable=\"true\">\n";
+    out += "\t\t<clock clk_name=\"" + clock + "\" clk_peroid=\"10ns\"/>\n";
+    out += "\t\t<config bram_name=\"" + inst + "/wrapper_cwc_top/U_cwc_ram\" debughub_name=\"\" " +
+           "input_pipe_num=\"0\" output_pipe_num=\"0\" sample_depth=\"" + std::to_string(depth) +
+           "\"/>\n";
+    out += "\t\t<signal_vec>\n\t\t\t<watcher_nodes>\n";
+    for (const auto& bus : buses) {
+        out += "\t\t\t\t<bus name=\"" + rel(bus.first) + "[" + std::to_string(bus.second - 1) +
+               ":0]\" compatator_num=\"1\" op=\"dont_care\" capture_op=\"dont_care\">\n";
+        for (int bit = bus.second - 1; bit >= 0; --bit) {
+            out += "\t\t\t\t\t<net name=\"" + rel(bus.first) + "[" + std::to_string(bit) +
+                   "]\" cond=\"low\" capture_cond=\"low\"/>\n";
+        }
+        out += "\t\t\t\t</bus>\n";
+    }
+    out += "\t\t\t</watcher_nodes>\n\t\t</signal_vec>\n";
+    out += "\t\t<trigger name=\"" + inst + "_trigger\" position=\"" +
+           std::to_string(config.trigger_position) + "\" window_num=\"1\" window_depth=\"" +
+           std::to_string(depth) + "\">\n";
+    out += "\t\t\t<condition level=\"1\" enabled=\"yes\" type=\"basic_and\" " +
+           std::string("capture_type=\"basic_and\"/>\n");
+    out += "\t\t</trigger>\n";
+    if (include_eram) {
+    out += "\t\t<logic_eram name=\"" + inst + "/wrapper_cwc_top/U_cwc_ram\" width=\"" +
+           std::to_string(total) + "\" depth=\"" + std::to_string(depth) + "\">\n";
+    for (const BidEram& eram : erams) {
+        out += "\t\t\t<phy_eram name=\"" + eram.name + "\" wid=\"" + eram.wid + "\" rid=\"" +
+               eram.rid + "\" model_type=\"" + eram.model_type + "\" width_a=\"" + eram.width_a +
+               "\" width_b=\"" + eram.width_b + "\" debuggable=\"" +
+               (EnableWord(eram.debuggable) ? "enable" : "disable") + "\" initialized=\"" +
+               (EnableWord(eram.initialized) ? "enable" : "disable") + "\" width=\"" + eram.width +
+               "\" depth=\"" + std::to_string(depth) + "\" address_offset=\"" +
+               eram.address_offset + "\" data_offset=\"" + eram.data_offset +
+               "\" address_step=\"" + eram.address_step + "\" num_section=\"" + eram.num_section +
+               "\" section_size=\"" + eram.section_size + "\" width_per_section=\"" +
+               eram.width_per_section + "\" bytes_in_per_section=\"" +
+               eram.bytes_in_per_section + "\" working_mode_depth=\"" + std::to_string(depth) +
+               "\" working_mode_width=\"" + eram.wm_width + "\" working_mode_ecc=\"" +
+               (eram.wm_ecc == "0" ? "disable" : "enable") + "\" working_mode_num_byte=\"" +
+               eram.wm_num_byte + "\" working_mode_super_wide=\"disable\"/>\n";
+    }
+    out += "\t\t</logic_eram>\n";
+    }
+    out += "\t</instance>\n</chipwatcher>\n";
+    if (info != nullptr) {
+        (*info)["ok"] = true;
+        (*info)["clock"] = clock;
+        (*info)["depth"] = depth;
+        (*info)["buses"] = static_cast<int>(buses.size());
+        (*info)["bits"] = total;
+        (*info)["eram"] = static_cast<int>(erams.size());
+    }
+    return out;
+}
+
+jsonrpc::Json WriteCompiledCwcAfterPhy(const project::Project& project) {
+    jsonrpc::Json out = jsonrpc::Json::object();
+    out["ok"] = false;
+    const MdnConfig mdn = ReadMdn(MdnPath(project));
+    if (!mdn.exists || mdn.signals.empty()) {
+        out["reason"] = "no probes marked - nothing to write";
+        return out;
+    }
+    // ⚠ 只补缺，不覆盖：TD/GUI 或上一次成功抓取留下的 cwc 是**经过验证**的，
+    //   我们生成的这份还不一定与位流完全对齐（实测拿它抓取会让 TD 会话在
+    //   wait_on_hw_cw/write_hw_cw_data 阶段挂掉）。有就不要动。
+    if (IsFile(CompiledCwc(project))) {
+        const CwcSnapshot existing = ReadCwc(CompiledCwc(project));
+        if (existing.ok && existing.net_count > 0) {
+            out["ok"] = true;
+            out["existed"] = true;
+            out["written"] = false;
+            out["net_count"] = existing.net_count;
+            return out;
+        }
+    }
+    const ProbeBuildConfig config = ReadProbeBuildConfig(project);
+    std::string error;
+    jsonrpc::Json info = jsonrpc::Json::object();
+    const std::string text = BuildCwcFromConfig(project, mdn, config, &error, &info);
+    if (text.empty()) {
+        out["reason"] = error;
+        return out;
+    }
+    std::error_code ec;
+    std::filesystem::create_directories(
+        std::filesystem::path(CompiledCwc(project)).parent_path(), ec);
+    if (!fpgalsp::platform::write_file_utf8(CompiledCwc(project), text)) {
+        out["reason"] = "cannot write " + CompiledCwc(project);
+        return out;
+    }
+    // bit 侧 sidecar 也补上
+    if (!IsFile(CompiledBit(project))) {
+        const std::string run_bit =
+            project.dir + "/" + project.name + "_Runs/phy_1/" + project.name + ".bit";
+        if (IsFile(run_bit)) {
+            std::error_code copy_ec;
+            std::filesystem::copy_file(run_bit, CompiledBit(project),
+                                       std::filesystem::copy_options::overwrite_existing, copy_ec);
+            out["bit_copied"] = !copy_ec;
+        }
+    }
+    const CwcSnapshot written = ReadCwc(CompiledCwc(project));
+    out["ok"] = written.ok;
+    out["net_count"] = written.net_count;
+    out["depth"] = config.has_depth ? config.depth : 1024;
+    out["generated"] = info;
+    if (!written.ok) out["reason"] = "generated cwc does not parse back";
     return out;
 }
 
@@ -1300,7 +1548,7 @@ jsonrpc::Json Status(const project::Project& project) {
 }
 
 jsonrpc::Json Configure(const project::Project& project, const std::vector<std::string>& signals,
-                        bool write) {
+                        bool write, bool has_clock, const std::string& clock, int depth) {
     jsonrpc::Json out = jsonrpc::Json::object();
     out["ok"] = false;
     out["path"] = MdnPath(project);
@@ -1390,6 +1638,26 @@ jsonrpc::Json Configure(const project::Project& project, const std::vector<std::
     }
     out["ok"] = true;
     out["written"] = true;
+    // 采样时钟/深度：TD 只在 "Optimize Gate 之后" 那次 insert_debugger 里采纳，
+    // 而且必须通过 `-cwc <配置>` 传进去才会被采用（实测 depth 2048 生效）。
+    // 这里只落盘参数；真正生成配置并挂钩子是 flow_runner 的事。
+    if (has_clock || depth > 0) {
+        ProbeBuildConfig config = ReadProbeBuildConfig(project);
+        if (has_clock) {
+            config.has_clock = true;
+            config.clock = clock;
+        }
+        if (depth > 0) {
+            config.has_depth = true;
+            config.depth = depth;
+        }
+        out["build_config_saved"] = WriteProbeBuildConfig(project, config);
+        jsonrpc::Json saved = jsonrpc::Json::object();
+        saved["clock"] = config.has_clock ? config.clock : std::string();
+        saved["depth"] = config.has_depth ? config.depth : 0;
+        saved["path"] = ProbeConfigPath(project);
+        out["build_config"] = std::move(saved);
+    }
     out["reason"] =
         "user.mdn updated - now run stages [\"all\"] (NOT [\"phy\"]): TD creates the "
         "ChipWatcher instance right after Optimize Gate, which belongs to the syn run. "

@@ -364,7 +364,10 @@ const std::vector<Tool>& AllTools() {
              "Cost: milliseconds. It only edits chip_debugger/user.mdn - no TD session, no hardware, no bitstream.\n"
              "Failure modes: ok:true with written:true does NOT mean the probes are in the bitstream; rerun phy and confirm with fpga_probe_status (stale/missing_in_bit). An empty list is refused.\n"
              "Example: {\"signals\":[\"WHG/pwm_reg0_i[15:0]\"],\"write\":true}",
-             Schema({{"signals", Arr("Replacement probe signals, e.g. WHG/pwm_reg0_i[0]. Omit to read the current list.",
+             Schema({{"clock", Str("Sample clock net for the ChipWatcher, e.g. reg_init/clk. TD treats it as a compile-time value: it is only honoured at the Optimize Gate step when the backend hands TD an authored cwc, so it takes effect on the next stages:[\"all\"] run, not at capture time.")},
+                      {"apply_build_config", Bool("Actually hand TD an authored cwc at the Optimize Gate step so `clock`/`depth` take effect (default false). Measured: TD honours the depth, but a phy place after that crashed twice with 'Run phy_1 has exited unexpectedly' - the authored cwc still disagrees with the bitstream resources. Enable only when you are prepared to experiment.")},
+                      {"depth", Int("Sample depth for the ChipWatcher (e.g. 2048). Same rule as clock: compile-time in TD, takes effect on the next stages:[\"all\"] run. The backend writes it into the cwc it feeds to insert_debugger - measured: depth 2048 is honoured by TD 2026.2.", 16, 65536)},
+                      {"signals", Arr("Replacement probe signals, e.g. WHG/pwm_reg0_i[0]. Omit to read the current list.",
                                       StrNoDesc())},
                       {"write", Bool("Actually rewrite chip_debugger/user.mdn (default false = dry run).")}},
                      {}),

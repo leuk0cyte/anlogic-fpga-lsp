@@ -158,6 +158,43 @@ CaptureData ParseCaptureCsv(std::string_view text);
 
 std::string RunsDir(const project::Project& project);
 std::string ChipDebuggerDir(const project::Project& project);
+// -----------------------------------------------------------------------------
+// 探针构建参数（采样深度 / 采样时钟）
+// -----------------------------------------------------------------------------
+// TD 的 ChipWatcher 把这些当作**编译期**量：它们只在 "Optimize Gate 完成" 那次
+// `insert_debugger` 里被采纳。实测（2026-11-21）：把一份 cwc 作为
+// `insert_debugger <dir> -cwc <file>` 的参数传进去，TD 会按它重建 watcher ——
+// 深度 2048 传进去后新的 `*_watcherInst.sv` 里 `RAM_DATA_DEPTH = 2048`。
+// 所以我们用"自己作者化一份 cwc + 落盘参数"的方式把 depth/clock 变成可配置量。
+// 落盘位置：`<project>/.fpgalsp/probe/config.json`。
+struct ProbeBuildConfig {
+    bool has_clock = false;
+    std::string clock;      // 例如 reg_init/clk
+    bool has_depth = false;
+    int depth = 1024;
+    int trigger_position = 127;
+    // 是否真的把这份配置以 `-cwc` 交给 gate 阶段的 insert_debugger（默认 false）。
+    // ⚠ 实测（2026-11-21）：`-cwc` 在 gate 阶段**会被采纳**（depth 2048 反映到
+    //   `*_watcherInst.sv` 的 RAM_DATA_DEPTH），但随后的 phy place 连续两次
+    //   "Run phy_1 has exited unexpectedly" —— 自写 cwc 的 ERAM/资源描述与位流不匹配。
+    //   所以在拿到稳定的写法之前，这个能力必须显式开启，绝不能默认生效。
+    bool apply_build_config = false;
+};
+
+std::string ProbeConfigPath(const project::Project& project);
+ProbeBuildConfig ReadProbeBuildConfig(const project::Project& project);
+bool WriteProbeBuildConfig(const project::Project& project, const ProbeBuildConfig& config);
+
+// 用 mdn + 指定 clock/depth + 现有 `phy_1/<prj>_inst.bid` 的 ERAM 行生成一份 cwc 文本。
+// 用作 `insert_debugger -cwc` 的输入，也可以在 phy 之后作为 sidecar 写出去。
+std::string BuildCwcFromConfig(const project::Project& project, const MdnConfig& mdn,
+                               const ProbeBuildConfig& config, std::string* error,
+                               jsonrpc::Json* info, bool include_eram = true);
+
+// phy 成功后调用：用**新**位流的 ERAM + 我们指定的 clock/depth/总线顺序写
+// `phy_1/cw/compiled.cwc`（批量 launch_runs 不会写这个 sidecar）。
+jsonrpc::Json WriteCompiledCwcAfterPhy(const project::Project& project);
+
 std::string MdnPath(const project::Project& project);
 std::string CompiledBit(const project::Project& project);
 std::string CompiledCwc(const project::Project& project);
@@ -191,7 +228,8 @@ jsonrpc::Json Status(const project::Project& project);
 // 把请求的信号写成 user.mdn。signals 为空 = 读取当前清单（dry run，不落盘）。
 // 返回 { ok, path, before, after, added, removed, written, reason }
 jsonrpc::Json Configure(const project::Project& project, const std::vector<std::string>& signals,
-                        bool write);
+                        bool write, bool has_clock = false,
+                        const std::string& clock = std::string(), int depth = 0);
 
 // -----------------------------------------------------------------------------
 // 采集（碰硬件）
