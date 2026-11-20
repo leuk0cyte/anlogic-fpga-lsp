@@ -313,6 +313,14 @@ flash +0.5~0.7 %。
 不跟安装走，批量替换会毁掉真实样本覆盖。要区分 `project.td_version`（`.al`）与
 `TdChoice.version`（安装目录名），二者在 `fpgalsp.info` 里是不同字段。
 
+### 交付产物
+
+| 项 | 值 |
+| --- | --- |
+| 扩展包 | `vscode-extension/fpga-lsp-anlogic-0.18.2.vsix`（230 文件，3,185,310 B） |
+| 打包内置的服务端 | `build/bin/fpgalsp-native.exe`（Release + 全量 LTO，6,486,016 B，SHA256 `7C089F71…23B08`） |
+| 一致性校验 | 解包后 `extension/server/bin/fpgalsp-native.exe` 的 SHA256 与该二进制**逐字节相同**；`extension/package.json` 版本 = 0.18.2 |
+
 ### 升级后工程侧的变化
 
 `%WORKSPACE%\CorpusDelta\corpus_delta\corpus_delta.al` 已被 SP1 的 GUI 重写为

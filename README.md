@@ -47,13 +47,14 @@ fpgalsp-native.exe --mcp --mcp-port 7788 --root <工程根>      :: MCP over loo
 fpgalsp-native.exe --help
 ```
 
-改代码想快速迭代时用无 LTO 的 `windows-msvc-relwithdebinfo`（Release 的 LTCG 重链约 48 s）。
+改代码想快速迭代时用无 LTO 的 `windows-msvc-dev`（增量 32 s；Release 的 LTO 版要 142 s，因为
+58 个测试可执行文件每个都做一次全程序 LTCG）。
 更多构建细节、预设与排错见 [doc/build.md](doc/build.md)。
 
 ## VS Code 扩展
 
 ```powershell
-code --install-extension vscode-extension\fpga-lsp-anlogic-0.18.1.vsix
+code --install-extension vscode-extension\fpga-lsp-anlogic-0.18.2.vsix
 ```
 
 扩展会优先使用随包内置的服务端。开发、测试与打包见
