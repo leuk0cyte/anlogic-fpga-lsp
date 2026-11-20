@@ -93,16 +93,48 @@ B-B13 波形联动、X-B4/B5/B6/B8 等）。
 第 7 条（二进制加固：CFG / CET / `/Qspectre` / `/sdl`）按要求**维持现状**：
 `DllCharacteristics` 仍为 `0x8160`（ASLR / DEP / HighEntropyVA / 终端服务感知 开，CFG 关）。
 
-## VS Code 扩展（0.15.0）
+## VS Code 扩展（0.15.1）
 
 ```
-vscode-extension/fpga-lsp-anlogic-0.15.0.vsix   228 files / 2.96 MB
-  └─ extension/server/bin/fpgalsp-native.exe    6,317,568 B（全量 LTCG）
+vscode-extension/fpga-lsp-anlogic-0.15.1.vsix   228 files / 2.97 MB
+  └─ extension/server/bin/fpgalsp-native.exe    6,352,384 B（全量 LTCG）
 ```
 
 打包：`npm run package`（= `node scripts/bundle-server.js && npx --yes @vscode/vsce@4 package …`）。
-已核对包内 exe 与 `build/bin` 哈希一致（`59E4E2B9…74CB0`）。
+已核对包内 exe 与 `build/bin` 哈希一致（`AF9B3E27…E4522`）。
 0.15.0 起随包附带 `LICENSE.txt`（AGPL-3.0-or-later），原先被 `--skip-license` 略过。
+
+### 排版 / lint 默认值（0.15.1 修正）
+
+历史 bug：重写把排版风格在服务端**写死**成 Verible 默认（`indentation_spaces=2`），
+同时 `veribleArgs` / `veribleLintArgs` 只被存进 `Settings`、**从未被使用**；
+而插件 `package.json` 的默认值一直是旧 Python 版的 160 列 / **4 空格** / 对齐组。
+结果：格式化一次就把整份工程从 4 空格重排成 2 空格（实测 `link_rx.v` 15 KB：
+241 行增 / 251 行删）。
+
+| 项 | 旧 Python 插件（生效值） | 0.15.0 | 0.15.1 |
+| --- | --- | --- | --- |
+| 列宽 `column_limit` | 160 | 160 | 160 |
+| 缩进 `indentation_spaces` | **4** | **2**（写死） | **4**（= 插件默认） |
+| `try_wrap_long_lines` | true | false（Verible 默认） | true |
+| 12 个 `*_alignment` | align | infer（Verible 默认） | align |
+| `alignment_group_boundary` | blank-lines-and-separator-comments | none | 同左 |
+| lint `line-length` | 100（**旧插件默认值被静默丢弃**） | 160 | 160（可配置） |
+
+现在的规则：
+
+1. **风格只有一个来源** —— `verible_bridge::DefaultStyleFlags()` 逐条复制插件
+   `fpgaLsp.verible.args` 的默认值；客户端发来 `veribleArgs` 时覆盖它。
+   `tests/unit/verible_style_test.cpp` 盯着这条（默认 4 空格、flag 生效、未知 flag 忽略）。
+2. **flag 解析不碰全局 absl flag**：`--name=value` / `--flag value` / `--flag` 三种写法
+   都在 `verible_bridge/flag_tokens.h` 里归一，再逐字段覆盖 style 副本 —— 多线程安全，
+   服务端进程状态不会变成隐式输入。
+3. **非法取值直接失败**（返回原文 + error，记 warn 日志），未知 flag 只记日志不中断。
+4. **lint 参数真的生效**：`--rules=` / `--ruleset=` / `--rules_config=` /
+   `--rules_config_search` / `--waiver_files=`；插件设置同时接受数组和旧版字符串写法
+   （旧 Python 服务端只认数组，所以它的字符串默认值其实没生效 —— 上面表里 lint 100 就是这么来的）。
+5. 实测：`fpga_format`（MCP）与 `textDocument/formatting`（LSP）对 `link_rx.v` 都输出
+   **14,802 B**，与用旧插件 23 条默认 args 跑 `format_dump` 的结果**逐字节一致**。
 
 ## 已知差异（有意保留 / 版本基线）
 

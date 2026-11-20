@@ -45,7 +45,7 @@
 ### 2. 安装扩展并重载
 
 ```powershell
-code --install-extension Y:\fpga-lsp-cpp\vscode-extension\fpga-lsp-anlogic-0.15.0.vsix
+code --install-extension Y:\fpga-lsp-cpp\vscode-extension\fpga-lsp-anlogic-0.15.1.vsix
 ```
 
 安装后按提示 **Reload**，或执行 `Developer: Reload Window`。
@@ -144,9 +144,11 @@ code --install-extension Y:\fpga-lsp-cpp\vscode-extension\fpga-lsp-anlogic-0.15.
 服务端提供）：
 
 - 格式化：由内嵌 Verible 完成，通过语言服务器调用；参数见 `fpgaLsp.verible.args`
-  （默认 160 列 + 一组对齐选项）。`fpgaLsp.verible.format=false` 可关掉。
+  （默认 160 列 + 4 空格缩进 + 一组对齐选项，与 Python 版插件完全一致）。
+  `fpgaLsp.verible.format=false` 可关掉。
 - Lint / quick fix：`fpgaLsp.verible.autofix=true`（默认）时，quick fix 由内嵌 lint
-  直接算出来，**不需要外部 verible 二进制**。
+  直接算出来，**不需要外部 verible 二进制**。规则参数见 `fpgaLsp.verible.lintArgs`
+  （默认 `--rules=+line-length=length:160`，与格式化列宽对齐）。
 - 语法高亮：基础着色由 TextMate 语法（`syntaxes/*.tmLanguage.json`）提供，语义高亮由
   服务端的 `semanticTokens`（内嵌 Verible CST 驱动）叠加；不依赖外部 `verible-verilog-syntax`。
 - 因此不再有「找不到 Verible 就降级」的行为——历史上那套外部 Verible 探测是在
@@ -167,7 +169,7 @@ FPGA: Install MCP Configuration
 
 - `fpgaLsp.mcp.allowFlow` 默认 `true`；`allowWrite` 默认 `false`。
 - 常用新工具：`fpga_flow_log`、`fpga_flow_issues`、`fpga_flow_wait`（带 progress 通知）、`fpga_read_file`、`fpga_search_text`、`fpga_constraint_audit`。
-- 全部 39 个工具与安全限制见仓库的 `src/mcp/tools.cpp` 与
+- 全部 43 个工具与安全限制见仓库的 `src/mcp/tools.cpp` 与
   `doc/audit/2026-11-18/parity-mcp/tools-diff.md`（工具清单与 Python 侧差异对照）。
 
 ### ADC / SDC
@@ -189,7 +191,8 @@ FPGA: Install MCP Configuration
 | `fpgaLsp.flowJobs` | `6` | 传给 `launch_runs` 的并行 jobs（与 TD GUI 默认一致） |
 | `fpgaLsp.logFile` | `""` | 服务器日志，空 = `<workspace>/.fpgalsp/logs/server.log` |
 | `fpgaLsp.verible.format` | `true` | 用内嵌 Verible 格式化（Format Document） |
-| `fpgaLsp.verible.args` | 160 列 + 一组对齐参数 | 传给内嵌 `verible-verilog-format` |
+| `fpgaLsp.verible.args` | 160 列 + 4 空格缩进 + 一组对齐参数 | 传给内嵌 `verible-verilog-format` 的 style 参数（留空数组 = 服务端内置同一套默认值） |
+| `fpgaLsp.verible.lintArgs` | `["--rules=+line-length=length:160"]` | 传给内嵌 lint 的参数：`--rules=` / `--ruleset=` / `--rules_config=` / `--rules_config_search` / `--waiver_files=` |
 | `fpgaLsp.verible.autofix` | `true` | quick fix 由内嵌 Verible linter 计算（**不需要外部 verible 二进制**） |
 | `fpgaLsp.mcp.allowFlow` | `true` | 向 agent 暴露 flow / analysis / strategy 工具（会真的启动 TD flow） |
 | `fpgaLsp.mcp.allowWrite` | `false` | 向 agent 暴露工程写工具（更新 / 添加源文件 / 重命名 `.al`） |

@@ -1,6 +1,6 @@
 # VS Code 扩展功能设计：现状地图与待开发功能
 
-> 对象：`fpga-lsp-anlogic` 0.15.0（`vscode-extension/`）+ 同仓原生后端 `fpgalsp-native.exe`。
+> 对象：`fpga-lsp-anlogic` 0.15.1（`vscode-extension/`）+ 同仓原生后端 `fpgalsp-native.exe`。
 > 视角：**产品 / 前端**。后端只作为"数据是否已经存在"的证据来源，不讨论后端内部设计。
 > 方法：只读代码与文档，未运行扩展、未构建、未安装依赖。所有结论都给出 `文件:行`。
 > 前提（用户已确认）：**不再要求兼容 Python 版协议**，前后端可以一起重构。
