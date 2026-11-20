@@ -299,20 +299,21 @@ GUI 的 ChipWatcher 不是每次抓取都先下 bit —— 只要器件里跑的
    （mtime 一直停在 2026/8/10）。
 
 所以：**这一版 TD 没有"按工程可编辑的流程脚本"**。要让 `insert_debugger` 带上 `-cwc`，
-只能去改安装目录里的共享 `DefaultFlow.tcl` —— 那会影响这台机器上**所有工程**，
-插件不该悄悄干这种事。这就是面板保持只读的最终原因。
+只能去改安装目录里的共享 `DefaultFlow.tcl`
+（`C:\Anlogic\TD_Release_2026.2_SP1.218.141\scripts\DefaultFlow.tcl`）—— 那会影响这台机器上
+**所有工程**，插件不该悄悄干这种事。这就是面板保持只读的最终原因。
+
+> **TD 升级复核（2026.2 → 2026.2_SP1，6.2.3.210850 → 6.2.3.218141）**：这份 `DefaultFlow.tcl`
+> 与 210850 那份**逐字节相同**（9452 B，mtime 2026/8/10 20:14:24，SHA256 `4FC07E5E…`），
+> 工程里 `corpus_delta_Runs/phy_1/corpus_delta.tcl` 也仍是它的副本（同 hash）。
+> 所以上面的结论在新版本上依然成立，**不需要重做隔离实验**。
 
 对照实验（说明 `-cwc` 本身是有效的）：在 `syn_1/…_gate.db` 上**直接**跑
 `insert_debugger <chip_debugger> -cwc <depth2048.cwc>`，`report_cwc_status` 立刻显示
 `Sample Depth 2048` / `trigger length 2048`。
 
-所以 B 失败不是 `-cwc` 不认，而是"流程里那次调用"没有被我们的参数接管。两种可能（本轮未隔离）：
-1. `launch_runs` 并没有执行我们改过的那份 `phy_1/corpus_delta.tcl`；
-2. 执行了，但 bitgen 阶段的 `setup_debugger $chipDebugger -prj <prj>` 会**重新生成**
-   `cw/compiled.cwc`（它才是最终产物），把 opt_place 时的 2048 覆盖回默认值。
-
-要彻底定论，下次可以在改过的 tcl 顶部写一个 marker 文件、或用 `launch_runs phy_1 -step opt_place`
-只跑半步，看 `cw/compiled.cwc` 是"中途变 2048、最后被覆盖"还是"全程 1024"。
+因此 B 失败不是 `-cwc` 不认，而是"流程里那次调用"没有被我们的参数接管 —— 这一点已由实验 C
+定论（`launch_runs` 根本不执行工程里那份脚本），不再是待验证的两种可能。
 
 **当前结论：采样时钟 / 采样深度在 TD 2026.2 下由 mark_debug 驱动的 watcher 固定为默认值
 （1024 / 推断出的 reg_init/clk），我们这边改不动。真改要在 TD GUI 里改 ChipWatcher 实例属性

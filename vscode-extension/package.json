@@ -154,7 +154,7 @@
                 "fpgaLsp.tdPath": {
                     "type": "string",
                     "default": "",
-                    "description": "TangDynasty installation root, e.g. C:/Anlogic/TD_Release_2026.2.210.850. Empty = auto-detect."
+                    "description": "TangDynasty installation root, e.g. C:/Anlogic/TD_Release_<version>. Empty = auto-detect."
                 },
                 "fpgaLsp.tdCheckOnSave": {
                     "type": "boolean",

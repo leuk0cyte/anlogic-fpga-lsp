@@ -327,6 +327,20 @@ RunOutcome DecideRunOutcome(const RunSnapshot& snapshot, std::string_view out) {
         return outcome;
     }
 
+    // ── 条件 1b：**只有** CRITICAL-WARNING、一个 ERROR 都没有，且产物齐全 -> 接受为成功 ──
+    // 这是相对 Python 版的一处**有意偏离**（Python 用 "ERROR" 子串分类，警告一律判失败）。
+    // 起因是 TD 2026.2_SP1 (6.2.3.218141) 的 release note：
+    //   "修复 read_adc 命令报 CRITICAL-WARNING 但会导致 Flow 退出的问题"
+    // —— 也就是说 SP1 **之前**这类警告会连带中断流程（判失败是对的），SP1 **之后**流程
+    // 照常跑完、产物齐全，但警告文本仍然出现在 stdout 里。若继续"有警告即失败"，
+    // 就会出现「TD 已经产出 bit、后端却报失败」。
+    // 仍然要求 completed：不把「只有警告、但根本没跑完」当成成功。
+    if (!td::HasFatal(out) && completed) {
+        outcome.accepted = true;
+        outcome.warnings_only = ErrorLines(out, 3);
+        return outcome;
+    }
+
     outcome.accepted = false;
     outcome.failure_detail = BuildFailureDetail(out, ErrorMarkers(snapshot.run_dir_names),
                                                 snapshot.run_log_tail, snapshot.run_dir);

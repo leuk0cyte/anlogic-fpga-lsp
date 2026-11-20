@@ -1014,7 +1014,17 @@ jsonrpc::Json Capture(const td::TdChoice& td, const project::Project& project,
         const std::string command = "config_chipwatcher " + td::TclQuoteGrouped(cwc_path);
         const std::string text = session->Run(command, 180.0);
         for (const std::string& line : ErrorLines(text, 4)) record(line);
-        if (td::HasError(text) || text.find("KIT-1004") == std::string::npos) {
+        // 成功判据用**文本锚**为主、消息号为辅：
+        //   文本锚 "chipwatcher: sanity check successfully" 在 2026.2(210850) 与
+        //   2026.2_SP1(218141) 上都稳定出现；消息号是运行时"前缀+数字"拼出来的，
+        //   在 exe 里扫不到，TD 升级后是否改号无法静态确认（SP1 实测仍是 KIT-1004）。
+        //   两者取或，任一命中即认为配置已导入。
+        const bool imported =
+            text.find("sanity check successfully") != std::string::npos ||
+            text.find("KIT-1004") != std::string::npos;
+        // 判致命只看 ERROR：与其它 TD 步骤一致（CRITICAL-WARNING 只记录，不判死），
+        // 否则 SP1 起"警告不中断 Flow"的新行为会在这里把成功的导入判成失败。
+        if (td::HasFatal(text) || !imported) {
             return fail("config_chipwatcher",
                         "cannot import the ChipWatcher configuration", text);
         }

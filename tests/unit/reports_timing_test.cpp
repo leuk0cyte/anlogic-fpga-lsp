@@ -127,6 +127,21 @@ TEST(ReportsTiming, ParsesCoverageAndConfidence) {
     EXPECT_EQ(*ef2.confidence, "Synthesized");
 }
 
+// 数字与 % 之间有空白也要能解析（报表分隔符形态不该被赌死）。
+// TD 2026.2_SP1 修了 "STA Coverage 不准确"：标签没变、只有数值会变，
+// 但分隔符若变成 `98.7 %`，旧 pattern `([\d.]+)%` 会静默解析失败 ->
+// coverage 变 nullopt，前端只看到"没有覆盖率"。
+TEST(ReportsTiming, ParsesCoverageWithSpaceBeforePercent) {
+    const TimingReport spaced = ParseTiming("STA coverage : 98.7 %\n", "x");
+    ASSERT_TRUE(spaced.coverage.has_value());
+    EXPECT_DOUBLE_EQ(*spaced.coverage, 98.7);
+
+    // 无空白的老形态必须不回归
+    const TimingReport tight = ParseTiming("STA coverage : 99.64%\n", "x");
+    ASSERT_TRUE(tight.coverage.has_value());
+    EXPECT_DOUBLE_EQ(*tight.coverage, 99.64);
+}
+
 // -----------------------------------------------------------------------------
 // Path Group / 路径
 // -----------------------------------------------------------------------------

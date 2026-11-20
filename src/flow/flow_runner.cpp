@@ -636,7 +636,14 @@ struct FlowRunner::Impl {
                                    " -jobs " + std::to_string(jobs);
         std::string out = RunCommand(launch, 300.0);
         RememberRunLog(run_name, out);
-        if (td::HasError(out)) {
+        // ⚠ 这里只能用 HasFatal（只看 ERROR），不能用 HasError：
+        //   HasError 把 `<CODE> CRITICAL-WARNING` 也算失败，而 TD 2026.2_SP1 起
+        //   read_adc 的 CRITICAL-WARNING 不再中断 Flow —— 已经正常跑完的 run 也会把这
+        //   类警告留在 stdout 上，用 HasError 会在**启动阶段**就把成功的 run 判死，
+        //   而且完全不看产物。同一个坑在 probe.cpp 的 open_project 上已经踩过一次
+        //   （真实工程自带的 HDL-7225 CRITICAL-WARNING）。
+        //   run 真正的成败由下面的 wait_run + DecideRunOutcome（产物优先）决定。
+        if (td::HasFatal(out)) {
             Record(out);
             RunSnapshot snapshot = Snapshot(run_name);
             return Fail("launch_runs " + run_name + " failed: " +
@@ -644,6 +651,11 @@ struct FlowRunner::Impl {
                                            snapshot.run_log_tail, snapshot.run_dir));
         }
         Record(out);
+        // 非致命警告仍然要留痕，不能静默吞掉
+        if (td::HasError(out)) {
+            Emit("log", run_name + ": TD reported warnings during launch (not fatal): " +
+                            ErrorLines(out, 3));
+        }
 
         if (!WaitForRunStart(run_name, owner->options_.start_timeout_seconds)) {
             return Fail(run_name +
@@ -672,6 +684,12 @@ struct FlowRunner::Impl {
                 Record(out);
                 Emit("log", run_name +
                                 " completed despite TD PRJ-8806; artifacts are present");
+            } else if (!outcome.warnings_only.empty()) {
+                // 产物齐全、TD 只报了 CRITICAL-WARNING（TD 2026.2_SP1 起 read_adc 之类
+                // 的警告不再中断流程）：接受为成功，但必须把警告原文透出来。
+                Record(out);
+                Emit("log", run_name + " completed with TD warnings (not fatal): " +
+                                outcome.warnings_only);
             }
         } else {
             return Fail(run_name + " failed: " + outcome.failure_detail);

@@ -869,12 +869,22 @@ jsonrpc::Json Program(const td::TdChoice& td, const project::Project& project,
 
     const std::string out_text = scope.get()->Run(command, effective.program_timeout);
     const std::vector<std::string> tail = TailLines(out_text, 40);
-    // 2026.2 的成功凭据：`PRG-2014 : Chip validation success: <系列>`（download 一定打印）
-    // 和收尾的 `GUI-1001 : Downloading succeeded!`。**退出码不可信**（出错也返回 0），
-    // 所以"没有成功标记"同样判失败 —— 不能因为日志里没有 ERROR 就当成烧好了。
+    // 2026.2 的**唯一**逐次必打的成功凭据是 `PRG-2014 : Chip validation success: <系列>`。
+    // ⚠ 实测更正（2026-11-20，TD 2026.2 与 2026.2_SP1 两版都一样）：
+    //   后端驱动的是 bin/**bw_commands_prompt.exe**（CLI 版），它**从不**打印
+    //   `GUI-1001 : Downloading succeeded!`（那是 GUI 版 bin/bw.exe 的输出），
+    //   所以 HasDownloadSuccess() 在这条链路上恒为 false，只是留给别的通道的兜底。
+    //   因此 ok 实际退化为「出现 PRG-2014 且日志里没有任何 `<CODE> SEVERITY` 错误行」。
+    // 另外 PRG-2014 会在**失败路径上先打印**（实测：PRG-2014 之后紧跟 PRG-8002/PRG-8000
+    //   ERROR），所以它只能当"板子在线、器件 ID 已对上"，不能单独当"烧录成功"；
+    //   真正挡住假成功的是 HasBwError()（`<CODE> ERROR|CRITICAL-WARNING` 正则）。
+    //   flash 模式还有第二个免费证据：`PRG-1000 : SPI flash Page program and verify`
+    //   （写+校验都走完才打印），见下面的 flash_verified —— 只做留痕，不单独作为门槛，
+    //   以免将来 TD 改文案就把正常烧录判成失败。
     const std::string validation = ParseChipValidation(out_text);
     const bool success_marker = HasDownloadSuccess(out_text);
     const bool bw_error = HasBwError(out_text);
+    const bool flash_verified = out_text.find("Page program and verify") != std::string::npos;
     const bool ok = !bw_error && (!validation.empty() || success_marker);
 
     jsonrpc::Json out = jsonrpc::Json::object();
@@ -886,6 +896,8 @@ jsonrpc::Json Program(const td::TdChoice& td, const project::Project& project,
     out["device_id"] = pre.value("device_id", std::string());
     out["expected"] = project.device;
     out["chip_validation"] = validation;
+    // flash 专有的第二条证据（写+校验走完才会有）：只留痕，不当门槛
+    if (mode == "flash") out["flash_verified"] = flash_verified;
     out["command"] = command;
     out["log"] = TailJson(tail);
     if (ok) {

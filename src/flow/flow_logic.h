@@ -110,6 +110,10 @@ struct RunOutcome {
     bool accepted = false;
     // 是否需要记一条"产物完整、只是 TD 报了 PRJ-xxxx"的说明日志
     bool tolerated_prj_error = false;
+    // 产物完整、但 TD 只打了 CRITICAL-WARNING（没有任何 ERROR）时，这里带上前几条
+    // 警告原文：接受为成功，但必须留痕，避免"修好判定却漏报告警"。
+    // 见 flow_logic.cpp 的 DecideRunOutcome 条件 1b（TD 2026.2_SP1 起的行为差异）。
+    std::string warnings_only;
     // 失败原因（accepted=false 时由调用方抛/记录）
     std::string failure_detail;
 };

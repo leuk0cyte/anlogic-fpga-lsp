@@ -33,7 +33,9 @@ namespace {
 // ---- 与 Python 一字不差的模式表 ----
 constexpr std::string_view kSummaryPattern =
     R"((SWNS|STNS|HWNS|HTNS|Period Check WNS)\s*:\s*(-?\d+(?:\.\d+)?)\s*ns)";
-constexpr std::string_view kCoveragePattern = R"(STA coverage\s*:\s*([\d.]+)%)";
+// ⚠ 数字与 % 之间允许空白（`98.7 %`）：TD 2026.2_SP1 修了 STA Coverage 的数值，
+//   报表分隔符的形态我们不该赌；pattern 放宽不会误匹配（`%` 仍必须存在）。
+constexpr std::string_view kCoveragePattern = R"(STA coverage\s*:\s*([\d.]+)\s*%)";
 constexpr std::string_view kConfidencePattern = R"(Confidence\s*:\s*(\S.*))";
 constexpr std::string_view kClockSectionPattern = R"(^\s+(clk\d+):\s+([\d.]+)\s+(\d+)\s+(\S.*)$)";
 constexpr std::string_view kMetadataPattern = R"(^([A-Za-z][A-Za-z0-9 /_().-]{2,40}?)\s*:\s*(.+)$)";

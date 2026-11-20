@@ -445,7 +445,11 @@ jsonrpc::Json CompareStrategies(const project::Project& project, const td::TdCho
     run("reset_runs { syn_1 }", 120.0);
     run("launch_runs { syn_1 } -jobs 1", options.command_timeout_seconds);
     std::string out = run("wait_run syn_1 -quiet", options.timeout_seconds);
-    if (td::HasError(out)) {
+    // ⚠ run 级别的成败只看 ERROR（HasFatal），不看 CRITICAL-WARNING：
+    //   TD 2026.2_SP1 起 read_adc 之类的警告不再中断 Flow，成功的 run 也会在 stdout
+    //   留下这类文本；用 HasError 会把"其实已经跑完"的基线综合判死，整次策略对比就此
+    //   中断。口径与 flow_runner 的 launch_runs/wait_run 一致。
+    if (td::HasFatal(out)) {
         session->Close();
         return session_error("Synthesis failed: " + FirstErrorLine(out));
     }
@@ -473,7 +477,8 @@ jsonrpc::Json CompareStrategies(const project::Project& project, const td::TdCho
     }
     launch += " } -jobs " + std::to_string(options.jobs > 0 ? options.jobs : 1);
     out = run(launch, 600.0);
-    if (td::HasError(out)) {
+    // 同基线综合：launch_runs 只把 ERROR 当致命；成败由下面的 wait_run + QoR 产物决定。
+    if (td::HasFatal(out)) {
         session->Close();
         return session_error("launch_runs failed: " + FirstErrorLine(out));
     }
@@ -482,11 +487,19 @@ jsonrpc::Json CompareStrategies(const project::Project& project, const td::TdCho
     std::vector<jsonrpc::Json> run_entries;
     for (const std::string& name : run_names) {
         out = run("wait_run " + name + " -quiet", options.timeout_seconds);
-        if (td::HasError(out)) {
+        // 逐个 run 的成败同样只认 ERROR；只带 CRITICAL-WARNING 的 run 记为成功，
+        // 但把警告原文放进 entry["warnings"]，避免"修好判定却漏报告警"。
+        if (td::HasFatal(out)) {
             jsonrpc::Json entry = jsonrpc::Json::object();
             entry["run"] = name;
             entry["ok"] = false;
             entry["error"] = FirstErrorLine(out);
+            run_entries.push_back(std::move(entry));
+        } else if (td::HasError(out)) {
+            jsonrpc::Json entry = jsonrpc::Json::object();
+            entry["run"] = name;
+            entry["ok"] = true;
+            entry["warnings"] = ErrorLines(out, 3);
             run_entries.push_back(std::move(entry));
         }
     }

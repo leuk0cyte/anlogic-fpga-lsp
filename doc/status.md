@@ -1,4 +1,4 @@
-# 交付状态（当前：2026-11-19）
+# 交付状态（当前：2026-11-20）
 
 ## 构建与测试
 
@@ -188,7 +188,7 @@ vscode-extension/fpga-lsp-anlogic-0.15.3.vsix   228 files / 2.97 MB
 ## 片上探针（ChipWatcher，2026-11-20 落地并上板验证）
 
 > 设计与实测细节见 [doc/design/on-chip-probe.md](design/on-chip-probe.md)。
-> 工程：`%WORKSPACE%\CorpusDelta\corpus_delta`（PH1A100SFG676，TD 2026.2.210850），真机在环。
+> 工程：`%WORKSPACE%\CorpusDelta\corpus_delta`（PH1A100SFG676，TD 2026.2_SP1.218141），真机在环。
 
 | 项 | 数据 |
 | --- | --- |
@@ -267,3 +267,63 @@ the clock in chipwatcher`），而 CLI 侧没有公开的"给单个 bus 指定�
 `report_cwc_status` 落盘；摸清 `set_net_cond` / `set_cwc` 参数。
 
 已把清单还原成原来那 64 个信号（1192 B，与原始文件同尺寸）。
+
+## TD 升级到 2026.2_SP1（6.2.3.218141）的复核（2026-11-20）
+
+本机 TD 从 `Release_2026.2`（6.2.3.210850，目录 `TD_Release_2026.2.210.850`）升级为
+`Release_2026.2_SP1`（6.2.3.218141，目录 `TD_Release_2026.2_SP1.218.141`），旧安装已卸载。
+先读了安装目录的 `doc/release_note.pdf`（SP1 只修 bug、无新功能；BitWizard 的 release note
+未更新，但 `bw_commands_prompt.exe` **是新编译的**，build 也是 6.2.3.218141），然后分四路验证。
+
+| 验证线 | 结论 | 证据 |
+| --- | --- | --- |
+| TD/BW 命令面 | **完全兼容**：29 条 TD + 6 条 BW 命令全部存在，后端用到的每个选项（`download -mode/-bit/-spd/-cable/-flashsize/-v`、`config_chipwatcher`、`get_hw_cws`、`run_hw_cw -trigger_now`、`wait_on_hw_cw`、`write_hw_cw_data -csv_file`、`insert_debugger -cwc`、`launch_runs`/`wait_run`/`set_param`、`read_adc`/`read_sdc`…）无移除无改名 | `build/_audit_sp1/cmd/` |
+| 版本发现与解析 | **无需改**：`VersionKey("2026.2_SP1.218.141")` = `[2026,2,1,218,141]`，第 3 分量（service pack）`1 > 0` → 比 `[2026,2,0,210,850]` 新，自动发现正确选中 SP1（`source=auto`） | `build/_audit_sp1/static/` |
+| 构建与测试 | 干净重建 190 步 0 error；`ctest` **63/63**；插件 **43/43**；e2e `mcp_smoke` 28 项全过 | `build/_audit_sp1/build/` |
+| 真实硬件 | **9/9 PASS**：probe 状态/抓取（`downloaded:false`、1024 样本、`trigger_position:256` → `trigger_index=256`）、jtag 下载、program flash（`-flashsize 128 -v`，含 `SPI flash Page program and verify`）、`-spd` 生效（7→13.93 s vs 9→6.49 s） | `build/_audit_sp1/hw/` |
+
+与 210850 的等价性是**多口径交叉验证**的，不只是"能跑"：probe 会话日志 390 行 vs 390 行
+（diff 只有 3 行版本横幅、52 WARNING/0 ERROR 两边一致）、下发的 10 条 Tcl 命令逐条相同、
+`trigger_position=256` 生成的临时 `.cwc` **SHA256 完全相同**、同机 jtag 耗时 +1.2 % /
+flash +0.5~0.7 %。
+
+### 因这次升级而改的代码（SP1 唯一的行为变化：`read_adc` 的 CRITICAL-WARNING 不再中断 Flow）
+
+| 位置 | 改动 | 为什么 |
+| --- | --- | --- |
+| `src/flow/flow_logic.cpp` `DecideRunOutcome` | 新增"条件 1b"：**只有 CRITICAL-WARNING、没有 ERROR，且产物齐全 → 接受为成功**，警告原文进 `RunOutcome::warnings_only` | 旧版这类警告会连带中断流程（判失败是对的）；SP1 起流程照常跑完、产物齐全，若继续"有警告即失败"，就会出现「TD 已产出 bit、后端却报失败」。仍要求产物齐全 —— 不把"只报警告、根本没跑完"当成功 |
+| `src/flow/flow_runner.cpp` `RunStage` | `launch_runs` 的判定 `HasError` → **`HasFatal`**，非致命警告走 `Emit("log")` 留痕；`warnings_only` 透出 | 同上；与 `probe.cpp` 里 `open_project` 早就改用 `HasFatal` 的先例对齐（`HDL-7225 CRITICAL-WARNING` 那个坑） |
+| `src/flow/strategy.cpp` | 基线 `wait_run` / `launch_runs` / 逐 run `wait_run` 三处 `HasError` → `HasFatal`，逐 run 结果新增 `warnings` 字段 | 同一口径漏改，不修则 `compareStrategies` 在带 ADC 告警的工程上会整片报失败（QoR 其实已产出） |
+| `src/flow/probe.cpp` `Capture` | `config_chipwatcher` 成功判据改为**文本锚优先**（`chipwatcher: sanity check successfully`）+ `KIT-1004` 兜底；判致命改 `HasFatal` | 消息号是运行时拼的、在 exe 里扫不到，升级后无法静态确认是否改号；文本锚两版都稳定（SP1 实测仍发 `KIT-1004`） |
+| `src/reports/timing.cpp` | `STA coverage` 的 pattern 允许数字与 `%` 之间有空白 | SP1 修了"STA Coverage 不准确"；标签没变但分隔符形态不该被赌死，否则静默变成 `coverage: null` |
+| `src/flow/programmer.cpp` | 更正成功判据的注释（见下），flash 模式输出 `flash_verified` | 实测：后端驱动的 `bw_commands_prompt.exe` **从不**打印 `GUI-1001 : Downloading succeeded!`（那是 GUI 版 `bw.exe` 的输出），`HasDownloadSuccess()` 在这条链路上是死代码；`PRG-2014 : Chip validation success` 在失败路径上**也会先打印**（后面紧跟 `PRG-8002/PRG-8000 ERROR`），真正挡住假成功的是 `HasBwError()` |
+| `tests/unit/td_install_test.cpp` | 不再硬编码机器上的 TD 版本号；新增 SP1 版本样本用例 | 旧断言 `version == "2026.2.210.850"` 在升级后必红（升级一次的代价不该是改测试） |
+| `tests/unit/td_device_test.cpp` | 三处硬编码旧安装路径 → 走 `td::FindTd()` | 旧路径失效后这三个"真实 TD"用例静默 `GTEST_SKIP`：ctest 显示绿、覆盖已经消失（"绿着烂掉"） |
+| `tests/unit/flow_logic_test.cpp`、`tests/unit/reports_timing_test.cpp` | 新增 5 条用例（警告+产物齐全=成功 / 警告+产物缺失=失败 / SP1 版本样本 / coverage 带空格） | 锁住上面这些口径 |
+| `vscode-extension/package.json`、`src/td/td_install.h` | 设置项示例与注释里的旧版本号/旧路径改成 `<version>` 占位或更新为 SP1 | 用户会照抄示例；`210850` 已不存在 |
+
+### 明确**没有**改的（避免破坏覆盖）
+
+全仓 200+ 处 `210850` 里绝大多数是**工程元数据**，不是安装版本：`.al` 里的
+`<TD_Version>6.2.3.210850</TD_Version>` 表示"这个工程由哪个 TD 创建"（`bench_servers.py`、
+`al_project_test.cpp`、`gate-corpus/*.al`、`doc/audit/**` 历史快照…）。它们跟着**工程**走，
+不跟安装走，批量替换会毁掉真实样本覆盖。要区分 `project.td_version`（`.al`）与
+`TdChoice.version`（安装目录名），二者在 `fpgalsp.info` 里是不同字段。
+
+### 升级后工程侧的变化
+
+`%WORKSPACE%\CorpusDelta\corpus_delta\corpus_delta.al` 已被 SP1 的 GUI 重写为
+`<!-- Last modified by TangDynasty Release_2026.2_SP1 -->` + `<TD_Version>6.2.3.218141</TD_Version>`。
+即 [`doc/design/on-chip-probe.md`](design/on-chip-probe.md) 里记的版本回退陷阱现在方向反了：
+用 `2026.2`（210850）及更早**打不开**这个工程（`PRJ-8641`），要回退必须先删掉 `.al` 第 2 行。
+
+### 仍未处理（已知、优先级低）
+
+- `tests/golden/` 快照把**活安装**的 `td.version` / `td.root` 写进了断言，且不在
+  `GOLDEN_VOLATILE_KEYS` 里 → 重新采集会全量 diff。该目录**未注册进 ctest**，不阻塞门禁。
+- `programmer.cpp` 的 `HasDownloadSuccess()` 仍是死代码（留给别的通道），flash 模式已额外
+  输出 `flash_verified` 作为"写+校验走完"的证据，但**没有**把它做成硬门槛（避免将来 TD 改文案
+  把正常烧录判成失败）。
+- 采样时钟 / 采样深度仍是编译期量、改不动（三组隔离实验见
+  [`doc/design/on-chip-probe.md`](design/on-chip-probe.md)）；SP1 的 `DefaultFlow.tcl`
+  与 210850 **逐字节相同**（9452 B，SHA256 `4FC07E5E…`），所以该结论在新版本上继续成立。

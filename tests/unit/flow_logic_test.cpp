@@ -289,9 +289,13 @@ TEST(FlowLogicPrj, CleanOutputIsPlainSuccess) {
     EXPECT_FALSE(outcome.tolerated_prj_error);
 }
 
-// 只有 CRITICAL-WARNING、没有 ERROR：HasError 为真但 OnlyToleratedPrjErrors 为假
-// （Python 的判定基于 "ERROR" 子串，CRITICAL-WARNING 不带 ERROR -> errors 为空 -> 不容错）
-TEST(FlowLogicPrj, CriticalWarningIsNotTolerated) {
+// 只有 CRITICAL-WARNING、没有 ERROR，且**产物齐全**：接受为成功，但必须留痕。
+// ⚠ 这是相对 Python 版的一处有意偏离。依据 TD 2026.2_SP1 (6.2.3.218141) 的 release note：
+//    「修复 read_adc 命令报 CRITICAL-WARNING 但会导致 Flow 退出的问题」
+//    —— SP1 之前这类警告会连带中断流程（判失败是对的），SP1 之后流程照常跑完、
+//    产物齐全，但警告文本仍留在 stdout 上。继续「有警告即失败」就会出现
+//    「TD 已经产出 bit，后端却报失败」。判定改成「产物优先」，且警告要透出来。
+TEST(FlowLogicPrj, CriticalWarningOnlyAcceptedWhenArtifactsComplete) {
     RunSnapshot snapshot;
     snapshot.run_name = "phy_1";
     snapshot.run_dir_names = PhyCompleteNames();
@@ -299,7 +303,25 @@ TEST(FlowLogicPrj, CriticalWarningIsNotTolerated) {
     snapshot.project_bit_exists = true;
 
     const RunOutcome outcome = DecideRunOutcome(snapshot, "PRJ-8806 CRITICAL-WARNING: odd\n");
+    EXPECT_TRUE(outcome.accepted);
+    EXPECT_FALSE(outcome.tolerated_prj_error);
+    EXPECT_TRUE(outcome.failure_detail.empty());
+    EXPECT_NE(outcome.warnings_only.find("CRITICAL-WARNING"), std::string::npos);
+}
+
+// 同一份「只有警告」的输出，但产物**不**齐全 -> 仍然失败。
+// 不能把「只报了警告、其实根本没跑完」当成成功。
+TEST(FlowLogicPrj, CriticalWarningOnlyStillFailsWithoutArtifacts) {
+    RunSnapshot snapshot;
+    snapshot.run_name = "phy_1";
+    snapshot.run_dir_names = Names({".bitgen.begin.f", "route.qor"});
+    snapshot.project_name = "main";
+    snapshot.project_bit_exists = false;
+
+    const RunOutcome outcome = DecideRunOutcome(snapshot, "PRJ-8806 CRITICAL-WARNING: odd\n");
     EXPECT_FALSE(outcome.accepted);
+    EXPECT_TRUE(outcome.warnings_only.empty());
+    EXPECT_NE(outcome.failure_detail.find("CRITICAL-WARNING"), std::string::npos);
 }
 
 TEST(FlowLogicPrj, ErrorLinesAndFirstError) {

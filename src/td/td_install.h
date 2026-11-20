@@ -4,7 +4,8 @@
 //  对应参考实现：Y:\fpga-lsp\fpgalsp\td.py
 //      version_key / _install_roots / installs / find_td / _normalise_root / _release_of
 //
-//  本机实测可用安装：C:\Anlogic\TD_Release_2026.2.210.850
+//  本机实测可用安装：C:\Anlogic\TD_Release_2026.2_SP1.218.141
+//  （上一版是 C:\Anlogic\TD_Release_2026.2.210.850，已被 SP1 覆盖安装）
 // =============================================================================
 
 #pragma once
@@ -40,6 +41,8 @@ struct TdChoice {
 // 对应 Python version_key：把 release 目录名转成可比较的数字序列。
 //   "TD_Release_2026.2.210.850" -> [2026, 2, 0, 210, 850]
 //   "2026.1_SP2.200.067"        -> [2026, 1, 2, 200, 67]
+//   "2026.2_SP1.218.141"        -> [2026, 2, 1, 218, 141]   ← SP1 靠第 3 个分量
+//                                   (service pack) 排在无 SP 的 210.850 之前
 // 匹配不到时退化为「提取全部数字」。
 std::vector<int> VersionKey(std::string_view release);
 

@@ -74,6 +74,23 @@ TEST(TdVersionKey, ServicePackForm) {
     EXPECT_EQ(VersionKey("2026.1_SP2.200.067"), (std::vector<int>{2026, 1, 2, 200, 67}));
 }
 
+// 本轮真实升级留下的样本：2026.2(210850) -> 2026.2_SP1(218141)。
+// 把"SP1 必须排在不带 SP 的旧版之前"固化下来 —— 这条断的是
+// 「自动发现会选中新装的 SP1，而不是回落到旧目录」。
+TEST(TdVersionKey, Sp1IsNewerThanBaseRelease) {
+    const std::string sp1 = "TD_Release_2026.2_SP1.218.141";
+    EXPECT_EQ(VersionKey("2026.2_SP1.218.141"), (std::vector<int>{2026, 2, 1, 218, 141}));
+    EXPECT_EQ(VersionKey("2026.2.210.850"), (std::vector<int>{2026, 2, 0, 210, 850}));
+    EXPECT_GT(CompareVersionKey(VersionKey("2026.2_SP1.218.141"),
+                                VersionKey("2026.2.210.850")),
+              0);
+    EXPECT_EQ(ReleaseOf("C:/Anlogic/" + sp1), "2026.2_SP1.218.141");
+    // 目录名若把补充版本点写丢（...SP1.218141），也仍应比旧版新（走数字兜底）
+    EXPECT_LT(CompareVersionKey(VersionKey("2026.2.210.850"),
+                                VersionKey("2026.2_SP1.218141")),
+              0);
+}
+
 TEST(TdVersionKey, AnotherYear) {
     // Python: version_key('TD_Release_2025.1.100.001') == (2025, 1, 0, 100, 1)
     EXPECT_EQ(VersionKey("TD_Release_2025.1.100.001"),
@@ -337,8 +354,14 @@ TEST(TdInstallReal, FindsThisMachineInstall) {
     const auto choice = FindTd();
     ASSERT_TRUE(choice.has_value()) << "本机应能找到 TD 安装";
     EXPECT_NE(choice->exe.find("td_commands_prompt.exe"), std::string::npos);
-    // 本机实测：C:/Anlogic/TD_Release_2026.2.210.850
-    EXPECT_EQ(choice->version, "2026.2.210.850");
+    // ⚠ 不要在这里硬编码 TD 版本/build 号 —— TD 升级一次（如 2026.2.210.850 →
+    //   2026.2_SP1.218.141）就会把这条断言变成假红。只断言「版本串确实是从安装
+    //   目录名派生的、且能被解析成版本号」，具体数字交给上面对合成目录的用例。
+    EXPECT_EQ(choice->version, ReleaseOf(choice->root));
+    EXPECT_FALSE(choice->version.empty());
+    // 至少三段（year.major[.SPn].build.patch）：解析失败会退化成"提取全部数字"，
+    // 这里要求结构化解析出来的键足够长，能挡住 "TD_Release_" 后面接垃圾名的情况。
+    EXPECT_GE(VersionKey(choice->version).size(), 4u) << "版本串: " << choice->version;
     EXPECT_TRUE(choice->source == "auto" || choice->source == "explicit");
 }
 

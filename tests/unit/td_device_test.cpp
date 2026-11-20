@@ -12,11 +12,21 @@
 #include <string>
 
 #include "td/td_device.h"
+#include "td/td_install.h"
 #include "td/td_output.h"
 
 namespace {
 
 using namespace fpgalsp::td;
+
+// 本机真实安装根。**不要写死路径 + 版本号**：
+//   写死的后果是 TD 一升级（2026.2.210.850 -> 2026.2_SP1.218.141）这三个"真实 TD"的
+//   用例就静默 GTEST_SKIP —— ctest 照样显示通过，覆盖却已经消失。
+//   走被测模块自己的发现逻辑，与产品代码保持同一份"哪台机器、哪个版本"的答案。
+std::string RealTdRoot() {
+    const auto choice = FindTd();
+    return choice.has_value() ? choice->root : std::string{};
+}
 
 std::string ReadFixture(const std::string& name) {
     const std::string path =
@@ -323,9 +333,8 @@ TEST(TdCacheKey, ReplacesIllegalChars) {
 // -----------------------------------------------------------------------------
 
 TEST(TdDbCandidates, RealTdInstallEf2) {
-    const std::string arch =
-        "C:/Anlogic/TD_Release_2026.2.210.850";
-    if (!std::filesystem::exists(arch + "/arch")) {
+    const std::string arch = RealTdRoot();
+    if (arch.empty() || !std::filesystem::exists(arch + "/arch")) {
         GTEST_SKIP() << "本机没有 TD 安装";
     }
 
@@ -370,8 +379,8 @@ TEST(TdDbCandidates, RealTdInstallEf2) {
 }
 
 TEST(TdDbCandidates, UnknownFamilyStillReturnsAllSorted) {
-    const std::string arch = "C:/Anlogic/TD_Release_2026.2.210.850";
-    if (!std::filesystem::exists(arch + "/arch")) {
+    const std::string arch = RealTdRoot();
+    if (arch.empty() || !std::filesystem::exists(arch + "/arch")) {
         GTEST_SKIP() << "本机没有 TD 安装";
     }
     // family 无前缀映射时，退化为全部 db 按字典序
@@ -383,8 +392,8 @@ TEST(TdDbCandidates, UnknownFamilyStillReturnsAllSorted) {
 }
 
 TEST(TdDbCandidates, Ef3PrefersEf3OverEf2) {
-    const std::string arch = "C:/Anlogic/TD_Release_2026.2.210.850";
-    if (!std::filesystem::exists(arch + "/arch")) {
+    const std::string arch = RealTdRoot();
+    if (arch.empty() || !std::filesystem::exists(arch + "/arch")) {
         GTEST_SKIP() << "本机没有 TD 安装";
     }
     // EF3 的前缀顺序是 (ef3, ef4, ef2)：第一个候选必须是 ef3_*
