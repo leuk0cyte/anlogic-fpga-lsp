@@ -279,6 +279,29 @@ GUI 的 ChipWatcher 不是每次抓取都先下 bit —— 只要器件里跑的
 `probe::ExpandSignalRanges()` 会展开成 16 个逐位网名（`[msb:lsb]` 降序也接受，
 超过 1024 位的明显笔误原样保留不展开）。面板里粘贴范围写法即可。
 
+### 采样时钟 / 深度：两条"让流程吃到自定义 .cwc"的路都试过了，不通
+
+| 实验 | 做法 | 结果 |
+| --- | --- | --- |
+| A（`.al` 的 `<CWC_FILE>`） | 临时把 `.al` 的 CWC 条目改成 `cwc/probe_depth2048.cwc` 且 `Enable=true`，`open_project -single_run` + `import_db gate.db`，然后跑流程里那次**不带 `-cwc`** 的 `insert_debugger` | `open_project` 之后**一个 watcher 实例都没有**（report 只有表头）；`insert_debugger` 重建出来的是 **1024**、ERAM 4 块。也就是说 `.al` 的 CWC 条目没有喂进 `insert_debugger` |
+| B（改流程脚本 Editable zone） | 备份 `phy_1/corpus_delta.tcl`，把 4 处 `insert_debugger`（`opt_rtl` / `opt_place` 各两处形态）全部改成带 `-cwc {…/probe_depth2048.cwc}`，跑完整 `launch_runs phy_1` + `wait_run` | 跑完 `cw/compiled.cwc` 仍是 **`sample_depth="1024"`**、watcher ERAM 仍 **4 块**。脚本已原样还原（hash 一致） |
+
+对照实验（说明 `-cwc` 本身是有效的）：在 `syn_1/…_gate.db` 上**直接**跑
+`insert_debugger <chip_debugger> -cwc <depth2048.cwc>`，`report_cwc_status` 立刻显示
+`Sample Depth 2048` / `trigger length 2048`。
+
+所以 B 失败不是 `-cwc` 不认，而是"流程里那次调用"没有被我们的参数接管。两种可能（本轮未隔离）：
+1. `launch_runs` 并没有执行我们改过的那份 `phy_1/corpus_delta.tcl`；
+2. 执行了，但 bitgen 阶段的 `setup_debugger $chipDebugger -prj <prj>` 会**重新生成**
+   `cw/compiled.cwc`（它才是最终产物），把 opt_place 时的 2048 覆盖回默认值。
+
+要彻底定论，下次可以在改过的 tcl 顶部写一个 marker 文件、或用 `launch_runs phy_1 -step opt_place`
+只跑半步，看 `cw/compiled.cwc` 是"中途变 2048、最后被覆盖"还是"全程 1024"。
+
+**当前结论：采样时钟 / 采样深度在 TD 2026.2 下由 mark_debug 驱动的 watcher 固定为默认值
+（1024 / 推断出的 reg_init/clk），我们这边改不动。真改要在 TD GUI 里改 ChipWatcher 实例属性
+（随 Gate 阶段一起编译）。所以插件面板保持只读。**
+
 ### 未完成：非 0 的动态读数（已定位到 TD 侧，不是我们的 bug）
 
 想证明"采到的是随时间变化的活动数据"，计划加 16 位三角载波
