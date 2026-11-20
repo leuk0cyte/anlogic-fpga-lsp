@@ -93,18 +93,18 @@ B-B13 波形联动、X-B4/B5/B6/B8 等）。
 第 7 条（二进制加固：CFG / CET / `/Qspectre` / `/sdl`）按要求**维持现状**：
 `DllCharacteristics` 仍为 `0x8160`（ASLR / DEP / HighEntropyVA / 终端服务感知 开，CFG 关）。
 
-## VS Code 扩展（0.15.1）
+## VS Code 扩展（0.15.2）
 
 ```
-vscode-extension/fpga-lsp-anlogic-0.15.1.vsix   228 files / 2.97 MB
+vscode-extension/fpga-lsp-anlogic-0.15.2.vsix   228 files / 2.97 MB
   └─ extension/server/bin/fpgalsp-native.exe    6,352,384 B（全量 LTCG）
 ```
 
 打包：`npm run package`（= `node scripts/bundle-server.js && npx --yes @vscode/vsce@4 package …`）。
-已核对包内 exe 与 `build/bin` 哈希一致（`AF9B3E27…E4522`）。
+已核对包内 exe 与 `build/bin` 哈希一致（`010156E7…`）。
 0.15.0 起随包附带 `LICENSE.txt`（AGPL-3.0-or-later），原先被 `--skip-license` 略过。
 
-### 排版 / lint 默认值（0.15.1 修正）
+### 排版 / lint 默认值（0.15.1 修正，0.15.2 收口）
 
 历史 bug：重写把排版风格在服务端**写死**成 Verible 默认（`indentation_spaces=2`），
 同时 `veribleArgs` / `veribleLintArgs` 只被存进 `Settings`、**从未被使用**；
@@ -112,10 +112,10 @@ vscode-extension/fpga-lsp-anlogic-0.15.1.vsix   228 files / 2.97 MB
 结果：格式化一次就把整份工程从 4 空格重排成 2 空格（实测 `link_rx.v` 15 KB：
 241 行增 / 251 行删）。
 
-| 项 | 旧 Python 插件（生效值） | 0.15.0 | 0.15.1 |
+| 项 | 旧 Python 插件（生效值） | 0.15.0 | 0.15.1 / 0.15.2 |
 | --- | --- | --- | --- |
 | 列宽 `column_limit` | 160 | 160 | 160 |
-| 缩进 `indentation_spaces` | **4** | **2**（写死） | **4**（= 插件默认） |
+| 缩进 `indentation_spaces` | **4** | **2**（写死） | **4**（= 服务端内置） |
 | `try_wrap_long_lines` | true | false（Verible 默认） | true |
 | 12 个 `*_alignment` | align | infer（Verible 默认） | align |
 | `alignment_group_boundary` | blank-lines-and-separator-comments | none | 同左 |
@@ -123,18 +123,26 @@ vscode-extension/fpga-lsp-anlogic-0.15.1.vsix   228 files / 2.97 MB
 
 现在的规则：
 
-1. **风格只有一个来源** —— `verible_bridge::DefaultStyleFlags()` 逐条复制插件
-   `fpgaLsp.verible.args` 的默认值；客户端发来 `veribleArgs` 时覆盖它。
-   `tests/unit/verible_style_test.cpp` 盯着这条（默认 4 空格、flag 生效、未知 flag 忽略）。
-2. **flag 解析不碰全局 absl flag**：`--name=value` / `--flag value` / `--flag` 三种写法
+1. **风格只有一个来源（0.15.2）** —— `verible_bridge::DefaultStyleFlags()`。插件
+   `fpgaLsp.verible.args` 默认改成**空数组**，只在用户主动覆盖时才有内容
+   （0.15.1 时两边各存一份同样的 23 条，属于"早晚会走偏"的重复，已消除）。
+   `tests/unit/verible_style_test.cpp` 用**逐条全量比对**盯着这份列表。
+2. **覆盖是整体替换，不逐条合并**（2026-11-20 拍板保留该语义）：写了非空数组，
+   内置默认全部让位，没写的字段回落到 Verible 原生默认。`UserListReplacesBuiltInDefaults`
+   把这个契约钉住 —— 只写 `--column_limit=120` 时缩进会变 2，这是有意的。
+3. **flag 解析不碰全局 absl flag**：`--name=value` / `--flag value` / `--flag` 三种写法
    都在 `verible_bridge/flag_tokens.h` 里归一，再逐字段覆盖 style 副本 —— 多线程安全，
    服务端进程状态不会变成隐式输入。
-3. **非法取值直接失败**（返回原文 + error，记 warn 日志），未知 flag 只记日志不中断。
-4. **lint 参数真的生效**：`--rules=` / `--ruleset=` / `--rules_config=` /
+4. **非法取值直接失败**（返回原文 + error，记 warn 日志），未知 flag 只记日志不中断。
+5. **lint 参数真的生效**：`--rules=` / `--ruleset=` / `--rules_config=` /
    `--rules_config_search` / `--waiver_files=`；插件设置同时接受数组和旧版字符串写法
    （旧 Python 服务端只认数组，所以它的字符串默认值其实没生效 —— 上面表里 lint 100 就是这么来的）。
-5. 实测：`fpga_format`（MCP）与 `textDocument/formatting`（LSP）对 `link_rx.v` 都输出
-   **14,802 B**，与用旧插件 23 条默认 args 跑 `format_dump` 的结果**逐字节一致**。
+   lint 的默认值仍是 `DefaultLintFlags()`（`+line-length=length:160`），插件
+   `fpgaLsp.verible.lintArgs` 默认值同样写着这一条：单条、且它是用户最可能想改的旋钮
+   （阈值），留在设置面板里便于发现；格式化那 23 条则不再重复。
+6. 实测：`fpga_format`（MCP）与 `textDocument/formatting`（LSP）对 `link_rx.v` 都输出
+   **14,802 B**，与用旧插件 23 条默认 args 跑 `format_dump` 的结果**逐字节一致**
+   （插件默认值改成空数组后重测，仍是 14,802 B）。
 
 ## 已知差异（有意保留 / 版本基线）
 

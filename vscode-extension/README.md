@@ -143,8 +143,9 @@ code --install-extension Y:\fpga-lsp-cpp\vscode-extension\fpga-lsp-anlogic-0.15.
 **Verible 已内嵌在 `fpgalsp-native.exe` 里，不需要另外安装**（解析、lint、格式化都由
 服务端提供）：
 
-- 格式化：由内嵌 Verible 完成，通过语言服务器调用；参数见 `fpgaLsp.verible.args`
-  （默认 160 列 + 4 空格缩进 + 一组对齐选项，与 Python 版插件完全一致）。
+- 格式化：由内嵌 Verible 完成，通过语言服务器调用。团队排版风格（160 列 / 4 空格缩进 /
+  对齐组）**内嵌在服务端**（`src/verible_bridge/format_text.cpp` 的 `DefaultStyleFlags()`）；
+  插件设置 `fpgaLsp.verible.args` 默认空，只在你要覆盖时才写（整体替换语义，见下）。
   `fpgaLsp.verible.format=false` 可关掉。
 - Lint / quick fix：`fpgaLsp.verible.autofix=true`（默认）时，quick fix 由内嵌 lint
   直接算出来，**不需要外部 verible 二进制**。规则参数见 `fpgaLsp.verible.lintArgs`
@@ -191,7 +192,7 @@ FPGA: Install MCP Configuration
 | `fpgaLsp.flowJobs` | `6` | 传给 `launch_runs` 的并行 jobs（与 TD GUI 默认一致） |
 | `fpgaLsp.logFile` | `""` | 服务器日志，空 = `<workspace>/.fpgalsp/logs/server.log` |
 | `fpgaLsp.verible.format` | `true` | 用内嵌 Verible 格式化（Format Document） |
-| `fpgaLsp.verible.args` | 160 列 + 4 空格缩进 + 一组对齐参数 | 传给内嵌 `verible-verilog-format` 的 style 参数（留空数组 = 服务端内置同一套默认值） |
+| `fpgaLsp.verible.args` | `[]`（= 服务端内置团队风格） | 覆盖内嵌 `verible-verilog-format` 的 style 参数；**整体替换**语义，见下 |
 | `fpgaLsp.verible.lintArgs` | `["--rules=+line-length=length:160"]` | 传给内嵌 lint 的参数：`--rules=` / `--ruleset=` / `--rules_config=` / `--rules_config_search` / `--waiver_files=` |
 | `fpgaLsp.verible.autofix` | `true` | quick fix 由内嵌 Verible linter 计算（**不需要外部 verible 二进制**） |
 | `fpgaLsp.mcp.allowFlow` | `true` | 向 agent 暴露 flow / analysis / strategy 工具（会真的启动 TD flow） |
@@ -199,33 +200,49 @@ FPGA: Install MCP Configuration
 | `fpgaLsp.mcp.attachOnStart` | `true` | 启动时附着 MCP server；`false` 则完全跳过附着与注册 |
 | `fpgaLsp.mcp.dynamicProvider` | `false` | 注册动态 MCP server provider。默认关闭：Copilot 无法把动态 server 关联到 workspace，建议用 `FPGA: Install MCP Configuration` 写工作区 `.vscode/mcp.json` |
 
-默认的 `fpgaLsp.verible.args`：
+### 排版风格从哪来
 
-```json
-[
-  "--column_limit=160",
-  "--indentation_spaces=4",
+`fpgaLsp.verible.args` 默认是**空数组** —— 团队排版风格只内嵌在服务端一处
+（`src/verible_bridge/format_text.cpp` 的 `DefaultStyleFlags()`），插件设置只在
+需要覆盖时才有内容。当前内置风格（等价于旧 Python 插件 `fpgaLsp.verible.args`
+的默认值，逐条一致）：
+
+```text
+--column_limit=160                                    # 行宽 160
+--indentation_spaces=4  --wrap_spaces=4               # 4 空格缩进
+--try_wrap_long_lines=true                            # 长行主动折断
+--assignment_statement_alignment=align                # 12 组对齐
+--case_items_alignment=align
+--distribution_items_alignment=align
+--enum_assignment_statement_alignment=align
+--module_net_variable_alignment=align
+--class_member_variable_alignment=align
+--struct_union_members_alignment=align
+--parameter_declaration_alignment=align
+--port_declarations_alignment=align
+--formal_parameters_alignment=align
+--named_parameter_alignment=align
+--named_port_alignment=align
+--port_declarations_right_align_packed_dimensions=true
+--port_declarations_right_align_unpacked_dimensions=true
+--formal_parameters_indentation=indent                # 4 组换行缩进
+--named_parameter_indentation=indent
+--named_port_indentation=indent
+--port_declarations_indentation=indent
+--alignment_group_boundary=blank-lines-and-separator-comments
+```
+
+**覆盖语义是"整体替换"，不是逐条合并**：写了非空数组，上面这些内置默认就全部不再
+生效，没写的字段回落到 Verible 原生默认（缩进 2 空格、对齐 `infer`）。所以想改单项
+又不想丢掉团队风格，要把整串抄下来再改那一项，例如：
+
+```jsonc
+"fpgaLsp.verible.args": [
+  "--column_limit=120",          // 只改行宽
+  "--indentation_spaces=4",      // 其余照抄
   "--wrap_spaces=4",
   "--try_wrap_long_lines=true",
-  "--assignment_statement_alignment=align",
-  "--case_items_alignment=align",
-  "--distribution_items_alignment=align",
-  "--enum_assignment_statement_alignment=align",
-  "--module_net_variable_alignment=align",
-  "--class_member_variable_alignment=align",
-  "--struct_union_members_alignment=align",
-  "--parameter_declaration_alignment=align",
-  "--port_declarations_alignment=align",
-  "--formal_parameters_alignment=align",
-  "--named_parameter_alignment=align",
-  "--named_port_alignment=align",
-  "--port_declarations_right_align_packed_dimensions=true",
-  "--port_declarations_right_align_unpacked_dimensions=true",
-  "--formal_parameters_indentation=indent",
-  "--named_parameter_indentation=indent",
-  "--named_port_indentation=indent",
-  "--port_declarations_indentation=indent",
-  "--alignment_group_boundary=blank-lines-and-separator-comments"
+  // … 其余 19 条 alignment / indentation / alignment_group_boundary
 ]
 ```
 
