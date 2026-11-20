@@ -3763,7 +3763,54 @@ Json Bridge::ProbeConfigTool(const Json& arguments) {
     if (const auto it = arguments.find("write"); it != arguments.end() && it->is_boolean()) {
         write = it->get<bool>();
     }
-    return probe::Configure(proj, signals, write);
+    Json out = probe::Configure(proj, signals, write);
+    // ---- 名字预检（非阻塞）----
+    // 写进 user.mdn 的名字若在 RTL 里根本不存在，TD 只会在跑完一轮 syn+phy 之后
+    // 静默丢掉（KIT-2501 / empty watcher）。这里用 HDL 索引先看一眼：找不到的放进
+    // `unresolved` 并给一句 warning，但**不**判失败 —— 索引只认声明，层级名/生成块
+    // 里的网可能查不到，硬拦会误伤。
+    const Json& after = out.contains("after") ? out["after"] : Json::array();
+    if (after.is_array() && !after.empty()) {
+        Json unresolved = Json::array();
+        try {
+            const hdl::HdlIndex& index = EnsureHdlIndex(proj);
+            std::map<std::string, bool> cache;
+            std::set<std::string> seen;
+            for (const Json& item : after) {
+                if (!item.is_string()) continue;
+                std::string name = item.get<std::string>();
+                const std::size_t bracket = name.rfind('[');
+                if (bracket != std::string::npos) name.erase(bracket);
+                const std::size_t slash = name.rfind('/');
+                const std::string leaf = slash == std::string::npos ? name : name.substr(slash + 1);
+                if (!seen.insert(name).second) continue;
+                bool known = false;
+                if (const auto hit = cache.find(name); hit != cache.end()) {
+                    known = hit->second;
+                }
+                if (!known) {
+                    for (const auto& symbol : index.SearchSymbols(leaf)) {
+                        if (symbol.name == leaf) {
+                            known = true;
+                            break;
+                        }
+                    }
+                    cache[name] = known;
+                }
+                if (!known) unresolved.push_back(name);
+            }
+        } catch (...) {
+            // 索引不可用就当没做预检，绝不因此挡住写 mdn
+        }
+        out["unresolved"] = std::move(unresolved);
+        if (out["unresolved"].size() > 0) {
+            out["warning"] =
+                "some probe names were not found by the HDL index - TD silently drops nets it "
+                "cannot resolve after a full syn+phy run. Check them with fpga_symbol_path "
+                "(it returns the exact <top>/<inst>/<net>[msb:lsb] form).";
+        }
+    }
+    return out;
 }
 
 Json Bridge::ProbeVerifyTool(const Json& arguments) {
@@ -3871,6 +3918,16 @@ Json Bridge::ProbeCaptureTool(const Json& arguments) {
     }
     if (const auto it = arguments.find("bus_op"); it != arguments.end() && it->is_string()) {
         capture_options.trigger.bus_op = it->get<std::string>();
+    }
+    if (const auto it = arguments.find("cwc_bus_order");
+        it != arguments.end() && it->is_array()) {
+        for (const Json& item : *it) {
+            if (item.is_string()) capture_options.cwc_bus_order.push_back(item.get<std::string>());
+        }
+    }
+    if (const auto it = arguments.find("generate_cwc");
+        it != arguments.end() && it->is_boolean()) {
+        capture_options.generate_cwc = it->get<bool>();
     }
     // per-bus 触发值：`[{name, op, value}]`，value 是**二进制位串**（与采集 CSV 同格式）。
     // 校验放在这里而不是后面：TD 对未知 op / 缺名字的元素不会报错，只会静默按默认处理，

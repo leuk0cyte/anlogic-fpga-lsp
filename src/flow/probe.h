@@ -183,7 +183,8 @@ std::string CompiledData(const project::Project& project);
 // 从 TD 自己的产物（*_watcherInst.sv + <prj>_inst.bid + user.mdn）反推并**写出** cwc。
 // 批量 `launch_runs` 不会写这个 sidecar，而 `probe_capture` 需要它拿 instance 名与触发配置。
 // 返回 {"ok":bool, "existed":bool, "written":bool, ...}；失败时带 reason（不改 ok 语义）。
-jsonrpc::Json EnsureCompiledCwc(const project::Project& project);
+jsonrpc::Json EnsureCompiledCwc(const project::Project& project,
+                                   const std::vector<std::string>& bus_order = {});
 
 jsonrpc::Json Status(const project::Project& project);
 
@@ -244,7 +245,15 @@ struct CaptureOptions {
     // false（默认）：`user.mdn` 与 bit 里嵌的探针不一致时拒绝采集 —— 采回来的
     // 不是你写的清单，静默给数据比报错更糟。true：明知 bit 旧也要读当前那份。
     bool allow_stale = false;
-    std::string csv_path;  // 空 = <runs>/phy_1/cw/capture_<ts>.csv
+    // 空 = <runs>/phy_1/cw/capture_<ts>.csv
+    std::string csv_path;
+    // cwc 自动生成时的总线顺序提示（TD 会重排总线，watcher 产物里没有总线名）。
+    // 名字可以是 `WHG/e2e_cnt2l` 或 `e2e_cnt2l`；缺省按 user.mdn 的顺序。
+    std::vector<std::string> cwc_bus_order;
+    // 是否允许从 TD 的 watcher 产物**生成** phy_1/cw/compiled.cwc（默认 false）。
+    // ⚠ 生成的 ERAM 段没有经过 bit 侧校验，实测可能让 TD 在 write_hw_cw_data 时崩；
+    //   宁可拒绝并让调用方提供一份可用的 cwc，也不要静默给出错误的采样数据。
+    bool generate_cwc = false;
 };
 
 // 把一份 compiled.cwc 的触发字段改掉（纯文本替换，不动 <logic_eram> 的 depth，

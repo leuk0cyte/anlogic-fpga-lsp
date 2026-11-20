@@ -888,7 +888,8 @@ bool EnableWord(const std::string& value) {
 
 // 生成 cwc 文本；失败时返回空串并把原因写进 error。
 std::string BuildCwcFromWatcher(const project::Project& project, const MdnConfig& mdn,
-                                std::string* error, jsonrpc::Json* info) {
+                                const std::vector<std::string>& bus_order, std::string* error,
+                                jsonrpc::Json* info) {
     const auto fail = [error, info](const std::string& why) {
         if (error != nullptr) *error = why;
         if (info != nullptr) (*info)["ok"] = false;
@@ -910,6 +911,46 @@ std::string BuildCwcFromWatcher(const project::Project& project, const MdnConfig
             buses.emplace_back(base, 0);
         }
         ++buses.back().second;
+    }
+
+    // 1b) 顺序提示：TD 会把总线重排（watcher 产物里没有总线名，只有位宽），所以当位宽
+    //     有重复时无法从产物反推"哪个 16 位对哪个 slot"。调用方若知道真实顺序，可用
+    //     `cwc_bus_order` 明确指定（名字可带 `WHG/` 前缀，也可只给叶子名）。
+    if (!bus_order.empty()) {
+        const auto leaf = [](const std::string& name) {
+            const std::size_t slash = name.rfind('/');
+            return slash == std::string::npos ? name : name.substr(slash + 1);
+        };
+        std::vector<std::pair<std::string, int>> reordered;
+        std::vector<bool> used(buses.size(), false);
+        for (const std::string& wanted : bus_order) {
+            bool found = false;
+            for (std::size_t i = 0; i < buses.size(); ++i) {
+                if (used[i]) continue;
+                if (buses[i].first == wanted || leaf(buses[i].first) == leaf(wanted)) {
+                    reordered.push_back(buses[i]);
+                    used[i] = true;
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                return fail("cwc_bus_order entry '" + wanted +
+                            "' is not a bus in user.mdn (known: " + [&buses]() {
+                                std::string names;
+                                for (const auto& bus : buses) {
+                                    if (!names.empty()) names += ", ";
+                                    names += bus.first;
+                                }
+                                return names;
+                            }() + ")");
+            }
+        }
+        if (reordered.size() != buses.size()) {
+            return fail("cwc_bus_order must list every bus exactly once (" +
+                        std::to_string(buses.size()) + " expected)");
+        }
+        buses = std::move(reordered);
     }
 
     // 2) 读 TD 的 watcher 元数据（总线数/位宽/DIN 位置/深度）
@@ -994,16 +1035,26 @@ std::string BuildCwcFromWatcher(const project::Project& project, const MdnConfig
     }
 
     // 5) 拼 XML（格式与 TD 自己写出的 compiled.cwc 逐字段一致）
+    //    ⚠ 总线/网名是**相对顶层模块**的（TD 自己的 cwc 里写的是 `pwm_reg0_i[15:0]`、
+    //      `pwm_reg0_i[15]`，没有 `WHG/` 前缀）。带前缀会让"mdn ↔ bit"逐位比对判成
+    //      stale（missing e2e_cnt2l / extra WHG/e2e_cnt2l），抓取因此被拒。
+    const std::string top_prefix = project.top.empty() ? std::string() : project.top + "/";
+    const auto rel_name = [&top_prefix](const std::string& name) {
+        if (!top_prefix.empty() && name.rfind(top_prefix, 0) == 0) {
+            return name.substr(top_prefix.size());
+        }
+        return name;
+    };
     std::string out;
     out += "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n";
     out += "<chipwatcher version=\"3.070000\" project_name=\"" + project.name + "\" chip_name=\"" +
            project.device + "\">\n";
     out += "\t<watcher_nodes>\n";
     for (const auto& bus : buses) {
-        out += "\t\t<bus name=\"" + bus.first + "[" + std::to_string(bus.second - 1) + ":0]\" clock=\"" +
+        out += "\t\t<bus name=\"" + rel_name(bus.first) + "[" + std::to_string(bus.second - 1) + ":0]\" clock=\"" +
                clock + "\" inst=\"" + cwc1_name + "\" type=\"MARK_DEBUG_PROBE\" is_enabled=\"yes\">\n";
         for (int bit = bus.second - 1; bit >= 0; --bit) {
-            out += "\t\t\t<net name=\"" + bus.first + "[" + std::to_string(bit) +
+            out += "\t\t\t<net name=\"" + rel_name(bus.first) + "[" + std::to_string(bit) +
                    "]\" const=\"false\" data=\"enable\" trig=\"enable\"/>\n";
         }
         out += "\t\t</bus>\n";
@@ -1017,10 +1068,10 @@ std::string BuildCwcFromWatcher(const project::Project& project, const MdnConfig
            "\"/>\n";
     out += "\t\t<signal_vec>\n\t\t\t<watcher_nodes>\n";
     for (const auto& bus : buses) {
-        out += "\t\t\t\t<bus name=\"" + bus.first + "[" + std::to_string(bus.second - 1) +
+        out += "\t\t\t\t<bus name=\"" + rel_name(bus.first) + "[" + std::to_string(bus.second - 1) +
                ":0]\" compatator_num=\"1\" op=\"dont_care\" capture_op=\"dont_care\">\n";
         for (int bit = bus.second - 1; bit >= 0; --bit) {
-            out += "\t\t\t\t\t<net name=\"" + bus.first + "[" + std::to_string(bit) +
+            out += "\t\t\t\t\t<net name=\"" + rel_name(bus.first) + "[" + std::to_string(bit) +
                    "]\" cond=\"low\" capture_cond=\"low\"/>\n";
         }
         out += "\t\t\t\t</bus>\n";
@@ -1064,10 +1115,26 @@ std::string BuildCwcFromWatcher(const project::Project& project, const MdnConfig
     return out;
 }
 
-jsonrpc::Json EnsureCompiledCwc(const project::Project& project) {
+jsonrpc::Json EnsureCompiledCwc(const project::Project& project,
+                                   const std::vector<std::string>& bus_order) {
     jsonrpc::Json out = jsonrpc::Json::object();
     out["ok"] = false;
     out["path"] = CompiledCwc(project);
+
+    // sidecar 的另一半：批量 phy 也不写 `cw/compiled.bit`（只有 GUI 会拷）。
+    // 抓到数据只需要 bit + cwc 都在，所以这里顺手把 `<run>/<prj>.bit` 同步过去。
+    if (!IsFile(CompiledBit(project))) {
+        const std::string run_bit =
+            project.dir + "/" + project.name + "_Runs/phy_1/" + project.name + ".bit";
+        if (IsFile(run_bit)) {
+            std::error_code copy_ec;
+            std::filesystem::create_directories(
+                std::filesystem::path(CompiledBit(project)).parent_path(), copy_ec);
+            std::filesystem::copy_file(run_bit, CompiledBit(project),
+                                       std::filesystem::copy_options::overwrite_existing, copy_ec);
+            out["bit_copied"] = !copy_ec;
+        }
+    }
     if (IsFile(CompiledCwc(project))) {
         const CwcSnapshot existing = ReadCwc(CompiledCwc(project));
         if (existing.ok && existing.net_count > 0) {
@@ -1081,7 +1148,7 @@ jsonrpc::Json EnsureCompiledCwc(const project::Project& project) {
     const MdnConfig mdn = ReadMdn(MdnPath(project));
     std::string error;
     jsonrpc::Json info = jsonrpc::Json::object();
-    const std::string text = BuildCwcFromWatcher(project, mdn, &error, &info);
+    const std::string text = BuildCwcFromWatcher(project, mdn, bus_order, &error, &info);
     out["existed"] = false;
     out["generated"] = info;
     if (text.empty()) {
@@ -1104,8 +1171,12 @@ jsonrpc::Json EnsureCompiledCwc(const project::Project& project) {
 }
 
 jsonrpc::Json Status(const project::Project& project) {
-    // 批量 phy 不写 sidecar：能重建就先重建，避免 Status 把"位流里有 watcher"误报成没探针。
-    const jsonrpc::Json ensured = EnsureCompiledCwc(project);
+    // 探针 sidecar 的自动重建默认**不**做（见 CaptureOptions::generate_cwc 的注释：
+    // 生成的 ERAM 段没有经过 bit 侧校验，贸然拿去抓取可能让 TD 会话崩）。
+    // Status 只报告"能不能重建"，把决定权留给调用方。
+    const jsonrpc::Json ensured = std::filesystem::exists(CompiledCwc(project))
+                                      ? jsonrpc::Json::object()
+                                      : jsonrpc::Json::object();
     jsonrpc::Json out = jsonrpc::Json::object();
     out["ok"] = false;
     out["project"] = project.name;
@@ -1724,10 +1795,14 @@ jsonrpc::Json Capture(const td::TdChoice& td, const project::Project& project,
     out["ok"] = false;
     out["stage"] = "precheck";
 
-    // 抓取前同样补齐 sidecar（批量 phy 不写它）。
-    const jsonrpc::Json ensured = EnsureCompiledCwc(project);
-    if (ensured.contains("written") && ensured["written"].get<bool>()) {
-        out["cwc_generated"] = true;
+    // 抓取前按需补齐 sidecar：默认不生成（generate_cwc=false），因为生成的 ERAM 段
+    // 没有经过 bit 侧校验；只有调用方明确要求时才生成并承担风险。
+    jsonrpc::Json ensured = jsonrpc::Json::object();
+    if (options.generate_cwc) {
+        ensured = EnsureCompiledCwc(project, options.cwc_bus_order);
+        if (ensured.contains("written") && ensured["written"].get<bool>()) {
+            out["cwc_generated"] = true;
+        }
     }
     const CwcSnapshot cwc = ReadCwc(CompiledCwc(project));
     if (!cwc.ok) {

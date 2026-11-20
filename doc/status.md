@@ -6,7 +6,7 @@
 | --- | --- |
 | **全新目录干净构建** | configure 29 s → build 3.3 min → **844 个目标全部成功**（Release + 全量 LTO）；无 LTO 的 `windows-msvc-dev` 全新目录 **56 s** |
 | **`ctest` 全量** | **63/63 通过**（`unit` 43 · `td` 4 · `e2e` 5 · `formatgate` 4 · `lintgate` 3 · `gate` 2 · `generator` 1 · `mcp` 1）；preset 默认 **8 路并行**，实测 **62 s**（串行 92–104 s） |
-| **原生产物** | `build/bin/fpgalsp-native.exe`（**6,673,920 B**，全量 LTCG；SHA256 `2D521E94…B0FB47`） |
+| **原生产物** | `build/bin/fpgalsp-native.exe`（**6,686,720 B**，全量 LTCG；SHA256 `38886350…A1395C`） |
 | **单元测试规模** | 43 个 gtest target |
 
 > 构建/测试的并行度分析（为什么 192 线程帮不上忙、时间精确花在哪、日常该用哪个 preset）见
@@ -317,9 +317,9 @@ flash +0.5~0.7 %。
 
 | 项 | 值 |
 | --- | --- |
-| 扩展包 | `vscode-extension/fpga-lsp-anlogic-0.18.6.vsix`（230 文件，3,272,414 B） |
-| 打包内置的服务端 | `build/bin/fpgalsp-native.exe`（Release + 全量 LTO，6,673,920 B，SHA256 `2D521E94…0FB47`） |
-| 一致性校验 | 解包后 `extension/server/bin/fpgalsp-native.exe` 的 SHA256 与该二进制**逐字节相同**；`extension/package.json` 版本 = 0.18.6 |
+| 扩展包 | `vscode-extension/fpga-lsp-anlogic-0.18.7.vsix`（230 文件，3,276,807 B） |
+| 打包内置的服务端 | `build/bin/fpgalsp-native.exe`（Release + 全量 LTO，6,686,720 B，SHA256 `38886350…1395C`） |
+| 一致性校验 | 解包后 `extension/server/bin/fpgalsp-native.exe` 的 SHA256 与该二进制**逐字节相同**；`extension/package.json` 版本 = 0.18.7 |
 
 ### 升级后工程侧的变化
 
@@ -484,3 +484,23 @@ command 级 Flow Statistics 表（含每步 wall/cpu/mem）从来没被翻译成
 - 硬件采样 RAM 在"非 16 位宽总线"后有 5 bit 偏移（它靠数据自洽性还原）；我们生成的 cwc 按 TD 的总线顺序写，
   但**位序 ↔ 硬件 slot 的对应关系没有独立校验** —— 若要长期依赖，应再加一条"抓已知常数网自检"的用例。
 - `flow_status` 在"客户端崩溃导致 TD 被杀"后没有 `interrupted` 标记（仍是 idle）。列为下一步。
+
+### 第二轮：把"探针 sidecar"这条路走到底（结论：不能再猜）
+
+- **名字预检**（`fpga_probe_config`）：把 `user.mdn` 里的每个总线名丢给 HDL 索引查一遍，
+  查不到的放进 `unresolved` 并给 warning（**不判失败** —— 索引只认声明，层级名/生成块里的网
+  可能查不到，硬拦会误伤）。实测：`WHG/no_such_sig` 被正确列出。
+- **`cwc_bus_order` / `generate_cwc`**（`fpga_probe_capture`）：TD 会重排总线（watcher 产物里
+  只有位宽、没有总线名），混合位宽时无法自动反推"哪个 16 位对哪个 slot"。因此：
+  - 新增 `cwc_bus_order`：调用方把真实顺序传进来（`WHG/e2e_hstat` 或 `e2e_hstat`），
+    生成器按该顺序写 cwc；实测能生成 10 KB 的 cwc，总线顺序与 TD 一致；
+  - 新增 `generate_cwc`（**默认 false**）：生成的 ERAM 段没有经过位流侧校验，实测拿它去抓取
+    会让 TD 会话在 `wait_on_hw_cw` 卡死（`capture completed successfully` 不再出现）→
+    默认拒绝并让调用方提供一份可用 cwc，比静默给出错误数据安全。
+- 生成的 cwc 里的总线/网名必须是**相对顶层模块**的（TD 自己的 cwc 写 `pwm_reg0_i[15:0]`，
+  带 `WHG/` 前缀会让"mdn ↔ bit"逐位比对判 stale）。
+
+**下一步（真正的解法）**：`insert_debugger <dir> -cwc <我们写的配置>` 在 gate 之后调用时，
+TD 会按我们的配置编译 watcher（2048 深度那组实验已经证明 `-cwc` 被认），如果它同时把
+`compiled.cwc` 写出来，sidecar 问题就彻底消失，而且顺带获得采样时钟/深度的控制权。
+这需要一次带 `-cwc` 的完整 syn+phy 实验，留到下一轮。
