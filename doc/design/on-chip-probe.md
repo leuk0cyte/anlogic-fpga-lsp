@@ -285,6 +285,22 @@ GUI 的 ChipWatcher 不是每次抓取都先下 bit —— 只要器件里跑的
 | --- | --- | --- |
 | A（`.al` 的 `<CWC_FILE>`） | 临时把 `.al` 的 CWC 条目改成 `cwc/probe_depth2048.cwc` 且 `Enable=true`，`open_project -single_run` + `import_db gate.db`，然后跑流程里那次**不带 `-cwc`** 的 `insert_debugger` | `open_project` 之后**一个 watcher 实例都没有**（report 只有表头）；`insert_debugger` 重建出来的是 **1024**、ERAM 4 块。也就是说 `.al` 的 CWC 条目没有喂进 `insert_debugger` |
 | B（改流程脚本 Editable zone） | 备份 `phy_1/corpus_delta.tcl`，把 4 处 `insert_debugger`（`opt_rtl` / `opt_place` 各两处形态）全部改成带 `-cwc {…/probe_depth2048.cwc}`，跑完整 `launch_runs phy_1` + `wait_run` | 跑完 `cw/compiled.cwc` 仍是 **`sample_depth="1024"`**、watcher ERAM 仍 **4 块**。脚本已原样还原（hash 一致） |
+| C（隔离：这份脚本到底执行了吗） | 在同一份 tcl 顶部插一条写 marker 文件的 Tcl，`opt_place` 的 `place` 前和 `setup_debugger` 后各复制一次 `compiled.cwc`，再跑完整 phy | **marker 文件根本没生成** → 我们改的那份脚本**没有被执行**；两个中途快照也就都没有 |
+
+**C 的结论（B 为什么无效的根因）**：`launch_runs` 执行的**不是**工程里那份
+`phy_1/corpus_delta.tcl`，而是安装目录里的
+`C:\Anlogic\TD_Release_2026.2.210.850\scripts\DefaultFlow.tcl` ——
+证据有三条：
+
+1. TD 生成的 `phy_1/run.bat` 命令行写的就是
+   `…/bin/td_commands_prompt… <TD>/scripts/DefaultFlow.tcl`；
+2. 两份文件 **SHA256 完全相同**（9452 B），工程里那份只是副本；
+3. 改了工程里那份，marker 不出现、depth 不变；而 TD 并不会重新生成它
+   （mtime 一直停在 2026/8/10）。
+
+所以：**这一版 TD 没有"按工程可编辑的流程脚本"**。要让 `insert_debugger` 带上 `-cwc`，
+只能去改安装目录里的共享 `DefaultFlow.tcl` —— 那会影响这台机器上**所有工程**，
+插件不该悄悄干这种事。这就是面板保持只读的最终原因。
 
 对照实验（说明 `-cwc` 本身是有效的）：在 `syn_1/…_gate.db` 上**直接**跑
 `insert_debugger <chip_debugger> -cwc <depth2048.cwc>`，`report_cwc_status` 立刻显示
