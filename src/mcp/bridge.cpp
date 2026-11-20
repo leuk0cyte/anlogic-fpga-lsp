@@ -30,6 +30,7 @@
 #include "constraints/adc.h"
 #include "flow/flow_runner.h"
 #include "flow/programmer.h"
+#include "flow/probe.h"
 #include "flow/strategy.h"
 #include "hdl/hdl_index.h"
 #include "jsonrpc/dispatcher.h"
@@ -1954,6 +1955,9 @@ Json Bridge::Call(std::string_view handler, const Json& arguments) {
     if (name == "job_cancel") return JobCancelTool(arguments);
     if (name == "strategy_compare") return StrategyCompareTool(arguments);
     if (name == "cables") return CablesTool(arguments);
+    if (name == "probe_status") return ProbeStatusTool(arguments);
+    if (name == "probe_config") return ProbeConfigTool(arguments);
+    if (name == "probe_capture") return ProbeCaptureTool(arguments);
     if (name == "completion") return CompletionTool(arguments);
     if (name == "instantiation") return InstantiationTool(arguments);
     if (name == "project_rename") return ProjectRenameTool(arguments);
@@ -3639,6 +3643,76 @@ Json Bridge::CablesTool(const Json&) {
     if (!choice.has_value()) throw ToolError("No TangDynasty installation found");
     td_choice_ = *choice;
     return flow::Inspect(*choice, proj, flow::ProgramOptions{});
+}
+
+// -----------------------------------------------------------------------------
+//  0.16.0：片上探针（ChipWatcher）
+// -----------------------------------------------------------------------------
+//  status / config 只读工程文件（毫秒级，不碰硬件）；
+//  capture 会起一个独立 TD 会话驱动 JTAG，因此：
+//    * 与 fpgalsp.program 共用进程级 HardwareLease（并发会抢同一根下载线）
+//    * download:true 需要 confirm:true（等同烧录 SRAM 的确认强度）
+// -----------------------------------------------------------------------------
+Json Bridge::ProbeStatusTool(const Json& arguments) {
+    const project::Project& proj = ProjectFor(arguments);
+    return probe::Status(proj);
+}
+
+Json Bridge::ProbeConfigTool(const Json& arguments) {
+    const project::Project& proj = ProjectFor(arguments);
+    std::vector<std::string> signals;
+    if (const auto it = arguments.find("signals");
+        it != arguments.end() && it->is_array()) {
+        for (const auto& item : *it) {
+            if (item.is_string()) signals.push_back(item.get<std::string>());
+        }
+    }
+    bool write = false;
+    if (const auto it = arguments.find("write"); it != arguments.end() && it->is_boolean()) {
+        write = it->get<bool>();
+    }
+    return probe::Configure(proj, signals, write);
+}
+
+Json Bridge::ProbeCaptureTool(const Json& arguments) {
+    const project::Project& proj = ProjectFor(arguments);
+    std::optional<td::TdChoice> choice = td::FindTd(options_.td_path);
+    if (!choice.has_value()) throw ToolError("No TangDynasty installation found");
+    td_choice_ = *choice;
+
+    probe::CaptureOptions capture_options;
+    if (const auto it = arguments.find("download"); it != arguments.end() && it->is_boolean()) {
+        capture_options.download = it->get<bool>();
+    }
+    if (const auto it = arguments.find("trigger_now"); it != arguments.end() && it->is_boolean()) {
+        capture_options.trigger_now = it->get<bool>();
+    }
+    if (const auto it = arguments.find("instance");
+        it != arguments.end() && it->is_string()) {
+        capture_options.instance = it->get<std::string>();
+    }
+    if (const auto it = arguments.find("cable"); it != arguments.end() && it->is_string()) {
+        capture_options.cable = it->get<std::string>();
+    }
+    if (const auto it = arguments.find("csv"); it != arguments.end() && it->is_string()) {
+        capture_options.csv_path = it->get<std::string>();
+    }
+    if (const auto it = arguments.find("timeout");
+        it != arguments.end() && it->is_number_integer()) {
+        const int timeout = it->get<int>();
+        if (timeout > 0) capture_options.wait_timeout = static_cast<double>(timeout);
+    }
+    bool confirm = false;
+    if (const auto it = arguments.find("confirm"); it != arguments.end() && it->is_boolean()) {
+        confirm = it->get<bool>();
+    }
+    if (capture_options.download && !confirm) {
+        return flow::Refusal(
+            "confirm",
+            "capture with download:true reprograms the FPGA SRAM; pass confirm:true "
+            "(or download:false to only read the already-loaded design)");
+    }
+    return probe::Capture(*choice, proj, capture_options);
 }
 // -----------------------------------------------------------------------------
 //  C 批：补全 / 实例化模板

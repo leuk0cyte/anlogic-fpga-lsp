@@ -182,6 +182,10 @@ class Bridge : public ToolDispatcher {
     Json JobCancelTool(const Json& arguments);
     Json StrategyCompareTool(const Json& arguments);
     Json CablesTool(const Json& arguments);
+    // 0.16.0 片上探针：status/config 纯文件，capture 碰硬件（需 TD 会话）
+    Json ProbeStatusTool(const Json& arguments);
+    Json ProbeConfigTool(const Json& arguments);
+    Json ProbeCaptureTool(const Json& arguments);
     Json CompletionTool(const Json& arguments);
     Json InstantiationTool(const Json& arguments);
     Json ProjectRenameTool(const Json& arguments);

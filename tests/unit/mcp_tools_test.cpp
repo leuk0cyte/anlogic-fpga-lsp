@@ -66,6 +66,10 @@ const char* const kExpectedNames[] = {
     "fpga_job_status",
     "fpga_job_cancel",
     "fpga_cables",
+    // 0.16.0 片上探针（ChipWatcher）：紧跟在 cables 之后插入
+    "fpga_probe_status",
+    "fpga_probe_config",
+    "fpga_probe_capture",
     "fpga_flow_wait",
     "fpga_flow_log",
     "fpga_flow_issues",
@@ -112,9 +116,9 @@ void CheckEnumsAreStrings(const Json& schema, const std::string& path) {
 
 }  // namespace
 
-TEST(McpTools, TableHas43Tools) {
+TEST(McpTools, TableHas46Tools) {
     // 39 个 Python 对齐工具 + P-B5 的 fpga_job_status/fpga_job_cancel
-    EXPECT_EQ(fpgalsp::mcp::AllTools().size(), 43u);
+    EXPECT_EQ(fpgalsp::mcp::AllTools().size(), 46u);
 }
 
 TEST(McpTools, NamesMatchDeclaredOrder) {
@@ -130,7 +134,7 @@ TEST(McpTools, NamesAreUnique) {
     for (const Tool& tool : fpgalsp::mcp::AllTools()) {
         EXPECT_TRUE(names.insert(tool.name).second) << tool.name;
     }
-    EXPECT_EQ(names.size(), 43u);
+    EXPECT_EQ(names.size(), 46u);
 }
 
 TEST(McpTools, EveryToolHasTitleAndDescription) {
@@ -226,11 +230,14 @@ TEST(McpTools, ToolToJsonStripsInternalFields) {
 
 TEST(McpTools, VisibleToolsDefaultHidesGatedTools) {
     const std::vector<Json> visible = fpgalsp::mcp::VisibleTools(false, false);
-    EXPECT_EQ(visible.size(), 35u);
+    // 46 个工具减去 5 个 flow 门控、3 个 write 门控、外加 0.16.0 的
+    // probe_config(write) 与 probe_capture(flow) => 36
+    EXPECT_EQ(visible.size(), 36u);
     const std::set<std::string> gated = {"fpga_flow_run",   "fpga_flow_cancel", "fpga_analysis_run",
                                          "fpga_job_cancel",
                                          "fpga_strategy_compare", "fpga_project_update",
-                                         "fpga_project_add_source", "fpga_project_rename"};
+                                         "fpga_project_add_source", "fpga_project_rename",
+                                         "fpga_probe_config", "fpga_probe_capture"};
     for (const Json& tool : visible) {
         EXPECT_EQ(gated.count(tool.at("name").get<std::string>()), 0u)
             << tool.at("name").get<std::string>();
@@ -238,11 +245,12 @@ TEST(McpTools, VisibleToolsDefaultHidesGatedTools) {
 }
 
 TEST(McpTools, VisibleToolsAllIncludesEverything) {
-    EXPECT_EQ(fpgalsp::mcp::VisibleTools(true, true).size(), 43u);
+    EXPECT_EQ(fpgalsp::mcp::VisibleTools(true, true).size(), 46u);
     // flow 门控 5 个（flow_run/flow_cancel/job_cancel/analysis_run/strategy_compare）
-    // write 门控 3 个（project_update/project_add_source/project_rename）
-    EXPECT_EQ(fpgalsp::mcp::VisibleTools(true, false).size(), 40u);
-    EXPECT_EQ(fpgalsp::mcp::VisibleTools(false, true).size(), 38u);
+    // + probe_capture；write 门控 3 个（project_update/project_add_source/project_rename）
+    // + probe_config
+    EXPECT_EQ(fpgalsp::mcp::VisibleTools(true, false).size(), 42u);
+    EXPECT_EQ(fpgalsp::mcp::VisibleTools(false, true).size(), 40u);
 }
 
 TEST(McpTools, FindToolReturnsNullForUnknown) {

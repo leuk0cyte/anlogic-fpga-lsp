@@ -67,6 +67,9 @@ fpgalsp_add_unit_test(flow_runner fpga_lsp::flow)
 fpgalsp_add_unit_test(flow_programmer fpga_lsp::flow)
 fpgalsp_add_unit_test(flow_strategy fpga_lsp::flow)
 
+# 0.16.0：片上探针（ChipWatcher）—— user.mdn / compiled.cwc / 采集 CSV 的纯解析
+fpgalsp_add_unit_test(probe fpga_lsp::flow)
+
 # 阶段 5-α：ADC 引脚约束 + SDC 时序约束（纯文本解析，无外部依赖）
 #   adc：真实语料 tests/gate-corpus/corpus_alpha/constrains/pin.adc + Python 金标准逐字段比对
 #   sdc：真实语料 top.sdc + 浅层 Tcl 词法/诊断/补全

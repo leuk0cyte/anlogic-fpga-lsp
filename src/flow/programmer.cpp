@@ -487,10 +487,34 @@ jsonrpc::Json CableInfo::ToJson() const {
 
 std::vector<CableInfo> ParseCables(std::string_view text) {
     static const RE2 kDeviceRe(R"(([0-9]+)\s*:\s*([A-Za-z][A-Za-z0-9_]+))");
+    // 2026.2 把表头与条目拆成了两行（本机实测，bw_2026-11-20 的真实输出）：
+    //     PRG-1000 : Connect device:
+    //     0:PH1A100              <- 注意冒号后没有空格
+    // 旧实现只在含 "Connect device" 的那一行里找 `N:器件`，于是 2026.2 下永远解析出
+    // **空列表** —— Inspect 报 "No cable/board detected"、Program 在 stage="cable" 直接拒绝，
+    // 板子在环也烧不了。所以裸条目行必须单独认。
+    static const RE2 kEntryLineRe(R"(^\s*([0-9]+)\s*:\s*([A-Za-z][A-Za-z0-9_]+)\s*$)");
     std::vector<CableInfo> cables;
+    const auto add = [&cables](const std::string& index, std::string device) {
+        const int value = std::atoi(index.c_str());
+        for (const CableInfo& existing : cables) {
+            if (existing.index == value && existing.device == device) return;  // 去重
+        }
+        CableInfo info;
+        info.index = value;
+        info.device = std::move(device);
+        cables.push_back(std::move(info));
+    };
+
     for (const std::string& line : Lines(text)) {
         const std::size_t marker = line.find("Connect device");
-        if (marker == std::string::npos) continue;
+        if (marker == std::string::npos) {
+            // 2026.2：器件条目独占一行，形如 "0:PH1A100"
+            std::string index;
+            std::string device;
+            if (RE2::FullMatch(line, kEntryLineRe, &index, &device)) add(index, std::move(device));
+            continue;
+        }
         std::string rest = line.substr(marker + std::string("Connect device").size());
         // Python: rest.lstrip(":").strip()
         while (!rest.empty() && rest.front() == ':') rest.erase(rest.begin());
@@ -500,10 +524,7 @@ std::vector<CableInfo> ParseCables(std::string_view text) {
         std::string index;
         std::string device;
         while (RE2::FindAndConsume(&input, kDeviceRe, &index, &device)) {
-            CableInfo info;
-            info.index = std::atoi(index.c_str());
-            info.device = std::move(device);
-            cables.push_back(std::move(info));
+            add(index, std::move(device));
         }
     }
     return cables;
@@ -623,6 +644,20 @@ BitCheck CheckBit(std::string_view path) {
 bool HasBwError(std::string_view text) {
     static const RE2 kErrorRe(R"(\b[A-Z]{2,6}-\d{3,5}\s+(?:ERROR|CRITICAL-WARNING)\b)");
     return RE2::PartialMatch(std::string(text), kErrorRe);
+}
+
+std::string ParseChipValidation(std::string_view text) {
+    // 实测原文：`PRG-2014 : Chip validation success: PH1A100`
+    static const RE2 kRe(R"(Chip validation success:\s*([A-Za-z][A-Za-z0-9_]+))");
+    const std::string body(text);
+    std::string part;
+    if (RE2::PartialMatch(body, kRe, &part)) return part;
+    return {};
+}
+
+bool HasDownloadSuccess(std::string_view text) {
+    static const RE2 kRe(R"(Downloading succeeded|Download success|download succeeded)");
+    return RE2::PartialMatch(std::string(text), kRe);
 }
 
 std::string DefaultBit(const project::Project& project) {
@@ -801,9 +836,25 @@ jsonrpc::Json Program(const td::TdChoice& td, const project::Project& project,
     // ⚠ B7 / S-01：bit 路径可能来自 LSP 参数或 `<project>/<Name>.bit`（<Name> 来自
     //   .al），旧实现用裸 `{...}` 包，路径里一个 `}` 就能跳出并追加命令。
     //   TclQuoteGrouped 对正常路径输出仍是 `{Y:/x.bit}`（与既有测试/契约一致）。
-    const std::string command =
-        mode == "sram" ? "program " + td::TclQuoteGrouped(bit)
-                       : "program_spi " + td::TclQuoteGrouped(bit);
+    std::string style = effective.command_style.empty() ? std::string("download")
+                                                        : effective.command_style;
+    for (char& c : style) {
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+    }
+    const std::string quoted = td::TclQuoteGrouped(bit);
+    std::string command;
+    if (style == "legacy") {
+        command = (mode == "sram" ? std::string("program ") : std::string("program_spi ")) + quoted;
+    } else {
+        // 2026.2 的 GUI 实际下发形态（本机有成功日志），详见 programmer.h 顶部说明。
+        command = std::string("download -mode ") +
+                  (mode == "sram" ? std::string("jtag") : std::string("program_spi")) + " -bit " +
+                  quoted + " -spd " + std::to_string(effective.speed) + " -cable " +
+                  std::to_string(effective.cable);
+        if (mode == "flash") {
+            command += " -flashsize " + std::to_string(effective.flash_size) + " -v";
+        }
+    }
     const std::string label = mode == "sram" ? "SRAM (JTAG)" : "Flash (SPI)";
 
     std::string error;
@@ -818,18 +869,35 @@ jsonrpc::Json Program(const td::TdChoice& td, const project::Project& project,
 
     const std::string out_text = scope.get()->Run(command, effective.program_timeout);
     const std::vector<std::string> tail = TailLines(out_text, 40);
-    const bool ok = !HasBwError(out_text);
+    // 2026.2 的成功凭据：`PRG-2014 : Chip validation success: <系列>`（download 一定打印）
+    // 和收尾的 `GUI-1001 : Downloading succeeded!`。**退出码不可信**（出错也返回 0），
+    // 所以"没有成功标记"同样判失败 —— 不能因为日志里没有 ERROR 就当成烧好了。
+    const std::string validation = ParseChipValidation(out_text);
+    const bool success_marker = HasDownloadSuccess(out_text);
+    const bool bw_error = HasBwError(out_text);
+    const bool ok = !bw_error && (!validation.empty() || success_marker);
 
     jsonrpc::Json out = jsonrpc::Json::object();
     out["ok"] = ok;
     out["mode"] = mode;
     out["mode_label"] = label;
+    out["command_style"] = style;
     out["bit"] = bit;
     out["device_id"] = pre.value("device_id", std::string());
     out["expected"] = project.device;
+    out["chip_validation"] = validation;
     out["command"] = command;
     out["log"] = TailJson(tail);
-    out["error"] = ok ? "" : "BitWizard error: " + (tail.empty() ? std::string("see logs") : tail.back());
+    if (ok) {
+        out["error"] = "";
+    } else if (bw_error) {
+        out["error"] =
+            "BitWizard error: " + (tail.empty() ? std::string("see logs") : tail.back());
+    } else {
+        out["error"] =
+            "BitWizard reported no error but also no success marker "
+            "(expected 'Chip validation success:' or 'Downloading succeeded') - see logs";
+    }
     return out;
 }
 

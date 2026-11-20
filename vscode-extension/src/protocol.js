@@ -54,6 +54,10 @@ const COMMANDS = Object.freeze({
     addSourceFile: 'fpgalsp.addSourceFile',
     setProjectName: 'fpgalsp.setProjectName',
     updateProject: 'fpgalsp.updateProject',
+    // 0.16.0: on-chip probe (Anlogic ChipWatcher)
+    probeStatus: 'fpgalsp.probeStatus',
+    probeConfig: 'fpgalsp.probeConfig',
+    probeCapture: 'fpgalsp.probeCapture',
 });
 
 // VS Code contribution ids (`contributes.commands`). All of these must be declared in
@@ -116,6 +120,10 @@ const VSCodeCommands = Object.freeze({
     duplicateModules: 'fpgaLsp.duplicateModules',
     renameProject: 'fpgaLsp.renameProject',
     updateProject: 'fpgaLsp.updateProject',
+    // 0.16.0: on-chip probe (ChipWatcher)
+    probeStatus: 'fpgaLsp.probeStatus',
+    probeCapture: 'fpgaLsp.probeCapture',
+    probeConfig: 'fpgaLsp.probeConfig',
 });
 
 const VIEWS = Object.freeze({

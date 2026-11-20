@@ -27,6 +27,7 @@
 #include <vector>
 
 #include "flow/flow_runner.h"
+#include "flow/probe.h"
 #include "flow/programmer.h"
 #include "flow/strategy.h"
 #include "hdl/hdl_index.h"
@@ -825,6 +826,8 @@ const std::vector<std::string>& ExecuteCommandNames() {
         "fpgalsp.duplicateModules", "fpgalsp.searchHierarchy", "fpgalsp.addSourceFile",
         "fpgalsp.setProjectName", "fpgalsp.updateProject", "fpgalsp.debugHighlight",
         "fpgalsp.metrics",      "fpgalsp.compareRuns", "fpgalsp.runs",      "fpgalsp.testbench", "fpgalsp.constraintTable",
+        // 0.16.0 片上探针（ChipWatcher）
+        "fpgalsp.probeStatus",  "fpgalsp.probeConfig", "fpgalsp.probeCapture",
     };
     return kNames;
 }
@@ -1441,6 +1444,60 @@ HandlerResult LspServer::HandleExecuteCommand(const Json& params) {
         program_options.svf_path = jsonrpc::GetString(options, "svf");
         program_options.scan_mode = jsonrpc::GetString(options, "scanMode", "prog_sram");
         return OkObject(flow::GenerateSvf(*td, *project, program_options));
+    }
+
+    // ---- 0.16.0：片上探针（ChipWatcher）----
+    //   与 program/svfgen 同一形状：只解析参数，逻辑在 probe::，TD 由这里解析后传进去。
+    if (command == "fpgalsp.probeStatus") {
+        const auto project = CurrentProject();
+        if (!project.has_value()) return Failure(".al project not found");
+        return OkObject(probe::Status(*project));
+    }
+
+    if (command == "fpgalsp.probeConfig") {
+        const auto project = CurrentProject();
+        if (!project.has_value()) return Failure(".al project not found");
+        const Json options =
+            args.empty() || !args.front().is_object() ? Json::object() : args.front();
+        std::vector<std::string> signals;
+        if (const Json list = jsonrpc::GetArray(options, "signals"); !list.empty()) {
+            for (const auto& item : list) {
+                if (item.is_string()) signals.push_back(item.get<std::string>());
+            }
+        }
+        // ⚠ 写 user.mdn 会改变下一次综合/布局要嵌进 bit 的探针集合，必须显式 write:true
+        return OkObject(probe::Configure(*project, signals,
+                                        jsonrpc::GetBool(options, "write", false)));
+    }
+
+    if (command == "fpgalsp.probeCapture") {
+        const auto project = CurrentProject();
+        if (!project.has_value()) return Failure(".al project not found");
+        const std::string configured =
+            settings_.td_path.empty() ? td_explicit_ : settings_.td_path;
+        const std::optional<td::TdChoice> td = FindTdCached(configured);
+        if (!td.has_value()) return Failure("No TangDynasty installation found");
+
+        const Json options =
+            args.empty() || !args.front().is_object() ? Json::object() : args.front();
+        probe::CaptureOptions capture_options;
+        capture_options.download = jsonrpc::GetBool(options, "download", true);
+        capture_options.trigger_now = jsonrpc::GetBool(options, "triggerNow", true);
+        capture_options.instance = jsonrpc::GetString(options, "instance");
+        capture_options.cable = jsonrpc::GetString(options, "cable", "0");
+        capture_options.csv_path = jsonrpc::GetString(options, "csv");
+        const int timeout = jsonrpc::GetInt(options, "timeout", 30);
+        capture_options.wait_timeout = timeout > 0 ? static_cast<double>(timeout) : 30.0;
+        // `download` 会把带探针的 bit 重新灌进 SRAM（改板子状态）；采集本身只读。
+        // 和 fpgalsp.program 一样把确认下沉到后端，避免任何调用路径绕过。
+        if (capture_options.download && !jsonrpc::GetBool(options, "confirm", false)) {
+            Json refusal = flow::Refusal(
+                "confirm",
+                "capture with download:true reprograms the FPGA SRAM; pass confirm:true "
+                "(or download:false to only read the already-loaded design)");
+            return OkObject(refusal);
+        }
+        return OkObject(probe::Capture(*td, *project, capture_options));
     }
 
     // ---- Phase B：IDE / 分析 / 报告类命令（统一走 Feature 层）----

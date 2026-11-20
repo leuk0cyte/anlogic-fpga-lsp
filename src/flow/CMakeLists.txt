@@ -15,6 +15,7 @@ add_library(fpga_lsp_flow STATIC
     flow_logic.cpp
     flow_runner.cpp
     programmer.cpp
+    probe.cpp
     strategy.cpp
 )
 

@@ -1273,6 +1273,115 @@ function activate(context) {
         reportsTreeProvider.refresh().catch(() => undefined);
     };
 
+    // ---- 0.16.0：片上探针（Anlogic ChipWatcher）-----------------------------
+    // 三层语义，和 program 家族对齐：
+    //   probeStatus  纯读文件（探针清单 + 编译产物），毫秒级
+    //   probeConfig  改 chip_debugger/user.mdn（不碰板子，但会改变下次埋进 bit 的探针）
+    //   probeCapture 碰硬件：会先用 -mode jtag_burst 把带探针的 bit 灌进 SRAM，必须二次确认
+    const probeStatus = async (silent) => {
+        const result = await runWithProgress('FPGA: reading ChipWatcher probe setup...',
+            COMMANDS.probeStatus, []);
+        if (!silent) {
+            if (!result || result.ok !== true) {
+                openErrors((result && result.reason) || 'ChipWatcher probe setup is not ready');
+                return result;
+            }
+            const watcher = result.watcher || {};
+            const buses = (watcher.buses || []).map((b) => b.name).join(', ') || '(none)';
+            const rows = [
+                `Project        : ${result.project || ''}  (${result.target || ''})`,
+                `Probe signals  : ${(result.chip_debugger || {}).count || 0} (chip_debugger/user.mdn)`,
+                `Watcher inst   : ${watcher.instance || '(none)'}`,
+                `Sample clock   : ${watcher.clock || '(none)'}`,
+                `Sample depth   : ${watcher.sample_depth || 0}`,
+                `Trigger        : ${watcher.trigger_type || '(none)'} @ ${watcher.trigger_position || 0}`,
+                `Buses          : ${buses}`,
+                `Compiled bit   : ${watcher.compiled_bit || '(none)'}`,
+                `Ready          : ${result.ready ? 'yes' : 'no'} - ${result.reason || ''}`,
+            ];
+            const doc = await vscode.workspace.openTextDocument({ content: rows.join('\n'), language: 'text' });
+            await vscode.window.showTextDocument(doc, { preview: true });
+        }
+        return result;
+    };
+
+    const probeCapture = async () => {
+        const status = await probeStatus(true);
+        if (!status || status.ok !== true) {
+            openErrors((status && status.reason)
+                || 'No probe-enabled bitstream. Run the phy flow first so chip_debugger/user.mdn gets embedded.');
+            return;
+        }
+        const watcher = status.watcher || {};
+        const confirmed = await vscode.window.showWarningMessage(
+            `Capture on-chip probe data?\n` +
+            `Watcher: ${watcher.instance}\nClock: ${watcher.clock}\nDepth: ${watcher.sample_depth}\n` +
+            `This reloads ${(watcher.compiled_bit || '').split('/').pop()} into SRAM over JTAG (the FPGA stops for ~15 s).`,
+            { modal: true }, 'Capture');
+        if (confirmed !== 'Capture') return;
+
+        const result = await runWithProgress('FPGA: capturing on-chip probe data (JTAG)...',
+            COMMANDS.probeCapture, [{ confirm: true }]);
+        if (!result || result.ok !== true) {
+            openErrors(`Probe capture failed - ${(result && (result.reason || result.error)) || 'unknown error'}`);
+            return;
+        }
+        const summary = result.summary || {};
+        const lines = Object.keys(summary).map((bus) => {
+            const item = summary[bus] || {};
+            return `${bus}: ${item.distinct} distinct value(s), first ${item.first}, last ${item.last}`;
+        });
+        vscode.window.showInformationMessage(
+            `FPGA probe: ${result.samples} samples on ${result.clock} -> ${result.csv}`,
+            'Show details').then(async (picked) => {
+            if (picked !== 'Show details') return;
+            const content = [
+                `Watcher   : ${result.instance}`,
+                `Clock     : ${result.clock}`,
+                `Depth     : ${result.sample_depth}`,
+                `Trigger   : ${result.trigger_mode} (index ${result.trigger_index})`,
+                `CSV       : ${result.csv}`,
+                '',
+                ...lines,
+            ];
+            const doc = await vscode.workspace.openTextDocument({ content: content.join('\n'), language: 'text' });
+            await vscode.window.showTextDocument(doc, { preview: true });
+        });
+    };
+
+    const probeConfig = async () => {
+        const current = await runWithProgress('FPGA: reading probe signal list...',
+            COMMANDS.probeConfig, [{}]);
+        if (!current || current.ok !== true) {
+            openErrors((current && current.reason) || 'Cannot read chip_debugger/user.mdn');
+            return;
+        }
+        const before = (current.before || []).join(' ');
+        const edited = await vscode.window.showInputBox({
+            title: 'Probe signals (whitespace separated hierarchical net names)',
+            prompt: 'These go into chip_debugger/user.mdn as mark_debug; re-run the phy flow to embed them.',
+            value: before,
+            ignoreFocusOut: true,
+            validateInput: (value) => (value.trim() ? undefined : 'At least one signal is required'),
+        });
+        if (edited === undefined || edited.trim() === before) return;
+        const signals = edited.split(/\s+/).map((s) => s.trim()).filter(Boolean);
+        const result = await runWithProgress('FPGA: updating chip_debugger/user.mdn...',
+            COMMANDS.probeConfig, [{ signals, write: true }]);
+        if (!result || result.ok !== true) {
+            openErrors((result && result.reason) || 'Cannot update user.mdn');
+            return;
+        }
+        const added = (result.added || []).length;
+        const removed = (result.removed || []).length;
+        vscode.window.showInformationMessage(
+            `FPGA: probe list updated (${result.count} signals, +${added}/-${removed}). ` +
+            'Re-run the phy flow so the probes get embedded into the bitstream.',
+            'Run Place & Route').then((picked) => {
+            if (picked === 'Run Place & Route') vscode.commands.executeCommand(VSCodeCommands.runPhy);
+        });
+    };
+
     register(VSCodeCommands.doctor, async () => {
         try {
             const root = workspaceFolder();
@@ -1373,6 +1482,9 @@ function activate(context) {
             { label: '$(zap) Program SRAM (JTAG)', command: VSCodeCommands.programSram },
             { label: '$(database) Program Flash (SPI)', command: VSCodeCommands.programFlash },
             { label: '$(file-binary) Generate SVF (for third-party JTAG tools)', command: VSCodeCommands.generateSvf },
+            { label: '$(pulse) ChipWatcher probe status', command: VSCodeCommands.probeStatus },
+            { label: '$(circuit-board) Capture on-chip probe data', command: VSCodeCommands.probeCapture },
+            { label: '$(list-tree) Edit probe signal list', command: VSCodeCommands.probeConfig },
             { label: '$(stethoscope) Doctor: extension / LSP / Verible / TD / MCP status', command: VSCodeCommands.doctor },
             { label: '$(output) Show logs', command: VSCodeCommands.showLogs },
         ];
@@ -1447,6 +1559,11 @@ function activate(context) {
 
     register(VSCodeCommands.programSram, () => programFlow('sram'));
     register(VSCodeCommands.programFlash, () => programFlow('flash'));
+
+    // 0.16.0：片上探针
+    register(VSCodeCommands.probeStatus, () => probeStatus(false));
+    register(VSCodeCommands.probeCapture, () => probeCapture());
+    register(VSCodeCommands.probeConfig, () => probeConfig());
 
     register(VSCodeCommands.generateSvf, async () => {
         const result = await runWithProgress('FPGA: generating SVF...', COMMANDS.svfgen, [{}]);

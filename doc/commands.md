@@ -36,6 +36,9 @@
 | `fpgalsp.cables` | `{ok, inspect{...}}` | 下载器探测 |
 | `fpgalsp.program` | `{ok, refused?, stage?, device_id, log}` | **三条硬规则在 `flow::Program()` 内部**：`confirm:true` 必须显式传 / 无下载器直接拒 / 器件不匹配即使 `allowMismatch:true` 也拒 |
 | `fpgalsp.svfgen` | `{ok, svf, size, command}` | 生成 SVF |
+| `fpgalsp.probeStatus` | `{ok, ready, chip_debugger:{exists,count,signals[]}, watcher:{present,instance,clock,sample_depth,buses[]}}` | 纯读文件（`chip_debugger/user.mdn` + `phy_1/cw/compiled.cwc`），毫秒级、不碰硬件 |
+| `fpgalsp.probeConfig` | `{ok, written, count, before[], after[], added[], removed[]}` | 读写 `chip_debugger/user.mdn` 的 `mark_debug`；**只有 `write:true` 才落盘**，空清单拒绝写 |
+| `fpgalsp.probeCapture` | `{ok, samples, clock, signals{bus:[值…]}, summary, csv}` | 片上采集：起独立 TD 会话，`config_chipwatcher → download -mode jtag_burst → run_hw_cw → wait_on_hw_cw → write_hw_cw_data`。`download:true`（默认）必须带 `confirm:true` |
 
 ## 一、`workspace/executeCommand` —— Phase B 已全部实现（无占位）
 

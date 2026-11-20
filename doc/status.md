@@ -185,3 +185,55 @@ vscode-extension/fpga-lsp-anlogic-0.15.3.vsix   228 files / 2.97 MB
   `Path`，否则会写进用户真实工程（本项目中差点发生）。
 
 完整清单见 [tests/PYTHON-BUGS.md](../tests/PYTHON-BUGS.md)。
+## 片上探针（ChipWatcher，2026-11-20 落地并上板验证）
+
+> 设计与实测细节见 [doc/design/on-chip-probe.md](design/on-chip-probe.md)。
+> 工程：`%WORKSPACE%\CorpusDelta\corpus_delta`（PH1A100SFG676，TD 2026.2.210850），真机在环。
+
+| 项 | 数据 |
+| --- | --- |
+| 新增后端模块 | `src/flow/probe.{h,cpp}`（mdn / compiled.cwc / 采集 CSV 三套纯解析 + TD 会话编排）、`src/flow/hardware_lease.h`（进程级 JTAG 租约） |
+| 新增 LSP 命令 | `fpgalsp.probeStatus` / `fpgalsp.probeConfig` / `fpgalsp.probeCapture`（广播进 `executeCommandProvider`） |
+| 新增 MCP 工具 | `fpga_probe_status`（只读）· `fpga_probe_config`（`write` 门控）· `fpga_probe_capture`（`flow` 门控）→ 工具总数 **43 → 46** |
+| 新增插件命令 | `fpgaLsp.probeStatus` / `fpgaLsp.probeCapture` / `fpgaLsp.probeConfig`（采集前有模态确认） |
+| 单测 | `tests/unit/probe_test.cpp` **18 例**（含两条回归：2026.2 两行式 `list_cable`、38 字符层次名不被截断） |
+| 回归 | `ctest` **63/63**；插件 `node test/run.js` **41/41** |
+
+### 烧录真机验证（Step 1）
+
+| 模式 | 命令 | 耗时 | 结果 |
+| --- | --- | --- | --- |
+| JTAG / SRAM | `download -mode jtag -bit {…} -spd 7 -cable 0` | **14.2 s** | `PRG-2014 : Chip validation success: PH1A100`，`ok:true` |
+| SPI / Flash | `download -mode program_spi -bit {…} -spd 7 -cable 0 -flashsize 128 -v` | **96.0 s** | `SPI flash sector erase` + `Page program and verify`，`ok:true` |
+
+两处修好才通的**真 bug**：
+
+1. **`ParseCables` 认不出 2026.2 的输出**：它要求 `Connect device` 与 `0:PH1A100` 在同一行，
+   而 2026.2 是两行（`PRG-1000 : Connect device:` 换行 `0:PH1A100`）→ 电缆列表恒为空 →
+   `Program` 在 `stage:"cable"` 直接拒绝。单测夹具用的正是单行假输出，所以 29 个用例全绿也
+   盖不住它。
+2. **命令形态**：`program` / `program_spi` 是 2026.1 写法（本机无成功样本）；2026.2 GUI 实际
+   用的是 `download -mode …`。现在默认 `download`，`command_style:"legacy"` 可回退。
+   成功判据也从"没有 ERROR"改成"必须出现 `Chip validation success:` 或 `Downloading succeeded`
+   —— BitWizard 出错同样返回 0，只看错误标记会把静默失败当成功。
+
+### 采集真机验证（Step 2）
+
+| 项 | 实测 |
+| --- | --- |
+| 预检 | `ready:true`、`clock:reg_init/clk`、`sample_depth:1024`、4 条 bus / 64 net |
+| 采集 | **17.4 s**，`ok:true`，**1024 个采样点**，4 条 16 位总线，`trigger_index:127`（= `compiled.cwc` 的 `position`） |
+| 落盘 | `phy_1/cw/capture_20261120_121852.csv`（1025 行：表头 + 1024 采样） |
+| 读数 | 4 条总线全部 `distinct:1`、值为 0 |
+
+**关于"全 0"**：`pwm_reg{0,1,6,7}_i` 来自 `import/src/project/bus_reg.v` 的 `reg_bus`，
+复位为 `'d0`，只有主机写总线才改变；板子当前没有主机在写 → 0 就是**真实值**。
+探针链路本身的活性由三点佐证：`KIT-1001 : capture completed successfully`、
+`Trigger` 列唯一标记在 127、1024 行数据从 ERAM 读回并逐位解码。
+
+**未完成的实验（下期）**：为拿到"非 0 且随时间变化"的读数，把
+`WHG/ANPC_init0/ANPC_SVPWM_init/cnt[15:0]`（16 位三角载波，`synthesis keep="1"`，
+与 `reg_init` 同 `clk` 域）加进 `user.mdn` 后**必须跑完整 flow**——实测
+`stages:["route"]` 会走增量（`import_db place.db`，只重跑 route），
+`insert_debugger` 在 `opt_place` 阶段不会重新执行，`compiled.cwc` 时间戳不变、探针不会更新。
+本次已验证到这一层并已把 `user.mdn` 还原成原来那 64 个信号（1192 B，与原始文件同尺寸）。

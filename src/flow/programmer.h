@@ -17,9 +17,17 @@
 //  ---- 实测命令（TD 2026.2 的 BitWizard CLI）----
 //      list_cable
 //      read_device_id
-//      program {<abs .bit>}                                  ; SRAM / JTAG
-//      program_spi {<abs .bit>}                              ; Flash via SPI
+//      download -mode jtag       -bit {<abs .bit>} -spd 7 -cable 0            ; SRAM / JTAG
+//      download -mode program_spi -bit {<abs .bit>} -spd 7 -cable 0 -flashsize 128 -v  ; Flash via SPI
+//      program {<abs .bit>} / program_spi {<abs .bit>}                        ; 旧写法（2026.1）
 //      svfgen -bit {<abs>} -svf {<abs>} -scan_mode prog_sram
+//
+//  ⚠ 为什么默认走 `download`：2026.2 的 GUI 实际发的就是它，本机有成功日志
+//    （log/bw_2026-11-19_11-09-55.log 的 `-mode jtag`、bw_2026-11-19_12-51-22.log 的
+//     `-mode program_spi`，两者都打印 GUI-1001 : Downloading succeeded!）。
+//    旧 `program*` 命令仍在 help 里，但没有本机成功样本，所以只作回退。
+//  ⚠ 成功判据**不是**退出码（BitWizard 出错也返回 0）：必须看到
+//    `Chip validation success: <系列>` 且没有 ERROR / CRITICAL-WARNING。
 // =============================================================================
 
 #pragma once
@@ -83,6 +91,13 @@ BitCheck CheckBit(std::string_view path);
 // BitWizard 输出里是否有 ERROR / CRITICAL-WARNING
 bool HasBwError(std::string_view text);
 
+// `PRG-2014 : Chip validation success: PH1A100` -> "PH1A100"（没有则空串）。
+// 这是 2026.2 `download` 的**器件校验成功**凭据，比退出码可靠。
+std::string ParseChipValidation(std::string_view text);
+
+// 输出里是否出现"下载成功"标记（`GUI-1001 : Downloading succeeded!`）。
+bool HasDownloadSuccess(std::string_view text);
+
 // 工程里最新的 .bit（best_result 优先，其次 phy_1，按 mtime 降序）
 std::string DefaultBit(const project::Project& project);
 
@@ -114,6 +129,15 @@ struct ProgramOptions {
     std::string scan_mode = "prog_sram";  // svfgen 用
     std::string svf_path;                 // 空 = 与 .bit 同目录同名 .svf
     BwSessionFactory session_factory;     // 空 = 真实 BitWizard
+
+    // ---- 下发命令的形态（2026.2 实测差异）----
+    // "download"（默认）：`download -mode jtag|program_spi -bit <f> -spd <n> -cable <n>`
+    //   这是 2026.2 GUI 真正用的那条，本机有成功日志（log/bw_2026-11-19_12-51-22.log）。
+    // "legacy"：`program {<f>}` / `program_spi {<f>}`，2026.1 的写法，保留给旧 TD。
+    std::string command_style = "download";
+    int speed = 7;      // -spd，GUI 默认 7
+    int cable = 0;      // -cable，单下载器时为 0
+    int flash_size = 128;  // -flashsize（仅 flash）
 };
 
 // 只读预检（对应 Python inspect）：cables / device_id / match / reason / bit_check

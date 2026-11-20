@@ -157,9 +157,9 @@ TEST_F(McpServerTest, PingReturnsEmptyResult) {
 
 // --------------------------------------------------------------- tools/list
 
-TEST_F(McpServerTest, ToolsListAllModesReturns43) {
+TEST_F(McpServerTest, ToolsListAllModesReturns46) {
     const Json response = Call(Request("tools/list", Json::object()));
-    EXPECT_EQ(response.at("result").at("tools").size(), 43u);
+    EXPECT_EQ(response.at("result").at("tools").size(), 46u);
 }
 
 TEST_F(McpServerTest, ToolsListDefaultHidesFlowAndWriteTools) {
@@ -167,7 +167,7 @@ TEST_F(McpServerTest, ToolsListDefaultHidesFlowAndWriteTools) {
     McpServer restricted_server(dispatcher, restricted);
     const Json response = *restricted_server.Handle(Request("tools/list", Json::object()));
     const Json& tools = response.at("result").at("tools");
-    EXPECT_EQ(tools.size(), 35u);
+    EXPECT_EQ(tools.size(), 36u);
     for (const Json& tool : tools) {
         const std::string name = tool.at("name").get<std::string>();
         EXPECT_NE(name, "fpga_flow_run") << "flow 工具默认不该出现";

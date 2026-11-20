@@ -68,7 +68,12 @@ void Touch(const std::string& path, const std::string& content = "bit") {
 struct BwScript {
     std::string list_cable_output = "Connect device 0: PH1A100\n";
     std::string device_id_output = "PH1A100\n";
-    std::string program_output = "RUN-100 starting\nprogram done\n";
+    // 2026.2 `download` 的真实成功输出（PRG-2014 + GUI-1001，见 programmer.h 顶部）
+    std::string program_output =
+        "RUN-1002 : start command \"download\"\n"
+        "PRG-2014 : Chip validation success: PH1A100\n"
+        "RUN-1003 : finish command \"download\"\n"
+        "GUI-1001 : Downloading succeeded!\n";
     std::vector<std::string> commands;
 };
 
@@ -81,6 +86,7 @@ public:
         script_->commands.push_back(command);
         if (command == "list_cable") return script_->list_cable_output;
         if (command == "read_device_id") return script_->device_id_output;
+        if (command.rfind("download", 0) == 0) return script_->program_output;
         if (command.rfind("program", 0) == 0) return script_->program_output;
         if (command.rfind("svfgen", 0) == 0) {
             // svfgen 会真的产出文件；这里从命令里解析出 -svf 目标
@@ -135,9 +141,10 @@ struct Harness {
         return options;
     }
 
-    // 有没有下发过烧录命令
+    // 有没有下发过烧录命令（download 与旧 program* 都算）
     bool IssuedProgramCommand() const {
         for (const std::string& command : script->commands) {
+            if (command.rfind("download", 0) == 0) return true;
             if (command.rfind("program", 0) == 0) return true;
         }
         return false;
@@ -354,11 +361,16 @@ TEST(FlowProgrammerSafety, ProgramsWhenEverythingMatches) {
     EXPECT_TRUE(result.value("ok", false)) << result.dump();
     EXPECT_EQ(result.value("mode", std::string()), "sram");
     EXPECT_EQ(result.value("mode_label", std::string()), "SRAM (JTAG)");
-    EXPECT_NE(result.value("command", std::string()).find("program {"), std::string::npos);
+    EXPECT_EQ(result.value("command_style", std::string()), "download");
+    // 2026.2 的形态：download -mode jtag -bit {…} -spd 7 -cable 0
+    EXPECT_NE(result.value("command", std::string()).find("download -mode jtag -bit {"),
+              std::string::npos);
+    EXPECT_NE(result.value("command", std::string()).find("-cable 0"), std::string::npos);
+    EXPECT_EQ(result.value("chip_validation", std::string()), "PH1A100");
 
     bool issued = false;
     for (const std::string& command : harness.script->commands) {
-        if (command.rfind("program {", 0) == 0) issued = true;
+        if (command.rfind("download -mode jtag", 0) == 0) issued = true;
     }
     EXPECT_TRUE(issued);
 }
@@ -371,9 +383,73 @@ TEST(FlowProgrammerSafety, FlashUsesProgramSpi) {
     ProgramOptions options = harness.Options(/*confirm=*/true);
     options.mode = "flash";
     const Json result = Program(fpgalsp::td::TdChoice{}, harness.project, options);
-    EXPECT_TRUE(result.value("ok", false));
-    EXPECT_NE(result.value("command", std::string()).find("program_spi {"), std::string::npos);
+    EXPECT_TRUE(result.value("ok", false)) << result.dump();
+    const std::string command = result.value("command", std::string());
+    EXPECT_NE(command.find("download -mode program_spi -bit {"), std::string::npos);
+    // flash 必须带 -flashsize（GUI 实测参数），否则 2026.2 会按默认容量进程
+    EXPECT_NE(command.find("-flashsize 128"), std::string::npos);
     EXPECT_EQ(result.value("mode_label", std::string()), "Flash (SPI)");
+}
+
+// 旧写法仍可用（2026.1 的 program / program_spi）
+TEST(FlowProgrammerSafety, LegacyCommandStyleStillIssuesProgram) {
+    Harness harness("legacy", [](BwScript& script) {
+        script.list_cable_output = "Connect device 0: EF2L45LG144B\n";
+        script.device_id_output = "EF2L45LG144B\n";
+    });
+    ProgramOptions options = harness.Options(/*confirm=*/true);
+    options.command_style = "legacy";
+    const Json result = Program(fpgalsp::td::TdChoice{}, harness.project, options);
+    EXPECT_TRUE(result.value("ok", false)) << result.dump();
+    EXPECT_EQ(result.value("command_style", std::string()), "legacy");
+    EXPECT_NE(result.value("command", std::string()).find("program {"), std::string::npos);
+}
+
+// ⚠ 没有成功标记 = 失败：BitWizard 出错也返回 0，只看"有没有 ERROR"会把静默失败当成功
+TEST(FlowProgrammerSafety, NoSuccessMarkerIsFailure) {
+    Harness harness("nomarker", [](BwScript& script) {
+        script.list_cable_output = "Connect device 0: EF2L45LG144B\n";
+        script.device_id_output = "EF2L45LG144B\n";
+        script.program_output = "RUN-1003 : finish command \"download\"\n";
+    });
+    const Json result = Program(fpgalsp::td::TdChoice{}, harness.project,
+                                harness.Options(/*confirm=*/true));
+    EXPECT_FALSE(result.value("ok", false)) << result.dump();
+    EXPECT_NE(result.value("error", std::string()).find("no success marker"), std::string::npos);
+}
+
+// 2026.2 的 list_cable 是两行："PRG-1000 : Connect device:" + "0:PH1A100"
+// 这里的样本是本机 `_probe_audit/bw_audit_stdout.txt` 的真实 stdout。
+TEST(FlowProgrammerParse, ParseCablesReal2026TwoLineOutput) {
+    const std::string text =
+        "RUN-1002 : start command \"list_cable\"\n"
+        "PRG-1000 : Connect device:\n"
+        "0:PH1A100\n"
+        "\n"
+        "RUN-1003 : finish command \"list_cable\" in  0.137505s wall\n";
+    const std::vector<CableInfo> cables = ParseCables(text);
+    ASSERT_EQ(cables.size(), 1u) << "2026.2 的两行式必须能解析出 1 个器件";
+    EXPECT_EQ(cables[0].index, 0);
+    EXPECT_EQ(cables[0].device, "PH1A100");
+
+    // 多个下载器/多器件
+    const std::vector<CableInfo> many =
+        ParseCables("PRG-1000 : Connect device:\n0:PH1A100\n1:EF2L45LG144B\n");
+    ASSERT_EQ(many.size(), 2u);
+    EXPECT_EQ(many[1].index, 1);
+    EXPECT_EQ(many[1].device, "EF2L45LG144B");
+
+    // 只有表头没有条目 -> 空（没接板子）
+    EXPECT_TRUE(ParseCables("PRG-1000 : Connect device:\n\n").empty());
+    // `RUN-1002 : start command ...` 这类行不能被误认成器件条目
+    EXPECT_TRUE(ParseCables("RUN-1002 : start command \"list_cable\"\n").empty());
+}
+
+TEST(FlowProgrammerParse, ParseChipValidation) {
+    EXPECT_EQ(ParseChipValidation("PRG-2014 : Chip validation success: PH1A100\n"), "PH1A100");
+    EXPECT_EQ(ParseChipValidation("nothing here\n"), "");
+    EXPECT_TRUE(HasDownloadSuccess("GUI-1001 : Downloading succeeded!\n"));
+    EXPECT_FALSE(HasDownloadSuccess("PRG-1001 : Online device is: PH1A100\n"));
 }
 
 TEST(FlowProgrammerSafety, UnknownModeRejected) {

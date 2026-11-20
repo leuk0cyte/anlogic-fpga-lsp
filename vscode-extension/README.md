@@ -278,6 +278,27 @@ FPGA: Install MCP Configuration
 | `FPGA: Program SRAM (JTAG)` | JTAG 下载 bit |
 | `FPGA: Program Flash (SPI)` | SPI Flash 烧录 |
 | `FPGA: Generate SVF…` | 生成 SVF |
+| `FPGA: ChipWatcher Probe Status` | 看探针清单 / 采样深度 / 时钟 / 编译产物是否就绪（只读） |
+| `FPGA: Capture On-Chip Probe Data` | 通过 JTAG 读回片上探针的 1024 个采样点（会重灌一次 SRAM，先弹确认） |
+| `FPGA: Edit Probe Signal List` | 编辑 `chip_debugger/user.mdn` 里的 `mark_debug` 清单，再重跑 phy 嵌入 bit |
+
+### 片上探针（ChipWatcher）
+
+工程里 `<工程>/chip_debugger/user.mdn` 的 `mark_debug { … }` 决定**哪些内部信号被埋进 bit**：
+
+```tcl
+mark_debug { WHG/pwm_reg0_i[0] … WHG/pwm_reg7_i[15] }
+```
+
+流程是「改清单 → 重跑 Place & Route（`insert_debugger` 在 `opt_place` 阶段执行）→
+得到 `phy_1/cw/compiled.cwc` → 采集」。采集回 1024 个采样点（`sample_depth` 决定），
+每条总线一列，落地成 `phy_1/cw/capture_<时间戳>.csv`。
+
+三个已经踩过的坑（写进 [doc/design/on-chip-probe.md](../doc/design/on-chip-probe.md)）：
+
+* **只跑 route 不会更新探针** —— 走的是增量（复用 `place.db`），`compiled.cwc` 时间戳不变。
+* 触发条件默认是「所有 bit 为 low」，对寄存器类信号等于没用；采集默认用 `-trigger_now`。
+* 信号名必须是**综合后网表**的层次名，写错会被 TD 静默忽略。
 
 ---
 
