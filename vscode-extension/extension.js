@@ -1356,22 +1356,22 @@ function activate(context) {
         await showProbePanel();
     };
 
-    // ---- 0.16.1：ChipWatcher 图形面板 ----
-    //   把「改清单 / 看 watcher 现状 / 直接采一次」放进一个 webview，
+    // ---- 0.17.2：ChipWatcher 探针面板（**底栏** webview view）----
+    //   注册到 panel 容器（和 Terminal / Problems 同级），不是浮在编辑区的 webviewPanel。
     //   数据全部来自后端的 probeStatus / probeConfig / probeCapture。
-    let probePanel;  // 模块级单例由 show() 内部持有，这里只做缓存
     const probeService = {
         getStatus: async () => (await runWithProgress('FPGA: reading ChipWatcher state...',
             COMMANDS.probeStatus, [])) || {},
         applySignals: async (signals) => (await runWithProgress('FPGA: updating chip_debugger/user.mdn...',
             COMMANDS.probeConfig, [{ signals, write: true }])) || {},
-        capture: async () => (await runWithProgress('FPGA: capturing on-chip probe data...',
-            COMMANDS.probeCapture, [{ confirm: true }])) || {},
+        capture: async (trigger) => (await runWithProgress('FPGA: capturing on-chip probe data...',
+            COMMANDS.probeCapture, [{ confirm: true, trigger: trigger || {} }])) || {},
     };
-    const showProbePanel = async () => {
-        if (!probePanel) probePanel = new ProbePanel(vscode, probeService);
-        await probePanel.show();
-    };
+    const probePanel = new ProbePanel(vscode, probeService, VIEWS.probe);
+    vscode.window.registerWebviewViewProvider(VIEWS.probe, probePanel, {
+        webviewOptions: { retainContextWhenHidden: true },
+    });
+    const showProbePanel = async () => { await probePanel.show(); };
 
     register(VSCodeCommands.doctor, async () => {
         try {

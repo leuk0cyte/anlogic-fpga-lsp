@@ -57,6 +57,10 @@ std::string NormaliseSignal(std::string_view signal);
 // 去空、去重、按 (base, index) 升序
 std::vector<std::string> NormaliseSignals(const std::vector<std::string>& signals);
 
+// 把 `WHG/pwm_reg7_i[15:0]` / `[0:7]` 展开成逐位名字；其它形态原样返回。
+// 用户从 RTL 里复制的就是范围写法，而 mark_debug 要逐位网名。
+std::vector<std::string> ExpandSignalRanges(const std::vector<std::string>& signals);
+
 struct MdnConfig {
     bool ok = false;
     std::string error;
@@ -176,6 +180,33 @@ struct CaptureOptions {
     std::string instance;        // 空 = 从 compiled.cwc 读（通常是 auto_created_cwc1）
     std::string cable = "0";
     double wait_timeout = 30.0;  // wait_on_hw_cw -timeout
+
+    // 触发设置：**这些是运行期可改的**（实测：把 position 从 127 改成 512，
+    // 只要在采集会话里 config_chipwatcher 一份改过的 .cwc，CSV 的 Trigger 行就落到 512）。
+    // 做法是把 compiled.cwc 复制一份、只改 `<trigger>`/`<condition>`/`<net cond>`
+    // 这些字段（不动 <logic_eram> 的 depth，所以 bit 依然匹配，`Chipwatcher code` 不变）。
+    struct Trigger {
+        int position = -1;     // -1 = 沿用 .cwc 里的值
+        int window_num = 0;    // 0 = 沿用
+        int window_depth = 0;  // 0 = 沿用
+        std::string type;      // basic_and / basic_or，空 = 沿用
+        std::optional<bool> enabled;
+        std::string bus_op;    // equal / not_equal / rising_edge …，空 = 沿用
+        std::vector<std::pair<std::string, std::string>> net_conds;  // 网名 -> cond
+        // 按总线设置：op + 期望值（16 进制/十进制都行）。后端会把 value 展开成
+        // 逐位 `cond="high"/"low"`（高位对应 msb）。这是"触发值"最自然的写法。
+        struct BusTrigger {
+            std::string name;             // `pwm_reg0_i` 或 `pwm_reg0_i[15:0]`
+            std::string op;               // 空 = 不单独指定（用 bus_op）
+            unsigned long long value = 0;
+            bool has_value = false;
+        };
+        std::vector<BusTrigger> buses;
+        bool Any() const {
+            return position >= 0 || window_num > 0 || window_depth > 0 || !type.empty() ||
+                   enabled.has_value() || !bus_op.empty() || !net_conds.empty() || !buses.empty();
+        }
+    } trigger;
     // 是否先把带探针的 bit 灌进器件。默认 "auto"：
     //   GUI 的 ChipWatcher **不是每次抓取都先下载** —— 只要器件里跑的已经是那份
     //   带探针的 bit 就能直接抓。所以先直接抓，抓不动再下载重抓一次。
@@ -192,6 +223,10 @@ struct CaptureOptions {
     bool allow_stale = false;
     std::string csv_path;  // 空 = <runs>/phy_1/cw/capture_<ts>.csv
 };
+
+// 把一份 compiled.cwc 的触发字段改掉（纯文本替换，不动 <logic_eram> 的 depth，
+// 所以与 bit 仍然匹配、`Chipwatcher code` 不变）。返回新文本。
+std::string PatchTrigger(std::string_view cwc_text, const CaptureOptions::Trigger& trigger);
 
 // 返回 { ok, stage, reason, instance, clock, sample_depth, trigger_index,
 //        columns:[{bus,width}], signals:{bus:[值…]}, samples, csv, log }

@@ -1,13 +1,17 @@
 // =============================================================================
-//  vscode-extension/src/probePanel.js —— ChipWatcher 探针面板（webview）
+//  vscode-extension/src/probePanel.js —— ChipWatcher 探针面板（**底栏** webview view）
 // =============================================================================
-//  只负责面板生命周期与消息路由；数据全部通过注入的 service 拿，
-//  这样 test/run.js 可以用 mock 直接驱动（与 reportsPanel.js / flowController.js 同一约定）。
+//  用 WebviewViewProvider 注册到 panel 容器（底部面板，和 Terminal / Problems 同级），
+//  不是浮在编辑区的 webviewPanel —— 那是 0.17.1 之前的做法。
 //
 //  service 契约：
-//    getStatus():  Promise<status>           后端 fpgalsp.probeStatus 的返回
-//    applySignals(signals: string[]): Promise<result>   写 user.mdn
-//    capture():    Promise<result>           采集一次
+//    getStatus():  Promise<status>                       后端的 probeStatus
+//    applySignals(signals: string[]): Promise<result>     写 user.mdn
+//    capture(trigger):  Promise<result>                   带触发设置采集一次
+//
+//  ⚠ viewId 由构造函数传入（extension.js 给 VIEWS.probe）。
+//    不要在 src/*.js 里写 `fpgaLsp.*` 字面量：test/run.js 的守卫会把它当成
+//    "被引用的命令 id"，要求它在 package.json 里声明。
 // =============================================================================
 
 'use strict';
@@ -15,34 +19,34 @@
 const { renderProbePanelHtml } = require('./probeHtml');
 
 class ProbePanel {
-    constructor(vscodeApi, service) {
+    constructor(vscodeApi, service, viewId) {
         this.vscode = vscodeApi;
         this.service = service || {};
-        this.panel = null;
+        this.viewId = viewId || '';
+        this.view = null;
         this.state = null;
     }
 
+    // WebviewViewProvider 的实现
+    resolveWebviewView(view) {
+        this.view = view;
+        view.webview.options = { enableScripts: true };
+        view.webview.onDidReceiveMessage((message) => this.onMessage(message), null, []);
+        view.onDidDispose(() => { this.view = null; }, null, []);
+        this.refresh();
+    }
+
+    // 命令入口：把底栏那个视图聚焦（视图没被创建过时 registerWebviewViewProvider
+    // 会在第一次 focus 时调 resolveWebviewView）
     show() {
-        if (this.panel) {
-            this.panel.reveal();
-            return this.refresh();
+        if (!this.view && this.viewId) {
+            return this.vscode.commands.executeCommand(`${this.viewId}.focus`);
         }
-        this.panel = this.vscode.window.createWebviewPanel(
-            // ⚠ 不要写成 `fpgaLsp.xxx` —— test/run.js 的守卫会把 src/*.js 里出现的
-            //   `fpgaLsp.*` 一律当成"被引用的命令 id"，要求它在 package.json 里声明。
-            //   这里只是 webview 的类型标识，不需要是命令。
-            'fpgaLspProbePanel',
-            'ChipWatcher probes',
-            this.vscode.ViewColumn.One,
-            { enableScripts: true, retainContextWhenHidden: true }
-        );
-        this.panel.onDidDispose(() => { this.panel = null; }, null, []);
-        this.panel.webview.onDidReceiveMessage((message) => this.onMessage(message), null, []);
         return this.refresh();
     }
 
     async refresh() {
-        if (!this.panel) return undefined;
+        if (!this.view) return undefined;
         try {
             this.state = await this.service.getStatus();
         } catch (err) {
@@ -53,12 +57,12 @@ class ProbePanel {
     }
 
     render() {
-        if (!this.panel) return;
-        this.panel.webview.html = renderProbePanelHtml(this.state || {});
+        if (!this.view) return;
+        this.view.webview.html = renderProbePanelHtml(this.state || {});
     }
 
     say(text) {
-        if (this.panel) this.panel.webview.postMessage({ type: 'status', text });
+        if (this.view) this.view.webview.postMessage({ type: 'status', text });
     }
 
     async onMessage(message) {
@@ -96,22 +100,21 @@ class ProbePanel {
             return;
         }
         if (kind === 'capture') {
+            const trigger = message.trigger || {};
             this.say('Capturing (trying the bitstream already in the device first)...');
-            const result = await this.service.capture();
+            const result = await this.service.capture(trigger);
             if (!result || result.ok !== true) {
                 this.say(`Capture failed: ${(result && (result.reason || result.error)) || 'unknown'}`);
                 return;
             }
-            this.say(`Captured ${result.samples} sample(s) on ${result.clock} - ${result.csv || ''}`);
+            this.say(`Captured ${result.samples} sample(s) on ${result.clock}, trigger at sample ` +
+                `${result.trigger_index} - ${result.csv || ''}`);
             return;
         }
     }
 
     dispose() {
-        if (this.panel) {
-            this.panel.dispose();
-            this.panel = null;
-        }
+        this.view = null;
     }
 }
 

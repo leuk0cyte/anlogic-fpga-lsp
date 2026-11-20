@@ -222,10 +222,40 @@ std::string NormaliseSignal(std::string_view signal) {
     return base + "[" + padded + "]";
 }
 
+std::vector<std::string> ExpandSignalRanges(const std::vector<std::string>& signals) {
+    // `WHG/pwm_reg7_i[15:0]` / `WHG/bus[0:7]` 展开成逐位名字。
+    // 用户从 RTL 里直接复制声明（`reg [15:0] pwm_reg7_i;`）时写的是范围，
+    // 但 mark_debug 要的是逐位网名 —— 让工具替他们展开，别逼用户手写 16 条。
+    static const RE2 kRange(R"(^(.+?)\[(\d+):(\d+)\])");
+    std::vector<std::string> out;
+    for (const std::string& raw : signals) {
+        const std::string trimmed = Trim(raw);
+        std::string base;
+        std::string msb;
+        std::string lsb;
+        if (!RE2::FullMatch(trimmed, kRange, &base, &msb, &lsb)) {
+            out.push_back(trimmed);
+            continue;
+        }
+        const int a = std::atoi(msb.c_str());
+        const int b = std::atoi(lsb.c_str());
+        const int lo = std::min(a, b);
+        const int hi = std::max(a, b);
+        if (hi - lo > 1024) {  // 明显的笔误，别把内存撑爆
+            out.push_back(trimmed);
+            continue;
+        }
+        for (int bit = lo; bit <= hi; ++bit) {
+            out.push_back(base + "[" + std::to_string(bit) + "]");
+        }
+    }
+    return out;
+}
+
 std::vector<std::string> NormaliseSignals(const std::vector<std::string>& signals) {
     std::vector<std::string> out;
     std::set<std::string> seen;
-    for (const std::string& raw : signals) {
+    for (const std::string& raw : ExpandSignalRanges(signals)) {
         const std::string signal = NormaliseSignal(raw);
         if (signal.empty()) continue;
         if (!seen.insert(signal).second) continue;
@@ -738,6 +768,99 @@ jsonrpc::Json Configure(const project::Project& project, const std::vector<std::
 }
 
 // -----------------------------------------------------------------------------
+// 触发配置（运行期可改）
+// -----------------------------------------------------------------------------
+
+std::string PatchTrigger(std::string_view cwc_text, const CaptureOptions::Trigger& trigger) {
+    std::string text(cwc_text);
+    if (!trigger.Any()) return text;
+
+    const auto set_attr = [&text](const std::string& pattern, const std::string& value) {
+        const RE2 re(pattern);
+        if (!re.ok()) return;
+        (void)RE2::GlobalReplace(&text, re, value);
+    };
+
+    if (trigger.position >= 0) {
+        set_attr(R"((<trigger\b[^>]*?\bposition=")\d+("))",
+                 "\\1" + std::to_string(trigger.position) + "\\2");
+    }
+    if (trigger.window_num > 0) {
+        set_attr(R"((<trigger\b[^>]*?\bwindow_num=")\d+("))",
+                 "\\1" + std::to_string(trigger.window_num) + "\\2");
+    }
+    if (trigger.window_depth > 0) {
+        set_attr(R"((<trigger\b[^>]*?\bwindow_depth=")\d+("))",
+                 "\\1" + std::to_string(trigger.window_depth) + "\\2");
+    }
+    if (!trigger.type.empty()) {
+        set_attr(R"((<condition\b[^>]*?\btype=")[^"]*("))", "\\1" + trigger.type + "\\2");
+        set_attr(R"((<condition\b[^>]*?\bcapture_type=")[^"]*("))", "\\1" + trigger.type + "\\2");
+    }
+    if (trigger.enabled.has_value()) {
+        const std::string value = *trigger.enabled ? "yes" : "no";
+        set_attr(R"((<condition\b[^>]*?\benabled=")[^"]*("))", "\\1" + value + "\\2");
+    }
+    if (!trigger.bus_op.empty()) {
+        // 实例里的 bus 带 `op=...`（顶层 watcher_nodes 那组没有，所以只会命中实例那组）
+        set_attr(R"((<bus\b[^>]*?\bop=")[^"]*("))", "\\1" + trigger.bus_op + "\\2");
+        set_attr(R"((<bus\b[^>]*?\bcapture_op=")[^"]*("))", "\\1" + trigger.bus_op + "\\2");
+    }
+    for (const auto& [net, cond] : trigger.net_conds) {
+        if (net.empty() || cond.empty()) continue;
+        // 只改**有 cond 属性**的那条 <net>（顶层那条是 const/data/trig，不该动）
+        const std::string pattern =
+            R"((<net\b[^>]*?\bname=")" + RE2::QuoteMeta(net) + R"("[^>]*?\bcond=")[^"]*(")";
+        set_attr(pattern, "\\1" + net + "\\2" + cond + "\\3");
+    }
+    for (const auto& bus : trigger.buses) {
+        if (bus.name.empty()) continue;
+        // `pwm_reg0_i` / `pwm_reg0_i[15:0]` -> base + [msb:lsb]
+        static const RE2 kBusRange(R"(^(.+?)\[(\d+):(\d+)\])");
+        std::string base = bus.name;
+        std::string msb_s;
+        std::string lsb_s;
+        int msb = 0;
+        int lsb = 0;
+        if (RE2::FullMatch(bus.name, kBusRange, &base, &msb_s, &lsb_s)) {
+            msb = std::atoi(msb_s.c_str());
+            lsb = std::atoi(lsb_s.c_str());
+        } else {
+            // `pwm_reg0_i` 这种没带宽度的写法：从 .cwc 的 bus 名里补
+            const RE2 find_bus("(<bus\\b[^>]*?\\bname=\")" + RE2::QuoteMeta(bus.name) +
+                               "(\\[(\\d+):(\\d+)\\])");
+            std::string full;
+            std::string a;
+            std::string b;
+            if (RE2::PartialMatch(text, find_bus, &full, &a, &b)) {
+                msb = std::atoi(a.c_str());
+                lsb = std::atoi(b.c_str());
+            } else {
+                continue;  // 找不到这条总线，跳过而不是猜
+            }
+        }
+        const int lo = std::min(msb, lsb);
+        const int hi = std::max(msb, lsb);
+        if (hi - lo > 64) continue;
+        const std::string op = bus.op.empty() ? trigger.bus_op : bus.op;
+        if (!op.empty()) {
+            const std::string pattern = R"((<bus\b[^>]*?\bname=")" + RE2::QuoteMeta(base) +
+                                        R"((\[[^\]]*\]")[^>]*?\bop=")[^"]*(")";
+            set_attr(pattern, "\\1\\2" + base + "\\3\\4" + op + "\\5");
+        }
+        if (!bus.has_value) continue;
+        for (int bit = lo; bit <= hi; ++bit) {
+            const bool high = ((bus.value >> (bit - lo)) & 1ULL) != 0;
+            const std::string net = base + "[" + std::to_string(bit) + "]";
+            const std::string pattern = R"((<net\b[^>]*?\bname=")" + RE2::QuoteMeta(net) +
+                                        R"("[^>]*?\bcond=")[^"]*(")";
+            set_attr(pattern, "\\1" + net + "\\2" + (high ? "high" : "low") + "\\3");
+        }
+    }
+    return text;
+}
+
+// -----------------------------------------------------------------------------
 // 采集
 // -----------------------------------------------------------------------------
 
@@ -872,15 +995,28 @@ jsonrpc::Json Capture(const td::TdChoice& td, const project::Project& project,
     }
 
     // 3) 导入 ChipWatcher 编译结果（**必须**带文件；不带参数是静默空操作）
+    //    触发位置/窗口是运行期可改的：把 compiled.cwc 复制一份改掉 <trigger>，用它来
+    //    config_chipwatcher（实测 position 127->512 后 CSV 的 Trigger 行就落在 512）。
     {
         out["stage"] = "config_chipwatcher";
-        const std::string command =
-            "config_chipwatcher " + td::TclQuoteGrouped(CompiledCwc(project));
+        std::string cwc_path = CompiledCwc(project);
+        if (effective.trigger.Any()) {
+            const std::string patched = PatchTrigger(ReadText(CompiledCwc(project)),
+                                                     effective.trigger);
+            const std::string target = effective.cwd + "/trigger_" + Timestamp() + ".cwc";
+            if (fpgalsp::platform::write_file_utf8(target, patched)) {
+                cwc_path = target;
+                out["trigger_cwc"] = target;
+            } else {
+                record("cannot write the patched .cwc, falling back to compiled.cwc");
+            }
+        }
+        const std::string command = "config_chipwatcher " + td::TclQuoteGrouped(cwc_path);
         const std::string text = session->Run(command, 180.0);
         for (const std::string& line : ErrorLines(text, 4)) record(line);
         if (td::HasError(text) || text.find("KIT-1004") == std::string::npos) {
             return fail("config_chipwatcher",
-                        "cannot import the compiled ChipWatcher configuration", text);
+                        "cannot import the ChipWatcher configuration", text);
         }
     }
 

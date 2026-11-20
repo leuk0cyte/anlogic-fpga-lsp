@@ -1,20 +1,8 @@
 // =============================================================================
 //  vscode-extension/src/probeHtml.js —— ChipWatcher probe panel (static HTML)
 // =============================================================================
-//  Rendering only, no vscode imports (same convention as reportsHtml.js /
-//  trendHtml.js) so test/run.js can drive it with the mock.
-//
-//  UI language is English on purpose: every user-facing string in this
-//  extension is English, only the repo docs are Chinese.
-//
-//  Data shape (fpgalsp.probeStatus / probeConfig):
-//    {
-//      ok, ready, reason, project, target, matches_user_mdn,
-//      chip_debugger: { path, exists, count, signals: [ "WHG/xxx[0]", ... ] },
-//      watcher: { present, instance, clock, sample_depth, trigger_position,
-//                 trigger_type, stale, missing_in_bit: [base...], extra_in_bit: [base...],
-//                 compiled_cwc, compiled_bit, buses: [{ name, clock, type, enabled }] }
-//    }
+//  Rendering only, no vscode imports (same convention as reportsHtml.js) so
+//  test/run.js can drive it with the mock. UI language is English on purpose.
 // =============================================================================
 
 'use strict';
@@ -28,7 +16,6 @@ function escapeHtml(text) {
         .replace(/'/g, '&#39;');
 }
 
-// `WHG/pwm_reg0_i[12]` -> { base: 'WHG/pwm_reg0_i', bit: 12 }
 function splitSignal(signal) {
     const text = String(signal || '');
     const match = /^(.*)\[(\d+)\]$/.exec(text);
@@ -36,7 +23,6 @@ function splitSignal(signal) {
     return { base: match[1], bit: Number(match[2]) };
 }
 
-// Group the per-bit list by base, bits ascending, groups sorted by base.
 function groupSignals(signals) {
     const groups = new Map();
     for (const signal of signals || []) {
@@ -60,7 +46,6 @@ function renderBusTable(buses, staleMissing) {
             'Run <b>FPGA: Run Place &amp; Route</b> to embed the probes first.</p>';
     }
     const rows = buses.map((bus) => {
-        // compiled.cwc uses `pwm_reg0_i[15:0]`; the stale list uses the stripped base name.
         const base = String(bus.name || '').replace(/\[[^\]]*\]$/, '');
         const flag = missing.has(base)
             ? '<span class="warn" title="In user.mdn but not embedded in the bitstream">missing</span>'
@@ -70,15 +55,14 @@ function renderBusTable(buses, staleMissing) {
             `<td>${escapeHtml(bus.type || '')}</td>` +
             `<td>${bus.enabled === false ? 'no' : 'yes'} ${flag}</td></tr>`;
     }).join('');
-    return `<table><thead><tr><th>Bus</th><th>Sample clock</th><th>Type</th><th>Enabled</th></tr></thead>` +
+    return '<table><thead><tr><th>Bus</th><th>Sample clock</th><th>Type</th><th>Enabled</th></tr></thead>' +
         `<tbody>${rows}</tbody></table>`;
 }
 
 function renderSignalList(signals) {
     const groups = groupSignals(signals);
     if (!groups.length) {
-        return '<p class="empty">The probe list is empty. Add signals below, or paste net names ' +
-            'into the text box.</p>';
+        return '<p class="empty">The probe list is empty. Paste net names below, then Save.</p>';
     }
     return groups.map((group) => {
         const chips = group.bits.map((bit) => {
@@ -93,10 +77,25 @@ function renderSignalList(signals) {
     }).join('');
 }
 
+function renderTriggerRows(buses) {
+    const list = buses || [];
+    if (!list.length) return '<tr><td colspan="3" class="empty">No buses embedded yet.</td></tr>';
+    return list.map((bus) => {
+        const name = String(bus.name || '');
+        const base = name.replace(/\[[^\]]*\]$/, '');
+        const options = ['dont_care', 'equal', 'not_equal', 'less', 'less_equal', 'greater',
+            'greater_equal'].map((op) => `<option value="${op}">${op}</option>`).join('');
+        return `<tr><td><code>${escapeHtml(name)}</code></td>` +
+            `<td><select data-bus-op="${escapeHtml(base)}"><option value="">(keep)</option>${options}</select></td>` +
+            `<td><input data-bus-value="${escapeHtml(base)}" placeholder="0x00FF" style="width:8em"></td></tr>`;
+    }).join('');
+}
+
 function renderProbePanelHtml(state) {
     const data = state || {};
     const watcher = data.watcher || {};
     const mdn = data.chip_debugger || {};
+    const depth = watcher.sample_depth || 0;
     const ready = data.ready === true;
     const stale = watcher.stale === true;
     const badge = ready
@@ -108,7 +107,7 @@ function renderProbePanelHtml(state) {
         ['Probe signals', `${mdn.count == null ? 0 : mdn.count} (${mdn.path || 'chip_debugger/user.mdn'})`],
         ['Watcher instance', watcher.instance || '(none)'],
         ['Sample clock', watcher.clock || '(none)'],
-        ['Sample depth', String(watcher.sample_depth || 0)],
+        ['Sample depth', String(depth)],
         ['Trigger', `${watcher.trigger_type || '(none)'} @ ${watcher.trigger_position == null ? '?' : watcher.trigger_position}`],
         ['Compiled bit', watcher.compiled_bit || '(none)'],
     ].map(([key, value]) => `<tr><th>${escapeHtml(key)}</th><td>${escapeHtml(value)}</td></tr>`).join('');
@@ -128,9 +127,10 @@ function renderProbePanelHtml(state) {
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';">
 <title>ChipWatcher probes</title>
 <style>
-  body { font-family: var(--vscode-font-family); color: var(--vscode-foreground); padding: 12px 16px; }
-  h2 { font-size: 1.1em; margin: 0 0 8px; display: flex; gap: 8px; align-items: center; }
-  h3 { font-size: 1em; margin: 18px 0 6px; }
+  body { font-family: var(--vscode-font-family); color: var(--vscode-foreground); padding: 10px 14px; font-size: 12px; }
+  h2 { font-size: 1.15em; margin: 0 0 6px; display: flex; gap: 8px; align-items: center; }
+  h3 { font-size: 1em; margin: 16px 0 6px; }
+  h4 { margin: 12px 0 4px; font-size: .95em; }
   table { border-collapse: collapse; width: 100%; margin: 6px 0; }
   th, td { text-align: left; padding: 3px 8px; border-bottom: 1px solid var(--vscode-panel-border, #8884); vertical-align: top; }
   th { font-weight: 600; opacity: .8; white-space: nowrap; }
@@ -149,13 +149,14 @@ function renderProbePanelHtml(state) {
   .chip:hover { background: var(--vscode-button-secondaryHoverBackground, #8884); }
   .link { background: none; border: none; color: var(--vscode-textLink-foreground); cursor: pointer; padding: 0; }
   .empty { opacity: .7; }
-  textarea { width: 100%; min-height: 90px; font-family: var(--vscode-editor-font-family); font-size: .9em;
+  textarea { width: 100%; min-height: 64px; font-family: var(--vscode-editor-font-family); font-size: .9em;
              background: var(--vscode-input-background); color: var(--vscode-input-foreground);
              border: 1px solid var(--vscode-input-border, #8886); padding: 6px; }
+  input, select { background: var(--vscode-input-background); color: var(--vscode-input-foreground);
+                  border: 1px solid var(--vscode-input-border, #8886); padding: 2px 4px; }
   .row { display: flex; gap: 8px; align-items: center; margin: 8px 0; flex-wrap: wrap; }
   button.primary { padding: 4px 12px; background: var(--vscode-button-background);
                    color: var(--vscode-button-foreground); border: none; cursor: pointer; }
-  button.primary:disabled { opacity: .5; cursor: default; }
   .warn-box { border-left: 3px solid #c88800; padding: 6px 10px; background: #c888001a; }
   .hint { opacity: .7; font-size: .9em; }
 </style>
@@ -173,36 +174,94 @@ ${renderBusTable(watcher.buses, watcher.missing_in_bit)}
 
 <h3>Probe list (<code>chip_debugger/user.mdn</code>)</h3>
 <div id="signals">${renderSignalList(mdn.signals)}</div>
-
 <div class="row">
-  <textarea id="editor" placeholder="Whitespace or newline separated hierarchical net names, e.g. WHG/pwm_reg0_i[0]. A pasted mark_debug { ... } block is accepted too."></textarea>
+  <textarea id="editor" placeholder="Whitespace separated hierarchical net names. Ranges are expanded: WHG/pwm_reg7_i[15:0] becomes 16 nets."></textarea>
 </div>
 <div class="row">
   <button class="primary" id="apply">Save list</button>
   <button id="reload">Reload</button>
-  <button id="capture">Capture now</button>
+</div>
+
+<h3>Trigger (applied at capture time, no rebuild)</h3>
+<p class="hint">
+  Position / window / condition are pushed to the chip when the capture starts, so they can be
+  changed without re-running the flow. Measured on hardware: position 127 &rarr; 512 moves the
+  <code>Trigger</code> marker to sample 512, and a bus set to <code>not_equal</code> with data 0
+  does not fire at all while <code>-trigger_now</code> still completes.
+</p>
+<table>
+  <tr><th>Trigger position</th><td><input id="trg-position" type="number" min="0" max="${escapeHtml(String(depth ? depth - 1 : 65535))}" value="${escapeHtml(String(watcher.trigger_position == null ? 0 : watcher.trigger_position))}" style="width:8em"></td>
+      <td class="hint">0 .. depth-1 (depth ${escapeHtml(String(depth))})</td></tr>
+  <tr><th>Windows x depth</th><td><input id="trg-winnum" type="number" min="1" value="1" style="width:5em"> x
+      <input id="trg-windepth" type="number" min="1" value="${escapeHtml(String(depth || 1024))}" style="width:7em"></td>
+      <td class="hint">window count x samples per window</td></tr>
+  <tr><th>Combinator</th><td><select id="trg-type">
+      <option value="">(keep)</option><option value="basic_and">Basic AND</option><option value="basic_or">Basic OR</option>
+      </select></td><td class="hint">${escapeHtml(watcher.trigger_type || '')}</td></tr>
+  <tr><th>Condition</th><td><select id="trg-enabled">
+      <option value="">(keep)</option><option value="yes">enabled</option><option value="no">disabled</option>
+      </select></td><td class="hint">disabled = fire on the first sample</td></tr>
+</table>
+
+<h4>Per-bus trigger value</h4>
+<p class="hint">
+  Operator + expected value; the backend expands the value into one <code>cond</code> per bit.
+  Leave the operator at <i>keep</i> to leave a bus untouched.
+</p>
+<table id="bus-conds">
+<thead><tr><th>Bus</th><th>Operator</th><th>Value (hex)</th></tr></thead>
+<tbody>${renderTriggerRows(watcher.buses)}</tbody>
+</table>
+
+<div class="row">
+  <button class="primary" id="capture">Capture with this trigger</button>
   <span class="hint" id="status"></span>
 </div>
 
 <h3>Sample clock / depth</h3>
 <p class="hint">
-  Both are baked into the bitstream, so changing them requires a full <b>Place &amp; Route</b>.<br>
-  Measured: <code>insert_debugger &lt;dir&gt; -cwc &lt;file&gt;</code> does honour a hand-written
-  <code>.cwc</code> (changing <code>sample_depth</code> from 1024 to 2048 shows up immediately in
-  <code>report_cwc_status</code>), but the flow script TangDynasty generates calls
-  <code>insert_debugger</code> <i>without</i> <code>-cwc</code>, which wipes that configuration
-  again (measured). Until that is wired up these two fields are read-only.
+  Both are baked into the bitstream: changing them requires a full <b>Place &amp; Route</b>,
+  so they are read-only here.
 </p>
 <table>
   <tr><th>Sample clock</th><td>${escapeHtml(watcher.clock || '(none)')}</td></tr>
-  <tr><th>Sample depth</th><td>${escapeHtml(String(watcher.sample_depth || 0))}</td></tr>
-  <tr><th>Trigger position</th><td>${escapeHtml(String(watcher.trigger_position == null ? '' : watcher.trigger_position))}</td></tr>
+  <tr><th>Sample depth</th><td>${escapeHtml(String(depth))}</td></tr>
 </table>
 
 <script>
   const vscode = acquireVsCodeApi();
   const status = document.getElementById('status');
   function say(text) { status.textContent = text || ''; }
+
+  function collectTrigger() {
+      const trigger = {};
+      const position = document.getElementById('trg-position');
+      if (position && position.value !== '') trigger.position = Number(position.value);
+      const winnum = document.getElementById('trg-winnum');
+      if (winnum && winnum.value !== '' && Number(winnum.value) > 1) trigger.windowNum = Number(winnum.value);
+      const windepth = document.getElementById('trg-windepth');
+      if (windepth && windepth.value !== '') trigger.windowDepth = Number(windepth.value);
+      const type = document.getElementById('trg-type');
+      if (type && type.value) trigger.type = type.value;
+      const enabled = document.getElementById('trg-enabled');
+      if (enabled && enabled.value) trigger.enabled = (enabled.value === 'yes');
+      const buses = [];
+      document.querySelectorAll('[data-bus-op]').forEach((select) => {
+          const base = select.getAttribute('data-bus-op');
+          const input = document.querySelector('[data-bus-value="' + base + '"]');
+          const raw = input && input.value ? input.value.trim() : '';
+          if (!select.value && !raw) return;
+          const entry = { name: base };
+          if (select.value) entry.op = select.value;
+          if (raw) {
+              const value = Number(raw);
+              if (!Number.isNaN(value)) entry.value = value;
+          }
+          buses.push(entry);
+      });
+      if (buses.length) trigger.buses = buses;
+      return trigger;
+  }
 
   document.getElementById('apply').addEventListener('click', () => {
       const raw = document.getElementById('editor').value || '';
@@ -214,7 +273,9 @@ ${renderBusTable(watcher.buses, watcher.missing_in_bit)}
       vscode.postMessage({ type: 'apply', signals });
   });
   document.getElementById('reload').addEventListener('click', () => vscode.postMessage({ type: 'reload' }));
-  document.getElementById('capture').addEventListener('click', () => vscode.postMessage({ type: 'capture' }));
+  document.getElementById('capture').addEventListener('click', () => {
+      vscode.postMessage({ type: 'capture', trigger: collectTrigger() });
+  });
 
   document.body.addEventListener('click', (event) => {
       const target = event.target;

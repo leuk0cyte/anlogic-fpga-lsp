@@ -250,6 +250,35 @@ GUI 的 ChipWatcher 不是每次抓取都先下 bit —— 只要器件里跑的
 或让 `.al` 的 `<CWC_FILE>` 先加载实例。两条都**还没验证**，属于下一期。
 所以面板里这两项目前是**只读展示** + 上面这段说明，不写盘。
 
+### 采样时钟 / 深度 vs 触发设置：一个编译期、一个运行期
+
+| 参数 | 什么时候生效 | 实测 |
+| --- | --- | --- |
+| 采样时钟、采样深度 | **编译期**（`sample_depth` 决定 ERAM 深度，固化进 bit） | 改 `.cwc` 只影响下次综合 |
+| 触发位置、窗口数、窗口深度 | **运行期**（采集时随控制字写进器件） | `position` 127→512 ⇒ CSV 的 `Trigger` 行从 127 移到 **512** |
+| 触发条件（bus `op` + net `cond`） | **运行期** | 4 条 bus 全设 `op=not_equal`、数据为 0 ⇒ **条件触发不成立**（`KIT-8000 … did not complete within the allotted time`），而同一配置加 `-trigger_now` 立刻完成 |
+
+做法：把 `compiled.cwc` 复制一份、只改 `<trigger>` / `<condition>` / `<bus op>` / `<net cond>`，
+在采集会话里 `config_chipwatcher <改过的那份>`。**不动 `<logic_eram>` 的 depth，所以 bit 仍然匹配**
+（`Chipwatcher code` 不变），不需要重新综合。
+
+后端实现：`probe::PatchTrigger()` 做纯文本替换，`fpgalsp.probeCapture` 接受
+`trigger:{ position, windowNum, windowDepth, type, enabled, busOp, netConds, buses:[{name,op,value}] }`；
+`buses[].value` 会按位展开成逐位 `cond="high"/"low"`（高位对应 msb）。
+
+端到端实测：`fpga_probe_capture {"trigger_position":256}` → `trigger_index:256`、
+`downloaded:false`，补丁文件落在 `<project>/.fpgalsp/probe/trigger_<ts>.cwc`。
+
+⚠ 一个容易误判的点：只改 `<condition enabled="no">` 或只改单个 net 的 `cond` 都**不会**让触发消失，
+因为 bus 默认 `op="dont_care"` —— 比较器关着的时候逐位 `cond` 不参与。要让条件真正生效，
+必须同时把 bus 的 `op` 设成 `equal`/`not_equal` 之类。
+
+### 探针清单支持范围写法
+
+`user.mdn` 里的信号可以直接写 RTL 里的范围：`WHG/pwm_reg7_i[15:0]` / `[0:15]`，
+`probe::ExpandSignalRanges()` 会展开成 16 个逐位网名（`[msb:lsb]` 降序也接受，
+超过 1024 位的明显笔误原样保留不展开）。面板里粘贴范围写法即可。
+
 ### 未完成：非 0 的动态读数（已定位到 TD 侧，不是我们的 bug）
 
 想证明"采到的是随时间变化的活动数据"，计划加 16 位三角载波

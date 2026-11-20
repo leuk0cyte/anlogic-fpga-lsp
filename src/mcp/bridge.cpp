@@ -3709,6 +3709,30 @@ Json Bridge::ProbeCaptureTool(const Json& arguments) {
         it != arguments.end() && it->is_boolean()) {
         capture_options.allow_stale = it->get<bool>();
     }
+    // 触发设置（运行期可改）：扁平参数，和 LSP 的嵌套 trigger 对象等价
+    if (const auto it = arguments.find("trigger_position");
+        it != arguments.end() && it->is_number_integer()) {
+        capture_options.trigger.position = it->get<int>();
+    }
+    if (const auto it = arguments.find("window_num");
+        it != arguments.end() && it->is_number_integer()) {
+        capture_options.trigger.window_num = it->get<int>();
+    }
+    if (const auto it = arguments.find("window_depth");
+        it != arguments.end() && it->is_number_integer()) {
+        capture_options.trigger.window_depth = it->get<int>();
+    }
+    if (const auto it = arguments.find("trigger_type");
+        it != arguments.end() && it->is_string()) {
+        capture_options.trigger.type = it->get<std::string>();
+    }
+    if (const auto it = arguments.find("trigger_enabled");
+        it != arguments.end() && it->is_boolean()) {
+        capture_options.trigger.enabled = it->get<bool>();
+    }
+    if (const auto it = arguments.find("bus_op"); it != arguments.end() && it->is_string()) {
+        capture_options.trigger.bus_op = it->get<std::string>();
+    }
     if (const auto it = arguments.find("timeout");
         it != arguments.end() && it->is_number_integer()) {
         const int timeout = it->get<int>();

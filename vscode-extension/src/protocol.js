@@ -131,6 +131,7 @@ const VIEWS = Object.freeze({
     modules: 'fpgaLsp.modulesView',
     flow: 'fpgaLsp.flowView',
     reports: 'fpgaLsp.reportsView',
+    probe: 'fpgaLsp.probeView',
 });
 
 module.exports = { METHODS, COMMANDS, VSCodeCommands, VIEWS, REPORT_SECTIONS };

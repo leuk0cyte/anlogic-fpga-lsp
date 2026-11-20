@@ -12,6 +12,7 @@ const state = {
     builtinCommands: new Map(),
     treeViews: [],
     webviewPanels: [],
+    webviewViewProviders: {},
     outputChannels: [],
     statusBarItems: [],
     messages: { info: [], warning: [], error: [] },
@@ -250,6 +251,7 @@ function reset() {
     state.builtinCommands.clear();
     state.treeViews.length = 0;
     state.webviewPanels.length = 0;
+    state.webviewViewProviders = {};
     state.outputChannels.length = 0;
     state.statusBarItems.length = 0;
     state.messages.info.length = 0;
@@ -373,6 +375,15 @@ const window = {
         };
         state.statusBarItems.push(item);
         return item;
+    },
+
+    // 0.17.2：底栏 webview view（ChipWatcher 探针面板）
+    //   provider 会被记下来，测试可以调 provider.resolveWebviewView(fakeView) 驱动渲染。
+    registerWebviewViewProvider(viewType, provider, options) {
+        state.webviewViewProviders[viewType] = { provider, options };
+        return {
+            dispose() { delete state.webviewViewProviders[viewType]; },
+        };
     },
 
     createWebviewPanel(viewType, title, showOptions, options) {

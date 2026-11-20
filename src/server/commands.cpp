@@ -1500,6 +1500,29 @@ HandlerResult LspServer::HandleExecuteCommand(const Json& params) {
         capture_options.csv_path = jsonrpc::GetString(options, "csv");
         // 清单与 bit 不一致时默认拒绝；显式 allowStale 才读当前那份 bit
         capture_options.allow_stale = jsonrpc::GetBool(options, "allowStale", false);
+        // 触发设置（运行期可改，不需要重新综合）：position / windowNum / windowDepth /
+        // type / enabled / busOp / netConds{net: cond}
+        if (const auto it = options.find("trigger"); it != options.end() && it->is_object()) {
+            const Json& trigger = *it;
+            capture_options.trigger.position = jsonrpc::GetInt(trigger, "position", -1);
+            capture_options.trigger.window_num = jsonrpc::GetInt(trigger, "windowNum", 0);
+            capture_options.trigger.window_depth = jsonrpc::GetInt(trigger, "windowDepth", 0);
+            capture_options.trigger.type = jsonrpc::GetString(trigger, "type");
+            capture_options.trigger.bus_op = jsonrpc::GetString(trigger, "busOp");
+            if (const auto enabled = trigger.find("enabled");
+                enabled != trigger.end() && enabled->is_boolean()) {
+                capture_options.trigger.enabled = enabled->get<bool>();
+            }
+            if (const auto conds = trigger.find("netConds");
+                conds != trigger.end() && conds->is_object()) {
+                for (auto entry = conds->begin(); entry != conds->end(); ++entry) {
+                    if (entry.value().is_string()) {
+                        capture_options.trigger.net_conds.emplace_back(entry.key(),
+                                                                      entry.value().get<std::string>());
+                    }
+                }
+            }
+        }
         const int timeout = jsonrpc::GetInt(options, "timeout", 30);
         capture_options.wait_timeout = timeout > 0 ? static_cast<double>(timeout) : 30.0;
         // 下载会把带探针的 bit 重新灌进 SRAM（改板子状态）；纯抓取只读。
