@@ -204,20 +204,31 @@ Sample,Trigger,pwm_reg0_i[15:0],pwm_reg1_i[15:0],pwm_reg6_i[15:0],pwm_reg7_i[15:
 | 采集值 | 全部 0 —— 与 RTL 一致：`pwm_reg*_i` 来自 `bus_reg`，`reg_bus` 复位为 `'d0` 且只有主机写 Modbus 才改变，板上无主机 → 真值为 0 |
 | stale 守卫 | 把 `user.mdn` 改成 80 个信号但 bit 仍是 64 位后，`stale:true` / `missing:[ANPC_init0/ANPC_SVPWM_init/cnt]`，`probeCapture` 在 `stage:"stale"` 拒绝 |
 
-### 未完成：非 0 的动态读数
+### 未完成：非 0 的动态读数（已定位到 TD 侧，不是我们的 bug）
 
-想证明"采到的是随时间变化的活动数据"，加了 16 位三角载波
-`WHG/ANPC_init0/ANPC_SVPWM_init/cnt[15:0]`（`synthesis keep="1"`，与 `reg_init` 同 `clk` 域）
-并跑了完整 `["phy"]`（401 s）。**结果被 TD 静默丢弃**：
-`phy_1/cw/auto_created_cwc1/auto_created_cwc1_watcherInst.sv` 仍是
-`CWC_BUS_NUM = 4` / `CWC_BUS_DIN_NUM = 64`，`compiled.cwc` 里也只有那 4 条 bus。
+想证明"采到的是随时间变化的活动数据"，计划加 16 位三角载波
+`WHG/ANPC_init0/ANPC_SVPWM_init/cnt[15:0]`（`synthesis keep="1"`，与 `reg_init` 同 `clk` 域）。
+实测三轮，结论是 **TD 会静默丢弃这 16 个网**：
 
-也就是说 `mark_debug` 对这个层次名没生效（TD 对找不到的网只打一条
-`signal %s is not present in the netlist` 就跳过，不会让综合失败）。要查清楚得先拿到这次
-run 的 `run.log` —— 但**后端驱动 `launch_runs` 时 TD 不写 `phy_1/run.log`**
-（GUI/`run.bat` 驱动才写），这是排查此类"被静默忽略"问题的真实障碍，值得下一期补
-（比如给 run 显式加 `tcl_afterstep` 把 `report_cwc_status` 落盘）。
+| 实验 | 结果 |
+| --- | --- |
+| `get_nets -hier ANPC_init0/ANPC_SVPWM_init/cnt\[0\]`（对 `phy_1/…_pr.db`） | **1 个对象、名字完全对得上** → 不是"名字写错" |
+| `import_db syn_1/…_gate.db` + `insert_debugger … -mdn probe80.mdn` | TD 展开成 `mark_debug <80 个网>`（回显里 80 个都在），但 `config_chipwatcher` 报 **4 view node / 64 trigger net / 64 data net** |
+| 完整 `["phy"]` 流程（401 s） | `auto_created_cwc1_watcherInst.sv` 仍是 `CWC_BUS_NUM = 4` / `CWC_BUS_DIN_NUM = 64` |
+
+所以 `mark_debug` **收到了**这 16 个名字、网表里**也有**这些网，最终却没进 watcher。
+最可能的原因是**推断不出触发时钟**（TD 的错误串里正好有
+`failed to get clock for signal %s, please specify the clock in chipwatcher`）——
+这类需要"手工指定触发时钟"的实例在 GUI 里可以点，而 CLI 侧的
+`set_net_cond` / `set_bus_cond` / `set_cwc` 都没有公开用法。
+
+排查障碍：**后端驱动 `launch_runs` 时 TD 不把 run 输出写成 `phy_1/run.log`**
+（只有 GUI / `run.bat` 驱动才写），所以 `insert_debugger` 内部打的告警看不到。
+`--mdn` 选项（`insert_debugger <dir> -mdn <file>`）可以脱离工程文件做隔离实验，
+但它只在 gate db 上有效，elaborate db（RTL 级）上不会生成 watcher。
+
+下期两件事：① 给 run 加 `tcl_afterstep` 把 `report_cwc_status` / `insert_debugger` 的输出落盘；
+② 摸清 `set_net_cond` / `set_cwc` 的参数，让后端能给单个 bus 指定触发时钟。
 
 已把 `user.mdn` 还原成原来那 64 个信号（1192 B，与原始文件同尺寸），
 并用 `probeStatus` 确认 `stale:false / ready:true`，随后一次真实采集通过。
-**新增的 `stale` 守卫正好是这类问题的兜底**：以后谁改了清单没重跑完整流程，工具会直接说出来。

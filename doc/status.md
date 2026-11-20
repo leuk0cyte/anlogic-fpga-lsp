@@ -245,15 +245,21 @@ vscode-extension/fpga-lsp-anlogic-0.15.3.vsix   228 files / 2.97 MB
 `missing:[ANPC_init0/ANPC_SVPWM_init/cnt]`、采集在 `stage:"stale"` 拒绝；还原后
 `stale:false / ready:true`，再采一次 1024 点通过。
 
-**未完成：非 0 的动态读数**。把 16 位三角载波
-`WHG/ANPC_init0/ANPC_SVPWM_init/cnt[15:0]`（`synthesis keep="1"`，与 `reg_init` 同 `clk` 域）
-加进清单并跑了完整 `["phy"]`（401 s），**结果被 TD 静默丢弃**：
-`phy_1/cw/auto_created_cwc1/auto_created_cwc1_watcherInst.sv` 仍是
-`CWC_BUS_NUM = 4` / `CWC_BUS_DIN_NUM = 64`。TD 对找不到的网只打一条
-`signal %s is not present in the netlist` 就继续，不会让综合失败。
+**未完成：非 0 的动态读数（已定位到 TD 侧）**。想证明"采到的是随时间变化的活动数据"，
+把 16 位三角载波 `WHG/ANPC_init0/ANPC_SVPWM_init/cnt[15:0]` 加进清单，做了三轮实验：
 
-排查障碍（下一期要补）：**后端驱动 `launch_runs` 时 TD 不写 `phy_1/run.log`**
-（只有 GUI / `run.bat` 驱动才有），所以这类"被静默忽略的 mark_debug"没有日志可查。
-方向：给 run 加 `tcl_afterstep` 把 `report_cwc_status` 落盘，或从
-`cw/auto_created_cwc1/*_watcherInst.sv` 的 `BUS_NUM` 反推（本次就是这么确认的）。
+| 实验 | 结果 |
+| --- | --- |
+| `get_nets -hier ANPC_init0/ANPC_SVPWM_init/cnt\[0\]`（对 `_pr.db`） | 1 个对象，**名字完全对得上** → 不是名字写错 |
+| gate db + `insert_debugger … -mdn probe80.mdn` | 回显展开成 `mark_debug <80 个网>`，但 watcher 仍是 **4 node / 64 net** |
+| 完整 `["phy"]`（401 s） | `watcherInst.sv` 仍 `CWC_BUS_NUM = 4` / `CWC_BUS_DIN_NUM = 64` |
+
+即 `mark_debug` 收到了 80 个名字、网表里也有这些网，最终只落了 64 个。最可能是
+**推断不出触发时钟**（TD 的错误串 `failed to get clock for signal %s, please specify
+the clock in chipwatcher`），而 CLI 侧没有公开的"给单个 bus 指定触发时钟"的命令。
+
+排查障碍：**后端驱动 `launch_runs` 时 TD 不写 `phy_1/run.log`**（只有 GUI / `run.bat`
+驱动才写），`insert_debugger` 内部的告警看不到。下期：给 run 加 `tcl_afterstep` 把
+`report_cwc_status` 落盘；摸清 `set_net_cond` / `set_cwc` 参数。
+
 已把清单还原成原来那 64 个信号（1192 B，与原始文件同尺寸）。
