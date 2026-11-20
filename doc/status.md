@@ -231,9 +231,29 @@ vscode-extension/fpga-lsp-anlogic-0.15.3.vsix   228 files / 2.97 MB
 探针链路本身的活性由三点佐证：`KIT-1001 : capture completed successfully`、
 `Trigger` 列唯一标记在 127、1024 行数据从 ERAM 读回并逐位解码。
 
-**未完成的实验（下期）**：为拿到"非 0 且随时间变化"的读数，把
-`WHG/ANPC_init0/ANPC_SVPWM_init/cnt[15:0]`（16 位三角载波，`synthesis keep="1"`，
-与 `reg_init` 同 `clk` 域）加进 `user.mdn` 后**必须跑完整 flow**——实测
-`stages:["route"]` 会走增量（`import_db place.db`，只重跑 route），
-`insert_debugger` 在 `opt_place` 阶段不会重新执行，`compiled.cwc` 时间戳不变、探针不会更新。
-本次已验证到这一层并已把 `user.mdn` 还原成原来那 64 个信号（1192 B，与原始文件同尺寸）。
+**改了探针清单必须跑完整的 Place & Route**（实测同一工程两种 stages）：
+
+| stages | TD 实际动作 | 耗时 | 重新埋探针 |
+| --- | --- | --- | --- |
+| `["route"]` | `Incremental route`（`import_db place.db`，只重跑 route） | 227 s | **不会**（`insert_debugger` 在 `opt_place`，被跳过；`compiled.cwc` 时间戳不变） |
+| `["phy"]` | `reset_runs phy_1` + `launch_runs phy_1` | **401 s** | 会 |
+
+为此新增 `probeStatus.watcher.stale`：把 `user.mdn` 逐位清单聚合成 bus，与
+`compiled.cwc` 的 `<bus>` 逐位比对，不一致就 `stale:true` + `missing_in_bit` / `extra_in_bit`，
+并且 `probeCapture` **默认拒绝**（要读当前旧 bit 必须显式 `allow_stale:true`）。
+真机验证：把清单改成 80 个信号而 bit 仍是 64 位 → `stale:true`、
+`missing:[ANPC_init0/ANPC_SVPWM_init/cnt]`、采集在 `stage:"stale"` 拒绝；还原后
+`stale:false / ready:true`，再采一次 1024 点通过。
+
+**未完成：非 0 的动态读数**。把 16 位三角载波
+`WHG/ANPC_init0/ANPC_SVPWM_init/cnt[15:0]`（`synthesis keep="1"`，与 `reg_init` 同 `clk` 域）
+加进清单并跑了完整 `["phy"]`（401 s），**结果被 TD 静默丢弃**：
+`phy_1/cw/auto_created_cwc1/auto_created_cwc1_watcherInst.sv` 仍是
+`CWC_BUS_NUM = 4` / `CWC_BUS_DIN_NUM = 64`。TD 对找不到的网只打一条
+`signal %s is not present in the netlist` 就继续，不会让综合失败。
+
+排查障碍（下一期要补）：**后端驱动 `launch_runs` 时 TD 不写 `phy_1/run.log`**
+（只有 GUI / `run.bat` 驱动才有），所以这类"被静默忽略的 mark_debug"没有日志可查。
+方向：给 run 加 `tcl_afterstep` 把 `report_cwc_status` 落盘，或从
+`cw/auto_created_cwc1/*_watcherInst.sv` 的 `BUS_NUM` 反推（本次就是这么确认的）。
+已把清单还原成原来那 64 个信号（1192 B，与原始文件同尺寸）。

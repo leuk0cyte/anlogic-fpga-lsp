@@ -154,7 +154,12 @@ std::string CompiledData(const project::Project& project);
 // -----------------------------------------------------------------------------
 
 // { ok, project_target, chip_debugger, mdn:{exists,signals,count}, watcher:{present,
-//   compiled_cwc, compiled_bit, clock, sample_depth, buses, nets}, ready, reason }
+//   compiled_cwc, compiled_bit, clock, sample_depth, buses, stale, missing_in_bit,
+//   extra_in_bit}, ready, matches_user_mdn, reason }
+//
+// ⚠ `stale:true` = 改了 `chip_debugger/user.mdn` 但没重跑**完整** Place & Route。
+//   增量布线（只跑 route）不会重新执行 opt_place 阶段的 insert_debugger，
+//   `compiled.cwc` 时间戳不变，探针根本没进 bit —— 这是本功能最容易骗过用户的坑。
 jsonrpc::Json Status(const project::Project& project);
 
 // 把请求的信号写成 user.mdn。signals 为空 = 读取当前清单（dry run，不落盘）。
@@ -175,6 +180,9 @@ struct CaptureOptions {
     bool trigger_now = true;     // 立即触发（不依赖当前触发条件）
     double session_timeout = 900.0;
     bool keep_csv = true;
+    // false（默认）：`user.mdn` 与 bit 里嵌的探针不一致时拒绝采集 —— 采回来的
+    // 不是你写的清单，静默给数据比报错更糟。true：明知 bit 旧也要读当前那份。
+    bool allow_stale = false;
     std::string csv_path;  // 空 = <runs>/phy_1/cw/capture_<ts>.csv
 };
 

@@ -3697,6 +3697,10 @@ Json Bridge::ProbeCaptureTool(const Json& arguments) {
     if (const auto it = arguments.find("csv"); it != arguments.end() && it->is_string()) {
         capture_options.csv_path = it->get<std::string>();
     }
+    if (const auto it = arguments.find("allow_stale");
+        it != arguments.end() && it->is_boolean()) {
+        capture_options.allow_stale = it->get<bool>();
+    }
     if (const auto it = arguments.find("timeout");
         it != arguments.end() && it->is_number_integer()) {
         const int timeout = it->get<int>();

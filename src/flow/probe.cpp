@@ -545,6 +545,53 @@ std::string CompiledData(const project::Project& project) {
 // 状态 / 配置
 // -----------------------------------------------------------------------------
 
+namespace {
+
+// 把"逐位清单"（`WHG/pwm_reg0_i[0]`）聚合成 base -> 位号集合，并去掉顶层前缀。
+std::map<std::string, std::set<int>> GroupBitSignals(const std::vector<std::string>& signals,
+                                                     std::string_view top) {
+    std::map<std::string, std::set<int>> out;
+    for (const std::string& raw : signals) {
+        std::string name = raw;
+        if (!top.empty()) {
+            const std::string prefix = std::string(top) + "/";
+            if (name.rfind(prefix, 0) == 0) name.erase(0, prefix.size());
+        }
+        const std::size_t open = name.find_last_of('[');
+        if (open == std::string::npos || name.empty() || name.back() != ']') {
+            out[name];  // 标量：空位集合
+            continue;
+        }
+        const std::string base = name.substr(0, open);
+        const std::string index = name.substr(open + 1, name.size() - open - 2);
+        out[base].insert(std::atoi(index.c_str()));
+    }
+    return out;
+}
+
+// 把 ChipWatcher 的 bus（`pwm_reg0_i[15:0]`）展开成同样的 base -> 位号集合。
+std::map<std::string, std::set<int>> GroupBusRanges(const std::vector<CwcBus>& buses) {
+    std::map<std::string, std::set<int>> out;
+    for (const CwcBus& bus : buses) {
+        const std::size_t open = bus.name.find_last_of('[');
+        const std::size_t colon =
+            open == std::string::npos ? std::string::npos : bus.name.find(':', open);
+        if (open == std::string::npos || colon == std::string::npos) {
+            out[bus.name];
+            continue;
+        }
+        const std::string base = bus.name.substr(0, open);
+        const int msb = std::atoi(bus.name.substr(open + 1, colon - open - 1).c_str());
+        const int lsb = std::atoi(bus.name.substr(colon + 1).c_str());
+        const int lo = std::min(msb, lsb);
+        const int hi = std::max(msb, lsb);
+        for (int bit = lo; bit <= hi; ++bit) out[base].insert(bit);
+    }
+    return out;
+}
+
+}  // namespace
+
 jsonrpc::Json Status(const project::Project& project) {
     jsonrpc::Json out = jsonrpc::Json::object();
     out["ok"] = false;
@@ -587,10 +634,35 @@ jsonrpc::Json Status(const project::Project& project) {
     }
     watcher["buses"] = std::move(buses);
     if (!cwc.ok) watcher["error"] = cwc.error;
+
+    // 探针清单 vs 已经嵌进 bit 的 watcher。
+    // ⚠ 这是整个功能最容易踩的坑：改了 user.mdn 之后跑「增量布线」或只跑 route，
+    //   insert_debugger（在 opt_place 阶段）不会重新执行，compiled.cwc 时间戳不变，
+    //   探针根本没进 bit。这里把差异算出来，避免"以为改了其实没生效"。
+    {
+        const auto wanted = GroupBitSignals(mdn.signals, project.top);
+        const auto embedded = GroupBusRanges(cwc.buses);
+        jsonrpc::Json missing = jsonrpc::Json::array();
+        jsonrpc::Json extra = jsonrpc::Json::array();
+        for (const auto& [base, bits] : wanted) {
+            const auto found = embedded.find(base);
+            if (found == embedded.end() || found->second != bits) missing.push_back(base);
+        }
+        for (const auto& [base, bits] : embedded) {
+            const auto found = wanted.find(base);
+            if (found == wanted.end() || found->second != bits) extra.push_back(base);
+        }
+        const bool stale = cwc.ok && mdn.exists && (!missing.empty() || !extra.empty());
+        watcher["stale"] = stale;
+        watcher["missing_in_bit"] = std::move(missing);
+        watcher["extra_in_bit"] = std::move(extra);
+    }
+    const bool stale = watcher.value("stale", false);
     out["watcher"] = std::move(watcher);
 
-    bool ready = cwc.ok && IsFile(CompiledBit(project));
+    bool ready = cwc.ok && IsFile(CompiledBit(project)) && !stale;
     out["ready"] = ready;
+    out["matches_user_mdn"] = !stale;
     if (!mdn.exists) {
         out["reason"] =
             "no chip_debugger/user.mdn - no probe signal is marked (TD will not insert a watcher)";
@@ -598,6 +670,11 @@ jsonrpc::Json Status(const project::Project& project) {
         out["reason"] = "no compiled ChipWatcher yet - run the phy flow to embed the probes";
     } else if (!IsFile(CompiledBit(project))) {
         out["reason"] = "compiled.bit is missing - run the phy flow again";
+    } else if (stale) {
+        out["reason"] =
+            "chip_debugger/user.mdn changed but the probes in the bitstream were not rebuilt - "
+            "run Place & Route (stages [\"phy\"]); the incremental route does NOT re-insert the "
+            "debugger";
     } else {
         out["reason"] = "ready to capture on " + cwc.clock;
         out["ok"] = true;
@@ -655,7 +732,8 @@ jsonrpc::Json Configure(const project::Project& project, const std::vector<std::
     out["ok"] = true;
     out["written"] = true;
     out["reason"] =
-        "user.mdn updated - re-run the phy flow (launch_runs phy_1) so the probes get embedded";
+        "user.mdn updated - run Place & Route (stages [\"phy\"]) so the probes get embedded; "
+        "the incremental route does NOT re-insert the debugger";
     return out;
 }
 
@@ -681,6 +759,22 @@ jsonrpc::Json Capture(const td::TdChoice& td, const project::Project& project,
         out["refused"] = true;
         out["reason"] = "phy_1/cw/compiled.bit is missing - run the phy flow again";
         return out;
+    }
+
+    // 清单与 bit 不一致 -> 默认拒绝（采回来的不是清单里写的信号）
+    if (!options.allow_stale) {
+        const MdnConfig mdn = ReadMdn(MdnPath(project));
+        const auto wanted = GroupBitSignals(mdn.signals, project.top);
+        const auto embedded = GroupBusRanges(cwc.buses);
+        if (mdn.exists && wanted != embedded) {
+            out["refused"] = true;
+            out["stage"] = "stale";
+            out["reason"] =
+                "chip_debugger/user.mdn does not match the probes embedded in the bitstream - "
+                "run Place & Route (stages [\"phy\"], the incremental route does not re-insert "
+                "the debugger), or pass allow_stale:true to read the current bit anyway";
+            return out;
+        }
     }
 
     flow::HardwareLeaseGuard lease("probe");

@@ -1486,6 +1486,8 @@ HandlerResult LspServer::HandleExecuteCommand(const Json& params) {
         capture_options.instance = jsonrpc::GetString(options, "instance");
         capture_options.cable = jsonrpc::GetString(options, "cable", "0");
         capture_options.csv_path = jsonrpc::GetString(options, "csv");
+        // 清单与 bit 不一致时默认拒绝；显式 allowStale 才读当前那份 bit
+        capture_options.allow_stale = jsonrpc::GetBool(options, "allowStale", false);
         const int timeout = jsonrpc::GetInt(options, "timeout", 30);
         capture_options.wait_timeout = timeout > 0 ? static_cast<double>(timeout) : 30.0;
         // `download` 会把带探针的 bit 重新灌进 SRAM（改板子状态）；采集本身只读。

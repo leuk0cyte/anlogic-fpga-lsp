@@ -311,21 +311,60 @@ TEST(ProbeStatus, ReportsNotReadyWithoutWatcher) {
 TEST(ProbeStatus, ReportsReadyWithMdnAndCompiledWatcher) {
     ScopedTempDir temp("status_ready");
     const fpgalsp::project::Project project = MakeProject(temp.path());
-    Write(fpgalsp::probe::MdnPath(project), kRealMdn);
+    // 清单必须与 kRealCwc 里那两条 bus 逐位一致，否则会被判成 stale
+    std::vector<std::string> matching;
+    for (const char* bus : {"pwm_reg0_i", "pwm_reg1_i"}) {
+        for (int bit = 0; bit < 16; ++bit) {
+            matching.push_back(std::string("WHG/") + bus + "[" + std::to_string(bit) + "]");
+        }
+    }
+    Write(fpgalsp::probe::MdnPath(project),
+          "mark_debug { " + [&matching] {
+              std::string text;
+              for (const std::string& signal : matching) {
+                  if (!text.empty()) text += ' ';
+                  text += signal;
+              }
+              return text;
+          }() + " }\n");
     Write(fpgalsp::probe::CompiledCwc(project), kRealCwc);
     Write(fpgalsp::probe::CompiledBit(project), "bit");
 
     const fpgalsp::jsonrpc::Json status = fpgalsp::probe::Status(project);
     EXPECT_TRUE(status.value("ok", false)) << status.dump();
-    EXPECT_TRUE(status.value("ready", false));
+    EXPECT_TRUE(status.value("ready", false)) << status.dump();
+    EXPECT_TRUE(status.value("matches_user_mdn", false));
     const auto watcher = status["watcher"];
     EXPECT_TRUE(watcher.value("present", false));
+    EXPECT_FALSE(watcher.value("stale", true));
     EXPECT_EQ(watcher.value("clock", std::string()), "reg_init/clk");
     EXPECT_EQ(watcher.value("instance", std::string()), "auto_created_cwc1");
     EXPECT_EQ(watcher.value("sample_depth", 0), 1024);
     EXPECT_EQ(watcher.value("net_count", 0), 3);
     const auto mdn = status["chip_debugger"];
-    EXPECT_EQ(mdn.value("count", 0), 8);
+    EXPECT_EQ(mdn.value("count", 0), 32);
+}
+
+// ⚠ 最容易骗过用户的场景：改了 user.mdn 但只跑了增量布线 -> bit 里还是旧探针。
+//   必须报 stale 并列出差异 base，否则用户会以为探针加上了。
+TEST(ProbeStatus, ReportsStaleWhenMdnNoLongerMatchesTheBit) {
+    ScopedTempDir temp("status_stale");
+    const fpgalsp::project::Project project = MakeProject(temp.path());
+    Write(fpgalsp::probe::MdnPath(project), kRealMdn);
+    Write(fpgalsp::probe::CompiledCwc(project), kRealCwc);
+    Write(fpgalsp::probe::CompiledBit(project), "bit");
+
+    const fpgalsp::jsonrpc::Json status = fpgalsp::probe::Status(project);
+    EXPECT_FALSE(status.value("ok", false));
+    EXPECT_FALSE(status.value("ready", false));
+    EXPECT_FALSE(status.value("matches_user_mdn", true));
+    const auto watcher = status["watcher"];
+    EXPECT_TRUE(watcher.value("stale", false));
+    // kRealMdn 里有 reg6/reg7，而 kRealCwc 只有 reg0/reg1
+    const auto missing = watcher["missing_in_bit"];
+    ASSERT_TRUE(missing.is_array());
+    EXPECT_GE(missing.size(), 2u) << missing.dump();
+    EXPECT_NE(status.value("reason", std::string()).find("incremental route"), std::string::npos);
 }
 
 TEST(ProbeConfigure, DryRunDoesNotTouchTheFile) {

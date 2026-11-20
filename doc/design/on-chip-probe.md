@@ -74,6 +74,33 @@ bitgen_fun    →  bitgen -bit $prj_name.bit
 **判断"探针有没有真的进 bit"**：看 `phy_1/cw/compiled.cwc` 是否存在、里面的 `<bus>` 是否
 与 `user.mdn` 一致。`src/flow/probe.cpp::ReadCwc` 做的就是这个比对。
 
+### 重跑一定要跑「完整）」的 Place & Route
+
+实测（本机，同一个工程）：
+
+| stages | TD 实际动作 | 耗时 | 会不会重新埋探针 |
+| --- | --- | --- | --- |
+| `["route"]` | `Incremental route`，`import_db place.db` 只重跑 route | 227 s | **不会** —— `insert_debugger` 在 `opt_place` 阶段，被跳过了；`compiled.cwc` 时间戳不变 |
+| `["phy"]` | `reset_runs phy_1` + `launch_runs phy_1`（从 `opt_place` 起） | **401 s** | 会 |
+
+所以 `probeConfig` 之后必须按 **Run Place & Route（`stages: ["phy"]`）**，
+插件里那条「Re-run Place & Route（增量布线）」不够。
+
+### `probeStatus.stale`：专门防这个坑
+
+`probeStatus` 会把 `user.mdn` 的逐位清单聚合成 bus，与 `compiled.cwc` 的 `<bus>` 逐位比对：
+
+```
+mdn        = 80 signals
+bit buses  = [pwm_reg0_i[15:0], pwm_reg1_i[15:0], pwm_reg6_i[15:0], pwm_reg7_i[15:0]]
+stale      = true
+missing    = [ANPC_init0/ANPC_SVPWM_init/cnt]
+ready      = false
+```
+
+`stale:true` 时 `probeCapture` **默认拒绝**（采回来的不是你写的清单，静默给数据比报错更糟），
+要读当前那份 bit 必须显式 `allow_stale:true`。
+
 ---
 
 ## 4. 运行期：无 GUI 采集
@@ -175,3 +202,22 @@ Sample,Trigger,pwm_reg0_i[15:0],pwm_reg1_i[15:0],pwm_reg6_i[15:0],pwm_reg7_i[15:
 | `fpga_probe_status` | `ready:true`，`clock:reg_init/clk`，`sample_depth:1024`，4 条 bus / 64 net |
 | `fpga_probe_capture {confirm:true}` | 17.4 s，**1024 个采样点**，4 条 16 位总线，CSV 落盘 |
 | 采集值 | 全部 0 —— 与 RTL 一致：`pwm_reg*_i` 来自 `bus_reg`，`reg_bus` 复位为 `'d0` 且只有主机写 Modbus 才改变，板上无主机 → 真值为 0 |
+| stale 守卫 | 把 `user.mdn` 改成 80 个信号但 bit 仍是 64 位后，`stale:true` / `missing:[ANPC_init0/ANPC_SVPWM_init/cnt]`，`probeCapture` 在 `stage:"stale"` 拒绝 |
+
+### 未完成：非 0 的动态读数
+
+想证明"采到的是随时间变化的活动数据"，加了 16 位三角载波
+`WHG/ANPC_init0/ANPC_SVPWM_init/cnt[15:0]`（`synthesis keep="1"`，与 `reg_init` 同 `clk` 域）
+并跑了完整 `["phy"]`（401 s）。**结果被 TD 静默丢弃**：
+`phy_1/cw/auto_created_cwc1/auto_created_cwc1_watcherInst.sv` 仍是
+`CWC_BUS_NUM = 4` / `CWC_BUS_DIN_NUM = 64`，`compiled.cwc` 里也只有那 4 条 bus。
+
+也就是说 `mark_debug` 对这个层次名没生效（TD 对找不到的网只打一条
+`signal %s is not present in the netlist` 就跳过，不会让综合失败）。要查清楚得先拿到这次
+run 的 `run.log` —— 但**后端驱动 `launch_runs` 时 TD 不写 `phy_1/run.log`**
+（GUI/`run.bat` 驱动才写），这是排查此类"被静默忽略"问题的真实障碍，值得下一期补
+（比如给 run 显式加 `tcl_afterstep` 把 `report_cwc_status` 落盘）。
+
+已把 `user.mdn` 还原成原来那 64 个信号（1192 B，与原始文件同尺寸），
+并用 `probeStatus` 确认 `stale:false / ready:true`，随后一次真实采集通过。
+**新增的 `stale` 守卫正好是这类问题的兜底**：以后谁改了清单没重跑完整流程，工具会直接说出来。
