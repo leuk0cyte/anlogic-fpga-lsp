@@ -2,7 +2,7 @@
     "name": "fpga-lsp-anlogic",
     "displayName": "Anlogic FPGA LSP (TangDynasty)",
     "description": "Language support and IDE views for Anlogic TD FPGA projects: ADC pin constraints, SDC, project .al, Verilog index, TD-backed diagnostics, module hierarchy, syn/phy flow control and QoR/timing/area reports.",
-    "version": "0.15.2",
+    "version": "0.15.3",
     "publisher": "fpga-lsp",
     "license": "AGPL-3.0-or-later",
     "engines": {
@@ -179,8 +179,32 @@
                 },
                 "fpgaLsp.verible.args": {
                     "type": "array",
-                    "default": [],
-                    "description": "覆盖内嵌 Verible formatter 的 style 参数，写法与旧版一致（--flag=value，也接受 \"--flag value\"）。默认空 = 用服务端内置的团队风格（160 列 / 4 空格缩进 / try_wrap_long_lines / 12 个 alignment=align / 4 个 indentation=indent / alignment_group_boundary=blank-lines-and-separator-comments，见 src/verible_bridge/format_text.cpp 的 DefaultStyleFlags）。注意语义是**整体替换**：一旦写了非空数组，上面那些内置默认全部不再生效，没写的字段会回落到 Verible 原生默认（缩进 2 空格、对齐 infer）。"
+                    "default": [
+                        "--column_limit=160",
+                        "--indentation_spaces=4",
+                        "--wrap_spaces=4",
+                        "--try_wrap_long_lines=true",
+                        "--assignment_statement_alignment=align",
+                        "--case_items_alignment=align",
+                        "--distribution_items_alignment=align",
+                        "--enum_assignment_statement_alignment=align",
+                        "--module_net_variable_alignment=align",
+                        "--class_member_variable_alignment=align",
+                        "--struct_union_members_alignment=align",
+                        "--parameter_declaration_alignment=align",
+                        "--port_declarations_alignment=align",
+                        "--formal_parameters_alignment=align",
+                        "--named_parameter_alignment=align",
+                        "--named_port_alignment=align",
+                        "--port_declarations_right_align_packed_dimensions=true",
+                        "--port_declarations_right_align_unpacked_dimensions=true",
+                        "--formal_parameters_indentation=indent",
+                        "--named_parameter_indentation=indent",
+                        "--named_port_indentation=indent",
+                        "--port_declarations_indentation=indent",
+                        "--alignment_group_boundary=blank-lines-and-separator-comments"
+                    ],
+                    "description": "内嵌 Verible formatter 的 style 参数，写法与旧版一致（--flag=value，也接受 \"--flag value\"）。这里的内置默认值与服务端 `src/verible_bridge/format_text.cpp::DefaultStyleFlags()` **逐条一致**（单测保证不漂移）：VS Code 启动后端时会把本设置发过去，覆盖服务端的同一份默认；留空数组（或客户端根本不发）时用服务端默认。语义是**整体替换**：一旦给了非空数组，服务端默认全部让位，没写的字段回落到 Verible 原生默认（缩进 2 空格、对齐 infer）。"
                 },
                 "fpgaLsp.serverRoot": {
                     "type": "string",
@@ -198,7 +222,7 @@
                     "default": [
                         "--rules=+line-length=length:160"
                     ],
-                    "description": "内嵌 Verible lint 的参数。支持 --rules= / --ruleset= / --rules_config= / --rules_config_search / --waiver_files=。旧版（Python 后端）这里是字符串，服务端只认数组，所以那个默认值实际没生效；现在两种写法都接受。"
+                    "description": "内嵌 Verible lint 的参数。支持 --rules= / --ruleset= / --rules_config= / --rules_config_search / --waiver_files=。与 formatter 同样的规则：这里的内置默认值与服务端 DefaultLintFlags() 逐条一致，VS Code 会把本设置发给后端并**替换**服务端默认；留空数组则用服务端默认。旧版（Python 后端）这里是字符串、且服务端只认数组，所以那个默认值实际没生效；现在两种写法都接受。"
                 },
                 "fpgaLsp.verible.highlight": {
                     "type": "boolean",

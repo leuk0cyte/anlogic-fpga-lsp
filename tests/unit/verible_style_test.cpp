@@ -14,6 +14,7 @@
 // =============================================================================
 
 #include <algorithm>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -68,9 +69,10 @@ std::vector<std::string> Flags(std::initializer_list<const char*> flags) {
 // 1. 默认值 = 旧插件 package.json 的默认值
 // -----------------------------------------------------------------------------
 TEST(VeribleStyle, DefaultFlagsMatchOldPluginConfig) {
-    // 这是**唯一一份**默认排版风格：插件 package.json 的 `fpgaLsp.verible.args`
-    // 默认值是空数组（0.15.2 起），真正生效的是这里的列表。
-    // 逐条比对而不是"包含三条"，否则删一条 alignment 也没人发现。
+    // 服务端内置的默认排版风格（= 旧 Python 插件 `fpgaLsp.verible.args` 的默认值）。
+    // 插件 package.json 里还有一份同样的列表（VS Code 启动后端时发过来覆盖这份），
+    // 两者的一致性由下面的 PluginDefaultsMirrorServerDefaults 守着。
+    // 这里逐条比对而不是"包含三条"，否则删一条 alignment 也没人发现。
     const std::vector<std::string> expected = {
         "--column_limit=160",
         "--indentation_spaces=4",
@@ -98,6 +100,45 @@ TEST(VeribleStyle, DefaultFlagsMatchOldPluginConfig) {
     };
     EXPECT_EQ(fpgalsp::verible_bridge::DefaultStyleFlags(), expected)
         << "默认 style 必须与旧 Python 插件 fpgaLsp.verible.args 的默认值逐条一致";
+}
+
+TEST(VeribleStyle, PluginDefaultsMirrorServerDefaults) {
+    // 默认值**有意存在两处**：
+    //   * 服务端内置（DefaultStyleFlags / DefaultLintFlags）—— MCP、裸 LSP、
+    //     或客户端不发配置时用；
+    //   * 插件 package.json —— VS Code 启动后端时作为初始化选项发过来，**替换**内置值。
+    // 两份一旦漂移，就是"编辑器里显示的设置与实际格式化结果不同"这类最难查的 bug
+    // （0.15.0 那次 4 空格变 2 空格正是这么来的），所以这里直接读清单比对。
+    const std::string path =
+        std::string(FPGA_LSP_SOURCE_DIR) + "/vscode-extension/package.json";
+    std::ifstream stream(path, std::ios::binary);
+    ASSERT_TRUE(stream.good()) << "读不到插件清单：" << path;
+
+    nlohmann::json manifest;
+    ASSERT_NO_THROW(manifest = nlohmann::json::parse(stream))
+        << "插件清单不是合法 JSON：" << path;
+
+    const nlohmann::json& properties =
+        manifest.at("contributes").at("configuration").at("properties");
+    const auto read_default = [&properties](const char* key) {
+        std::vector<std::string> flags;
+        const nlohmann::json& node = properties.at(key).at("default");
+        if (node.is_array()) {
+            for (const nlohmann::json& item : node) {
+                flags.push_back(item.get<std::string>());
+            }
+        }
+        return flags;
+    };
+
+    EXPECT_EQ(read_default("fpgaLsp.verible.args"),
+              fpgalsp::verible_bridge::DefaultStyleFlags())
+        << "插件 package.json 的 fpgaLsp.verible.args 默认值必须与服务端 "
+           "DefaultStyleFlags() 逐条一致（否则 VS Code 一启动就把服务端默认改掉）";
+    EXPECT_EQ(read_default("fpgaLsp.verible.lintArgs"),
+              fpgalsp::verible_bridge::DefaultLintFlags())
+        << "插件 package.json 的 fpgaLsp.verible.lintArgs 默认值必须与服务端 "
+           "DefaultLintFlags() 逐条一致";
 }
 
 TEST(VeribleStyle, DefaultIndentationIsFourSpaces) {
