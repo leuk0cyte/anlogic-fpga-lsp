@@ -279,8 +279,11 @@ FPGA: Install MCP Configuration
 | `FPGA: Program Flash (SPI)` | SPI Flash 烧录 |
 | `FPGA: Generate SVF…` | 生成 SVF |
 | `FPGA: ChipWatcher Probe Status` | 看探针清单 / 采样深度 / 时钟 / 编译产物是否就绪（只读） |
-| `FPGA: Capture On-Chip Probe Data` | 通过 JTAG 读回片上探针的 1024 个采样点（会重灌一次 SRAM，先弹确认） |
-| `FPGA: Edit Probe Signal List` | 编辑 `chip_debugger/user.mdn` 里的 `mark_debug` 清单，再重跑 phy 嵌入 bit |
+| `FPGA: Capture On-Chip Probe Data` | 通过 JTAG 读回片上探针的 1024 个采样点（默认先直接用器件里现有的 bit 抓，抓不动才下载） |
+| `FPGA: Edit Probe Signals (opens ChipWatcher panel)` | 打开探针面板（信号增删 / watcher 现状 / 一键采集） |
+| `FPGA: ChipWatcher Probe Panel (signals, clock, capture)` | 同上，面板入口 |
+
+> 插件界面（命令标题、提示、面板、设置说明）一律英文；只有 `doc/` 与本 README 是中文。
 
 ### 片上探针（ChipWatcher）
 

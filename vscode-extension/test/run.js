@@ -1177,6 +1177,90 @@ test('state dir: resolves under system temp and is passed to the server env', as
         'mcp log must not be written into the workspace');
 });
 
+// ---------------------------------------------------------------------------
+// 0.17.1：ChipWatcher 探针面板
+//   * 界面文案必须是英文（仓库约定：只有 doc/ 里是中文）
+//   * 信号按 base 分组、点芯片能拿到移除用的完整名字
+//   * 报告里的文本必须转义
+// ---------------------------------------------------------------------------
+test('probe panel: renders the watcher state and groups signals by bus', () => {
+    const { renderProbePanelHtml, groupSignals } = require('../src/probeHtml');
+    const html = renderProbePanelHtml({
+        ok: true,
+        ready: true,
+        reason: 'ready to capture on reg_init/clk',
+        project: 'demo',
+        target: 'PH1A100SFG676',
+        matches_user_mdn: true,
+        chip_debugger: {
+            path: 'Y:/demo/chip_debugger/user.mdn',
+            exists: true,
+            count: 3,
+            signals: ['WHG/b[1]', 'WHG/b[0]', 'WHG/a[7]'],
+        },
+        watcher: {
+            present: true,
+            instance: 'auto_created_cwc1',
+            clock: 'reg_init/clk',
+            sample_depth: 1024,
+            trigger_position: 127,
+            trigger_type: 'basic_and',
+            stale: false,
+            missing_in_bit: [],
+            extra_in_bit: [],
+            compiled_bit: 'Y:/demo/corpus_delta_Runs/phy_1/cw/compiled.bit',
+            buses: [
+                { name: 'b[1:0]', clock: 'reg_init/clk', type: 'MARK_DEBUG_PROBE', enabled: true },
+            ],
+        },
+    });
+
+    includes(html, 'ChipWatcher probes');
+    includes(html, 'ready');
+    includes(html, 'auto_created_cwc1');
+    includes(html, 'reg_init/clk');
+    includes(html, 'b[1:0]');
+    // 每个 bit 一个可移除的芯片，值必须是完整层次名
+    includes(html, 'data-remove="WHG/b[0]"');
+    includes(html, 'data-remove="WHG/b[1]"');
+    includes(html, 'data-remove-base="WHG/b"');
+    eq(/[\u4e00-\u9fff]/.test(html), false, 'panel UI must be English only');
+
+    const groups = groupSignals(['x[10]', 'x[2]', 'x[1]', 'y']);
+    eq(groups.length, 2, 'one group per base');
+    eq(groups[0].base, 'x', 'groups sorted by base');
+    eq(groups[0].bits.join(','), '1,2,10', 'bits sorted numerically');
+    eq(groups[1].bits.join(','), '-1', 'a scalar signal has no bit index');
+});
+
+test('probe panel: refuses the stale state and escapes untrusted text', () => {
+    const { renderProbePanelHtml } = require('../src/probeHtml');
+    const html = renderProbePanelHtml({
+        ok: false,
+        ready: false,
+        reason: 'chip_debugger/user.mdn changed',
+        project: 'demo<script>alert(1)</script>',
+        target: 'PH1A100SFG676',
+        chip_debugger: { path: 'p', exists: true, count: 1, signals: ['WHG/a[0]'] },
+        watcher: {
+            present: true,
+            instance: 'auto_created_cwc1',
+            clock: 'c',
+            sample_depth: 1024,
+            stale: true,
+            missing_in_bit: ['ANPC_init0/ANPC_SVPWM_init/cnt'],
+            extra_in_bit: [],
+            buses: [{ name: 'a[0:0]', clock: 'c', type: 'MARK_DEBUG_PROBE', enabled: true }],
+        },
+    });
+
+    includes(html, 'needs rebuild');
+    includes(html, 'ANPC_init0/ANPC_SVPWM_init/cnt');
+    includes(html, 'incremental route');
+    excludes(html, '<script>alert(1)</script>', 'project name must be escaped');
+    includes(html, '&lt;script&gt;alert(1)&lt;/script&gt;');
+});
+
 const TEST_TIMEOUT_MS = 5000;
 
 (async () => {

@@ -2,7 +2,7 @@
     "name": "fpga-lsp-anlogic",
     "displayName": "Anlogic FPGA LSP (TangDynasty)",
     "description": "Language support and IDE views for Anlogic TD FPGA projects: ADC pin constraints, SDC, project .al, Verilog index, TD-backed diagnostics, module hierarchy, syn/phy flow control and QoR/timing/area reports.",
-    "version": "0.17.0",
+    "version": "0.17.1",
     "publisher": "fpga-lsp",
     "license": "AGPL-3.0-or-later",
     "engines": {
@@ -143,7 +143,7 @@
                 "fpgaLsp.serverPath": {
                     "type": "string",
                     "default": "",
-                    "description": "原生语言服务器 fpgalsp-native.exe 的路径（留空自动查找：serverRoot / dev 构建目录 / vsix 内置 server/bin）"
+                    "description": "Path to the native language server (fpgalsp-native.exe). Leave empty to auto-detect: serverRoot, the dev build directory, then the bundled server/bin inside the VSIX."
                 },
                 "fpgaLsp.tdPath": {
                     "type": "string",
@@ -204,30 +204,32 @@
                         "--port_declarations_indentation=indent",
                         "--alignment_group_boundary=blank-lines-and-separator-comments"
                     ],
-                    "description": "内嵌 Verible formatter 的 style 参数，写法与旧版一致（--flag=value，也接受 \"--flag value\"）。这里的内置默认值与服务端 `src/verible_bridge/format_text.cpp::DefaultStyleFlags()` **逐条一致**（单测保证不漂移）：VS Code 启动后端时会把本设置发过去，覆盖服务端的同一份默认；留空数组（或客户端根本不发）时用服务端默认。语义是**整体替换**：一旦给了非空数组，服务端默认全部让位，没写的字段回落到 Verible 原生默认（缩进 2 空格、对齐 infer）。"
+                    "description": "Style flags for the embedded Verible formatter, same syntax as before (--flag=value; \"--flag value\" is accepted too). These built-in defaults match src/verible_bridge/format_text.cpp::DefaultStyleFlags() one for one (a unit test guards the drift): VS Code sends this setting to the backend at start-up and it REPLACES the server's copy. An empty array (or a client that sends nothing) keeps the server default. The semantics are wholesale replacement: once a non-empty array is given, the server defaults step aside entirely and any flag you leave out falls back to Verible's own default (2-space indent, infer alignment)."
                 },
                 "fpgaLsp.serverRoot": {
                     "type": "string",
                     "default": "",
-                    "description": "（兼容旧版）语言服务器所在目录。原生版已不需要：留空即可，用 fpgaLsp.serverPath 指定 exe。"
+                    "description": "(Legacy) Directory of the language server. The native build does not need it: leave empty and use fpgaLsp.serverPath to point at the exe."
                 },
                 "fpgaLsp.verible.path": {
                     "type": "string",
                     "default": "",
-                    "description": "（兼容）外部 verible-verilog-format 路径。留空 = 用内嵌 Verible。"
+                    "description": "(Legacy) Path to an external verible-verilog-format. Leave empty to use the embedded Verible."
                 },
                 "fpgaLsp.verible.lintArgs": {
                     "type": "array",
-                    "items": { "type": "string" },
+                    "items": {
+                        "type": "string"
+                    },
                     "default": [
                         "--rules=+line-length=length:160"
                     ],
-                    "description": "内嵌 Verible lint 的参数。支持 --rules= / --ruleset= / --rules_config= / --rules_config_search / --waiver_files=。与 formatter 同样的规则：这里的内置默认值与服务端 DefaultLintFlags() 逐条一致，VS Code 会把本设置发给后端并**替换**服务端默认；留空数组则用服务端默认。旧版（Python 后端）这里是字符串、且服务端只认数组，所以那个默认值实际没生效；现在两种写法都接受。"
+                    "description": "Arguments for the embedded Verible lint. Supports --rules= / --ruleset= / --rules_config= / --rules_config_search / --waiver_files=. Same rule as the formatter: these built-in defaults match src/verible_bridge/lint_text.cpp::DefaultLintFlags() one for one, VS Code sends them to the backend and they REPLACE the server defaults; an empty array keeps the server defaults. The old Python backend expected a string here and only accepted an array, so that default never actually took effect; both forms are accepted now."
                 },
                 "fpgaLsp.verible.highlight": {
                     "type": "boolean",
                     "default": true,
-                    "description": "（兼容）是否发布 Verible 诊断；关掉只保留 TD/约束诊断。"
+                    "description": "(Legacy) Whether to publish Verible diagnostics. Turn it off to keep only TD / constraint diagnostics."
                 },
                 "fpgaLsp.verible.autofix": {
                     "type": "boolean",
@@ -503,13 +505,13 @@
             },
             {
                 "command": "fpgaLsp.probeConfig",
-                "title": "FPGA: Edit Probe Signal List (chip_debugger/user.mdn)",
+                "title": "FPGA: Edit Probe Signals (opens ChipWatcher panel)",
                 "category": "FPGA",
                 "icon": "$(list-tree)"
             },
             {
                 "command": "fpgaLsp.showProbePanel",
-                "title": "FPGA: ChipWatcher Probe Panel",
+                "title": "FPGA: ChipWatcher Probe Panel (signals, clock, capture)",
                 "category": "FPGA",
                 "icon": "$(circuit-board)"
             }

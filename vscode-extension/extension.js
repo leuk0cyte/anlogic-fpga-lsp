@@ -1351,26 +1351,9 @@ function activate(context) {
     };
 
     const probeConfig = async () => {
-        // 图形化面板：信号增删 + watcher 现状；占位函数保留给「快速粘贴清单」场景
-        const edited = await vscode.window.showInputBox({
-            title: 'Probe signals (whitespace separated hierarchical net names)',
-            prompt: 'These go into chip_debugger/user.mdn as mark_debug; re-run Place & Route to embed them.',
-            ignoreFocusOut: true,
-            validateInput: (value) => (value.trim() ? undefined : 'At least one signal is required'),
-        });
-        if (edited === undefined) return;
-        const signals = edited.split(/\s+/).map((s) => s.trim()).filter(Boolean);
-        const result = await runWithProgress('FPGA: updating chip_debugger/user.mdn...',
-            COMMANDS.probeConfig, [{ signals, write: true }]);
-        if (!result || result.ok !== true) {
-            openErrors((result && result.reason) || 'Cannot update user.mdn');
-            return;
-        }
-        vscode.window.showInformationMessage(
-            `FPGA: probe list updated (${result.count} signals, +${(result.added || []).length}/-${(result.removed || []).length}).`,
-            'Run Place & Route').then((picked) => {
-            if (picked === 'Run Place & Route') vscode.commands.executeCommand(VSCodeCommands.runPhy);
-        });
+        // 0.17.1：直接开面板。之前是个**空白**输入框 —— 看不到当前清单、不能逐个移除，
+        // 和面板功能重复而且容易误操作（一进去就是空的，很容易把清单整个覆盖掉）。
+        await showProbePanel();
     };
 
     // ---- 0.16.1：ChipWatcher 图形面板 ----
@@ -1447,7 +1430,7 @@ function activate(context) {
                 `- Server root: ${serverRoot}`,
                 `- Server log: ${config().get('logFile') || (root ? path.join(resolveStateDir(root), 'logs', 'server.log') : '(n/a)')}`,
                 '',
-                '## Verible (内嵌，无需外部二进制)',
+                '## Verible (embedded, no external binary needed)',
                 `- Format args: ${(vSettings.args || []).length} option(s)`,
                 '',
                 '## TangDynasty',

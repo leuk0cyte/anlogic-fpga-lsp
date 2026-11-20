@@ -196,6 +196,10 @@ vscode-extension/fpga-lsp-anlogic-0.15.3.vsix   228 files / 2.97 MB
 | 新增 LSP 命令 | `fpgalsp.probeStatus` / `fpgalsp.probeConfig` / `fpgalsp.probeCapture`（广播进 `executeCommandProvider`） |
 | 新增 MCP 工具 | `fpga_probe_status`（只读）· `fpga_probe_config`（`write` 门控）· `fpga_probe_capture`（`flow` 门控）→ 工具总数 **43 → 46** |
 | 新增插件命令 | `fpgaLsp.probeStatus` / `fpgaLsp.probeCapture` / `fpgaLsp.probeConfig`（采集前有模态确认） |
+| ChipWatcher 面板（0.17.0） | `src/probePanel.js` + `src/probeHtml.js`：按总线分组的信号芯片、单击/整组移除、粘贴清单保存、watcher 现状（时钟/深度/触发/`stale` 徽章）、一键采集 |
+| 下载速度 | `-spd` 是**档位号**不是 MHz：2=200k 3=500k 4=1M 5=2M 6=3M **7=5M（= GUI 默认）** 8=8M 9=16M；`program`/`probeCapture` 都接受 `speed`（2–9） |
+| 按需下载 | `probeCapture.download` 三态，默认 `"auto"`：先直接用器件里现有的 bit 抓，抓不动才下载并在**同一会话**内重抓；真机实测 `downloaded:false` 也能拿到 1024 点 |
+| 插件界面语言（0.17.1） | 所有用户可见文案统一英文（`package.json` 的 17 个设置描述、命令标题、面板 HTML、Doctor 报告）；中文只留在代码注释与 `doc/` |
 | 单测 | `tests/unit/probe_test.cpp` **18 例**（含两条回归：2026.2 两行式 `list_cable`、38 字符层次名不被截断） |
 | 回归 | `ctest` **63/63**；插件 `node test/run.js` **41/41** |
 

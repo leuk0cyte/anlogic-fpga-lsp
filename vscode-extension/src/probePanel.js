@@ -32,7 +32,7 @@ class ProbePanel {
             //   `fpgaLsp.*` 一律当成"被引用的命令 id"，要求它在 package.json 里声明。
             //   这里只是 webview 的类型标识，不需要是命令。
             'fpgaLspProbePanel',
-            'ChipWatcher 探针',
+            'ChipWatcher probes',
             this.vscode.ViewColumn.One,
             { enableScripts: true, retainContextWhenHidden: true }
         );
@@ -68,14 +68,14 @@ class ProbePanel {
             return;
         }
         if (kind === 'apply') {
-            this.say('保存中…');
+            this.say('Saving...');
             const result = await this.service.applySignals(message.signals || []);
             if (!result || result.ok !== true) {
-                this.say(`保存失败：${(result && (result.reason || result.error)) || 'unknown'}`);
+                this.say(`Save failed: ${(result && (result.reason || result.error)) || 'unknown'}`);
                 return;
             }
-            this.say(`已写入 ${result.count} 个信号（+${(result.added || []).length}/-${(result.removed || []).length}），` +
-                '请重跑 Place & Route 让探针进 bit');
+            this.say(`Wrote ${result.count} signal(s) (+${(result.added || []).length}/-${(result.removed || []).length}). ` +
+                'Run Place & Route so the probes get embedded in the bitstream.');
             await this.refresh();
             return;
         }
@@ -84,25 +84,25 @@ class ProbePanel {
             const next = kind === 'remove' ? current.filter((s) => s !== message.signal)
                 : current.filter((s) => !String(s).startsWith(`${message.base}[`));
             if (!next.length) {
-                this.say('不能把清单清空（那等于删掉 watcher）');
+                this.say('Refusing to empty the list (that would delete the watcher)');
                 return;
             }
             const result = await this.service.applySignals(next);
             if (!result || result.ok !== true) {
-                this.say(`移除失败：${(result && (result.reason || result.error)) || 'unknown'}`);
+                this.say(`Remove failed: ${(result && (result.reason || result.error)) || 'unknown'}`);
                 return;
             }
             await this.refresh();
             return;
         }
         if (kind === 'capture') {
-            this.say('采集中（会先尝试直接用器件里现有的 bit）…');
+            this.say('Capturing (trying the bitstream already in the device first)...');
             const result = await this.service.capture();
             if (!result || result.ok !== true) {
-                this.say(`采集失败：${(result && (result.reason || result.error)) || 'unknown'}`);
+                this.say(`Capture failed: ${(result && (result.reason || result.error)) || 'unknown'}`);
                 return;
             }
-            this.say(`采集完成：${result.samples} 点 · ${result.clock} · ${result.csv || ''}`);
+            this.say(`Captured ${result.samples} sample(s) on ${result.clock} - ${result.csv || ''}`);
             return;
         }
     }

@@ -1,10 +1,13 @@
 // =============================================================================
-//  vscode-extension/src/probeHtml.js —— 片上探针（ChipWatcher）面板的静态 HTML
+//  vscode-extension/src/probeHtml.js —— ChipWatcher probe panel (static HTML)
 // =============================================================================
-//  只做渲染，不含任何 vscode 依赖（与 reportsHtml.js / trendHtml.js 同一约定），
-//  因此可以在 test/run.js 的 mock-vscode 下直接单测。
+//  Rendering only, no vscode imports (same convention as reportsHtml.js /
+//  trendHtml.js) so test/run.js can drive it with the mock.
 //
-//  数据形状（来自后端 fpgalsp.probeStatus / probeConfig）：
+//  UI language is English on purpose: every user-facing string in this
+//  extension is English, only the repo docs are Chinese.
+//
+//  Data shape (fpgalsp.probeStatus / probeConfig):
 //    {
 //      ok, ready, reason, project, target, matches_user_mdn,
 //      chip_debugger: { path, exists, count, signals: [ "WHG/xxx[0]", ... ] },
@@ -33,7 +36,7 @@ function splitSignal(signal) {
     return { base: match[1], bit: Number(match[2]) };
 }
 
-// 把逐位清单按 base 分组，位号升序；组内保持紧凑显示（像 0-15 就折叠成范围）
+// Group the per-bit list by base, bits ascending, groups sorted by base.
 function groupSignals(signals) {
     const groups = new Map();
     for (const signal of signals || []) {
@@ -53,36 +56,39 @@ function groupSignals(signals) {
 function renderBusTable(buses, staleMissing) {
     const missing = new Set(staleMissing || []);
     if (!buses || !buses.length) {
-        return '<p class="empty">还没有编译产物（<code>phy_1/cw/compiled.cwc</code> 不存在）。' +
-            '先点「Run Place &amp; Route」把探针埋进 bit。</p>';
+        return '<p class="empty">No compiled watcher yet (<code>phy_1/cw/compiled.cwc</code> is missing). ' +
+            'Run <b>FPGA: Run Place &amp; Route</b> to embed the probes first.</p>';
     }
     const rows = buses.map((bus) => {
-        // compiled.cwc 里的名字是 `pwm_reg0_i[15:0]`，stale 列表里是去掉顶层的 base
+        // compiled.cwc uses `pwm_reg0_i[15:0]`; the stale list uses the stripped base name.
         const base = String(bus.name || '').replace(/\[[^\]]*\]$/, '');
-        const flag = missing.has(base) ? '<span class="warn" title="清单里有、bit 里没有">缺失</span>' : '';
+        const flag = missing.has(base)
+            ? '<span class="warn" title="In user.mdn but not embedded in the bitstream">missing</span>'
+            : '';
         return `<tr><td><code>${escapeHtml(bus.name)}</code></td>` +
             `<td>${escapeHtml(bus.clock || '')}</td>` +
             `<td>${escapeHtml(bus.type || '')}</td>` +
             `<td>${bus.enabled === false ? 'no' : 'yes'} ${flag}</td></tr>`;
     }).join('');
-    return `<table><thead><tr><th>总线</th><th>采样时钟</th><th>类型</th><th>启用</th></tr></thead>` +
+    return `<table><thead><tr><th>Bus</th><th>Sample clock</th><th>Type</th><th>Enabled</th></tr></thead>` +
         `<tbody>${rows}</tbody></table>`;
 }
 
 function renderSignalList(signals) {
     const groups = groupSignals(signals);
     if (!groups.length) {
-        return '<p class="empty">清单是空的 —— 点下面「添加信号」，或直接在文本框里粘贴层次名。</p>';
+        return '<p class="empty">The probe list is empty. Add signals below, or paste net names ' +
+            'into the text box.</p>';
     }
     return groups.map((group) => {
         const chips = group.bits.map((bit) => {
             const label = bit < 0 ? escapeHtml(group.base) : `[${bit}]`;
             const value = bit < 0 ? escapeHtml(group.base) : `${escapeHtml(group.base)}[${bit}]`;
-            return `<button class="chip" data-remove="${value}" title="移除 ${value}">${label}&times;</button>`;
+            return `<button class="chip" data-remove="${value}" title="Remove ${value}">${label}&times;</button>`;
         }).join('');
         return `<div class="group"><div class="group-head"><code>${escapeHtml(group.base)}</code>` +
-            `<span class="count">${group.count} 位</span>` +
-            `<button class="link" data-remove-base="${escapeHtml(group.base)}">整组移除</button></div>` +
+            `<span class="count">${group.count} bit(s)</span>` +
+            `<button class="link" data-remove-base="${escapeHtml(group.base)}">remove group</button></div>` +
             `<div class="chips">${chips}</div></div>`;
     }).join('');
 }
@@ -94,32 +100,33 @@ function renderProbePanelHtml(state) {
     const ready = data.ready === true;
     const stale = watcher.stale === true;
     const badge = ready
-        ? '<span class="badge ok">就绪</span>'
-        : stale ? '<span class="badge warn">需要重跑</span>' : '<span class="badge bad">未就绪</span>';
+        ? '<span class="badge ok">ready</span>'
+        : stale ? '<span class="badge warn">needs rebuild</span>' : '<span class="badge bad">not ready</span>';
 
     const info = [
-        ['工程 / 器件', `${data.project || '?'} / ${data.target || '?'}`],
-        ['探针信号', `${mdn.count == null ? 0 : mdn.count} 个（${mdn.path || 'chip_debugger/user.mdn'}）`],
-        ['Watcher 实例', watcher.instance || '(none)'],
-        ['采样时钟', watcher.clock || '(none)'],
-        ['采样深度', String(watcher.sample_depth || 0)],
-        ['触发', `${watcher.trigger_type || '(none)'} @ ${watcher.trigger_position == null ? '?' : watcher.trigger_position}`],
-        ['编译产物', watcher.compiled_bit || '(none)'],
+        ['Project / device', `${data.project || '?'} / ${data.target || '?'}`],
+        ['Probe signals', `${mdn.count == null ? 0 : mdn.count} (${mdn.path || 'chip_debugger/user.mdn'})`],
+        ['Watcher instance', watcher.instance || '(none)'],
+        ['Sample clock', watcher.clock || '(none)'],
+        ['Sample depth', String(watcher.sample_depth || 0)],
+        ['Trigger', `${watcher.trigger_type || '(none)'} @ ${watcher.trigger_position == null ? '?' : watcher.trigger_position}`],
+        ['Compiled bit', watcher.compiled_bit || '(none)'],
     ].map(([key, value]) => `<tr><th>${escapeHtml(key)}</th><td>${escapeHtml(value)}</td></tr>`).join('');
 
     const staleNote = stale
-        ? `<p class="warn-box">清单与 bit 里嵌的探针不一致：
-             ${(watcher.missing_in_bit || []).length ? 'bit 里缺 ' + escapeHtml(watcher.missing_in_bit.join(', ')) + '；' : ''}
-             ${(watcher.extra_in_bit || []).length ? 'bit 里多 ' + escapeHtml(watcher.extra_in_bit.join(', ')) : ''}
-             采集会被拒绝。请重跑 <b>Place &amp; Route</b>（增量布线不会重新埋探针）。</p>`
+        ? `<p class="warn-box">The probe list no longer matches what is embedded in the bitstream:
+             ${(watcher.missing_in_bit || []).length ? 'missing from the bit: ' + escapeHtml(watcher.missing_in_bit.join(', ')) + '; ' : ''}
+             ${(watcher.extra_in_bit || []).length ? 'left over in the bit: ' + escapeHtml(watcher.extra_in_bit.join(', ')) : ''}
+             Capture is refused until you rebuild. Run <b>Place &amp; Route</b> (the incremental route
+             does not re-insert the debugger).</p>`
         : '';
 
     return `<!DOCTYPE html>
-<html lang="zh">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';">
-<title>ChipWatcher 探针</title>
+<title>ChipWatcher probes</title>
 <style>
   body { font-family: var(--vscode-font-family); color: var(--vscode-foreground); padding: 12px 16px; }
   h2 { font-size: 1.1em; margin: 0 0 8px; display: flex; gap: 8px; align-items: center; }
@@ -154,42 +161,42 @@ function renderProbePanelHtml(state) {
 </style>
 </head>
 <body>
-<h2>ChipWatcher 片上探针 ${badge}</h2>
+<h2>ChipWatcher probes ${badge}</h2>
 <p class="hint">${escapeHtml(data.reason || '')}</p>
 ${staleNote}
 
-<h3>当前配置</h3>
+<h3>Current setup</h3>
 <table>${info}</table>
 
-<h3>bit 里已经嵌进去的探针</h3>
+<h3>Probes embedded in the bitstream</h3>
 ${renderBusTable(watcher.buses, watcher.missing_in_bit)}
 
-<h3>探针清单（<code>chip_debugger/user.mdn</code>）</h3>
+<h3>Probe list (<code>chip_debugger/user.mdn</code>)</h3>
 <div id="signals">${renderSignalList(mdn.signals)}</div>
 
 <div class="row">
-  <textarea id="editor" placeholder="每行或空格分隔的层次名，例如 WG/pwm_reg0_i[0]&#10;也可以粘贴整段 mark_debug { ... }"></textarea>
+  <textarea id="editor" placeholder="Whitespace or newline separated hierarchical net names, e.g. WHG/pwm_reg0_i[0]. A pasted mark_debug { ... } block is accepted too."></textarea>
 </div>
 <div class="row">
-  <button class="primary" id="apply">保存清单</button>
-  <button id="reload">重新读取</button>
-  <button id="capture">采集一次</button>
+  <button class="primary" id="apply">Save list</button>
+  <button id="reload">Reload</button>
+  <button id="capture">Capture now</button>
   <span class="hint" id="status"></span>
 </div>
 
-<h3>采样时钟 / 深度</h3>
+<h3>Sample clock / depth</h3>
 <p class="hint">
-  这两个参数固化在 bit 里，改了必须重跑 <b>Place &amp; Route</b>。<br>
-  实测：<code>insert_debugger &lt;dir&gt; -cwc &lt;file&gt;</code> 能让 TD 接受手写的
-  <code>.cwc</code>（改了 <code>sample_depth</code> 立刻体现在
-  <code>report_cwc_status</code>）；但 TD 生成的流程脚本调用的是不带 <code>-cwc</code> 的
-  <code>insert_debugger</code>，会把配置冲掉（实测——第二次调用后 watcher 列表变空）。
-  所以这里先只显示，不写盘。
+  Both are baked into the bitstream, so changing them requires a full <b>Place &amp; Route</b>.<br>
+  Measured: <code>insert_debugger &lt;dir&gt; -cwc &lt;file&gt;</code> does honour a hand-written
+  <code>.cwc</code> (changing <code>sample_depth</code> from 1024 to 2048 shows up immediately in
+  <code>report_cwc_status</code>), but the flow script TangDynasty generates calls
+  <code>insert_debugger</code> <i>without</i> <code>-cwc</code>, which wipes that configuration
+  again (measured). Until that is wired up these two fields are read-only.
 </p>
 <table>
-  <tr><th>采样时钟</th><td>${escapeHtml(watcher.clock || '(none)')}</td></tr>
-  <tr><th>采样深度</th><td>${escapeHtml(String(watcher.sample_depth || 0))}</td></tr>
-  <tr><th>触发位置</th><td>${escapeHtml(String(watcher.trigger_position == null ? '' : watcher.trigger_position))}</td></tr>
+  <tr><th>Sample clock</th><td>${escapeHtml(watcher.clock || '(none)')}</td></tr>
+  <tr><th>Sample depth</th><td>${escapeHtml(String(watcher.sample_depth || 0))}</td></tr>
+  <tr><th>Trigger position</th><td>${escapeHtml(String(watcher.trigger_position == null ? '' : watcher.trigger_position))}</td></tr>
 </table>
 
 <script>
@@ -202,8 +209,8 @@ ${renderBusTable(watcher.buses, watcher.missing_in_bit)}
       const inner = /mark_debug\\s*\\{([^}]*)\\}/.exec(raw);
       const text = inner ? inner[1] : raw;
       const signals = text.split(/\\s+/).map((s) => s.trim()).filter(Boolean);
-      if (!signals.length) { say('至少要一个信号'); return; }
-      say('保存中…');
+      if (!signals.length) { say('At least one signal is required'); return; }
+      say('Saving...');
       vscode.postMessage({ type: 'apply', signals });
   });
   document.getElementById('reload').addEventListener('click', () => vscode.postMessage({ type: 'reload' }));
@@ -222,7 +229,7 @@ ${renderBusTable(watcher.buses, watcher.missing_in_bit)}
   window.addEventListener('message', (event) => {
       const message = event.data || {};
       if (message.type === 'status') say(message.text || '');
-      if (message.type === 'error') say('错误：' + (message.text || ''));
+      if (message.type === 'error') say('Error: ' + (message.text || ''));
   });
 </script>
 </body>
