@@ -903,59 +903,98 @@ jsonrpc::Json Capture(const td::TdChoice& td, const project::Project& project,
         if (td::HasError(text)) return fail("connect_cable", "no cable/board detected", text);
     }
 
-    // 6) 把带探针的 bit 灌进去（jtag_burst 是 GUI 的写法；失败回落 jtag）
-    if (effective.download) {
+    // 6-9) 下载（按需）-> 触发 -> 等待 -> 落 CSV
+    //   实测：GUI 的 ChipWatcher **不是每次抓取都先下载**，只要器件里跑的就是那份
+    //   带探针的 bit 就能直接抓。所以默认 "auto"：先直接抓，抓不动再下载重抓一次
+    //   （同一个会话内重试，省掉 open_project 的 40 s）。
+    std::string download_mode = effective.download;
+    for (char& c : download_mode) {
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+    }
+    const bool never_download = download_mode == "false" || download_mode == "never" ||
+                                download_mode == "no" || download_mode == "0";
+    const bool always_download = download_mode == "true" || download_mode == "always" ||
+                                 download_mode == "yes" || download_mode == "1";
+
+    std::string failure_text;
+    const auto do_download = [&]() -> bool {
         out["stage"] = "download";
-        std::string text;
-        bool ok = false;
+        const std::string spd = std::to_string(effective.speed);
         for (const char* mode : {"jtag_burst", "jtag"}) {
-            const std::string command =
-                std::string("download -bit ") + td::TclQuoteGrouped(CompiledBit(project)) +
-                " -mode " + mode + " -spd 7 -cable " + effective.cable +
-                (std::string(mode) == "jtag_burst" ? " -total_dev 1 -cur_dev 1 -bypass 11111111"
-                                                   : "");
-            text = session->Run(command, effective.session_timeout);
-            for (const std::string& line : ErrorLines(text, 4)) record(line);
-            if (!td::HasError(text) && text.find("Chip validation success") != std::string::npos) {
-                ok = true;
+            std::string command = "download -bit " + td::TclQuoteGrouped(CompiledBit(project)) +
+                                  " -mode " + mode + " -spd " + spd + " -cable " + effective.cable;
+            if (std::string(mode) == "jtag_burst") {
+                command += " -total_dev 1 -cur_dev 1 -bypass 11111111";
+            }
+            failure_text = session->Run(command, effective.session_timeout);
+            for (const std::string& line : ErrorLines(failure_text, 4)) record(line);
+            if (!td::HasError(failure_text) &&
+                failure_text.find("Chip validation success") != std::string::npos) {
                 out["download_mode"] = mode;
-                break;
+                out["download_speed"] = effective.speed;
+                return true;
             }
         }
-        if (!ok) return fail("download", "cannot load the probe-enabled bitstream", text);
-    }
+        return false;
+    };
 
-    // 7) 触发（用第 4 步拿到的对象变量，不能用名字字面量）
-    {
-        out["stage"] = "run_hw_cw";
-        std::string command = "run_hw_cw $fpgalsp_hw";
-        if (effective.trigger_now) command += " -trigger_now";
-        command += " -cable " + effective.cable;
-        const std::string text = session->Run(command, 120.0);
-        if (td::HasError(text)) return fail("run_hw_cw", "cannot start the capture", text);
-    }
-
-    // 8) 等触发完成
-    {
-        out["stage"] = "wait_on_hw_cw";
-        std::string command = "wait_on_hw_cw $fpgalsp_hw -timeout ";
-        command += std::to_string(static_cast<int>(effective.wait_timeout));
-        command += " -cable " + effective.cable;
-        const std::string text = session->Run(command, effective.wait_timeout + 60.0);
-        if (td::HasError(text)) return fail("wait_on_hw_cw", "capture did not complete", text);
-    }
-
-    // 9) 落 CSV
-    {
-        out["stage"] = "write_hw_cw_data";
-        const std::string command =
-            "write_hw_cw_data $fpgalsp_hw -csv_file " + td::TclQuoteGrouped(csv);
-        const std::string text = session->Run(command, 180.0);
-        if (td::HasError(text) || !IsFile(csv)) {
-            return fail("write_hw_cw_data", "capture data was not written",
-                        text.empty() ? std::string("no output") : text);
+    // 返回空串 = 成功；否则是失败的阶段名
+    const auto attempt = [&]() -> std::string {
+        failure_text.clear();
+        {
+            out["stage"] = "run_hw_cw";
+            std::string command = "run_hw_cw $fpgalsp_hw";
+            if (effective.trigger_now) command += " -trigger_now";
+            command += " -cable " + effective.cable;
+            failure_text = session->Run(command, 120.0);
+            if (td::HasError(failure_text)) return "run_hw_cw";
         }
+        {
+            out["stage"] = "wait_on_hw_cw";
+            std::string command = "wait_on_hw_cw $fpgalsp_hw -timeout ";
+            command += std::to_string(static_cast<int>(effective.wait_timeout));
+            command += " -cable " + effective.cable;
+            failure_text = session->Run(command, effective.wait_timeout + 60.0);
+            if (td::HasError(failure_text)) return "wait_on_hw_cw";
+        }
+        {
+            out["stage"] = "write_hw_cw_data";
+            const std::string command =
+                "write_hw_cw_data $fpgalsp_hw -csv_file " + td::TclQuoteGrouped(csv);
+            failure_text = session->Run(command, 180.0);
+            if (td::HasError(failure_text) || !IsFile(csv)) return "write_hw_cw_data";
+        }
+        return {};
+    };
+
+    bool downloaded = false;
+    if (always_download) {
+        if (!do_download()) {
+            return fail("download", "cannot load the probe-enabled bitstream", failure_text);
+        }
+        downloaded = true;
     }
+
+    std::string failed = attempt();
+    if (!failed.empty() && !downloaded && !never_download) {
+        // auto：器件里那份 bit 抓不动（多半不是带探针的），下载后重抓一次
+        record("loaded bitstream did not answer the capture - downloading the probe-enabled bit");
+        if (!do_download()) {
+            return fail("download", "cannot load the probe-enabled bitstream", failure_text);
+        }
+        downloaded = true;
+        failed = attempt();
+    }
+    if (!failed.empty()) {
+        const std::string reason =
+            failed == "wait_on_hw_cw"
+                ? "capture did not complete - the bitstream in the device may not contain these "
+                  "probes (retry with download:true)"
+            : failed == "write_hw_cw_data" ? "capture data was not written"
+                                           : "cannot start the capture";
+        return fail(failed, reason, failure_text);
+    }
+    out["downloaded"] = downloaded;
 
     session->Kill();
 

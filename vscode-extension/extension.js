@@ -38,6 +38,7 @@ const { ReportsTreeProvider } = require('./src/reportsTree');
 const { renderTrendHtml } = require('./src/trendHtml');
 const { registerLmTools } = require('./src/lmTools');
 const { renderConstraintHtml } = require('./src/constraintHtml');
+const { ProbePanel } = require('./src/probePanel');
 const {
     buildMcpServerOptions,
     buildPortableConfig,
@@ -1350,21 +1351,14 @@ function activate(context) {
     };
 
     const probeConfig = async () => {
-        const current = await runWithProgress('FPGA: reading probe signal list...',
-            COMMANDS.probeConfig, [{}]);
-        if (!current || current.ok !== true) {
-            openErrors((current && current.reason) || 'Cannot read chip_debugger/user.mdn');
-            return;
-        }
-        const before = (current.before || []).join(' ');
+        // 图形化面板：信号增删 + watcher 现状；占位函数保留给「快速粘贴清单」场景
         const edited = await vscode.window.showInputBox({
             title: 'Probe signals (whitespace separated hierarchical net names)',
-            prompt: 'These go into chip_debugger/user.mdn as mark_debug; re-run the phy flow to embed them.',
-            value: before,
+            prompt: 'These go into chip_debugger/user.mdn as mark_debug; re-run Place & Route to embed them.',
             ignoreFocusOut: true,
             validateInput: (value) => (value.trim() ? undefined : 'At least one signal is required'),
         });
-        if (edited === undefined || edited.trim() === before) return;
+        if (edited === undefined) return;
         const signals = edited.split(/\s+/).map((s) => s.trim()).filter(Boolean);
         const result = await runWithProgress('FPGA: updating chip_debugger/user.mdn...',
             COMMANDS.probeConfig, [{ signals, write: true }]);
@@ -1372,14 +1366,28 @@ function activate(context) {
             openErrors((result && result.reason) || 'Cannot update user.mdn');
             return;
         }
-        const added = (result.added || []).length;
-        const removed = (result.removed || []).length;
         vscode.window.showInformationMessage(
-            `FPGA: probe list updated (${result.count} signals, +${added}/-${removed}). ` +
-            'Re-run the phy flow so the probes get embedded into the bitstream.',
+            `FPGA: probe list updated (${result.count} signals, +${(result.added || []).length}/-${(result.removed || []).length}).`,
             'Run Place & Route').then((picked) => {
             if (picked === 'Run Place & Route') vscode.commands.executeCommand(VSCodeCommands.runPhy);
         });
+    };
+
+    // ---- 0.16.1：ChipWatcher 图形面板 ----
+    //   把「改清单 / 看 watcher 现状 / 直接采一次」放进一个 webview，
+    //   数据全部来自后端的 probeStatus / probeConfig / probeCapture。
+    let probePanel;  // 模块级单例由 show() 内部持有，这里只做缓存
+    const probeService = {
+        getStatus: async () => (await runWithProgress('FPGA: reading ChipWatcher state...',
+            COMMANDS.probeStatus, [])) || {},
+        applySignals: async (signals) => (await runWithProgress('FPGA: updating chip_debugger/user.mdn...',
+            COMMANDS.probeConfig, [{ signals, write: true }])) || {},
+        capture: async () => (await runWithProgress('FPGA: capturing on-chip probe data...',
+            COMMANDS.probeCapture, [{ confirm: true }])) || {},
+    };
+    const showProbePanel = async () => {
+        if (!probePanel) probePanel = new ProbePanel(vscode, probeService);
+        await probePanel.show();
     };
 
     register(VSCodeCommands.doctor, async () => {
@@ -1485,6 +1493,7 @@ function activate(context) {
             { label: '$(pulse) ChipWatcher probe status', command: VSCodeCommands.probeStatus },
             { label: '$(circuit-board) Capture on-chip probe data', command: VSCodeCommands.probeCapture },
             { label: '$(list-tree) Edit probe signal list', command: VSCodeCommands.probeConfig },
+            { label: '$(circuit-board) ChipWatcher probe panel…', command: VSCodeCommands.showProbePanel },
             { label: '$(stethoscope) Doctor: extension / LSP / Verible / TD / MCP status', command: VSCodeCommands.doctor },
             { label: '$(output) Show logs', command: VSCodeCommands.showLogs },
         ];
@@ -1564,6 +1573,7 @@ function activate(context) {
     register(VSCodeCommands.probeStatus, () => probeStatus(false));
     register(VSCodeCommands.probeCapture, () => probeCapture());
     register(VSCodeCommands.probeConfig, () => probeConfig());
+    register(VSCodeCommands.showProbePanel, () => showProbePanel());
 
     register(VSCodeCommands.generateSvf, async () => {
         const result = await runWithProgress('FPGA: generating SVF...', COMMANDS.svfgen, [{}]);

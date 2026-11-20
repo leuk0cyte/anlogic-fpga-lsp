@@ -3681,8 +3681,16 @@ Json Bridge::ProbeCaptureTool(const Json& arguments) {
     td_choice_ = *choice;
 
     probe::CaptureOptions capture_options;
-    if (const auto it = arguments.find("download"); it != arguments.end() && it->is_boolean()) {
-        capture_options.download = it->get<bool>();
+    if (const auto it = arguments.find("download"); it != arguments.end()) {
+        if (it->is_boolean()) {
+            capture_options.download = it->get<bool>() ? "true" : "false";
+        } else if (it->is_string()) {
+            capture_options.download = it->get<std::string>();
+        }
+    }
+    if (const auto it = arguments.find("speed"); it != arguments.end() && it->is_number_integer()) {
+        const int value = it->get<int>();
+        if (value >= 2 && value <= 9) capture_options.speed = value;
     }
     if (const auto it = arguments.find("trigger_now"); it != arguments.end() && it->is_boolean()) {
         capture_options.trigger_now = it->get<bool>();
@@ -3710,11 +3718,18 @@ Json Bridge::ProbeCaptureTool(const Json& arguments) {
     if (const auto it = arguments.find("confirm"); it != arguments.end() && it->is_boolean()) {
         confirm = it->get<bool>();
     }
-    if (capture_options.download && !confirm) {
-        return flow::Refusal(
-            "confirm",
-            "capture with download:true reprograms the FPGA SRAM; pass confirm:true "
-            "(or download:false to only read the already-loaded design)");
+    if (capture_options.download == "true" || capture_options.download == "auto" ||
+        capture_options.download == "always") {
+        if (!confirm) {
+            return flow::Refusal(
+                "confirm",
+                "capture may reprogram the FPGA SRAM (download:auto keeps the current bitstream "
+                "when it already answers, download:true always reloads); pass confirm:true, or "
+                "download:false to only read the already-loaded design");
+        }
+    }
+    if (capture_options.download == "false") {
+        // 显式只读：不需要确认
     }
     return probe::Capture(*choice, proj, capture_options);
 }

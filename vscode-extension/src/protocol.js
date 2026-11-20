@@ -124,6 +124,7 @@ const VSCodeCommands = Object.freeze({
     probeStatus: 'fpgaLsp.probeStatus',
     probeCapture: 'fpgaLsp.probeCapture',
     probeConfig: 'fpgaLsp.probeConfig',
+    showProbePanel: 'fpgaLsp.showProbePanel',
 });
 
 const VIEWS = Object.freeze({

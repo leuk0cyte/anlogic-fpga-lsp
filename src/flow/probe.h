@@ -176,7 +176,14 @@ struct CaptureOptions {
     std::string instance;        // 空 = 从 compiled.cwc 读（通常是 auto_created_cwc1）
     std::string cable = "0";
     double wait_timeout = 30.0;  // wait_on_hw_cw -timeout
-    bool download = true;        // 先 download -mode jtag_burst 把带探针的 bit 灌进去
+    // 是否先把带探针的 bit 灌进器件。默认 "auto"：
+    //   GUI 的 ChipWatcher **不是每次抓取都先下载** —— 只要器件里跑的已经是那份
+    //   带探针的 bit 就能直接抓。所以先直接抓，抓不动再下载重抓一次。
+    //   "true"/"always" = 总是先下载；"false"/"never" = 只抓不下载。
+    std::string download = "auto";
+    // -spd（下载时钟档位，实测映射）：
+    //   2=200kHz 3=500kHz 4=1MHz 5=2MHz 6=3MHz 7=5MHz(GUI 默认) 8=8MHz 9=16MHz
+    int speed = 7;
     bool trigger_now = true;     // 立即触发（不依赖当前触发条件）
     double session_timeout = 900.0;
     bool keep_csv = true;

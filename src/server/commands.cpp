@@ -1426,6 +1426,9 @@ HandlerResult LspServer::HandleExecuteCommand(const Json& params) {
         //   不做任何"缺 confirm 就当 true"之类的便利处理。
         program_options.confirm = jsonrpc::GetBool(options, "confirm", false);
         program_options.allow_mismatch = jsonrpc::GetBool(options, "allowMismatch", false);
+        const int speed = jsonrpc::GetInt(options, "speed", 7);
+        // -spd 实测档位：2=200k 3=500k 4=1M 5=2M 6=3M 7=5M(GUI 默认) 8=8M 9=16M
+        if (speed >= 2 && speed <= 9) program_options.speed = speed;
         return OkObject(flow::Program(*td, *project, program_options));
     }
 
@@ -1481,7 +1484,16 @@ HandlerResult LspServer::HandleExecuteCommand(const Json& params) {
         const Json options =
             args.empty() || !args.front().is_object() ? Json::object() : args.front();
         probe::CaptureOptions capture_options;
-        capture_options.download = jsonrpc::GetBool(options, "download", true);
+        // download 支持三态：auto（默认，先直接抓、抓不动再下载）/ true / false
+        if (const auto it = options.find("download"); it != options.end()) {
+            if (it->is_boolean()) {
+                capture_options.download = it->get<bool>() ? "true" : "false";
+            } else if (it->is_string()) {
+                capture_options.download = it->get<std::string>();
+            }
+        }
+        const int probe_speed = jsonrpc::GetInt(options, "speed", 7);
+        if (probe_speed >= 2 && probe_speed <= 9) capture_options.speed = probe_speed;
         capture_options.trigger_now = jsonrpc::GetBool(options, "triggerNow", true);
         capture_options.instance = jsonrpc::GetString(options, "instance");
         capture_options.cable = jsonrpc::GetString(options, "cable", "0");
@@ -1490,13 +1502,20 @@ HandlerResult LspServer::HandleExecuteCommand(const Json& params) {
         capture_options.allow_stale = jsonrpc::GetBool(options, "allowStale", false);
         const int timeout = jsonrpc::GetInt(options, "timeout", 30);
         capture_options.wait_timeout = timeout > 0 ? static_cast<double>(timeout) : 30.0;
-        // `download` 会把带探针的 bit 重新灌进 SRAM（改板子状态）；采集本身只读。
-        // 和 fpgalsp.program 一样把确认下沉到后端，避免任何调用路径绕过。
-        if (capture_options.download && !jsonrpc::GetBool(options, "confirm", false)) {
+        // 下载会把带探针的 bit 重新灌进 SRAM（改板子状态）；纯抓取只读。
+        // "auto" 也**可能**下载，所以同样要确认；只有显式 download:false 才是纯只读。
+        std::string probe_download = capture_options.download;
+        for (char& c : probe_download) {
+            if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+        }
+        const bool read_only = probe_download == "false" || probe_download == "never" ||
+                               probe_download == "no" || probe_download == "0";
+        if (!read_only && !jsonrpc::GetBool(options, "confirm", false)) {
             Json refusal = flow::Refusal(
                 "confirm",
-                "capture with download:true reprograms the FPGA SRAM; pass confirm:true "
-                "(or download:false to only read the already-loaded design)");
+                "capture may reprogram the FPGA SRAM (download:auto keeps the current bitstream "
+                "when it already answers, download:true always reloads); pass confirm:true, or "
+                "download:false to only read the already-loaded design");
             return OkObject(refusal);
         }
         return OkObject(probe::Capture(*td, *project, capture_options));

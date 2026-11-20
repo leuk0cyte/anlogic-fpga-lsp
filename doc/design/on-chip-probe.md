@@ -161,11 +161,11 @@ Sample,Trigger,pwm_reg0_i[15:0],pwm_reg1_i[15:0],pwm_reg6_i[15:0],pwm_reg7_i[15:
 
 | 文件 | 内容 |
 | --- | --- |
-| `src/flow/probe.h/.cpp` | `ParseMarkDebug` / `RenderMdn` / `ReadMdn` / `WriteMdn`、`ParseCwc`、`ParseCaptureCsv`、`Status`、`Configure`、`Capture` |
+| 后端实现 | `src/flow/probe.h/.cpp` | `ParseMarkDebug` / `RenderMdn` / `ReadMdn` / `WriteMdn`、`ParseCwc`、`ParseCaptureCsv`、`Status`、`Configure`、`Capture` |
 | `src/flow/hardware_lease.h` | 进程级"谁在占 JTAG"租约；`Program` 与 `Capture` 互斥，撞了返回 `{refused:true, stage:"busy"}` |
 | `src/server/commands.cpp` | `fpgalsp.probeStatus` / `probeConfig` / `probeCapture` |
 | `src/mcp/tools.cpp` + `bridge.cpp` | `fpga_probe_status`（只读）/ `fpga_probe_config`（`write` 门控）/ `fpga_probe_capture`（`flow` 门控） |
-| `vscode-extension` | 3 条命令：状态 / 编辑探针清单 / 采集；采集前有模态确认 |
+| `vscode-extension` | **ChipWatcher 探针面板**（`src/probePanel.js` + `src/probeHtml.js`）：按总线分组的信号芯片、点一下移除、整组移除、粘贴清单、watcher 现状卡片（时钟/深度/触发/stale 徽章）、一键采集；另有 3 条命令走快捷路径 |
 
 ### 安全模型（比烧录松一档，但不是没有）
 
@@ -203,6 +203,52 @@ Sample,Trigger,pwm_reg0_i[15:0],pwm_reg1_i[15:0],pwm_reg6_i[15:0],pwm_reg7_i[15:
 | `fpga_probe_capture {confirm:true}` | 17.4 s，**1024 个采样点**，4 条 16 位总线，CSV 落盘 |
 | 采集值 | 全部 0 —— 与 RTL 一致：`pwm_reg*_i` 来自 `bus_reg`，`reg_bus` 复位为 `'d0` 且只有主机写 Modbus 才改变，板上无主机 → 真值为 0 |
 | stale 守卫 | 把 `user.mdn` 改成 80 个信号但 bit 仍是 64 位后，`stale:true` / `missing:[ANPC_init0/ANPC_SVPWM_init/cnt]`，`probeCapture` 在 `stage:"stale"` 拒绝 |
+
+### 下载速度 `-spd`（本机 GUI 实测映射）
+
+`-spd` 不是 MHz，是**档位号**（1-based，2 起）。官方文档（SWUG110 §5.2.1）写的是
+"可配置范围 200kHz～16MHz，默认 1MHz"，但界面上的默认档是 5MHz：
+
+| `-spd` | 2 | 3 | 4 | 5 | 6 | **7** | 8 | 9 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 时钟 | 200 kHz | 500 kHz | 1 MHz | 2 MHz | 3 MHz | **5 MHz** | 8 MHz | 16 MHz |
+
+**本后端默认 `-spd 7` = 5 MHz**，与 GUI 下载对话框的默认值一致。
+`fpgalsp.program` / `fpgalsp.probeCapture` 都接受 `speed`（2–9），越界值会被忽略并回落默认。
+注意 TD **不校验** `-spd`（实测 `-spd 0` / `-spd 99` 都直接放行，只是稍后才失败），
+所以范围检查必须在我们这层做。
+
+### 采集不一定要先下载
+
+GUI 的 ChipWatcher 不是每次抓取都先下 bit —— 只要器件里跑的就是那份带探针的 bit 就能直接抓。
+所以 `probeCapture` 的 `download` 是三态，默认 `"auto"`：
+
+| 值 | 行为 |
+| --- | --- |
+| `"auto"`（默认） | 先直接抓；抓不动（`run_hw_cw`/`wait_on_hw_cw` 报错，多半是器件里那份 bit 没探针）才下载并重抓一次 —— **同一会话内重试**，不重跑 `open_project` |
+| `"true"` | 总是先 `download -mode jtag_burst` |
+| `"false"` | 纯只读，绝不下载（这种调用不需要 `confirm`） |
+
+真机验证：器件里已经是最新 bit 时，`download:"auto"` 返回 `downloaded:false`、
+仍然拿到 1024 个采样点。
+
+### 采样时钟 / 深度为什么还不能在面板里改
+
+实测三件事，决定了这一步现在做不到：
+
+1. `insert_debugger <dir> -cwc <file>` **认手写的 `.cwc`** —— 把 `sample_depth` 从 1024 改成
+   2048 后 `report_cwc_status` 立刻显示 `2048`，文件头那行过期的
+   `<!-- HMAC is: … -->` 也不拦（`KIT-1004 : chipwatcher: sanity check successfully`）。
+2. 但 `insert_debugger <dir>`（**不带** `-cwc`）既不扫 `<dir>/*.cwc`（实测放进去也没生效，
+   depth 仍 1024），又会**冲掉**前一次 `-cwc` 的配置（实测：先 `-cwc` 得到 2048，
+   再跑一次不带参的 `insert_debugger` 后 watcher 列表直接变空）。
+3. TD 生成的流程脚本调用的是不带 `-cwc` 的 `insert_debugger $chipDebugger`（而且
+   `opt_rtl` 与 `opt_place` 各调一次），所以 `tcl_beforestep` 钩子也留不住配置。
+
+结论：要让面板改时钟/深度，必须让流程里的 `insert_debugger` 带 `-cwc`。可行路径是改
+`phy_1/corpus_delta.tcl` 的 "Editable zone"（该文件跨 run 不变，实测 mtime 停在 8 月），
+或让 `.al` 的 `<CWC_FILE>` 先加载实例。两条都**还没验证**，属于下一期。
+所以面板里这两项目前是**只读展示** + 上面这段说明，不写盘。
 
 ### 未完成：非 0 的动态读数（已定位到 TD 侧，不是我们的 bug）
 
