@@ -238,8 +238,14 @@ Json CopyInstantiation(const hdl::HdlIndex& index, std::string_view path) {
 Json SymbolPath(const hdl::HdlIndex& index, const project::Project& project,
                 std::string_view path, int line, int character) {
     std::string name;
+    std::optional<int> msb;
+    std::optional<int> lsb;
+    std::optional<int> width;
     if (const std::optional<hdl::SymbolAtResult> symbol = index.SymbolAt(path, line, character)) {
         name = symbol->name;
+        msb = symbol->msb;
+        lsb = symbol->lsb;
+        width = symbol->width;
     }
     if (name.empty()) {
         // 对应 Python refs.token_span 的兜底：光标处 token 的文本
@@ -296,10 +302,26 @@ Json SymbolPath(const hdl::HdlIndex& index, const project::Project& project,
     }
     const std::string full_path = instance_path.empty() ? name : instance_path + "/" + name;
 
+    // ⚠ 这个命令的用途是"复制一条能直接贴进 ChipWatcher / mark_debug 的网名"。
+    //   mark_debug 要的是**综合后网表**里的层次名，形如
+    //       WHG/pwm_reg0_i[0]                    （顶层里的信号）
+    //       WHG/ANPC_init0/ANPC_SVPWM_init/cnt[0] （子模块里的信号）
+    //   所以必须带顶层模块名做前缀（缺了它 TD 找不到网），并且把位宽带上 ——
+    //   整个总线写成 `[msb:lsb]` 即可，`chip_debugger/user.mdn` 侧会自动展开成逐位。
+    std::string chip_watcher_path;
+    if (!project.top.empty()) chip_watcher_path = project.top + "/";
+    chip_watcher_path += full_path;
+    if (width.has_value() && *width > 1 && msb.has_value() && lsb.has_value()) {
+        chip_watcher_path += "[" + std::to_string(*msb) + ":" + std::to_string(*lsb) + "]";
+    }
+
     Json out = Json::object();
     out["ok"] = true;
     out["name"] = name;
+    // path 保持"层次路径"语义不变（其它调用方按需使用），
+    // chipWatcherPath 才是可直接粘贴进 ChipWatcher 的那一条。
     out["path"] = full_path;
+    out["chipWatcherPath"] = chip_watcher_path;
     out["instancePath"] = instance_path;
     out["module"] = module->module.name;
     return out;

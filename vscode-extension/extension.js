@@ -813,8 +813,11 @@ function activate(context) {
             vscode.window.showWarningMessage(`FPGA: ${(result && result.error) || 'no symbol under the cursor'}`);
             return;
         }
-        await vscode.env.clipboard.writeText(result.path);
-        vscode.window.showInformationMessage(`FPGA: copied hierarchy path ${result.path}`);
+        // ChipWatcher 里要的是"顶层/实例链/网名[msb:lsb]"这种网表层次名，
+        // 后端在 chipWatcherPath 里给；老后端没有这个字段时回落到 path。
+        const copied = result.chipWatcherPath || result.path;
+        await vscode.env.clipboard.writeText(copied);
+        vscode.window.showInformationMessage(`FPGA: copied ChipWatcher path ${copied}`);
     });
 
     register(VSCodeCommands.copyMcpConfig, async () => {

@@ -650,6 +650,12 @@ HandlerResult LspServer::HandleFormatting(const Json& params) {
 
     Json edits = Json::array();
     edits.push_back(std::move(edit));
+    // 覆盖全文的编辑会让客户端本地的 semantic token 全部作废；这里把服务端那份
+    // 缓存也丢掉，下一次请求必然是 full —— 否则可能拿旧基线算 delta，高亮会错位。
+    {
+        std::lock_guard<std::mutex> lock(semantic_mutex_);
+        semantic_cache_.erase(uri);
+    }
     return HandlerResult::Ok(std::move(edits));
 #endif
 }
@@ -800,15 +806,29 @@ HandlerResult LspServer::HandleSemanticTokensDelta(const Json& params) {
     const std::string id = SemanticResultId(data, uri);
 
     Json edits = Json::array();
+    bool full_result = false;
     {
         std::lock_guard<std::mutex> lock(semantic_mutex_);
         SemanticCacheEntry& entry = semantic_cache_[uri];
-        if (entry.result_id != id) {
+        // ⚠ 必须尊重 previousResultId：delta 的编辑是相对**客户端手里那份**数据算的。
+        //   如果客户端的基线不是我们缓存的那一份（典型场景：格式化返回一条覆盖全文的
+        //   编辑，客户端本地 token 已被作废/重建，或者中间穿插过一次 full 请求把
+        //   entry.data 推进了），再回 delta 就会让客户端把"差量"套到错误的基线上 ——
+        //   表现就是**格式化之后语法高亮错位**。这种情况只能回全量。
+        if (previous.empty() || previous != entry.result_id) {
+            full_result = true;
+        } else if (entry.result_id != id) {
             // P-D5：只发真正变化的那一段（而不是"新数组 + deleteCount=旧长度"）。
             edits = SemanticDeltaEdits(entry.data, data);
         }
         entry.result_id = id;
         entry.data = data;
+    }
+    if (full_result) {
+        Json result = Json::object();
+        result["resultId"] = id;
+        result["data"] = data;
+        return HandlerResult::Ok(std::move(result));
     }
     Json result = Json::object();
     result["resultId"] = id;

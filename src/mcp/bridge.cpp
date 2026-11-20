@@ -1835,10 +1835,23 @@ Json Bridge::SymbolPathTool(const Json& arguments) {
     }
     std::string full_path = instance_path.empty() ? name : instance_path + "/" + name;
 
+    // 与 server::ide::SymbolPath 保持一致：mark_debug / ChipWatcher 要的是**综合后网表**
+    // 的层次名，所以必须带顶层模块名前缀，并把位宽写成 `[msb:lsb]`（清单侧会自动展开）。
+    std::optional<hdl::SymbolAtResult> symbol_at = index.SymbolAt(path, line, character);
+    std::string chip_watcher_path;
+    if (!proj.top.empty()) chip_watcher_path = proj.top + "/";
+    chip_watcher_path += full_path;
+    if (symbol_at.has_value() && symbol_at->width.has_value() && *symbol_at->width > 1 &&
+        symbol_at->msb.has_value() && symbol_at->lsb.has_value()) {
+        chip_watcher_path +=
+            "[" + std::to_string(*symbol_at->msb) + ":" + std::to_string(*symbol_at->lsb) + "]";
+    }
+
     Json out = Json::object();
     out["ok"] = true;
     out["name"] = name;
     out["path"] = full_path;
+    out["chipWatcherPath"] = chip_watcher_path;
     out["instancePath"] = instance_path;
     out["module"] = module->module.name;
     return out;
