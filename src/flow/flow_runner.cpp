@@ -34,6 +34,7 @@
 #include <re2/re2.h>
 
 #include "flow/flow_logic.h"
+#include "flow/flow_status.h"  // GUI 6 步：flow.status 统计表 + 步骤标记
 #include "flow/probe.h"
 #include "platform/encoding.h"
 #include "reports/reports_aggregate.h"
@@ -360,6 +361,9 @@ jsonrpc::Json FlowState::ToJson() const {
     out["error"] = error;
     out["log"] = log;
     out["jobs"] = jobs;
+    // GUI 的 6 个步骤（含每步耗时）：见 FlowRunner::Status() 里的收集逻辑。
+    // 只**追加**这一个键，现有字段（state/stage/elapsed/running/lines/...）不动。
+    out["steps"] = steps;
     return out;
 }
 
@@ -406,6 +410,61 @@ struct FlowRunner::Impl {
         if (clock) return clock();
         const auto now = std::chrono::system_clock::now().time_since_epoch();
         return std::chrono::duration<double>(now).count();
+    }
+
+    // -------------------------------------------------------------------------
+    // GUI 的 6 个步骤（含每步耗时）—— flowStatus 的 steps 数组
+    // -------------------------------------------------------------------------
+    //  为什么在这里算：flow.status 里的 Flow Statistics 表是**命令级**的，而 GUI 是
+    //  6 个步骤；两者的对齐（命令名 -> GUI 步骤、同步骤多条命令耗时相加）放在
+    //  flow_status.cpp 里，这里只负责"按模板顺序拼成 JSON"。
+    //  1 s 缓存：TD 只在每个步骤结束时写 flow.status，flowStatus 每 2 s 轮询一次，
+    //  没必要每次轮询都扫两个 run 目录。
+    mutable std::mutex steps_mutex;
+    mutable jsonrpc::Json steps_cache = jsonrpc::Json::array();
+    mutable double steps_cached_at = 0.0;
+    mutable bool steps_cached = false;
+
+    // 永远返回 6 条、按 GUI 顺序；run 目录里没有的步骤补 pending（wall 记 0）。
+    jsonrpc::Json StepsJson() const {
+        const double now = Now();
+        {
+            std::lock_guard<std::mutex> lock(steps_mutex);
+            if (steps_cached && now - steps_cached_at < 1.0) return steps_cache;
+        }
+        const std::vector<RunFlowSteps> runs = CollectRunsFlowSteps(RunsRoot());
+        jsonrpc::Json steps = jsonrpc::Json::array();
+        for (const FlowStep& tpl : GuiFlowSteps()) {
+            const FlowStep* found = nullptr;
+            const std::string* run_name = nullptr;
+            for (const RunFlowSteps& run : runs) {
+                for (const FlowStep& step : run.steps) {
+                    if (std::string_view(step.name) != tpl.name) continue;
+                    found = &step;
+                    run_name = &run.run_name;
+                    break;
+                }
+                if (found != nullptr) break;
+            }
+            const FlowStep& src = found != nullptr ? *found : tpl;
+            jsonrpc::Json item = jsonrpc::Json::object();
+            item["name"] = src.name;
+            item["stage"] = src.stage;
+            item["status"] = src.status;
+            item["wall"] = src.wall;
+            item["cpu"] = src.cpu;
+            item["mem_mb"] = src.mem_mb;
+            // syn / phy 两个 run 合并在同一个数组里，用 run 标出来源
+            if (run_name != nullptr && !run_name->empty()) item["run"] = *run_name;
+            steps.push_back(std::move(item));
+        }
+        {
+            std::lock_guard<std::mutex> lock(steps_mutex);
+            steps_cache = steps;
+            steps_cached_at = now;
+            steps_cached = true;
+        }
+        return steps;
     }
 
     FlowSession* Session() {
@@ -673,17 +732,26 @@ struct FlowRunner::Impl {
     }
 
     // -------------------------------------------------------------------------
-    // P0-3：别依赖裸 `insert_debugger`
+    // P0-3：探针必须在**正确的两个时点**插入（TD GUI 的时序）
     // -------------------------------------------------------------------------
-    // 实测（TD 2026.2，同一台机器、同一个工程，三种写法结果完全不同）：
-    //   * `insert_debugger {<project>/chip_debugger}` 在 elaborate 设计上**正常工作**，
-    //     会回显 mark_debug 列表；
-    //   * 裸 `insert_debugger` —— DefaultFlow.tcl 走的正是这条（chipDebugger 变量没设）
-    //     —— **零输出、静默空操作**；
-    //   * 在 gate 网表上调 -> KIT-2501。
-    // 所以必须在 run 的对应步骤前自己 source 一条**带参数**的 insert_debugger。
-    // 钩子走工程模式（TD 2026.2 实测 `RUN-1002 : start command "source_tcl ..."`），
-    // 非工程模式下 set_param -run 不生效 —— 失败时降级，不让 flow 失败。
+    // GUI 的 flow 是 6 步：syn = Read Design / Optimize RTL / Optimize Gate，
+    // phy = Optimize Placement / Optimize Routing / Generate Bitstream。
+    // TD 的 ChipWatcher 时序（用户确认 + 实测）：
+    //   ① **Read Design 完成之后**才能 mark_debug 信号（RTL 级网名此时可解析）；
+    //   ② **Optimize Gate 完成之后**才能定采样时钟/深度 —— 也就是 watcher 实例
+    //      （`auto_created_cwc1` + debug hub + OOC 综合）在这一刻被建立；
+    //   ③ 然后跑 phy，watcher 才会被布局布线进 bit。
+    //
+    // 实测证据（2026-11-21，同一工程）：
+    //   * 只在 rtl 步前插：syn 报告 `#mark_debug 64`，但 phy 的 insert_debugger 报
+    //     `KIT-2501 : No mark_debug exists in the netlist`，最终**没有** watcher；
+    //   * rtl 步前 + **gate 步后**各插一次：gate 步结束时报
+    //     `KIT-1004 : import watcher inst auto_created_cwc1 completed, there are
+    //      4 view node(s), 64 trigger net(s), 64 data net(s)`，并跑了
+    //     `auto_created_cwc1` 的 OOC 综合；phy 里能看到 `auto_created_cwc1/...` 的网
+    //     与 `cwc_jtck` 时钟；最后用这份 bit 直接 `probe_capture` 成功（1024 点）。
+    // 所以两个钩子都要挂：`syn_1 rtl beforestep` 负责 mark_debug，
+    // `syn_1 gate afterstep` 负责建立 watcher 实例（这一步最容易漏）。
     void EnsureProbeHook(const std::string& run_name) {
         if (!HasProbeMdn(owner->project_)) return;  // 没配探针就什么都不做
         // 综合只做到 gate：在 rtl 步骤前插探针；布局布线的 place 步骤前再插一次
@@ -700,7 +768,6 @@ struct FlowRunner::Impl {
         // 脚本里的路径必须正斜杠：TD 的 Tcl 会把反斜杠当转义符吃掉。
         const std::string debugger_dir = probe::ChipDebuggerDir(owner->project_);
         const std::string insert_hook = Join(RunDir(), "probe_insert.tcl");
-        const std::string setup_hook = Join(RunDir(), "probe_setup.tcl");
 
         // 写一个钩子脚本；失败返回空字符串（调用方只留痕、不判死）。
         const auto write_hook = [this](const std::string& path, const std::string& body) {
@@ -734,17 +801,11 @@ struct FlowRunner::Impl {
 
         bool applied = set_hook(step, "tcl_beforestep", insert_hook);
 
-        // phy 还差一步：`setup_debugger` 才是真正生成 cw/compiled.cwc 的那个命令，
-        // 而 DefaultFlow 同样是"有 chipDebugger 才带路径、否则裸调用"。实测（2026-11-21）：
-        // 只挂 insert_debugger 时 gate 报告里 mark_debug 为 64，但 phy 跑完**没有** cwc ——
-        // 因为 setup_debugger 那一步拿不到 chip_debugger 路径。它在 bitgen 之后被调用，
-        // 所以用 bitgen 的 afterstep 钩子补一次带路径的调用。
-        if (run_name == "phy_1") {
-            const std::string setup_body = "setup_debugger {" + debugger_dir + "} -prj {" +
-                                           owner->project_.name + "}\n";
-            if (write_hook(setup_hook, setup_body)) {
-                applied = set_hook("bitgen", "tcl_afterstep", setup_hook) && applied;
-            }
+        // syn 还要在 **gate 之后**再插一次：watcher 实例（clock/depth/hub/OOC）是在
+        // "Optimize Gate 完成"那一刻建立的，缺了这一步 phy 只会看到一个空 watcher，
+        // 最终 bit 里没有探针。这是本轮实测定位到的根因。
+        if (run_name == "syn_1") {
+            applied = set_hook("gate", "tcl_afterstep", insert_hook) && applied;
         }
         {
             std::lock_guard<std::mutex> lock(hook_mutex);
@@ -848,14 +909,26 @@ struct FlowRunner::Impl {
         bool watcher_present = false;
         int watcher_net_count = 0;
         std::string cwc_path;
+        bool watcher_built = false;  // gate 之后是否建出了 watcher 实例（看 OOC 产物）
         if (run_name == "phy_1") {
             cwc_path = probe::CompiledCwc(owner->project_);
             watcher_present = IsFile(cwc_path);
             if (watcher_present) watcher_net_count = probe::ReadCwc(cwc_path).net_count;
+            // batch/CLI 驱动下 TD 不写 compiled.cwc（只有 GUI 的 ChipWatcher 会存），
+            // 但 gate 之后若真的建了 watcher，`<run>/cw/` 下会有 `auto_created_cwc*`
+            // 目录（含 `*_ooc.db` / `*_watcherInst.sv`）。用这个作为"探针确实编进去了"的
+            // 第二判据 —— 否则会误报失败（2026-11-21 实测：bit 里已有 watcher，
+            // 直接 probe_capture 抓到了 1024 点，但 compiled.cwc 仍然不存在）。
+            for (const std::string& name : ListDir(Join(RunDirOf("syn_1"), "cw"))) {
+                if (name.find("cwc") == std::string::npos) continue;
+                watcher_built = true;
+                break;
+            }
 
             // ⚠ 只有**确实配了探针**（chip_debugger 下有非空 *.mdn）的工程才强制；
             //   没配探针的普通工程必须继续成功 —— 回归红线。
-            if (HasProbeMdn(owner->project_) && (!watcher_present || watcher_net_count == 0)) {
+            if (HasProbeMdn(owner->project_) && !watcher_built &&
+                (!watcher_present || watcher_net_count == 0)) {
                 // 优先带出 `KIT-*`：那才是"探针为什么没进去"的真正诊断。
                 // RUN-/PRJ-/ARC- 这些运行时噪声（start command / Waiting for run）只会误导。
                 std::string said;
@@ -1451,6 +1524,9 @@ FlowState FlowRunner::Status() const {
         state.elapsed = Round1(impl_->Now() - state.started_at);
     }
     state.log = TrimLog(std::move(state.log), 200);
+    // GUI 的 6 个步骤（每步耗时）：run 目录里的标记文件 + flow.status 现算。
+    // 没跑过 flow 时也是 6 条 pending —— 与 TD GUI 的 Flow 视图行数一致。
+    state.steps = impl_->StepsJson();
     return state;
 }
 

@@ -14,6 +14,8 @@
 add_library(fpga_lsp_flow STATIC
     flow_logic.cpp
     flow_runner.cpp
+    # GUI 的 6 步（含每步耗时）：flow.status 表 + .<step>.{begin,end,error}.f 标记
+    flow_status.cpp
     programmer.cpp
     probe.cpp
     strategy.cpp

@@ -6,7 +6,7 @@
 | --- | --- |
 | **全新目录干净构建** | configure 29 s → build 3.3 min → **844 个目标全部成功**（Release + 全量 LTO）；无 LTO 的 `windows-msvc-dev` 全新目录 **56 s** |
 | **`ctest` 全量** | **63/63 通过**（`unit` 43 · `td` 4 · `e2e` 5 · `formatgate` 4 · `lintgate` 3 · `gate` 2 · `generator` 1 · `mcp` 1）；preset 默认 **8 路并行**，实测 **62 s**（串行 92–104 s） |
-| **原生产物** | `build/bin/fpgalsp-native.exe`（**6,592,512 B**，全量 LTCG；SHA256 `D0857390…96BC72`） |
+| **原生产物** | `build/bin/fpgalsp-native.exe`（**6,618,624 B**，全量 LTCG；SHA256 `5975E6E7…9AD9E2`） |
 | **单元测试规模** | 43 个 gtest target |
 
 > 构建/测试的并行度分析（为什么 192 线程帮不上忙、时间精确花在哪、日常该用哪个 preset）见
@@ -317,9 +317,9 @@ flash +0.5~0.7 %。
 
 | 项 | 值 |
 | --- | --- |
-| 扩展包 | `vscode-extension/fpga-lsp-anlogic-0.18.4.vsix`（230 文件，3,231,689 B） |
-| 打包内置的服务端 | `build/bin/fpgalsp-native.exe`（Release + 全量 LTO，6,592,512 B，SHA256 `D0857390…6BC72`） |
-| 一致性校验 | 解包后 `extension/server/bin/fpgalsp-native.exe` 的 SHA256 与该二进制**逐字节相同**；`extension/package.json` 版本 = 0.18.4 |
+| 扩展包 | `vscode-extension/fpga-lsp-anlogic-0.18.5.vsix`（230 文件，3,246,758 B） |
+| 打包内置的服务端 | `build/bin/fpgalsp-native.exe`（Release + 全量 LTO，6,618,624 B，SHA256 `5975E6E7…AD9E2`） |
+| 一致性校验 | 解包后 `extension/server/bin/fpgalsp-native.exe` 的 SHA256 与该二进制**逐字节相同**；`extension/package.json` 版本 = 0.18.5 |
 
 ### 升级后工程侧的变化
 
@@ -403,3 +403,51 @@ flash +0.5~0.7 %。
 修掉 `build/_probe_audit/mcp_call.py` 里这一行后，同一次调用从 **20 s 降到 0.2 s**。
 `fpga_guide` 的 overview、`initialize.instructions`、`doc/mcp-usage.md` 的相应文案都已改正；
 安装发现缓存仍保留（在磁盘多/网络盘的机器上仍有用），但本机收益接近 0。
+
+## 探针闭环 + Flow 六步对齐（2026-11-21 凌晨 04:00）
+
+### 一、探针进 bit：根因是"漏了 gate 之后那一次 insert_debugger"
+
+用户的 GUI 时序给了决定性线索：mark_debug 只能在 **Read Design 之后**；采样时钟/深度只能在
+**Optimize Gate 之后**设；然后跑 phy 才进 bit。按这个时序复测：
+
+| 做法 | 结果 |
+| --- | --- |
+| 只在 `rtl` 步前插 `insert_debugger <chip_debugger>`（上一轮） | syn 报 `#mark_debug 64`，phy 的 insert_debugger 报 `KIT-2501 : No mark_debug exists in the netlist`，**无 watcher** |
+| `rtl` 步前 + **`gate` 步后** 各插一次 | gate 结束报 `KIT-1004 : import watcher inst auto_created_cwc1 completed, there are 4 view node(s), 64 trigger net(s), 64 data net(s)`，生成 `syn_1/cw/auto_created_cwc1/`（OOC 综合）；phy 里出现 `auto_created_cwc1/...` 与 `cwc_jtck`；**后端自己跑出的 bit 直接 `probe_capture` 成功：1024 点 / trigger_index=256** |
+
+因此 `flow_runner` 的探针钩子改为 **`syn_1 rtl tcl_beforestep`（mark）+ `syn_1 gate tcl_afterstep`（建 watcher）**，
+`phy_1 place` 前那次保留；phy 的成功判据也从"只看 `compiled.cwc`"改为
+**"`compiled.cwc` 有 net" 或 "`syn_1/cw/` 下有 `auto_created_cwc*` OOC 产物"** ——
+后者才是"watcher 真建出来了"的硬证据（批量跑 TD 不写 cwc，见下）。
+
+**仍有一小截**：批量（`launch_runs`）跑完 phy 时 TD **不写** `phy_1/cw/compiled.cwc`
+（只有 GUI 的 ChipWatcher 存盘会写），而 `probe_capture` 需要它拿 instance 名与触发条件。
+当前可用的桥接办法：把任意一份**与当前 mdn 同构**的 cwc 放到该路径（上一次抓取留下的
+`.fpgalsp/probe/trigger_*.cwc` 即可，实测对新 bit 完全适用）。彻底自动化需要从
+`report_cwc_status` / `auto_created_cwc1_watcherInst.tcl` 反推并生成 cwc —— 列为下一步。
+
+### 二、插件侧边栏 Flow 与 TD GUI 的 6 步不一致：原因与修复
+
+**原因**：后端只把**阶段级**状态（`state/stage/elapsed`）发给插件；`flow.status` 里那张
+command 级 Flow Statistics 表（含每步 wall/cpu/mem）从来没被翻译成 GUI 的 6 步，
+`fpgaLsp/flowStatus` 的 `flow` 对象里根本没有 `steps` 键（`bridge.cpp` 只是透传一个永远不存在的字段）。
+插件只能按名字正则猜，于是显示成 syn/phy 两段而不是 6 步。
+
+**修复**：
+- 新 `src/flow/flow_status.{h,cpp}`：解析 `flow.status` / `*_flow.status` 的 Flow Statistics 表，
+  把命令名映射到 GUI 6 步（`analyze|elaborate|read_hdl|read_adc|read_sdc|import_db|import_device → Read Design`；
+  `optimize_rtl`→Optimize RTL；`optimize_gate`→Optimize Gate；`place|legalize_phy_inst`→Optimize Placement；
+  `route`→Optimize Routing；`bitgen|setup_debugger`→Generate Bitstream），同步骤耗时相加、mem 取 max；
+  用 `.read_design/.opt_rtl/.opt_gate/.opt_place/.opt_route/.bitgen.{begin,end,error}.f` 判
+  `pending|running|done|failed`；**没有 flow.status 时也给 6 步全 pending**。
+- `flow_runner` 的 flow JSON 增 `steps:[{name,stage,status,wall,cpu,mem_mb,run}]`（1 s 缓存）；
+  `src/server/commands.cpp` 加一行把 `steps` 透传到 LSP 通道（插件走这条）。
+- `vscode-extension/src/flowTree.js`：有 `steps` 时渲染 6 个节点，标签 `Optimize Gate · 1m11s`、
+  描述 `done · cpu 3m58s · 1125 MB`，父节点保留总耗时；无 `steps` 时**原样回落**到旧显示。
+- 测试：新 `tests/unit/flow_status_test.cpp`（`1m11s`→71、同步骤相加、缺表 6 步 pending、
+  标记→done/failed/running、`place_flow.status`+`route_flow.status` 取 max 不重复计数）；
+  插件 `test/run.js` 新增"steps 渲染 6 步 + 耗时"用例（**44 passed**）。
+
+已知不精确处：`fix_hold`/`update_timing` 在 gate/place/route 三步都出现，故意不归属任何一步
+（记进去必然错），所以某些 run 的 place/route 耗时会略少。

@@ -531,6 +531,68 @@ test('flow tree: pushed flowEvent updates the summary', async () => {
     includes(done.description, 'bitstream saved');
 });
 
+test('flow tree: backend flow.steps renders the six GUI steps with wall times', async () => {
+    // 后端 `fpgaLsp/flowStatus` 的 flow.steps 形状（wall/cpu 单位是秒）：
+    // syn_1 的三步跑完、phy_1 的三步还没开始 —— 与 TD GUI 的 6 步一一对应。
+    const flowStepsPayload = [
+        { name: 'Read Design', stage: 'design', status: 'done', wall: 2, cpu: 1, mem_mb: 577, run: 'syn_1' },
+        { name: 'Optimize RTL', stage: 'rtl', status: 'done', wall: 40, cpu: 46, mem_mb: 907, run: 'syn_1' },
+        { name: 'Optimize Gate', stage: 'gate', status: 'done', wall: 71, cpu: 238, mem_mb: 1125, run: 'syn_1' },
+        { name: 'Optimize Placement', stage: 'place', status: 'running', wall: 0, cpu: 0, mem_mb: 0, run: 'phy_1' },
+        { name: 'Optimize Routing', stage: 'route', status: 'failed', wall: 0, cpu: 0, mem_mb: 0, run: 'phy_1' },
+        { name: 'Generate Bitstream', stage: 'bitgen', status: 'pending', wall: 0, cpu: 0, mem_mb: 0, run: 'phy_1' },
+    ];
+    const provider = new FlowTreeProvider(
+        {
+            request: async (method) => {
+                if (method === 'fpgaLsp/flowStatus') {
+                    return {
+                        ok: true,
+                        flow: {
+                            running: false,
+                            stage: 'done',
+                            elapsed: 113,
+                            lastMessage: 'syn_1 finished',
+                            steps: flowStepsPayload,
+                        },
+                    };
+                }
+                return sampleReports();
+            },
+        },
+        async () => sampleInfo
+    );
+    await provider.refresh();
+
+    const flowSection = provider.getChildren().find((section) => section.id === 'section:flow');
+    // 父节点仍然带总耗时
+    includes(flowSection.description, 'done');
+    includes(flowSection.description, '113s');
+
+    const groups = provider.getChildren(flowSection).filter((node) => node.kind === 'section');
+    eq(groups.length, 2, 'syn / phy groups');
+    const nodes = groups.flatMap((group) => provider.getChildren(group).filter((node) => node.kind === 'stage'));
+    eq(nodes.length, 6, 'six GUI steps');
+    eq(
+        nodes.map((node) => node.label).join('|'),
+        'Read Design · 2s|Optimize RTL · 40s|Optimize Gate · 1m11s|'
+        + 'Optimize Placement|Optimize Routing|Generate Bitstream',
+        'step labels carry the wall time'
+    );
+    // 状态用图标 + 描述区分
+    eq(provider.getTreeItem(nodes[0]).iconPath.id, 'pass', 'done icon');
+    eq(provider.getTreeItem(nodes[3]).iconPath.id, 'sync~spin', 'running icon');
+    eq(provider.getTreeItem(nodes[4]).iconPath.id, 'error', 'failed icon');
+    eq(provider.getTreeItem(nodes[5]).iconPath.id, 'circle-outline', 'pending icon');
+    includes(nodes[2].description, 'done');
+    includes(nodes[2].description, 'cpu 3m58s');   // 238 s
+    includes(nodes[2].description, '1125 MB');
+    includes(nodes[5].description, 'pending');
+    // 组上的小结：3 步 + 该 run 的累计耗时
+    includes(groups[0].description, '3 steps');
+    includes(groups[0].description, '1m53s');      // 2 + 40 + 71 = 113 s
+});
+
 test('flow tree: tolerates reports.py flowStatus object with steps', async () => {
     const reports = sampleReports();
     reports.flowStatus = {

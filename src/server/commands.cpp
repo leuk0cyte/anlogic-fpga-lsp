@@ -79,6 +79,9 @@ Json FlowObjectFrom(const flow::FlowState& state) {
     flow["jobs"] = state.jobs;
     flow["ok"] = state.ok.has_value() ? Json(*state.ok) : Json(nullptr);
     if (!state.error.empty()) flow["error"] = state.error;
+    // GUI 的 6 个步骤（含每步耗时）：FlowState::ToJson 里也算了一份（MCP 通道用），
+    // 但 LSP 这层是**逐字段**转发的，漏掉这一行插件就永远看不到 steps。
+    flow["steps"] = state.steps;
     return flow;
 }
 

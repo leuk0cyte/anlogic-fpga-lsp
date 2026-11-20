@@ -67,6 +67,9 @@ fpgalsp_add_unit_test(flow_runner fpga_lsp::flow)
 fpgalsp_add_unit_test(flow_programmer fpga_lsp::flow)
 fpgalsp_add_unit_test(flow_strategy fpga_lsp::flow)
 
+# GUI 6 步（含每步耗时）：flow.status 统计表 + .<step>.{begin,end,error}.f 标记
+fpgalsp_add_unit_test(flow_status fpga_lsp::flow)
+
 # 0.16.0：片上探针（ChipWatcher）—— user.mdn / compiled.cwc / 采集 CSV 的纯解析
 fpgalsp_add_unit_test(probe fpga_lsp::flow)
 

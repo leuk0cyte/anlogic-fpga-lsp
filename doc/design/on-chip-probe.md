@@ -347,3 +347,43 @@ GUI 的 ChipWatcher 不是每次抓取都先下 bit —— 只要器件里跑的
 
 已把 `user.mdn` 还原成原来那 64 个信号（1192 B，与原始文件同尺寸），
 并用 `probeStatus` 确认 `stale:false / ready:true`，随后一次真实采集通过。
+## 2026-11-21 补记：闭环 —— 探针确实能进 bit，缺的是"gate 之后那一次 insert_debugger"
+
+上一轮以为"采样时钟/深度改不动 ⇒ 探针进不了 bit"，**这个结论下得过头了**。
+按 TD GUI 的时序（用户确认）重新做实验后闭环成功。
+
+### GUI 的真实时序（6 步）
+
+| run | 步骤 | 这一步能做什么 |
+| --- | --- | --- |
+| syn | 1 Read Design | 完成后才能在 ChipWatcher 里 **mark_debug 信号** |
+| syn | 2 Optimize RTL | — |
+| syn | 3 Optimize Gate | **完成后才能设采样时钟/深度**：watcher 实例（`auto_created_cwc1` + debug hub + OOC 综合）在这一刻建立 |
+| phy | 4 Optimize Placement | — |
+| phy | 5 Optimize Routing | — |
+| phy | 6 Generate Bitstream | watcher 随设计进 bit |
+
+### 实测对照
+
+| 做法 | 结果 |
+| --- | --- |
+| 只在 `rtl` 步前 `insert_debugger <dir>`（上一轮的做法） | syn 报告 `#mark_debug 64`，但 phy 的 insert_debugger 报 `KIT-2501 : No mark_debug exists in the netlist`，**没有** watcher |
+| `rtl` 步前 + **`gate` 步后** 各插一次 | gate 结束时报 `KIT-1004 : import watcher inst auto_created_cwc1 completed, there are 4 view node(s), 64 trigger net(s), 64 data net(s)`，并跑了 `auto_created_cwc1` 的 OOC 综合（`syn_1/cw/auto_created_cwc1/`）；phy 里能看到 `auto_created_cwc1/...` 的网与 `cwc_jtck` 时钟；**用这份 bit 直接 `probe_capture` 成功，1024 点、trigger_index=256** |
+
+所以后端现在把钩子挂在 **`syn_1 rtl tcl_beforestep`（mark）+ `syn_1 gate tcl_afterstep`（建 watcher）**；
+`phy_1 place` 之前那次保留（TD 自己的流程也会做，重复无副作用）。
+
+### 仍未闭环的一小截：`compiled.cwc` 这个 sidecar
+
+批量（`launch_runs`）跑完 phy 时，TD **不会**写 `<runs>/phy_1/cw/compiled.cwc`（只有 GUI 的
+ChipWatcher 存盘会写），但 bit 里**确实有** watcher。后果：`probe_capture` 需要这个文件来
+拿 instance 名与触发条件。当前处理：
+
+- `flow` 的成功判据改成"`compiled.cwc` 存在且 net>0" **或** `syn_1/cw/` 下有 `auto_created_cwc*`
+  OOC 产物（后者证明 watcher 真的建出来了）；
+- 抓取侧：给 `phy_1/cw/compiled.cwc` 放一份同构的 cwc（例如 GUI 存过的、或上次抓取留下的
+  `.fpgalsp/probe/trigger_*.cwc`）即可，实测这份旧 cwc（同样的 4 bus / depth 1024 / `reg_init/clk`）
+  对**新编的 bit** 完全适用，抓取成功。
+
+**下一步**（若要彻底自动化）：从 `report_cwc_status` 的表或 `auto_created_cwc1_watcherInst.tcl`
+反推并生成 `compiled.cwc`，让 `probe_capture` 不再依赖 GUI 存盘。

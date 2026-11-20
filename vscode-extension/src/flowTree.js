@@ -45,12 +45,63 @@ function fmtElapsed(seconds) {
     return n < 100 ? `${n.toFixed(1)}s` : `${Math.round(n)}s`;
 }
 
+/**
+ * `1m11s` style duration for a wall/cpu time in seconds (TD writes `1m11s`).
+ * 0 / unknown renders as '' so a pending step shows no fake `0s`.
+ */
+function fmtWall(seconds) {
+    const n = Number(seconds);
+    if (!Number.isFinite(n) || n <= 0) return '';
+    const total = Math.round(n);
+    const h = Math.floor(total / 3600);
+    const m = Math.floor((total % 3600) / 60);
+    const s = total % 60;
+    if (h > 0) return `${h}h${m}m${s}s`;
+    if (m > 0) return `${m}m${s}s`;
+    return `${s}s`;
+}
+
 function statusIcon(status) {
     const text = String(status || '').toLowerCase();
     if (/fail|error/.test(text)) return new vscode.ThemeIcon('error');
     if (/finish|done|pass|success|met/.test(text)) return new vscode.ThemeIcon('pass');
     if (/run|progress|active/.test(text)) return new vscode.ThemeIcon('sync~spin');
     return new vscode.ThemeIcon('circle-outline');
+}
+
+// syn / phy 的分组：后端 steps 的 stage 是 TD 的参数命名空间
+// （design/rtl/gate = 综合，place/route/bitgen = 布局布线），run 是 syn_1/phy_1。
+function guiGroup(stage, run) {
+    const text = `${stage || ''} ${run || ''}`.toLowerCase();
+    if (/place|route|bitgen|phy/.test(text)) return 'phy';
+    return 'syn';
+}
+
+/**
+ * Backend GUI steps — `fpgaLsp/flowStatus` → `flow.steps`:
+ * `[{name, stage, status, wall, cpu, mem_mb, run}]` where wall/cpu are **seconds**
+ * and name is the TD GUI label (`Read Design` … `Generate Bitstream`).
+ * JSON 里的 wall/cpu 单位是秒（后端把 "1m11s(62%)" 归一化过）。
+ * Older servers never emit `steps`; the caller then falls back to the stage rows.
+ */
+function flowRunSteps(flow) {
+    const raw = flow && Array.isArray(flow.steps) ? flow.steps : [];
+    const rows = [];
+    for (const entry of raw) {
+        if (!entry || typeof entry !== 'object') continue;
+        const name = entry.name || entry.step || entry.stage || '';
+        if (!name) continue;
+        rows.push({
+            name: String(name),
+            stage: entry.stage ? String(entry.stage) : '',
+            status: String(entry.status || 'pending'),
+            wall: Number(entry.wall) || 0,
+            cpu: Number(entry.cpu) || 0,
+            mem_mb: Number(entry.mem_mb) || 0,
+            run: entry.run ? String(entry.run) : '',
+        });
+    }
+    return rows;
 }
 
 /**
@@ -83,10 +134,11 @@ function describeFlow(flow) {
     const message = flow.lastMessage ? String(flow.lastMessage) : '';
     if (flow.running) return ['running', stage, elapsed].filter(Boolean).join(' · ');
     if (flow.ok === false || flow.status === 'error') {
-        return ['failed', stage !== 'idle' ? stage : '', message].filter(Boolean).join(' · ');
+        return ['failed', stage !== 'idle' ? stage : '', elapsed, message].filter(Boolean).join(' · ');
     }
     const status = flow.status && flow.status !== stage ? String(flow.status) : '';
-    return [stage, status, message].filter(Boolean).join(' · ') || 'idle';
+    // 总耗时留在父节点（Flow 段）上：跑完/失败后 elapsed 也要看得见
+    return [stage, status, elapsed, message].filter(Boolean).join(' · ') || 'idle';
 }
 
 class FlowTreeProvider {
@@ -162,9 +214,16 @@ class FlowTreeProvider {
         const reportsPromise = this.reportsService
             ? this.reportsService.fetch({ section: 'summary', force: opts.force === true })
             : this.rpc.request(METHODS.reports, {});
-        const [reportsResult, infoResult] = await Promise.allSettled([
+        // 单独问一次 flowStatus：GUI 的 6 步（含每步耗时）只在 `flow.steps` 里，
+        // `fpgaLsp/reports` 的 flowStatus 是 command 级的。旧服务器会忽略这个请求的
+        // 结果（没有 flow 字段），这里用 allSettled 兜住失败，不阻塞树的刷新。
+        const flowPromise = this.rpc && typeof this.rpc.request === 'function'
+            ? this.rpc.request(METHODS.flowStatus, {})
+            : Promise.resolve(undefined);
+        const [reportsResult, infoResult, flowResult] = await Promise.allSettled([
             reportsPromise,
             this.getInfo(),
+            flowPromise,
         ]);
         if (seq !== this._seq) return this.reports;
         this.loading = false;
@@ -187,6 +246,14 @@ class FlowTreeProvider {
         if (reports.flow && typeof reports.flow === 'object') {
             this.flow = Object.assign({}, this.flow, reports.flow);
         }
+        // flowStatus 是 flow 的权威来源（reports.flow 只是同一份状态的快照副本）：
+        // steps 只从这里来，所以放在 reports.flow 之后合并。
+        const flowPayload = flowResult.status === 'fulfilled' ? flowResult.value : undefined;
+        const backendFlow = flowPayload && typeof flowPayload === 'object'
+            && flowPayload.flow && typeof flowPayload.flow === 'object'
+            ? flowPayload.flow
+            : undefined;
+        if (backendFlow) this.flow = Object.assign({}, this.flow, backendFlow);
         this.loaded = true;
         this._syncMessage();
         this.fire();
@@ -254,32 +321,60 @@ class FlowTreeProvider {
                 status: 'Running',
             });
         }
-        const stages = flowSteps(reports);
-        const classify = (stage) => {
-            const text = `${stage.step} ${(stage.raw && (stage.raw.stage || stage.raw.name)) || ''}`.toLowerCase();
-            if (/syn|gate|elab|rtl|opt|logic/.test(text)) return 'syn';
-            if (/place|route|phy|pr|hold|bit|timing/.test(text)) return 'phy';
-            return 'syn';
-        };
+        // 两种数据来源：
+        //   1) 后端给出了 `flow.steps`（TD GUI 的 6 步 + 每步耗时）—— 首选；
+        //   2) 老服务器只有 `reports.flowStatus`（command 级、没有 status/秒数）—— 回落。
+        const backendSteps = flowRunSteps(flow);
+        let rows;
+        if (backendSteps.length) {
+            // 6 步固定顺序由后端给（design→rtl→gate→place→route→bitgen），这里只负责
+            // 标签/描述：`Optimize Gate · 1m11s`，状态用图标 + 描述文本区分。
+            rows = backendSteps.map((step, index) => ({
+                kind: 'stage',
+                id: `flow:step:${index}:${step.stage || 'step'}`,
+                label: step.wall > 0 ? `${step.name} · ${fmtWall(step.wall)}` : step.name,
+                description: [
+                    step.status,
+                    step.cpu > 0 ? `cpu ${fmtWall(step.cpu)}` : '',
+                    step.mem_mb > 0 ? `${step.mem_mb} MB` : '',
+                ].filter(Boolean).join(' · '),
+                status: step.status,
+                group: guiGroup(step.stage, step.run),
+                wall: step.wall,
+            }));
+        } else {
+            const classify = (stage) => {
+                const text = `${stage.step} ${(stage.raw && (stage.raw.stage || stage.raw.name)) || ''}`.toLowerCase();
+                if (/syn|gate|elab|rtl|opt|logic/.test(text)) return 'syn';
+                if (/place|route|phy|pr|hold|bit|timing/.test(text)) return 'phy';
+                return 'syn';
+            };
+            rows = flowSteps(reports).map((stage, index) => ({
+                kind: 'stage',
+                id: `flow:${classify(stage)}:stage:${index}`,
+                label: stage.step || `step ${index + 1}`,
+                description: [stage.status, stage.elapsed].filter(Boolean).join(' · '),
+                status: stage.status,
+                group: classify(stage),
+                wall: 0,
+            }));
+        }
         const groups = [
             { id: 'syn', label: 'Synthesis (syn)', icon: new vscode.ThemeIcon('chip') },
             { id: 'phy', label: 'Place & Route (phy)', icon: new vscode.ThemeIcon('circuit-board') },
         ];
         for (const group of groups) {
-            const groupStages = stages.filter((stage) => classify(stage) === group.id);
+            const groupStages = rows.filter((row) => row.group === group.id);
+            const groupWall = groupStages.reduce((sum, row) => sum + (Number(row.wall) || 0), 0);
             children.push({
                 kind: 'section',
                 id: `flow:group:${group.id}`,
                 label: group.label,
                 icon: group.icon,
-                description: groupStages.length ? `${groupStages.length} steps` : 'not run',
-                children: groupStages.length ? groupStages.map((stage, index) => ({
-                    kind: 'stage',
-                    id: `flow:${group.id}:stage:${index}`,
-                    label: stage.step || `step ${index + 1}`,
-                    description: [stage.status, stage.elapsed].filter(Boolean).join(' · '),
-                    status: stage.status,
-                })) : [{
+                description: groupStages.length
+                    ? [`${groupStages.length} steps`, fmtWall(groupWall)].filter(Boolean).join(' · ')
+                    : 'not run',
+                children: groupStages.length ? groupStages : [{
                     kind: 'placeholder',
                     id: `flow:${group.id}:placeholder`,
                     label: group.id === 'syn' ? 'No synthesis run yet' : 'No place & route run yet',
@@ -292,7 +387,7 @@ class FlowTreeProvider {
             label: flow.lastMessage ? String(flow.lastMessage) : 'No flow message yet',
             description: flow.elapsed ? `elapsed ${fmtElapsed(flow.elapsed)}` : '',
         });
-        if (!stages.length && !flow.running) {
+        if (!rows.length && !flow.running) {
             children.push({
                 kind: 'placeholder',
                 id: 'flow:placeholder',
@@ -497,9 +592,11 @@ class FlowTreeProvider {
 module.exports = {
     FlowTreeProvider,
     flowSteps,
+    flowRunSteps,
     fmtSize,
     fmtTime,
     fmtElapsed,
+    fmtWall,
     describeFlow,
     statusIcon,
     VIEW_ID,

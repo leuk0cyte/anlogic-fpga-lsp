@@ -102,6 +102,11 @@ struct FlowState {
     // 客户端用 sinceSeq 只取新增行：log[i] 的序号 = log_seq - (log.size() - i)。
     std::uint64_t log_seq = 0;
     int jobs = 6;
+    // GUI 的 6 个步骤（含每步耗时），形状 {name, stage, status, wall, cpu, mem_mb[, run]}。
+    // 由 FlowRunner::Status() 用 flow_status.h 的 CollectFlowSteps 从 run 目录现算：
+    // 顺序/状态来自 .<step>.{begin,end,error}.f 标记，耗时来自 flow.status 的统计表。
+    // 老客户端忽略这个键；扩展的 FlowTree 有它时按 6 步渲染，没有时回落到 stage 行。
+    jsonrpc::Json steps = jsonrpc::Json::array();
 
     jsonrpc::Json ToJson() const;
 };
