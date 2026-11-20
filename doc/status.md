@@ -317,9 +317,9 @@ flash +0.5~0.7 %。
 
 | 项 | 值 |
 | --- | --- |
-| 扩展包 | `vscode-extension/fpga-lsp-anlogic-0.18.8.vsix`（230 文件，3,289,003 B） |
-| 打包内置的服务端 | `build/bin/fpgalsp-native.exe`（Release + 全量 LTO，6,714,368 B，SHA256 `E71C1984…F79E9`） |
-| 一致性校验 | 解包后 `extension/server/bin/fpgalsp-native.exe` 的 SHA256 与该二进制**逐字节相同**；`extension/package.json` 版本 = 0.18.8 |
+| 扩展包 | `vscode-extension/fpga-lsp-anlogic-0.18.9.vsix`（230 文件，3,290,231 B） |
+| 打包内置的服务端 | `build/bin/fpgalsp-native.exe`（Release + 全量 LTO，6,718,000 B，SHA256 `EC53503E…48A8F`） |
+| 一致性校验 | 解包后 `extension/server/bin/fpgalsp-native.exe` 的 SHA256 与该二进制**逐字节相同**；`extension/package.json` 版本 = 0.18.9 |
 
 ### 升级后工程侧的变化
 
@@ -531,3 +531,27 @@ TD 会按我们的配置编译 watcher（2048 深度那组实验已经证明 `-c
 **下一步（明确）**：在 GUI 里保存一次 ChipWatcher，拿到一份**TD 亲笔**的 cwc，
 与我们生成的逐字段 diff（`logic_eram` 的 width/data_offset/working_mode 等），把差异固化进生成器；
 再跑一次 place 验证 depth 可调。这是最后一个"必须人参与"的点。
+
+### 第四轮：定位到"生成的 cwc 为什么不能用"的关键证据
+
+把 `Chipwatcher code` 当指纹来比对（`config_chipwatcher` 每次都会打印）：
+
+| 场景 | Chipwatcher code | 抓取 |
+| --- | --- | --- |
+| 03:57（TD/GUI 留下的 64 位 cwc + 对应 bit） | `1011001100110001` | ✅ 成功 |
+| 04:40（干净 agent 手工拼的 cwc + 04:36 bit） | `0110100011111110` | ✅ 成功 |
+| 05:23 / 07:10（**我们生成的** cwc + 对应 bit） | `0000101010001110`（两次相同） | ❌ `wait_on_hw_cw` 永远等不到触发，会话挂死 |
+
+结论：
+1. **code 是由 cwc 决定的**（同 bit、不同 cwc → code 不同；不同 bit、同一份生成器 → code 相同），
+   所以 code 是"这份 cwc 与 TD 编译时那份配置是否等价"的指纹。
+2. 我们的生成器**光靠 `*_watcherInst.sv` + `_inst.bid` 还不够**：总线顺序已经用 `cwc_bus_order`
+   对齐了，仍不等价 ⇒ 差异在 `<logic_eram>`/mem 段（带宽 `width`、`section_size`、
+   mem 行集合）或 `<config>` 的某个字段。缺一份 **TD 亲笔的、同一份设计的 `compiled.cwc`** 才能逐字段 diff。
+3. 因此本轮把"自动写 cwc"改为 **opt-in**（`probe_config{write_sidecar_cwc:true}`），
+   默认只同步 `compiled.bit`；一条错误的 cwc 会让抓取挂死，比"没有 cwc"更糟。
+   `probe_config{cwc_bus_order:[...]}` 会落盘到 `.fpgalsp/probe/config.txt`，供生成器使用。
+
+**要做的一件事（需要 GUI 一次）**：在 TD GUI 里给当前设计保存一次 ChipWatcher（或直接跑一次
+GUI 的 phy 让 TD 写 `compiled.cwc`），把那份文件留给我 —— 我按它 diff 出生成器的差异，
+之后"无 GUI 抓取 + 采样深度可调"就能一起闭环。

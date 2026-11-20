@@ -3781,11 +3781,22 @@ Json Bridge::ProbeConfigTool(const Json& arguments) {
         apply_build_config = it->get<bool>();
     }
     Json out = probe::Configure(proj, signals, write, has_clock, clock, depth);
-    if (apply_build_config) {
+    if (apply_build_config || arguments.contains("cwc_bus_order") ||
+        arguments.contains("write_sidecar_cwc")) {
         probe::ProbeBuildConfig config = probe::ReadProbeBuildConfig(proj);
-        config.apply_build_config = true;
+        if (apply_build_config) config.apply_build_config = true;
+        if (const auto it = arguments.find("write_sidecar_cwc");
+            it != arguments.end() && it->is_boolean()) {
+            config.write_sidecar_cwc = it->get<bool>();
+        }
+        if (const auto it = arguments.find("cwc_bus_order"); it != arguments.end() && it->is_array()) {
+            config.cwc_bus_order.clear();
+            for (const Json& item : *it) {
+                if (item.is_string()) config.cwc_bus_order.push_back(item.get<std::string>());
+            }
+        }
         probe::WriteProbeBuildConfig(proj, config);
-        out["apply_build_config"] = true;
+        if (apply_build_config) out["apply_build_config"] = true;
     }
     // ---- 名字预检（非阻塞）----
     // 写进 user.mdn 的名字若在 RTL 里根本不存在，TD 只会在跑完一轮 syn+phy 之后

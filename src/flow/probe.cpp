@@ -1163,6 +1163,19 @@ ProbeBuildConfig ReadProbeBuildConfig(const project::Project& project) {
             if (pos >= 0) config.trigger_position = pos;
         } else if (key == "apply") {
             config.apply_build_config = value != "0";
+        } else if (key == "write_sidecar") {
+            config.write_sidecar_cwc = value != "0";
+        } else if (key == "bus_order" && !value.empty()) {
+            std::size_t pos = 0;
+            while (pos <= value.size()) {
+                const std::size_t comma = value.find(',', pos);
+                const std::string one =
+                    value.substr(pos, comma == std::string::npos ? std::string::npos
+                                                                : comma - pos);
+                if (!one.empty()) config.cwc_bus_order.push_back(one);
+                if (comma == std::string::npos) break;
+                pos = comma + 1;
+            }
         }
     }
     return config;
@@ -1176,6 +1189,15 @@ bool WriteProbeBuildConfig(const project::Project& project, const ProbeBuildConf
     if (config.has_depth) text += "depth=" + std::to_string(config.depth) + "\n";
     text += "trigger_position=" + std::to_string(config.trigger_position) + "\n";
     if (config.apply_build_config) text += "apply=1\n";
+    if (config.write_sidecar_cwc) text += "write_sidecar=1\n";
+    if (!config.cwc_bus_order.empty()) {
+        std::string joined;
+        for (const std::string& name : config.cwc_bus_order) {
+            if (!joined.empty()) joined += ",";
+            joined += name;
+        }
+        text += "bus_order=" + joined + "\n";
+    }
     return fpgalsp::platform::write_file_utf8(ProbeConfigPath(project), text);
 }
 
@@ -1329,9 +1351,36 @@ jsonrpc::Json WriteCompiledCwcAfterPhy(const project::Project& project) {
         }
     }
     const ProbeBuildConfig config = ReadProbeBuildConfig(project);
+    const auto copy_bit_sidecar = [&project, &out]() {
+        if (IsFile(CompiledBit(project))) return;
+        const std::string run_bit =
+            project.dir + "/" + project.name + "_Runs/phy_1/" + project.name + ".bit";
+        if (!IsFile(run_bit)) return;
+        std::error_code copy_ec;
+        std::filesystem::create_directories(
+            std::filesystem::path(CompiledBit(project)).parent_path(), copy_ec);
+        std::filesystem::copy_file(run_bit, CompiledBit(project),
+                                   std::filesystem::copy_options::overwrite_existing, copy_ec);
+        out["bit_copied"] = !copy_ec;
+    };
+    if (!config.write_sidecar_cwc) {
+        // 默认只同步位流：我们生成的 cwc 与 TD 自己那份不等价（Chipwatcher code 不同 ->
+        // 抓取挂死），写出去反而会被后续 capture 误用。
+        copy_bit_sidecar();
+        out["ok"] = IsFile(CompiledBit(project));
+        out["written"] = false;
+        out["reason"] = "cwc generation is opt-in (probe_config{write_sidecar_cwc:true}); "
+                        "bit sidecar was synced instead";
+        return out;
+    }
     std::string error;
     jsonrpc::Json info = jsonrpc::Json::object();
-    const std::string text = BuildCwcFromConfig(project, mdn, config, &error, &info);
+    // ⚠ 必须走 `BuildCwcFromWatcher`：它会拿 watcher 的 CWC_BUS_WIDTH 逐位校验总线顺序。
+    //   用 mdn 顺序直接写会生成一份"位序与位流不一致"的 cwc —— TD 会接受
+    //   config_chipwatcher（KIT-1004 照打），但 `wait_on_hw_cw` 永远等不到触发，
+    //   实测表现为 TD 会话挂死。宁可拒绝。
+    const std::string text = BuildCwcFromWatcher(project, mdn, config.cwc_bus_order,
+                                                &error, &info);
     if (text.empty()) {
         out["reason"] = error;
         return out;
