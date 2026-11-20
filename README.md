@@ -30,8 +30,13 @@ cd /d Y:\fpga-lsp-cpp
 
 cmake --preset windows-msvc-release      :: Release，含全量 LTO
 cmake --build --preset windows-msvc-release
-ctest --preset windows-msvc-release
+ctest --preset windows-msvc-release      :: 8 路并行
 ```
+
+> 只是改代码、跑测试的话用 **`windows-msvc-dev`**（同优化等级、关 LTO，输出 `build-dev/`）：
+> 增量构建 **32 s** vs LTO 版 **139 s**。LTO 版 83% 的时间花在 58 个测试可执行文件的
+> `/LTCG` 链接上，那部分不随核数扩展 —— 详见 [doc/build.md](doc/build.md) 的
+> 「并行度：192 线程用在了哪里」。
 
 产物在 `build/bin/fpgalsp-native.exe`。运行：
 

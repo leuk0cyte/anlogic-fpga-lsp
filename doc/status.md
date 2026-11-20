@@ -4,10 +4,13 @@
 
 | 项目 | 数据 |
 | --- | --- |
-| **全新目录干净构建** | configure 29 s → build 3.3 min → **844 个目标全部成功**（Release + 全量 LTO） |
-| **`ctest` 全量** | **58/58 通过**（`unit` 40 · `e2e` 3 · `formatgate` 4 · `lintgate` 3 · `gate` 2 · `generator` 1 · `mcp` 1 · `td` 3 · `bench` 1） |
-| **原生产物** | `build/bin/fpgalsp-native.exe`（**6,132,736 B**，全量 LTCG；SHA256 `1E5B207B…B1595A`） |
-| **单元测试规模** | 40 个 gtest target |
+| **全新目录干净构建** | configure 29 s → build 3.3 min → **844 个目标全部成功**（Release + 全量 LTO）；无 LTO 的 `windows-msvc-dev` 全新目录 **56 s** |
+| **`ctest` 全量** | **63/63 通过**（`unit` 43 · `td` 4 · `e2e` 5 · `formatgate` 4 · `lintgate` 3 · `gate` 2 · `generator` 1 · `mcp` 1）；preset 默认 **8 路并行**，实测 **62 s**（串行 92–104 s） |
+| **原生产物** | `build/bin/fpgalsp-native.exe`（**6,486,016 B**，全量 LTCG；SHA256 `78744ADE…88E25F`） |
+| **单元测试规模** | 43 个 gtest target |
+
+> 构建/测试的并行度分析（为什么 192 线程帮不上忙、时间精确花在哪、日常该用哪个 preset）见
+> [doc/build.md](build.md) 的「并行度：192 线程用在了哪里」。
 
 ## 功能面
 

@@ -28,6 +28,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <process.h>  // _getpid：夹具临时目录按进程隔离（见 TempRoot）
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -64,7 +65,12 @@ using fpgalsp::server::IndexService;
 // -----------------------------------------------------------------------------
 
 fs::path TempRoot(const std::string& name) {
-    const fs::path root = fs::temp_directory_path() / "fpgalsp-index-service-test" / name;
+    // ⚠ 路径里带 PID：同一台机器上可能同时跑两棵构建树（build/ 与 build-dev/）的 ctest，
+    //   如果两边的实例共用 %TEMP%\fpgalsp-index-service-test\<name>，会互相 remove_all
+    //   对方的夹具目录 —— 实测表现是 FileCount 只有 1/2、file_updates==0 这种"离谱"失败。
+    static const std::string kProcessTag = std::to_string(static_cast<long>(_getpid()));
+    const fs::path root =
+        fs::temp_directory_path() / ("fpgalsp-index-service-test-" + kProcessTag) / name;
     std::error_code ec;
     fs::remove_all(root, ec);
     fs::create_directories(root, ec);
@@ -587,6 +593,18 @@ TEST(IndexServiceTest, ConcurrentGetWhileUpdating) {
         service.OnFileChanged(tiny.File(1), text);
         if (i % 7 == 0) {
             service.OnWatchedFiles({}, {});
+        }
+    }
+    // 收尾前先等"至少有一次成功读取"。
+    // 否则这条用例在**负载高**时会假红：写者只做 40 次很小的更新就结束，6 个读者线程
+    // 可能一次都没被调度到，`reads == 0` 于是变成在测调度器而不是在测并发快照
+    // （实测 1/13 轮在 `ctest -j` 下出现过，`bad_snapshots` 仍是 0）。
+    {
+        const std::chrono::steady_clock::time_point deadline =
+            std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (reads.load(std::memory_order_relaxed) == 0 &&
+               std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
     }
     stop.store(true, std::memory_order_relaxed);

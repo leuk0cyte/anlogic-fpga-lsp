@@ -7,6 +7,14 @@
 #    golden/      vendored 裁剪基准（verible-prune）
 # =============================================================================
 
+# 测试夹具的临时根：**与构建目录绑定**，不用系统 %TEMP%。
+#   原因：不少夹具用固定名目录（%TEMP%\fpgalsp_b1a_test 等）。本机可以同时存在两棵
+#   构建树（build/ 与 build-dev/），两边同时跑 ctest 时会在 %TEMP% 里抢同一个夹具目录，
+#   表现为"FileCount 只有 1/2、file_updates==0"这种看着像产品 bug 的假失败。
+#   这里只负责把目录建出来；把 TMP/TEMP 指过来的是 CMakePresets.json 的 testPresets
+#   （每个 preset 指向自己构建目录下的 Testing/tmp）。
+file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/Testing/tmp")
+
 # 单元测试（不依赖 Verible，始终可用）
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/unit/CMakeLists.txt")
     add_subdirectory(unit)

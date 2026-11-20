@@ -55,6 +55,18 @@
       "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" }
     },
     {
+      "name": "windows-msvc-dev",
+      "displayName": "Windows / MSVC Release（无 LTO，日常迭代）",
+      "description": "与 windows-msvc-release 同优化等级但**关闭 IPO**，输出到 build-dev/。实测（本机 2×EPYC 96C/192T）：改一处代码后的增量构建 32 s，而 LTO 版要 139 s —— 因为 LTO 版 83% 的时间花在 58 个测试可执行文件的 /LTCG 链接上，这部分**不随核数扩展**。日常改代码/跑测试用这个；发版与性能数字用 windows-msvc-release。",
+      "inherits": "windows-msvc-base",
+      "binaryDir": "${sourceDir}/build-dev",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_INTERPROCEDURAL_OPTIMIZATION": "OFF",
+        "FPGA_LSP_VERIBLE_ALLOW_LTO": "OFF"
+      }
+    },
+    {
       "name": "windows-msvc-release-lto",
       "displayName": "Windows / MSVC Release + 全量 LTO（独立目录）",
       "description": "与 windows-msvc-release 相同的 LTO 配置，但输出到 build-lto/，用于与普通 build/ 做 A/B 对照（保留兼容）。",
@@ -77,10 +89,12 @@
     { "name": "windows-msvc-release", "displayName": "Build: MSVC Release", "configurePreset": "windows-msvc-release", "configuration": "Release", "jobs": 0 },
     { "name": "windows-msvc-relwithdebinfo", "displayName": "Build: MSVC RelWithDebInfo", "configurePreset": "windows-msvc-relwithdebinfo", "configuration": "RelWithDebInfo", "jobs": 0 },
     { "name": "windows-msvc-release-lto", "displayName": "Build: MSVC Release + LTO", "configurePreset": "windows-msvc-release-lto", "configuration": "Release", "jobs": 0 },
+    { "name": "windows-msvc-dev", "displayName": "Build: MSVC Release（无 LTO）", "configurePreset": "windows-msvc-dev", "configuration": "Release", "jobs": 0 },
     { "name": "windows-msvc", "displayName": "Build: MSVC Release (默认)", "configurePreset": "windows-msvc", "configuration": "Release", "jobs": 0 }
   ],
   "testPresets": [
-    { "name": "windows-msvc-debug", "displayName": "Test: MSVC Debug", "configurePreset": "windows-msvc-debug", "configuration": "Debug", "output": { "outputOnFailure": true } },
-    { "name": "windows-msvc-release", "displayName": "Test: MSVC Release", "configurePreset": "windows-msvc-release", "configuration": "Release", "output": { "outputOnFailure": true } }
+    { "name": "windows-msvc-debug", "displayName": "Test: MSVC Debug", "configurePreset": "windows-msvc-debug", "configuration": "Debug", "output": { "outputOnFailure": true }, "execution": { "jobs": 8 }, "environment": { "TMP": "${sourceDir}/build/Testing/tmp", "TEMP": "${sourceDir}/build/Testing/tmp" } },
+    { "name": "windows-msvc-release", "displayName": "Test: MSVC Release", "configurePreset": "windows-msvc-release", "configuration": "Release", "output": { "outputOnFailure": true }, "execution": { "jobs": 8 }, "environment": { "TMP": "${sourceDir}/build/Testing/tmp", "TEMP": "${sourceDir}/build/Testing/tmp" } },
+    { "name": "windows-msvc-dev", "displayName": "Test: MSVC Release（无 LTO 构建）", "configurePreset": "windows-msvc-dev", "configuration": "Release", "output": { "outputOnFailure": true }, "execution": { "jobs": 8 }, "environment": { "TMP": "${sourceDir}/build-dev/Testing/tmp", "TEMP": "${sourceDir}/build-dev/Testing/tmp" } }
   ]
 }

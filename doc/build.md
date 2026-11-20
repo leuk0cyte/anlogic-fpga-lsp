@@ -46,19 +46,20 @@ cmd /c '"C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Buil
 | `windows-msvc-debug` | Debug | `/MTd`、`/Od`、PDB，无 LTO |
 | `windows-msvc-release` | Release | `/MT`、`/O2`、**全量 LTO**（自有代码 + Verible） |
 | `windows-msvc-relwithdebinfo` | RelWithDebInfo | `/MT`、`/O2`、PDB，**无 LTO**（保留可调试性与快速迭代） |
+| `windows-msvc-dev` | Release | 与 release 同优化等级但**关闭 IPO**，输出到 `build-dev/`（日常迭代用，见下节实测） |
 | `windows-msvc-release-lto` | Release | 与 release 相同的 LTO 配置，但输出到 `build-lto/`，用于 A/B |
 
 ## Release 默认开启全量 LTO
 
-| 项 | 实测值（本机 192 核，`-j24`） |
+| 项 | 实测值（本机 2×EPYC 7K62 = 96 物理核 / 192 逻辑核，512 GB） |
 | --- | --- |
 | 全新目录 configure | 约 29 s（含配置期预生成 flex/bison，占数秒） |
 | 全新目录全量构建（844 目标） | 约 3.3 min（含 50+ 测试可执行文件） |
-| **仅重链**（改一个 .cpp 后） | **约 48 s**（`/LTCG` 全程序分析，比普通链接慢很多） |
+| **改一处 .cpp 后的增量构建** | **约 139 s** —— 不是 48 s。改一个 TU 会重编它、重链静态库，然后 **59 个可执行文件全部重链**（每个都跑 `/LTCG`：主程序 50 s、每个测试 ≈9.8 s）。只算"主程序重链"是 50 s，但没人只构建主程序 |
 | 二进制体积 | 6,132,736 B（同源码非 LTO 为 6,248,960 B，**−1.9%**） |
 | 性能 | lint 规则层 CPU **−11.9%**（361 KB 文件 / 1028 条诊断）；纯解析层基本不变 |
 
-只改代码、想快速迭代时用无 LTO 的 `windows-msvc-relwithdebinfo`。
+只改代码、想快速迭代时用 `windows-msvc-dev` 或 `windows-msvc-relwithdebinfo`（都不开 LTO）。
 
 相关 CMake 开关（默认值保证不改变行为）：
 
@@ -73,6 +74,87 @@ cmd /c '"C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Buil
 > 真实原因有两个叠加——生成物未挂接、以及 `cmake/Verible.cmake` 曾无条件把 Verible 的
 > IPO 设为 OFF（等于 Verible 从未进过 LTO 图）。完整实验记录见
 > [doc/audit/2026-11-19/static/LTCG.md](audit/2026-11-19/static/LTCG.md)。
+
+## 并行度：192 线程用在了哪里（2026-11-20 实测）
+
+本机是 **2×AMD EPYC 7K62（96 物理核 / 192 逻辑核 / 512 GB）**，Windows 把它们分进多个
+processor group。结论先说：**编译阶段早就吃满核数，瓶颈不在那里**。
+
+### 1. 构建阶段拆分（`windows-msvc-release`，删掉自有代码 117 个 obj 后重编）
+
+| 指标 | `-j` 默认 | `-j96` | `-j192` |
+| --- | ---: | ---: | ---: |
+| 总墙钟 | 141.8 s | 145.0 s | 138.6 s |
+| 其中 **编译** 117 个 TU | **24.3 s** | 25.8 s | **23.2 s** |
+| 其中 **链接** 72 个目标 | **117.4 s** | 119.2 s | **115.4 s** |
+
+编译 117 个 TU 只花 24 s —— 并行度已经没问题（`-j` 默认 ≈ `-j192`，±2.3% 属噪声，
+说明 ninja 认得出这 192 个逻辑核；**不需要**手动传 `--parallel`）。**83% 的时间在链接**。
+
+### 2. 只做链接：加核几乎无效
+
+删掉 60 个 exe 后重链（不动 obj）：
+
+| 只重链 | `-j1` | `-j8` | `-j24` | `-j192` |
+| --- | ---: | ---: | ---: | ---: |
+| 墙钟 | 1017.2 s | 134.6 s | 138.4 s | 124.9 s |
+
+**有效并行度只有 8.1×**（1017/125）。原因：**单条 `/LTCG` 链接自己就吃 ~5.6 核**
+（实测一个 link.exe：CPU 168 s / 墙钟 30 s / 工作集 1.8 GB），58 条并发 ≈ **330 核的瞬时需求**，
+已经超过 192 个逻辑核 —— 所以 8 核和 192 核几乎同一时间，加核没有用。
+
+再看"这些链接工作有多少是交付需要的"：59 个 exe 串行链接合计 1009.4 s，其中
+`fpgalsp-native.exe` 只占 **31.9 s（3.2%）**，另外 58 个（46 个 `unit_*` 643.4 s、
+7 个 `perf_*` 206.0 s、5 个工具 128.2 s）占 **96.8%**。也就是说构建时间的绝大部分花在
+**测试/探针可执行文件的全程序 LTO** 上，而那 58 个二进制不需要 LTO。
+
+### 3. ctest 之前是**串行**的
+
+`ctest` 默认不加 `-j`，63 个用例一个个跑：**92–104 s**。改成并行后（preset 里已设为 8）：
+
+| ctest | 串行 | `-j8` | `-j24` | `-j48` | `-j96` |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 墙钟 | 92.5 / 103.7 | **59.2 / 59.9** | 59.1 / 59.7 | 59.8 / 60.7 | 59.4 / 60.2 |
+| 结果 | 63/63 | 63/63 | 63/63 | 63/63 | 63/63 |
+
+- 8 路就到地板，再加核没有收益：下界 = **10 个 `RUN_SERIAL` 用例之和 49.9–51.7 s**
+  （其中 `td.bench` 17.6 + `td.flow` 9.4 + `td.diagnostics` 7.7 + `td.session` 7.7 ≈ 42 s，
+  它们必须串行，否则 `td-process` 资源锁互斥），其余 53 个并行后只剩约 9 s。
+- 用例本身有并发防护（`td.*` 与 5 条 e2e 都带 `RUN_SERIAL TRUE` + `RESOURCE_LOCK "td-process"`），
+  5 组 × 2 次共 **10 次 63/63**，无 flake。
+- **测试临时目录也按构建目录隔离**：preset 里把 `TMP`/`TEMP` 指向 `<build>/Testing/tmp`
+  （`tests/CMakeLists.txt` 里 `file(MAKE_DIRECTORY ...)` 建好）。这样 `build/` 与
+  `build-dev/` 两棵树**可以同时跑单元测试**（实测两边各 43/43）。
+  没有这层隔离时，两棵树会在系统 `%TEMP%` 里抢同名夹具目录，表现为"FileCount 只有 1/2、
+  `file_updates==0`"这种看着像产品 bug 的假失败。
+  ⚠ 但两棵树**不要同时跑 `td.*` / `e2e.*`**：`RESOURCE_LOCK` 只在单个 ctest 进程内生效，
+  跨进程仍会抢 TD 会话。
+- ⚠ 唯一会"假失败"的情形：**一边构建一边跑 ctest**。构建会删/重链 `build/bin/*.exe`，
+  此时 ctest 报 `***Not Run`（找不到可执行文件），不是用例本身的问题。
+
+### 4. 建议
+
+| 场景 | 命令 | 实测 |
+| --- | --- | --- |
+| 日常改代码 + 跑测试 | `cmake --preset windows-msvc-dev` → `cmake --build --preset windows-msvc-dev` → `ctest --preset windows-msvc-dev` | 增量 **32 s** + 测试 **62 s** |
+| 发版 / 性能数字 / 交付二进制 | `cmake --preset windows-msvc-release` → `cmake --build --preset windows-msvc-release` → `ctest --preset windows-msvc-release` | 增量 **139 s** + 测试 **62 s** |
+| 全新目录 | 同上 | 无 LTO 全量 **57 s**（491 个 TU）；LTO 全量约 **3.3 min** |
+
+`build-dev/` 与 `build/` 互不干扰（`.gitignore` 已覆盖 `build-*/`），可以同时存在。
+
+### 5. 还能再快，但要改 CMake 结构（未做）
+
+1. **只给 58 个测试/探针目标关 IPO**（保留 `fpgalsp-native.exe` 的 LTO）：按上面的账，链接工作
+   的 96.8% 与交付物无关，理论上可把构建从 142 s 压到 62–68 s。
+   ⚠ 有一处**需要先验证**：静态库本身是 `/GL` 对象，链接器看到 IL 仍可能触发 LTCG，
+   那样收益就没有估算的那么大 —— 得先做一次"只关测试目标 IPO"的实验再定。
+2. **合并测试可执行文件**：58 个 exe 合成少数几个（每个原用例仍注册成独立 ctest，用
+   `--gtest_filter=<Suite>.*` 选择），把 58 次 LTCG 降到 1–2 次。
+   代价：ctest 名字与 `ctest -R` 过滤表达式要跟着改（现有文档、`tools/perf/gate/verify.ps1`、
+   多份审计记录都按 `unit.<name>` 点名），所以先记录不实施。
+3. `td.bench`（17.6 s）如果移出默认集合，ctest 还能从 ~60 s 降到 ~45 s。
+
+> 完整测量数据与脚本见 `build/_audit_sp1/parallel/REPORT.md`（构建目录内，未提交）。
 
 ## 依赖
 
@@ -156,8 +238,14 @@ cmake --preset windows-msvc-release
 ## 测试
 
 ```bat
-ctest --preset windows-msvc-release --output-on-failure
+ctest --preset windows-msvc-release          :: 8 路并行（preset 里 execution.jobs=8）
 ctest -L unit --output-on-failure          :: 只跑单元测试
+ctest -j 1                                  :: 想复现问题/看干净时序时用串行
 ```
 
-当前基线：`ctest` **58/58**，其中 `unit` 40 个 target。
+当前基线：`ctest` **63/63**（并行 8 路约 **62 s**，串行约 **99 s**）。其中 `unit` 43 个 target。
+并行之所以安全：`td.*` 与 5 条 e2e 都带 `RUN_SERIAL TRUE` + `RESOURCE_LOCK "td-process"`。
+详见上文「并行度：192 线程用在了哪里」。
+
+> ⚠ **不要一边构建一边跑 ctest**：构建会删除并重链 `build/bin/*.exe`，此时 ctest 会报
+> `***Not Run`（找不到可执行文件），看起来像用例失败，其实是构建在改文件。
