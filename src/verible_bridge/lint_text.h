@@ -20,6 +20,14 @@
 //    可能不同**（规则增删、同一规则措辞/行为变化）。这是版本基线差异，不是移植缺陷；
 //    详见 doc/audit/2026-11-18/B3-REPORT.md。
 //
+//  ★ lint 规则参数（0.15.1）：
+//    旧插件的 `fpgaLsp.verible.lintArgs` 默认值是**字符串**
+//    `"--rules=+line-length=length:160"`，而旧服务端只接受 list（`isinstance(lint_args, list)`）
+//    → 那个默认值其实**被静默丢弃**，Python 版实际跑的是 Verible 默认规则集（行宽 100）。
+//    这里改为：默认 `DefaultLintFlags()`（行宽 160，与格式化列宽一致，也是旧插件
+//    "本意"），并且**真正解析** `--rules=` / `--ruleset=` / `--rules_config=` /
+//    `--rules_config_search` / `--waiver_files=`，让用户设置生效。
+//
 //  约定（与 format_text.h 一致）：
 //    * **不抛异常**、不写盘、不读全局 absl flag（不调用 InitCommandLine —— 那会
 //      解析服务端自己的 argv）；
@@ -36,18 +44,26 @@
 
 namespace fpgalsp::verible_bridge {
 
+// 旧插件 `fpgaLsp.verible.lintArgs` 的默认值（Python 版是字符串，这里归一成数组）。
+// 唯一目的：让内嵌 lint 的行宽阈值（160）与 formatter 的 column_limit 一致 ——
+// 否则"格式化一次就把刚写好的行判成超长"。
+std::vector<std::string> DefaultLintFlags();
+
 struct LintAutofixResult {
     bool ok = false;
     bool changed = false;
     std::string text;   // ok=true 时是修复后的文本（行尾按输入原样，调用方自行归一化）
     std::string error;  // 失败原因（不含路径，供日志/报告）
     int applied_edits = 0;
+    std::vector<std::string> unknown_flags;  // 被忽略的 lint flag（调用方记日志）
 };
 
 // 用内嵌 Verible 的 lint 规则跑一遍 `text`，并把可应用的 autofix 合成一份新文本。
-//   text     待检查的源码（UTF-8）
-//   filename 仅用于诊断/规则的文件名相关判断（如 module-filename）
-LintAutofixResult AutofixText(std::string_view text, std::string_view filename);
+//   text       待检查的源码（UTF-8）
+//   filename   仅用于诊断/规则的文件名相关判断（如 module-filename）
+//   lint_flags 形如 "--rules=+line-length=length:160"；**空 = DefaultLintFlags()**
+LintAutofixResult AutofixText(std::string_view text, std::string_view filename,
+                              const std::vector<std::string>& lint_flags = {});
 
 // -----------------------------------------------------------------------------
 //  T1 / task-50：**只收集 violation**，不生成修复文本（服务端 lint 用）
@@ -76,11 +92,13 @@ struct LintResult {
     bool ok = false;
     std::vector<LintDiagnostic> diagnostics;
     std::string error;  // ok=false 时给出原因（不抛异常）
+    std::vector<std::string> unknown_flags;  // 被忽略的 lint flag（调用方记日志）
 };
 
 // 对 `text` 跑一遍内嵌 Verible lint 并返回结构化 violation。
 // never-raise；空文本返回 ok=true + 空列表。
-LintResult LintText(std::string_view text, std::string_view filename);
+LintResult LintText(std::string_view text, std::string_view filename,
+                    const std::vector<std::string>& lint_flags = {});
 
 // 复现旧插件 `veribleDiagnostics.js::buildCommentIndex/isInsideComment` 的语义：
 // **丢掉位置落在注释里的 `no-tabs` violation**（代码里的 tab 照报）。

@@ -40,8 +40,17 @@
 #include "verible/verilog/analysis/verilog-analyzer.h"
 #include "verible/verilog/analysis/verilog-linter.h"
 #include "verible/verilog/analysis/verilog-linter-configuration.h"
+#include "verible_bridge/flag_tokens.h"
 
 namespace fpgalsp::verible_bridge {
+
+// 旧插件 `fpgaLsp.verible.lintArgs` 的默认值（Python 版是**字符串**，服务端只认
+// list，于是被静默丢弃 —— 见 lint_text.h 的说明）。这里保留它的"本意"：
+// 行宽阈值 160，与 formatter 的 column_limit 一致。
+std::vector<std::string> DefaultLintFlags() {
+    return {"--rules=+line-length=length:160"};
+}
+
 namespace {
 
 using verible::AutoFix;
@@ -55,34 +64,106 @@ struct AppliedEdit {
     std::string replacement;
 };
 
-// 与 `verible-verilog-lint`（不带参数）等价的规则配置，**只有一处例外**：
-//   `line-length` 的行长阈值放到 160，与旧插件设置
-//   `fpgaLsp.verible.lintArgs` 的默认值 `--rules=+line-length=length:160` 对齐，
-//   也与本项目格式化默认列宽（`--column_limit=160`）一致。
-//   否则真实工程里 100–160 列的行会全部变成新告警（用户明确要求维持旧默认）。
+// 由 flag 列表构造 LinterConfiguration。
 //
-// 其余保持 `verible-verilog-lint` 的默认语义：
+// 默认（flags 为空）等价于 `verible-verilog-lint --rules=+line-length=length:160`
+// 的规则集，**其余保持官方默认语义**：
 //   ruleset = default、不做向上搜索 .rules.verible_lint、无 waiver 文件。
-bool BuildDefaultConfiguration(verilog::LinterConfiguration* config, std::string* error) {
-    // 用 Verible 自己的 flag 解析器构造 bundle，避免手写 RuleSetting 的内部结构。
-    // 语义对照：`+line-length=length:160` => 启用 line-length，配置 "length:160"。
+//
+// 支持（与旧插件 `fpgaLsp.verible.lintArgs` 同形）：
+//   --rules=<+rule,-rule,rule=config>   （可多次出现，累积到同一个 bundle）
+//   --ruleset=default|all|none
+//   --rules_config=<path>
+//   --rules_config_search[=true|false]
+//   --waiver_files=<path>
+// 其它 flag 归入 unknown（调用方记日志），**不**让一次拼错把 lint 整个关掉。
+bool BuildConfiguration(const std::vector<std::string>& flags,
+                        verilog::LinterConfiguration* config, std::string* error,
+                        std::vector<std::string>* unknown) {
+    const std::vector<std::string> effective =
+        flags.empty() ? DefaultLintFlags() : flags;
+
     verilog::RuleBundle bundle;
-    std::string parse_error;
-    if (!verilog::AbslParseFlag("+line-length=length:160", &bundle, &parse_error)) {
-        if (error != nullptr) *error = parse_error;
-        return false;
+    verilog::RuleSet ruleset = verilog::RuleSet::kDefault;
+    std::string config_file;
+    bool config_search = false;
+    std::string waiver_files;
+
+    for (const ParsedFlag& flag : ParseFlagList(effective)) {
+        const std::string& name = flag.name;
+
+        if (name == "rules") {
+            if (!flag.has_value) {
+                *error = "--rules 需要一个取值（形如 --rules=+line-length=length:160）";
+                return false;
+            }
+            std::string parse_error;
+            if (!verilog::AbslParseFlag(flag.value, &bundle, &parse_error)) {
+                *error = "--rules=" + flag.value + " 非法：" + parse_error;
+                return false;
+            }
+            continue;
+        }
+
+        if (name == "ruleset") {
+            if (!flag.has_value) {
+                *error = "--ruleset 需要一个取值（default / all / none）";
+                return false;
+            }
+            std::string parse_error;
+            if (!verilog::AbslParseFlag(flag.value, &ruleset, &parse_error)) {
+                *error = "--ruleset=" + flag.value + " 非法：" + parse_error;
+                return false;
+            }
+            continue;
+        }
+
+        if (name == "rules_config") {
+            if (!flag.has_value) {
+                *error = "--rules_config 需要一个文件路径";
+                return false;
+            }
+            config_file = flag.value;
+            continue;
+        }
+
+        if (name == "rules_config_search") {
+            if (!flag.has_value) {  // 只写开关 = 打开
+                config_search = true;
+                continue;
+            }
+            bool parsed = false;
+            if (!ParseBoolValue(flag.value, &parsed)) {
+                *error = "--rules_config_search=" + flag.value + " 不是合法布尔值";
+                return false;
+            }
+            config_search = parsed;
+            continue;
+        }
+
+        if (name == "waiver_files") {
+            if (!flag.has_value) {
+                *error = "--waiver_files 需要一个文件路径（多为逗号分隔）";
+                return false;
+            }
+            waiver_files = flag.value;
+            continue;
+        }
+
+        unknown->push_back("--" + name);
     }
+
     const verilog::LinterOptions options = {
-        .ruleset = verilog::RuleSet::kDefault,
+        .ruleset = ruleset,
         .rules = bundle,
-        .config_file = "",
-        .rules_config_search = false,
+        .config_file = config_file,
+        .rules_config_search = config_search,
         .linting_start_file = "",
-        .waiver_files = "",
+        .waiver_files = waiver_files,
     };
     const absl::Status status = config->ConfigureFromOptions(options);
     if (!status.ok()) {
-        if (error != nullptr) *error = status.message();
+        *error = status.message();
         return false;
     }
     return true;
@@ -102,7 +183,8 @@ bool OffsetOf(std::string_view base, std::string_view fragment, std::size_t* beg
 
 }  // namespace
 
-LintAutofixResult AutofixText(std::string_view text, std::string_view filename) {
+LintAutofixResult AutofixText(std::string_view text, std::string_view filename,
+                              const std::vector<std::string>& lint_flags) {
     LintAutofixResult result;
     if (text.empty()) {
         result.ok = true;
@@ -115,7 +197,10 @@ LintAutofixResult AutofixText(std::string_view text, std::string_view filename) 
         const std::string name(filename);
 
         verilog::LinterConfiguration config;
-        if (!BuildDefaultConfiguration(&config, &result.error)) return result;
+        if (!BuildConfiguration(lint_flags, &config, &result.error,
+                                &result.unknown_flags)) {
+            return result;
+        }
 
         // 与官方 LintOneFile 同一个解析入口（失败会返回可用的部分 AST）
         const std::unique_ptr<verilog::VerilogAnalyzer> analyzer =
@@ -205,7 +290,8 @@ LintAutofixResult AutofixText(std::string_view text, std::string_view filename) 
 // -----------------------------------------------------------------------------
 //  T1 / task-50：只收集 violation（服务端 lint）
 // -----------------------------------------------------------------------------
-LintResult LintText(std::string_view text, std::string_view filename) {
+LintResult LintText(std::string_view text, std::string_view filename,
+                    const std::vector<std::string>& lint_flags) {
     LintResult result;
     if (text.empty()) {
         result.ok = true;
@@ -216,7 +302,10 @@ LintResult LintText(std::string_view text, std::string_view filename) {
         const std::string name(filename);
 
         verilog::LinterConfiguration config;
-        if (!BuildDefaultConfiguration(&config, &result.error)) return result;
+        if (!BuildConfiguration(lint_flags, &config, &result.error,
+                                &result.unknown_flags)) {
+            return result;
+        }
 
         const std::unique_ptr<verilog::VerilogAnalyzer> analyzer =
             verilog::VerilogAnalyzer::AnalyzeAutomaticPreprocessFallback(text, name);

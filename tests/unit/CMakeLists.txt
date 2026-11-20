@@ -107,3 +107,7 @@ fpgalsp_add_unit_test(index_service fpga_lsp::server fpga_lsp::hdl)
 
 # T1 / task-50：服务端 lint（LintService 调度 + 注释掩码 + 诊断按来源合并）
 fpgalsp_add_unit_test(lint_service fpga_lsp::server fpga_lsp::hdl fpga_lsp::verible_bridge)
+
+# 0.15.1：formatter / lint 的 style flag（与旧 Python 插件默认值一致：160 列 / 4 空格）
+#   同时覆盖 Settings::Update 对 veribleArgs / veribleLintArgs 的两种写法（数组 / 旧字符串）
+fpgalsp_add_unit_test(verible_style fpga_lsp::verible_bridge fpga_lsp::server)

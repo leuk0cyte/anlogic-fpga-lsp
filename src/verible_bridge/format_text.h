@@ -20,37 +20,51 @@
 //    官方 CLI 的默认值(100000)，两者都必须显式赋 flag 值 —— 这个坑在
 //    doc/history/gate-reports/FORMAT-GATE-REPORT.md 的「坑 2」有完整记录。
 //
+//  ★ 默认排版风格（0.15.1 修正）：
+//    **不再**在代码里写死 column_limit/indentation_spaces，而是用
+//    `DefaultStyleFlags()` —— 它逐条复制旧 Python 插件 package.json 里
+//    `fpgaLsp.verible.args` 的默认值（160 列 / **4 空格缩进** / try_wrap_long_lines /
+//    一组 alignment=align / alignment_group_boundary=...）。
+//    历史教训：重写时把 indentation_spaces 写死成 Verible 的 2，而插件默认值仍是 4，
+//    结果是"格式化一次就把整份工程从 4 空格改成 2 空格"（实测 15 KB 文件 241 行增、
+//    251 行删）。默认值只能有**一个**来源，见下面的 kDefaultStyleFlags。
+//
 //  等价性保证：
-//    本封装产出的格式化结果，与 `verible-verilog-format` 在同一 style 下
-//    **逐字节一致**（由 ctest -L formatgate 的 102/102 + 194/194 区间验证）。
+//    同一组 style flag 下，本封装产出与 `verible-verilog-format` **逐字节一致**
+//    （由 ctest -L formatgate 的 102/102 + 194/194 区间验证；服务端这条路径
+//     另由 tests/unit/verible_style_test.cpp 覆盖）。
 // =============================================================================
 
 #pragma once
 
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace fpgalsp::verible_bridge {
 
-// 格式化选项。默认值与项目既有约定保持一致：
-//   * column_limit = 160
-//     —— 不是 Verible 的 100。本项目的 lint 规则 `line-length` 在 0.10.30 起
-//        设为 160 就是为了**与 formatter 对齐**；如果这里回到 100，
-//        那么"格式化一次就把刚写好的行判成超长"，形成 format/lint 互相打架。
-//   * indentation_spaces = 2
-//   * line_terminator = auto（跟随输入：LF 输入出 LF，CRLF 输入出 CRLF）
+// 旧插件（Python 版 `vscode-extension/package.json` 的 `fpgaLsp.verible.args`
+// 默认值）的 style 参数，**逐条照抄**。这是团队排版风格的唯一来源：
+//   * 改这里 = 改所有人的格式化结果，请同时改插件 package.json 的默认值；
+//   * 字符串形式是 Verible CLI 的 flag（"--name=value"），与旧插件一致，
+//     这样用户把 settings.json 里那串原样贴过来也是同样结果。
+std::vector<std::string> DefaultStyleFlags();
+
 struct FormatOptions {
-    int column_limit = 160;
-    int indentation_spaces = 2;
-    int wrap_spaces = 4;
-    // true = 保留输入的行尾风格（与官方 --line_terminator=auto 一致）
-    bool auto_line_terminator = true;
+    // "--flag=value" 形式的 Verible style flag。**空 = DefaultStyleFlags()**。
+    // 支持 "--flag=value" / "--flag value" / 裸 "flag=value"（宽松解析）；
+    // bool flag 可以只写 "--flag"（等价 =true）。
+    std::vector<std::string> style_flags;
 };
 
 struct FormatResult {
     bool ok = false;
     std::string text;    // ok=true 时是格式化结果；ok=false 时为原文
-    std::string error;   // ok=false 时是失败原因（Verible 的 status message）
+    std::string error;   // ok=false 时是失败原因（Verible 的 status message / 非法 flag）
+    // 无法识别的 style flag（例如 Verible 升级后改名）。**不致命**：
+    // 旧插件是把它交给 verible CLI 由 CLI 报错退出，服务端里那样做会让"一个拼错的
+    // 参数 = 整个格式化不可用"，所以这里降级为"忽略 + 由调用方记日志"。
+    std::vector<std::string> unknown_flags;
 };
 
 // 格式化整个文件。

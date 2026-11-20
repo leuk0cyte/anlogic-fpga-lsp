@@ -2,7 +2,7 @@
     "name": "fpga-lsp-anlogic",
     "displayName": "Anlogic FPGA LSP (TangDynasty)",
     "description": "Language support and IDE views for Anlogic TD FPGA projects: ADC pin constraints, SDC, project .al, Verilog index, TD-backed diagnostics, module hierarchy, syn/phy flow control and QoR/timing/area reports.",
-    "version": "0.15.0",
+    "version": "0.15.1",
     "publisher": "fpga-lsp",
     "license": "AGPL-3.0-or-later",
     "engines": {
@@ -204,7 +204,7 @@
                         "--port_declarations_indentation=indent",
                         "--alignment_group_boundary=blank-lines-and-separator-comments"
                     ],
-                    "description": "Extra arguments for verible-verilog-format. Defaults follow the team's alignment style."
+                    "description": "内嵌 Verible formatter（verible-verilog-format）的 style 参数，写法与旧版一致（--flag=value）。默认值就是团队排版风格：160 列、4 空格缩进、对齐组。留空数组 = 使用服务端内置的同一套默认值。"
                 },
                 "fpgaLsp.serverRoot": {
                     "type": "string",
@@ -219,8 +219,10 @@
                 "fpgaLsp.verible.lintArgs": {
                     "type": "array",
                     "items": { "type": "string" },
-                    "default": [],
-                    "description": "（兼容）追加给内嵌 lint 的参数。"
+                    "default": [
+                        "--rules=+line-length=length:160"
+                    ],
+                    "description": "内嵌 Verible lint 的参数。支持 --rules= / --ruleset= / --rules_config= / --rules_config_search / --waiver_files=。旧版（Python 后端）这里是字符串，服务端只认数组，所以那个默认值实际没生效；现在两种写法都接受。"
                 },
                 "fpgaLsp.verible.highlight": {
                     "type": "boolean",

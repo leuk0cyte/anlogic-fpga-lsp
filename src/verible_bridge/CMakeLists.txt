@@ -74,4 +74,6 @@ if(MSVC)
     endforeach()
 endif()
 
-message(STATUS "src/verible_bridge: formatter 桥已启用（全文件格式化，默认 column_limit=160）")
+message(STATUS
+    "src/verible_bridge: formatter 桥已启用（全文件格式化；默认风格 = 旧插件 "
+    "fpgaLsp.verible.args：160 列 / 4 空格缩进 / 对齐组）")

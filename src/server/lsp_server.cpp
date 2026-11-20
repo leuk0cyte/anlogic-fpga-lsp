@@ -22,6 +22,7 @@
 #include <exception>
 #include <filesystem>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <system_error>
 #include <tuple>
@@ -128,6 +129,21 @@ void Settings::Update(const Json& options) {
         for (const auto& item : *it) {
             if (item.is_string()) verible_args.push_back(item.get<std::string>());
         }
+    }
+    // 0.15.1：`veribleLintArgs` —— 旧插件的默认值是**字符串**
+    // `"--rules=+line-length=length:160"`，而旧服务端只接受 list（isinstance(list)），
+    // 所以那个默认值其实被静默丢弃了。这里两种写法都收：list 原样用；字符串按空白切。
+    if (const auto it = section->find("veribleLintArgs"); it != section->end()) {
+        std::vector<std::string> parsed;
+        if (it->is_array()) {
+            for (const auto& item : *it) {
+                if (item.is_string()) parsed.push_back(item.get<std::string>());
+            }
+        } else if (it->is_string()) {
+            std::istringstream stream(it->get<std::string>());
+            for (std::string token; stream >> token;) parsed.push_back(token);
+        }
+        verible_lint_args = std::move(parsed);
     }
     verible_format = jsonrpc::GetBool(*section, "veribleFormat", verible_format);
     format_fallback = jsonrpc::GetBool(*section, "formatFallback", format_fallback);
@@ -592,7 +608,15 @@ HandlerResult LspServer::HandleFormatting(const Json& params) {
     const auto text = LoadText(path);  // 未保存缓冲区优先，落盘回落
     if (!text.has_value()) return HandlerResult::Ok(Json::array());
 
-    const auto result = verible_bridge::FormatText(*text, path);
+    // 排版风格来自插件设置（`fpgaLsp.verible.args`）；空 = 桥里的旧插件默认值。
+    // 这里**不能**再用 FormatText 的默认参数：0.15.0 就是这么丢掉 4 空格缩进的。
+    verible_bridge::FormatOptions format_options;
+    format_options.style_flags = settings_.verible_args;
+    const auto result = verible_bridge::FormatText(*text, path, format_options);
+    if (!result.ok && !result.error.empty()) {
+        // 非法 style flag / Verible 失败：记日志（不弹窗），下面照旧返回空编辑
+        platform::log_warn("format: " + path + ": " + result.error);
+    }
     if (!result.ok || result.text == *text) {
         // 失败、或"本来就已格式化"：都返回空编辑数组
         return HandlerResult::Ok(Json::array());
@@ -1476,7 +1500,17 @@ lsp::DiagnosticList LspServer::ComputeLint(const std::string& path) {
     if (!loaded.has_value() || loaded->empty()) return {};
     const std::string& text = *loaded;
 
-    verible_bridge::LintResult result = verible_bridge::LintText(text, path);
+    verible_bridge::LintResult result =
+        verible_bridge::LintText(text, path, settings_.verible_lint_args);
+    if (!result.unknown_flags.empty()) {
+        // 认不出的 lint flag 只记一次日志（用户可能手写了过时参数）
+        std::string joined;
+        for (const std::string& flag : result.unknown_flags) {
+            if (!joined.empty()) joined += ' ';
+            joined += flag;
+        }
+        platform::log_warn("lint: 忽略未知参数 " + joined);
+    }
     if (!result.ok) return {};
 
     // 与旧插件等价：注释里的 no-tabs 不报（代码里的照报）。

@@ -355,7 +355,7 @@ Json LspServer::FeatureCodeActions(std::string_view path, const Json& range,
     if (!cache_hit) {
         {
             std::lock_guard<std::mutex> lock(LintExecutionMutex());
-            fixed = verible_bridge::AutofixText(text, path_string);
+            fixed = verible_bridge::AutofixText(text, path_string, settings_.verible_lint_args);
         }
         SharedLintCache().Put(path_string, text_hash, fixed);
     }

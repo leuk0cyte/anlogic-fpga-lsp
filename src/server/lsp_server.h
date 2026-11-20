@@ -76,10 +76,16 @@ struct Settings {
     std::string project_file;
     std::string td_path;
 
-    // Verible 相关：本阶段只解析（格式化/lint 桥接是独立任务），保留键名以免客户端
-    // 发来后被当成未知配置。
+    // Verible 相关：
+    //   * `verible_args`      —— 对应插件的 `fpgaLsp.verible.args`（formatter 的 style flag）。
+    //                            **空 = verible_bridge::DefaultStyleFlags()**，即旧插件默认排版。
+    //   * `verible_lint_args` —— 对应 `fpgaLsp.verible.lintArgs`（内嵌 lint 的 `--rules=` 等）。
+    //                            **空 = verible_bridge::DefaultLintFlags()**。
+    //   历史坑：0.15.0 之前这两个字段只被存下来、从没被用过，于是服务端永远用写死的
+    //   "160 列 / 2 空格缩进"，而插件默认值写的是 4 空格 —— 格式化一次整份工程被重新缩进。
     std::string verible_path;
     std::vector<std::string> verible_args;
+    std::vector<std::string> verible_lint_args;
     bool verible_format = true;
     bool format_fallback = true;
     // T1：didChange 之后在服务端跑内嵌 Verible lint（默认开）。

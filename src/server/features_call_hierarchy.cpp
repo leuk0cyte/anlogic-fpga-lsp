@@ -373,7 +373,12 @@ Json LspServer::FeatureRangeFormatting(std::string_view path, const Json& range,
     const std::optional<std::string> text = LoadText(path_string);
     if (!text.has_value()) return Json::array();
 
-    const verible_bridge::FormatResult formatted = verible_bridge::FormatText(*text, path_string);
+    // 与 HandleFormatting 同一个 style 来源：插件设置 `fpgaLsp.verible.args`，
+    // 空 = 桥里的旧插件默认值（160 列 / 4 空格缩进）。
+    verible_bridge::FormatOptions format_options;
+    format_options.style_flags = settings_.verible_args;
+    const verible_bridge::FormatResult formatted =
+        verible_bridge::FormatText(*text, path_string, format_options);
     if (!formatted.ok || formatted.text.empty()) return Json::array();
 
     const int first_line = RangeLine(range, "start", 0);
