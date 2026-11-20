@@ -61,7 +61,8 @@ struct LintAutofixResult {
 // 用内嵌 Verible 的 lint 规则跑一遍 `text`，并把可应用的 autofix 合成一份新文本。
 //   text       待检查的源码（UTF-8）
 //   filename   仅用于诊断/规则的文件名相关判断（如 module-filename）
-//   lint_flags 形如 "--rules=+line-length=length:160"；**空 = DefaultLintFlags()**
+//   lint_flags 形如 "--rules=+line-length=length:160"；**空 = DefaultLintFlags()**，
+//              非空 = 整体替换（不是逐条合并，与 format_text.h 同一套语义）
 LintAutofixResult AutofixText(std::string_view text, std::string_view filename,
                               const std::vector<std::string>& lint_flags = {});
 

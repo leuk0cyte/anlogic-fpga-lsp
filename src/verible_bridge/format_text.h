@@ -20,11 +20,13 @@
 //    官方 CLI 的默认值(100000)，两者都必须显式赋 flag 值 —— 这个坑在
 //    doc/history/gate-reports/FORMAT-GATE-REPORT.md 的「坑 2」有完整记录。
 //
-//  ★ 默认排版风格（0.15.1 修正）：
+//  ★ 默认排版风格（0.15.1 修正 / 0.15.2 收口）：
 //    **不再**在代码里写死 column_limit/indentation_spaces，而是用
 //    `DefaultStyleFlags()` —— 它逐条复制旧 Python 插件 package.json 里
 //    `fpgaLsp.verible.args` 的默认值（160 列 / **4 空格缩进** / try_wrap_long_lines /
 //    一组 alignment=align / alignment_group_boundary=...）。
+//    0.15.2 起插件的 `fpgaLsp.verible.args` 默认值改成**空数组**：这套风格只存在于
+//    本文件一处，插件设置只在用户主动覆盖时才有内容（否则两边各一份，早晚走偏）。
 //    历史教训：重写时把 indentation_spaces 写死成 Verible 的 2，而插件默认值仍是 4，
 //    结果是"格式化一次就把整份工程从 4 空格改成 2 空格"（实测 15 KB 文件 241 行增、
 //    251 行删）。默认值只能有**一个**来源，见下面的 kDefaultStyleFlags。
@@ -51,7 +53,9 @@ namespace fpgalsp::verible_bridge {
 std::vector<std::string> DefaultStyleFlags();
 
 struct FormatOptions {
-    // "--flag=value" 形式的 Verible style flag。**空 = DefaultStyleFlags()**。
+    // "--flag=value" 形式的 Verible style flag。**空 = DefaultStyleFlags()**；
+    // 非空 = **整体替换**（不是逐条合并）—— 这是刻意的语义：插件设置里写了什么就是什么，
+    // 没写的字段回落到 Verible 原生默认。想改单项又不想丢掉团队风格，就把默认列表抄过去改。
     // 支持 "--flag=value" / "--flag value" / 裸 "flag=value"（宽松解析）；
     // bool flag 可以只写 "--flag"（等价 =true）。
     std::vector<std::string> style_flags;

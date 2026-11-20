@@ -68,19 +68,36 @@ std::vector<std::string> Flags(std::initializer_list<const char*> flags) {
 // 1. 默认值 = 旧插件 package.json 的默认值
 // -----------------------------------------------------------------------------
 TEST(VeribleStyle, DefaultFlagsMatchOldPluginConfig) {
-    const std::vector<std::string> flags = fpgalsp::verible_bridge::DefaultStyleFlags();
-    ASSERT_FALSE(flags.empty());
-    const auto has = [&flags](const std::string& expected) {
-        return std::find(flags.begin(), flags.end(), expected) != flags.end();
+    // 这是**唯一一份**默认排版风格：插件 package.json 的 `fpgaLsp.verible.args`
+    // 默认值是空数组（0.15.2 起），真正生效的是这里的列表。
+    // 逐条比对而不是"包含三条"，否则删一条 alignment 也没人发现。
+    const std::vector<std::string> expected = {
+        "--column_limit=160",
+        "--indentation_spaces=4",
+        "--wrap_spaces=4",
+        "--try_wrap_long_lines=true",
+        "--assignment_statement_alignment=align",
+        "--case_items_alignment=align",
+        "--distribution_items_alignment=align",
+        "--enum_assignment_statement_alignment=align",
+        "--module_net_variable_alignment=align",
+        "--class_member_variable_alignment=align",
+        "--struct_union_members_alignment=align",
+        "--parameter_declaration_alignment=align",
+        "--port_declarations_alignment=align",
+        "--formal_parameters_alignment=align",
+        "--named_parameter_alignment=align",
+        "--named_port_alignment=align",
+        "--port_declarations_right_align_packed_dimensions=true",
+        "--port_declarations_right_align_unpacked_dimensions=true",
+        "--formal_parameters_indentation=indent",
+        "--named_parameter_indentation=indent",
+        "--named_port_indentation=indent",
+        "--port_declarations_indentation=indent",
+        "--alignment_group_boundary=blank-lines-and-separator-comments",
     };
-    // 这三条是"排版风格"的核心：列宽、缩进、长行折断
-    EXPECT_TRUE(has("--column_limit=160")) << "列宽必须与旧插件一致（160）";
-    EXPECT_TRUE(has("--indentation_spaces=4")) << "缩进必须与旧插件一致（4 空格）";
-    EXPECT_TRUE(has("--try_wrap_long_lines=true"));
-    // 对齐组：没有它们，连续赋值/端口声明不会被对齐
-    EXPECT_TRUE(has("--assignment_statement_alignment=align"));
-    EXPECT_TRUE(has("--port_declarations_alignment=align"));
-    EXPECT_TRUE(has("--alignment_group_boundary=blank-lines-and-separator-comments"));
+    EXPECT_EQ(fpgalsp::verible_bridge::DefaultStyleFlags(), expected)
+        << "默认 style 必须与旧 Python 插件 fpgaLsp.verible.args 的默认值逐条一致";
 }
 
 TEST(VeribleStyle, DefaultIndentationIsFourSpaces) {
@@ -120,6 +137,19 @@ TEST(VeribleStyle, TwoTokenFlagFormIsAccepted) {
     const FormatResult formatted = FormatText(kNested, "m.v", options);
     ASSERT_TRUE(formatted.ok) << formatted.error;
     EXPECT_TRUE(Has(formatted.text, "\n  always @(posedge clk) begin")) << formatted.text;
+}
+
+TEST(VeribleStyle, UserListReplacesBuiltInDefaults) {
+    // "整体替换"是刻意保留的语义（2026-11-20 拍板）：用户写了非空数组就完全接管，
+    // 没写的字段回落到 Verible 原生默认（缩进 2 / 对齐 infer），而不是继续沿用 4。
+    // 这条用例把这个契约钉住，免得以后有人"顺手改成合并"引发静默行为变化。
+    FormatOptions options;
+    options.style_flags = Flags({"--column_limit=120"});
+    const FormatResult formatted = FormatText(kNested, "m.v", options);
+    ASSERT_TRUE(formatted.ok) << formatted.error;
+    EXPECT_TRUE(Has(formatted.text, "\n  always @(posedge clk) begin"))
+        << "只写 --column_limit 时缩进应回落到 Verible 默认的 2 空格\n"
+        << formatted.text;
 }
 
 TEST(VeribleStyle, ColumnLimitIsHonored) {
