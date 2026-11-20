@@ -45,7 +45,7 @@
 ### 2. 安装扩展并重载
 
 ```powershell
-code --install-extension Y:\fpga-lsp-cpp\vscode-extension\fpga-lsp-anlogic-0.15.1.vsix
+code --install-extension Y:\fpga-lsp-cpp\vscode-extension\fpga-lsp-anlogic-0.15.3.vsix
 ```
 
 安装后按提示 **Reload**，或执行 `Developer: Reload Window`。
@@ -144,9 +144,8 @@ code --install-extension Y:\fpga-lsp-cpp\vscode-extension\fpga-lsp-anlogic-0.15.
 服务端提供）：
 
 - 格式化：由内嵌 Verible 完成，通过语言服务器调用。团队排版风格（160 列 / 4 空格缩进 /
-  对齐组）**内嵌在服务端**（`src/verible_bridge/format_text.cpp` 的 `DefaultStyleFlags()`）；
-  插件设置 `fpgaLsp.verible.args` 默认空，只在你要覆盖时才写（整体替换语义，见下）。
-  `fpgaLsp.verible.format=false` 可关掉。
+  对齐组）与 `fpgaLsp.verible.args` 的默认值逐条一致，后者会在启动后端时发过去覆盖
+  服务端内置的那份（整体替换语义，见下）。`fpgaLsp.verible.format=false` 可关掉。
 - Lint / quick fix：`fpgaLsp.verible.autofix=true`（默认）时，quick fix 由内嵌 lint
   直接算出来，**不需要外部 verible 二进制**。规则参数见 `fpgaLsp.verible.lintArgs`
   （默认 `--rules=+line-length=length:160`，与格式化列宽对齐）。
@@ -192,7 +191,7 @@ FPGA: Install MCP Configuration
 | `fpgaLsp.flowJobs` | `6` | 传给 `launch_runs` 的并行 jobs（与 TD GUI 默认一致） |
 | `fpgaLsp.logFile` | `""` | 服务器日志，空 = `<workspace>/.fpgalsp/logs/server.log` |
 | `fpgaLsp.verible.format` | `true` | 用内嵌 Verible 格式化（Format Document） |
-| `fpgaLsp.verible.args` | `[]`（= 服务端内置团队风格） | 覆盖内嵌 `verible-verilog-format` 的 style 参数；**整体替换**语义，见下 |
+| `fpgaLsp.verible.args` | 160 列 + 4 空格缩进 + 一组对齐参数 | 内嵌 `verible-verilog-format` 的 style 参数；与服务端内置默认逐条一致，非空即**整体替换**，见下 |
 | `fpgaLsp.verible.lintArgs` | `["--rules=+line-length=length:160"]` | 传给内嵌 lint 的参数：`--rules=` / `--ruleset=` / `--rules_config=` / `--rules_config_search` / `--waiver_files=` |
 | `fpgaLsp.verible.autofix` | `true` | quick fix 由内嵌 Verible linter 计算（**不需要外部 verible 二进制**） |
 | `fpgaLsp.mcp.allowFlow` | `true` | 向 agent 暴露 flow / analysis / strategy 工具（会真的启动 TD flow） |
@@ -202,10 +201,17 @@ FPGA: Install MCP Configuration
 
 ### 排版风格从哪来
 
-`fpgaLsp.verible.args` 默认是**空数组** —— 团队排版风格只内嵌在服务端一处
-（`src/verible_bridge/format_text.cpp` 的 `DefaultStyleFlags()`），插件设置只在
-需要覆盖时才有内容。当前内置风格（等价于旧 Python 插件 `fpgaLsp.verible.args`
-的默认值，逐条一致）：
+默认排版风格**同时存在两处**，且逐条一致：
+
+| 位置 | 作用 |
+| --- | --- |
+| `fpgaLsp.verible.args`（本插件 package.json 默认值） | VS Code 启动后端时作为初始化选项发过去 → **替换**服务端内置默认 |
+| `src/verible_bridge/format_text.cpp::DefaultStyleFlags()`（服务端内置） | MCP、裸 LSP、或客户端不传配置时使用 |
+
+两份不许漂移：`tests/unit/verible_style_test.cpp::PluginDefaultsMirrorServerDefaults`
+直接读本清单与服务端列表逐条比对，改了一边忘了另一边，单测立刻红。
+
+当前默认风格（与旧 Python 插件 `fpgaLsp.verible.args` 的默认值一致）：
 
 ```text
 --column_limit=160                                    # 行宽 160
