@@ -671,11 +671,446 @@ std::map<std::string, std::set<int>> GroupBusRanges(const std::vector<CwcBus>& b
 
 }  // namespace
 
+// =============================================================================
+// 从 TD 自己的 watcher 产物反推 compiled.cwc
+// =============================================================================
+// 背景（2026-11-21 实测）：批量 `launch_runs` 跑完 phy 时，TD **不会**写
+// `phy_1/cw/compiled.cwc`（只有 GUI 的 ChipWatcher 存盘会写），`setup_debugger`
+// 在 CLI 下更是静默 no-op。但"探针确实进了位流"这件事是可证的：gate 之后 TD 会生成
+//
+//   syn_1/cw/auto_created_cwc1/auto_created_cwc1_watcherInst.sv  ← 总线数/位宽/DIN 位置/深度
+//   phy_1/<prj>_inst.bid                                          ← 采集 RAM 的 ERAM 映射(rid/wid/offset)
+//
+// 这两样 + 当前 mdn 就足以重建 cwc（干净上下文 agent 手工做过一遍，实测抓取成功）。
+// 这里把它固化成后端能力：cwc 缺失时自动生成，抓取不再依赖 GUI 存盘。
+namespace {
+
+struct WatcherInst {
+    int bus_num = 0;
+    int din_num = 0;
+    int ram_len = 0;
+    int depth = 0;
+    int pipe_in = 0;
+    int pipe_out = 0;
+    std::vector<int> widths;
+    std::vector<int> din_pos;
+};
+
+bool ParseIntAfter(const std::string& text, const char* key, int* out) {
+    const std::size_t at = text.find(key);
+    if (at == std::string::npos) return false;
+    const std::size_t eq = text.find('=', at);
+    if (eq == std::string::npos) return false;
+    std::size_t begin = eq + 1;
+    while (begin < text.size() && (text[begin] == ' ' || text[begin] == '\t')) ++begin;
+    std::size_t end = begin;
+    while (end < text.size() && (std::isdigit(static_cast<unsigned char>(text[end])) != 0 ||
+                                 text[end] == '-')) {
+        ++end;
+    }
+    if (end == begin) return false;
+    *out = std::atoi(text.substr(begin, end - begin).c_str());
+    return true;
+}
+
+bool ParseIntListAfter(const std::string& text, const char* key, std::vector<int>* out) {
+    const std::size_t at = text.find(key);
+    if (at == std::string::npos) return false;
+    const std::size_t open = text.find('{', at);
+    const std::size_t close = open == std::string::npos ? std::string::npos : text.find('}', open);
+    if (open == std::string::npos || close == std::string::npos) return false;
+    out->clear();
+    std::string item;
+    for (std::size_t i = open + 1; i < close; ++i) {
+        const char c = text[i];
+        if (c == ',' || std::isspace(static_cast<unsigned char>(c)) != 0) {
+            if (!item.empty()) {
+                out->push_back(std::atoi(item.c_str()));
+                item.clear();
+            }
+            continue;
+        }
+        item.push_back(c);
+    }
+    if (!item.empty()) out->push_back(std::atoi(item.c_str()));
+    return !out->empty();
+}
+
+std::string NewestWatcherDir(const project::Project& project) {
+    const std::string runs = project.dir + "/" + project.name + "_Runs";
+    std::string best;
+    double best_time = 0.0;
+    for (const char* run : {"syn_1", "phy_1"}) {
+        const std::filesystem::path cw = std::filesystem::path(runs + "/" + run + "/cw");
+        std::error_code ec;
+        if (!std::filesystem::is_directory(cw, ec)) continue;
+        for (std::filesystem::directory_iterator it(cw, ec), end; !ec && it != end; it.increment(ec)) {
+            const std::string name = it->path().filename().string();
+            if (name.find("cwc") == std::string::npos) continue;
+            std::error_code tec;
+            const auto stamp = std::filesystem::last_write_time(it->path(), tec);
+            if (tec) continue;
+            const double value = static_cast<double>(stamp.time_since_epoch().count());
+            if (value > best_time) {
+                best_time = value;
+                best = it->path().string();
+            }
+        }
+    }
+    return best;
+}
+
+// 采样时钟：TD 不把它写成文本产物，只能从"历史 cwc"里取（当前 cwc / 抓取历史 / 工程 cwc 目录）。
+std::string ResolveSampleClock(const project::Project& project) {
+    std::vector<std::string> candidates;
+    candidates.push_back(CompiledCwc(project));
+    const std::filesystem::path history =
+        std::filesystem::path(project.dir + "/.fpgalsp/probe");
+    std::error_code ec;
+    if (std::filesystem::is_directory(history, ec)) {
+        for (std::filesystem::directory_iterator it(history, ec), end; !ec && it != end;
+             it.increment(ec)) {
+            const std::string name = it->path().filename().string();
+            if (name.size() > 4 && name.rfind(".cwc") == name.size() - 4) {
+                candidates.push_back(it->path().string());
+            }
+        }
+    }
+    const std::filesystem::path project_cwc = std::filesystem::path(project.dir + "/cwc");
+    if (std::filesystem::is_directory(project_cwc, ec)) {
+        for (std::filesystem::directory_iterator it(project_cwc, ec), end; !ec && it != end;
+             it.increment(ec)) {
+            const std::string name = it->path().filename().string();
+            if (name.size() > 4 && name.rfind(".cwc") == name.size() - 4) {
+                candidates.push_back(it->path().string());
+            }
+        }
+    }
+    for (const std::string& path : candidates) {
+        if (!IsFile(path)) continue;
+        const std::string text = ReadText(path);
+        const std::size_t at = text.find("clock=");
+        if (at == std::string::npos) continue;
+        const std::size_t quote = text.find('"', at);
+        if (quote == std::string::npos) continue;
+        const std::size_t close = text.find('"', quote + 1);
+        if (close == std::string::npos) continue;
+        const std::string clock = text.substr(quote + 1, close - quote - 1);
+        if (!clock.empty()) return clock;
+    }
+    return {};
+}
+
+struct BidEram {
+    std::string name;
+    std::string rid;
+    std::string wid;
+    std::string model_type;
+    std::string width_a;
+    std::string width_b;
+    std::string debuggable;
+    std::string initialized;
+    std::string width;
+    std::string depth;
+    std::string address_offset;
+    std::string data_offset;
+    std::string address_step;
+    std::string num_section;
+    std::string section_size;
+    std::string width_per_section;
+    std::string bytes_in_per_section;
+    std::string wm_depth;
+    std::string wm_width;
+    std::string wm_num_byte;
+    std::string wm_ecc;
+};
+
+std::string TagText(const std::string& block, const char* tag) {
+    const std::string open = std::string("<") + tag + ">";
+    const std::string close = std::string("</") + tag + ">";
+    const std::size_t at = block.find(open);
+    if (at == std::string::npos) return {};
+    const std::size_t begin = at + open.size();
+    const std::size_t end = block.find(close, begin);
+    if (end == std::string::npos) return {};
+    return block.substr(begin, end - begin);
+}
+
+std::vector<BidEram> ParseBidErams(const std::string& text, const std::string& inst) {
+    std::vector<BidEram> out;
+    const std::string prefix = inst + "/";
+    std::size_t at = 0;
+    while ((at = text.find("<INST_", at)) != std::string::npos) {
+        const std::size_t end = text.find("</INST_", at);
+        if (end == std::string::npos) break;
+        const std::string block = text.substr(at, end - at);
+        at = end;
+        const std::string name = TagText(block, "name");
+        if (name.rfind(prefix, 0) != 0) continue;
+        BidEram eram;
+        eram.name = name;
+        eram.rid = TagText(block, "rid");
+        eram.wid = TagText(block, "wid");
+        eram.model_type = TagText(block, "model_type");
+        eram.width_a = TagText(block, "width_a");
+        eram.width_b = TagText(block, "width_b");
+        eram.debuggable = TagText(block, "is_debuggable");
+        eram.initialized = TagText(block, "is_initialize");
+        const std::size_t sub = block.find("<sub_bid_info>");
+        const std::string sub_block =
+            sub == std::string::npos ? block : block.substr(sub);
+        eram.width = TagText(sub_block, "width");
+        eram.depth = TagText(sub_block, "depth");
+        eram.address_offset = TagText(sub_block, "address_offset");
+        eram.data_offset = TagText(sub_block, "data_offset");
+        eram.num_section = TagText(sub_block, "num_section");
+        eram.section_size = TagText(sub_block, "section_size");
+        eram.width_per_section = TagText(sub_block, "width_per_section");
+        eram.bytes_in_per_section = TagText(sub_block, "bytes_in_per_section");
+        eram.address_step = TagText(sub_block, "address_step");
+        eram.wm_depth = TagText(sub_block, "depth");
+        eram.wm_width = TagText(sub_block, "width");
+        eram.wm_num_byte = TagText(sub_block, "num_byte");
+        eram.wm_ecc = TagText(sub_block, "ecc");
+        out.push_back(std::move(eram));
+    }
+    std::sort(out.begin(), out.end(), [](const BidEram& a, const BidEram& b) {
+        return std::atoi(a.data_offset.c_str()) < std::atoi(b.data_offset.c_str());
+    });
+    return out;
+}
+
+bool EnableWord(const std::string& value) {
+    return value == "y" || value == "Y" || value == "1" || value == "enable";
+}
+
+}  // namespace
+
+// 生成 cwc 文本；失败时返回空串并把原因写进 error。
+std::string BuildCwcFromWatcher(const project::Project& project, const MdnConfig& mdn,
+                                std::string* error, jsonrpc::Json* info) {
+    const auto fail = [error, info](const std::string& why) {
+        if (error != nullptr) *error = why;
+        if (info != nullptr) (*info)["ok"] = false;
+        return std::string();
+    };
+    if (!mdn.exists || mdn.signals.empty()) return fail("no probes marked in chip_debugger/user.mdn");
+
+    // 1) 按 mdn 顺序把信号分组回总线（ChipWatcher 的"总线"= 一个信号）
+    std::vector<std::pair<std::string, int>> buses;
+    for (const std::string& signal : mdn.signals) {
+        std::string base = signal;
+        const std::size_t open = signal.rfind('[');
+        if (open != std::string::npos) base = signal.substr(0, open);
+        if (buses.empty() || buses.back().first != base) {
+            if (std::find_if(buses.begin(), buses.end(), [&base](const auto& item) {
+                    return item.first == base;
+                }) != buses.end()) {
+            }
+            buses.emplace_back(base, 0);
+        }
+        ++buses.back().second;
+    }
+
+    // 2) 读 TD 的 watcher 元数据（总线数/位宽/DIN 位置/深度）
+    const std::string dir = NewestWatcherDir(project);
+    if (dir.empty()) return fail("no watcher OOC artifacts (syn_1/cw/auto_created_cwc*) - the "
+                                 "ChipWatcher was never built; run stages:[\"all\"]");
+    const std::filesystem::path dir_path(dir);
+    std::string sv_path;
+    std::string sv_name;
+    {
+        std::error_code ec;
+        for (std::filesystem::directory_iterator it(dir_path, ec), end; !ec && it != end;
+             it.increment(ec)) {
+            const std::string name = it->path().filename().string();
+            if (name.size() > 3 && name.rfind(".sv") == name.size() - 3) {
+                sv_path = it->path().string();
+                sv_name = name;
+                break;
+            }
+        }
+    }
+    if (sv_path.empty()) return fail("no *_watcherInst.sv under " + dir);
+    const std::string sv = ReadText(sv_path);
+    WatcherInst inst;
+    ParseIntAfter(sv, "CWC_BUS_NUM", &inst.bus_num);
+    ParseIntAfter(sv, "CWC_BUS_DIN_NUM", &inst.din_num);
+    ParseIntAfter(sv, "RAM_LEN", &inst.ram_len);
+    ParseIntAfter(sv, "RAM_DATA_DEPTH", &inst.depth);
+    ParseIntAfter(sv, "INPUT_PIPE_NUM", &inst.pipe_in);
+    ParseIntAfter(sv, "OUTPUT_PIPE_NUM", &inst.pipe_out);
+    ParseIntListAfter(sv, "CWC_BUS_WIDTH", &inst.widths);
+    ParseIntListAfter(sv, "CWC_BUS_DIN_POS", &inst.din_pos);
+
+    int total = 0;
+    for (const auto& bus : buses) total += bus.second;
+    if (static_cast<int>(buses.size()) != inst.bus_num || total != inst.din_num ||
+        inst.widths.size() != buses.size()) {
+        return fail("mdn/watcher mismatch: mdn has " + std::to_string(buses.size()) + " buses / " +
+                    std::to_string(total) + " bits, watcher has " +
+                    std::to_string(inst.bus_num) + " buses / " + std::to_string(inst.din_num) +
+                    " bits - rerun stages:[\"all\"] so the watcher matches user.mdn");
+    }
+    // 顺序不一致 = bit 里的 watcher 是从**另一份** probe 清单建出来的（典型：改完 mdn 只
+    // 重跑过 phy，或 mdn 在 flow 之后又被写了一次）。这种情况只能重跑 syn 让它重建，
+    // 不能"猜"哪个 16 位总线对哪个 slot —— 猜错就是错的采样数据。
+    {
+        std::vector<int> mdn_widths;
+        for (const auto& bus : buses) mdn_widths.push_back(bus.second);
+        std::vector<int> watcher_widths = inst.widths;
+        std::sort(mdn_widths.begin(), mdn_widths.end());
+        std::sort(watcher_widths.begin(), watcher_widths.end());
+        const bool same_set = mdn_widths == watcher_widths;
+        for (std::size_t i = 0; i < buses.size(); ++i) {
+            if (buses[i].second != inst.widths[i]) {
+                return fail(
+                    same_set
+                        ? "the watcher in the bitstream was built from a DIFFERENT probe list "
+                          "(same widths, different order): rerun stages:[\"all\"] so user.mdn and "
+                          "the ChipWatcher agree - do not guess the bus order, wrong order means "
+                          "wrong capture data"
+                        : "bus " + buses[i].first + " width " + std::to_string(buses[i].second) +
+                              " != watcher width " + std::to_string(inst.widths[i]) +
+                              " - rerun stages:[\"all\"]");
+            }
+        }
+    }
+
+    // 3) 采集 RAM 的 ERAM 映射（rid/wid/offset）
+    std::string cwc1_name = dir_path.filename().string();  // auto_created_cwc1
+    const std::string bid_path = project.dir + "/" + project.name + "_Runs/phy_1/" +
+                                 project.name + "_inst.bid";
+    if (!IsFile(bid_path)) return fail("no " + bid_path + " - run the phy stage first");
+    const std::vector<BidEram> erams = ParseBidErams(ReadText(bid_path), cwc1_name);
+    if (erams.empty()) return fail("no ERAM entries for " + cwc1_name + " in " + bid_path);
+
+    // 4) 采样时钟（TD 不落文本，只能从历史 cwc 取）
+    const std::string clock = ResolveSampleClock(project);
+    if (clock.empty()) {
+        return fail("cannot determine the ChipWatcher sample clock: no existing .cwc anywhere "
+                    "under phy_1/cw, .fpgalsp/probe or cwc/. Save the ChipWatcher once from the "
+                    "TD GUI (or capture once with a valid cwc) and retry");
+    }
+
+    // 5) 拼 XML（格式与 TD 自己写出的 compiled.cwc 逐字段一致）
+    std::string out;
+    out += "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n";
+    out += "<chipwatcher version=\"3.070000\" project_name=\"" + project.name + "\" chip_name=\"" +
+           project.device + "\">\n";
+    out += "\t<watcher_nodes>\n";
+    for (const auto& bus : buses) {
+        out += "\t\t<bus name=\"" + bus.first + "[" + std::to_string(bus.second - 1) + ":0]\" clock=\"" +
+               clock + "\" inst=\"" + cwc1_name + "\" type=\"MARK_DEBUG_PROBE\" is_enabled=\"yes\">\n";
+        for (int bit = bus.second - 1; bit >= 0; --bit) {
+            out += "\t\t\t<net name=\"" + bus.first + "[" + std::to_string(bit) +
+                   "]\" const=\"false\" data=\"enable\" trig=\"enable\"/>\n";
+        }
+        out += "\t\t</bus>\n";
+    }
+    out += "\t</watcher_nodes>\n";
+    out += "\t<instance name=\"" + cwc1_name + "\" id=\"0\" ipgen=\"false\" inst_enable=\"true\">\n";
+    out += "\t\t<clock clk_name=\"" + clock + "\"/>\n";
+    out += "\t\t<config bram_name=\"" + cwc1_name + "/wrapper_cwc_top/U_cwc_ram\" debughub_name=\"\" " +
+           "input_pipe_num=\"" + std::to_string(inst.pipe_in) + "\" output_pipe_num=\"" +
+           std::to_string(inst.pipe_out) + "\" sample_depth=\"" + std::to_string(inst.depth) +
+           "\"/>\n";
+    out += "\t\t<signal_vec>\n\t\t\t<watcher_nodes>\n";
+    for (const auto& bus : buses) {
+        out += "\t\t\t\t<bus name=\"" + bus.first + "[" + std::to_string(bus.second - 1) +
+               ":0]\" compatator_num=\"1\" op=\"dont_care\" capture_op=\"dont_care\">\n";
+        for (int bit = bus.second - 1; bit >= 0; --bit) {
+            out += "\t\t\t\t\t<net name=\"" + bus.first + "[" + std::to_string(bit) +
+                   "]\" cond=\"low\" capture_cond=\"low\"/>\n";
+        }
+        out += "\t\t\t\t</bus>\n";
+    }
+    out += "\t\t\t</watcher_nodes>\n\t\t</signal_vec>\n";
+    out += "\t\t<trigger name=\"" + cwc1_name + "_trigger\" position=\"127\" window_num=\"1\" " +
+           "window_depth=\"" + std::to_string(inst.depth) + "\">\n";
+    out += std::string("\t\t\t<condition level=\"1\" enabled=\"yes\" type=\"basic_and\" ") +
+           "capture_type=\"basic_and\"/>\n";
+    out += "\t\t</trigger>\n";
+    out += "\t\t<logic_eram name=\"" + cwc1_name + "/wrapper_cwc_top/U_cwc_ram\" width=\"" +
+           std::to_string(inst.ram_len) + "\" depth=\"" + std::to_string(inst.depth) + "\">\n";
+    for (const BidEram& eram : erams) {
+        out += "\t\t\t<phy_eram name=\"" + eram.name + "\" wid=\"" + eram.wid + "\" rid=\"" + eram.rid +
+               "\" model_type=\"" + eram.model_type + "\" width_a=\"" + eram.width_a +
+               "\" width_b=\"" + eram.width_b + "\" debuggable=\"" +
+               (EnableWord(eram.debuggable) ? "enable" : "disable") + "\" initialized=\"" +
+               (EnableWord(eram.initialized) ? "enable" : "disable") + "\" width=\"" + eram.width +
+               "\" depth=\"" + eram.depth + "\" address_offset=\"" + eram.address_offset +
+               "\" data_offset=\"" + eram.data_offset + "\" address_step=\"" + eram.address_step +
+               "\" num_section=\"" + eram.num_section + "\" section_size=\"" + eram.section_size +
+               "\" width_per_section=\"" + eram.width_per_section +
+               "\" bytes_in_per_section=\"" + eram.bytes_in_per_section +
+               "\" working_mode_depth=\"" + eram.wm_depth + "\" working_mode_width=\"" +
+               eram.wm_width + "\" working_mode_ecc=\"" +
+               (eram.wm_ecc == "0" ? "disable" : "enable") + "\" working_mode_num_byte=\"" +
+               eram.wm_num_byte + "\" working_mode_super_wide=\"disable\"/>\n";
+    }
+    out += "\t\t</logic_eram>\n\t</instance>\n</chipwatcher>\n";
+
+    if (info != nullptr) {
+        (*info)["ok"] = true;
+        (*info)["source_dir"] = dir;
+        (*info)["watcher_sv"] = sv_name;
+        (*info)["clock"] = clock;
+        (*info)["depth"] = inst.depth;
+        (*info)["buses"] = static_cast<int>(buses.size());
+        (*info)["bits"] = total;
+        (*info)["eram"] = static_cast<int>(erams.size());
+    }
+    return out;
+}
+
+jsonrpc::Json EnsureCompiledCwc(const project::Project& project) {
+    jsonrpc::Json out = jsonrpc::Json::object();
+    out["ok"] = false;
+    out["path"] = CompiledCwc(project);
+    if (IsFile(CompiledCwc(project))) {
+        const CwcSnapshot existing = ReadCwc(CompiledCwc(project));
+        if (existing.ok && existing.net_count > 0) {
+            out["ok"] = true;
+            out["existed"] = true;
+            out["written"] = false;
+            out["net_count"] = existing.net_count;
+            return out;
+        }
+    }
+    const MdnConfig mdn = ReadMdn(MdnPath(project));
+    std::string error;
+    jsonrpc::Json info = jsonrpc::Json::object();
+    const std::string text = BuildCwcFromWatcher(project, mdn, &error, &info);
+    out["existed"] = false;
+    out["generated"] = info;
+    if (text.empty()) {
+        out["reason"] = error.empty() ? "cannot rebuild compiled.cwc" : error;
+        return out;
+    }
+    std::error_code ec;
+    std::filesystem::create_directories(
+        std::filesystem::path(CompiledCwc(project)).parent_path(), ec);
+    if (!fpgalsp::platform::write_file_utf8(CompiledCwc(project), text)) {
+        out["reason"] = "cannot write " + CompiledCwc(project);
+        return out;
+    }
+    const CwcSnapshot written = ReadCwc(CompiledCwc(project));
+    out["ok"] = written.ok && written.net_count > 0;
+    out["written"] = true;
+    out["net_count"] = written.net_count;
+    if (!out["ok"].get<bool>()) out["reason"] = "generated cwc does not parse back";
+    return out;
+}
+
 jsonrpc::Json Status(const project::Project& project) {
+    // 批量 phy 不写 sidecar：能重建就先重建，避免 Status 把"位流里有 watcher"误报成没探针。
+    const jsonrpc::Json ensured = EnsureCompiledCwc(project);
     jsonrpc::Json out = jsonrpc::Json::object();
     out["ok"] = false;
     out["project"] = project.name;
     out["target"] = project.device;
+    out["cwc"] = ensured;
 
     const MdnConfig mdn = ReadMdn(MdnPath(project));
     {
@@ -749,7 +1184,36 @@ jsonrpc::Json Status(const project::Project& project) {
         out["reason"] =
             "no chip_debugger/user.mdn - no probe signal is marked (TD will not insert a watcher)";
     } else if (!cwc.ok) {
-        out["reason"] = "no compiled ChipWatcher yet - run the phy flow to embed the probes";
+        // 区分两种完全不同的状态：
+        //   ① 探针压根没建 watcher  → 要重跑 syn（gate 之后才建实例）；
+        //   ② watcher 已经建好并进了位流，只是 TD 在批量模式下**没有写** compiled.cwc
+        //      （只有 GUI 的 ChipWatcher 存盘会写）→ 位流可用，缺的只是抓取用的 sidecar。
+        // 实测（2026-11-21）：后者非常常见，之前一律回报 "run the phy flow"，会让
+        // agent 反复重跑 5–10 分钟的流程却永远拿不到 cwc。
+        bool watcher_built = false;
+        const std::string runs = project.dir + "/" + project.name + "_Runs";
+        for (const char* run : {"syn_1", "phy_1"}) {
+            const std::filesystem::path cw = std::filesystem::path(runs + "/" + run + "/cw");
+            std::error_code ec;
+            if (!std::filesystem::is_directory(cw, ec)) continue;
+            for (std::filesystem::directory_iterator it(cw, ec), end; !ec && it != end; it.increment(ec)) {
+                if (it->path().filename().string().find("cwc") != std::string::npos) {
+                    watcher_built = true;
+                    break;
+                }
+            }
+            if (watcher_built) break;
+        }
+        out["watcher_built"] = watcher_built;
+        out["reason"] =
+            watcher_built
+                ? "the ChipWatcher was built and placed (syn_1/cw/auto_created_cwc* exists) but "
+                  "TD did not write phy_1/cw/compiled.cwc - batch runs never write that sidecar. "
+                  "Copy any cwc that matches the current user.mdn there (e.g. an earlier "
+                  ".fpgalsp/probe/trigger_*.cwc), or save once from the TD GUI; capture needs it "
+                  "for the instance name and trigger setup."
+                : "no ChipWatcher yet - run stages [\"all\"] (NOT [\"phy\"]): TD creates the "
+                  "watcher right after Optimize Gate, which belongs to the syn run";
     } else if (!IsFile(CompiledBit(project))) {
         out["reason"] = "compiled.bit is missing - run the phy flow again";
     } else if (stale) {
@@ -796,6 +1260,48 @@ jsonrpc::Json Configure(const project::Project& project, const std::vector<std::
     out["removed"] = std::move(removed);
     out["count"] = static_cast<int>(after.size());
 
+    // ---- 预算校验：ChipWatcher 的硬上限 ----
+    // 实测（2026-11-21，干净上下文 agent + TD 2026.2_SP1）：
+    //   * 4 条总线 / 64 bit 以内 → gate 之后会建出 `auto_created_cwcN`，探针进 bit；
+    //   * 5 条总线 → 第 5 条**静默丢弃**（前 4 条照常），没有任何报错；
+    //   * 6 条总线 / 70 bit → `probe_status` 只剩 `empty ChipWatcher configuration`，
+    //     位流照常产出、探针全丢。
+    // TD 在 insert_debugger 那一步不告警，所以必须在写 mdn 之前就挡住，
+    // 否则一次白跑就是 5–10 分钟的 syn+phy。
+    std::map<std::string, int> bus_widths;
+    for (const std::string& signal : after) {
+        const std::size_t open = signal.rfind('[');
+        const std::string base = open == std::string::npos ? signal : signal.substr(0, open);
+        ++bus_widths[base];
+    }
+    constexpr int kMaxBuses = 4;
+    constexpr int kMaxBits = 64;
+    jsonrpc::Json buses_json = jsonrpc::Json::array();
+    for (const auto& [name, width] : bus_widths) {
+        jsonrpc::Json item = jsonrpc::Json::object();
+        item["name"] = name;
+        item["width"] = width;
+        buses_json.push_back(std::move(item));
+    }
+    out["buses"] = std::move(buses_json);
+    out["bus_count"] = static_cast<int>(bus_widths.size());
+    out["bit_count"] = static_cast<int>(after.size());
+    jsonrpc::Json limits = jsonrpc::Json::object();
+    limits["buses"] = kMaxBuses;
+    limits["bits"] = kMaxBits;
+    out["limits"] = std::move(limits);
+
+    const bool over_budget =
+        static_cast<int>(bus_widths.size()) > kMaxBuses || static_cast<int>(after.size()) > kMaxBits;
+    if (over_budget) {
+        out["reason"] =
+            "probe budget exceeded: TD's ChipWatcher accepts at most 4 buses / 64 bits - "
+            "extra buses are dropped SILENTLY and an over-budget list yields "
+            "'empty ChipWatcher configuration' after a full syn+phy run. "
+            "Keep <=4 signals (a bus counts once, e.g. WHG/x[15:0]) and <=64 bits total.";
+        return out;  // ok 保持 false：连 dry run 也不放行
+    }
+
     if (!write) {
         out["ok"] = true;
         out["written"] = false;
@@ -814,8 +1320,9 @@ jsonrpc::Json Configure(const project::Project& project, const std::vector<std::
     out["ok"] = true;
     out["written"] = true;
     out["reason"] =
-        "user.mdn updated - run Place & Route (stages [\"phy\"]) so the probes get embedded; "
-        "the incremental route does NOT re-insert the debugger";
+        "user.mdn updated - now run stages [\"all\"] (NOT [\"phy\"]): TD creates the "
+        "ChipWatcher instance right after Optimize Gate, which belongs to the syn run. "
+        "The backend adds syn automatically when user.mdn is newer than the gate database.";
     return out;
 }
 
@@ -1217,8 +1724,14 @@ jsonrpc::Json Capture(const td::TdChoice& td, const project::Project& project,
     out["ok"] = false;
     out["stage"] = "precheck";
 
+    // 抓取前同样补齐 sidecar（批量 phy 不写它）。
+    const jsonrpc::Json ensured = EnsureCompiledCwc(project);
+    if (ensured.contains("written") && ensured["written"].get<bool>()) {
+        out["cwc_generated"] = true;
+    }
     const CwcSnapshot cwc = ReadCwc(CompiledCwc(project));
     if (!cwc.ok) {
+        out["cwc"] = ensured;
         out["refused"] = true;
         out["reason"] = cwc.error.empty()
                             ? "no compiled ChipWatcher (phy_1/cw/compiled.cwc) - run the phy flow"

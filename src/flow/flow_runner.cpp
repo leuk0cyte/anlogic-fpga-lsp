@@ -732,6 +732,25 @@ struct FlowRunner::Impl {
     }
 
     // -------------------------------------------------------------------------
+    // 只跑 phy 但探针清单比 gate 网表新 → 自动补 syn
+    // -------------------------------------------------------------------------
+    // TD 的 ChipWatcher 实例是在 **Optimize Gate 之后**建立的（debug hub + OOC 综合），
+    // 而 gate 属于 **syn** run。所以"改了 chip_debugger/user.mdn 只跑 phy"必然白跑
+    // 5–10 分钟。实测（干净上下文 agent，2026-11-21）：只跑 phy → 位流成功但
+    // `cw/` 里没有任何 watcher。与其让调用方踩一次，不如这里补 syn 并回一句说明。
+    std::string PromoteSynWhenProbesDirty(std::vector<std::string>& stages) {
+        if (stages.size() != 1 || stages.front() != "phy") return {};
+        const std::string mdn = probe::MdnPath(owner->project_);
+        const std::string gate_db = Join(RunDirOf("syn_1"), owner->project_.name + "_gate.db");
+        const double mdn_time = Mtime(mdn);
+        const double gate_time = Mtime(gate_db);
+        if (mdn_time <= 0.0 || mdn_time <= gate_time) return {};
+        stages.insert(stages.begin(), "syn");
+        return "user.mdn is newer than syn_1's gate database, so syn was added; "
+               "TD creates the ChipWatcher instance right after Optimize Gate";
+    }
+
+    // -------------------------------------------------------------------------
     // P0-3：探针必须在**正确的两个时点**插入（TD GUI 的时序）
     // -------------------------------------------------------------------------
     // GUI 的 flow 是 6 步：syn = Read Design / Optimize RTL / Optimize Gate，
@@ -1419,7 +1438,16 @@ void FlowRunner::SetClockForTest(std::function<double()> clock) {
 
 jsonrpc::Json FlowRunner::Start(const std::vector<std::string>& stages, int jobs) {
     std::lock_guard<std::mutex> start_lock(impl_->start_mutex);
-    const std::vector<std::string> normalised = NormaliseStages(stages);
+    std::vector<std::string> normalised = NormaliseStages(stages);
+    // ------------------------------------------------------------------
+    // 只跑 phy 但探针清单比 gate 网表新 → 自动补上 syn
+    // ------------------------------------------------------------------
+    // TD 的 ChipWatcher 实例是在 **Optimize Gate 之后**建立的（debug hub + OOC 综合），
+    // 而 gate 属于 **syn** run。所以"改了 `chip_debugger/user.mdn` 只跑 phy"必然白跑
+    // 5–10 分钟：insert_debugger 用的是旧的 gate 网表，watcher 不会重建。
+    // 实测（干净上下文 agent，2026-11-21）：只跑 phy → 位流成功但 `cw/` 里没有 watcher。
+    // 与其让它踩一次，不如这里直接补 syn，并在返回里说明（stagesRequested/stages）。
+    std::string auto_added = impl_->PromoteSynWhenProbesDirty(normalised);
     if (normalised.empty()) {
         jsonrpc::Json out = jsonrpc::Json::object();
         out["ok"] = false;
@@ -1483,6 +1511,11 @@ jsonrpc::Json FlowRunner::Start(const std::vector<std::string>& stages, int jobs
     out["ok"] = true;
     out["runId"] = run_id;
     out["stages"] = normalised;
+    if (!auto_added.empty()) {
+        // 明确告诉调用方"你要的 phy 我补成了 syn+phy"，否则 agent 会以为只跑了 phy
+        out["stagesRequested"] = stages;
+        out["note"] = auto_added;
+    }
     return out;
 }
 

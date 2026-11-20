@@ -6,7 +6,7 @@
 | --- | --- |
 | **全新目录干净构建** | configure 29 s → build 3.3 min → **844 个目标全部成功**（Release + 全量 LTO）；无 LTO 的 `windows-msvc-dev` 全新目录 **56 s** |
 | **`ctest` 全量** | **63/63 通过**（`unit` 43 · `td` 4 · `e2e` 5 · `formatgate` 4 · `lintgate` 3 · `gate` 2 · `generator` 1 · `mcp` 1）；preset 默认 **8 路并行**，实测 **62 s**（串行 92–104 s） |
-| **原生产物** | `build/bin/fpgalsp-native.exe`（**6,618,624 B**，全量 LTCG；SHA256 `5975E6E7…9AD9E2`） |
+| **原生产物** | `build/bin/fpgalsp-native.exe`（**6,673,920 B**，全量 LTCG；SHA256 `2D521E94…B0FB47`） |
 | **单元测试规模** | 43 个 gtest target |
 
 > 构建/测试的并行度分析（为什么 192 线程帮不上忙、时间精确花在哪、日常该用哪个 preset）见
@@ -317,9 +317,9 @@ flash +0.5~0.7 %。
 
 | 项 | 值 |
 | --- | --- |
-| 扩展包 | `vscode-extension/fpga-lsp-anlogic-0.18.5.vsix`（230 文件，3,246,758 B） |
-| 打包内置的服务端 | `build/bin/fpgalsp-native.exe`（Release + 全量 LTO，6,618,624 B，SHA256 `5975E6E7…AD9E2`） |
-| 一致性校验 | 解包后 `extension/server/bin/fpgalsp-native.exe` 的 SHA256 与该二进制**逐字节相同**；`extension/package.json` 版本 = 0.18.5 |
+| 扩展包 | `vscode-extension/fpga-lsp-anlogic-0.18.6.vsix`（230 文件，3,272,414 B） |
+| 打包内置的服务端 | `build/bin/fpgalsp-native.exe`（Release + 全量 LTO，6,673,920 B，SHA256 `2D521E94…0FB47`） |
+| 一致性校验 | 解包后 `extension/server/bin/fpgalsp-native.exe` 的 SHA256 与该二进制**逐字节相同**；`extension/package.json` 版本 = 0.18.6 |
 
 ### 升级后工程侧的变化
 
@@ -451,3 +451,36 @@ command 级 Flow Statistics 表（含每步 wall/cpu/mem）从来没被翻译成
 
 已知不精确处：`fix_hold`/`update_timing` 在 gate/place/route 三步都出现，故意不归属任何一步
 （记进去必然错），所以某些 run 的 place/route 耗时会略少。
+
+## 干净上下文 agent 实测 + 缺口补齐（2026-11-21 清晨）
+
+派了一个**干净上下文**的子 agent：只告诉它"后端可执行文件在哪、怎么起 MCP、工程与板子在哪、任务是什么"，
+**不告诉任何使用步骤**，让它自己从 `initialize.instructions` / `tools/list` / `fpga_guide` / `prompts` 里学。
+它最终**独立走通并把业务数拿出来了**。
+
+### 业务结论（1500 Hz 两电平载波计数器：实测 = 理论）
+
+| 项 | 理论（从 RTL 推） | 实测 |
+| --- | --- | --- |
+| 采样 | `reg_init/clk`=100 MHz，深度 1024，窗口 **10.24 µs**（1.54% 个载波周期） | 同（`editable:false`） |
+| 计数器步进 | 每 100 ns ±1（`PWM_clk`=10 MHz） | 两次抓取均 **+102 步、步间隔恰好 10 个采样点** |
+| 载波周期 | 6666 tick × 100 ns = 666.6 µs → **1500.15 Hz** | **6665 tick = 666.5 µs → 1500.38 Hz**（±1 tick 量化，差 0.015%） |
+| 状态位 | `0b10101`（lock=1、mode=1 两电平、pwm_int=1、dir=0） | **恒 21** ✅ |
+
+证据：`build/_audit_sp1/agent_clean/{REPORT.md, cap1.csv, cap2.csv, calls.jsonl}`。
+
+### 它踩到的三个阻塞点（本轮已补齐两个 + 一个半）
+
+| # | 问题 | 处理 |
+| --- | --- | --- |
+| 1 | **改完 `user.mdn` 只有 `stages:["all"]` 才真的插探针**（guide 写 phy，实测 phy-only 完全不插），白跑 5–10 min | ✅ `flow_run` 在 `user.mdn` 比 `syn_1/*_gate.db` 新时**自动把 phy 提升成 syn+phy**，并在返回里给 `stagesRequested`+`note`；guide/instructions 的措辞已改成 `["all"]` |
+| 2 | **探针上限 4 总线 / 64 bit 不校验不报错**（5 条静默丢第 5 条、6 条→`empty ChipWatcher configuration` 白跑 8 min） | ✅ `fpga_probe_config` 先算 `bus_count/bit_count` 并和 `limits` 比对，超限 **直接 ok:false**（连 dry run 也不放行），错误文案说明"TD 会静默丢弃" |
+| 3 | **后端从不生成 `phy_1/cw/compiled.cwc`**（批量 `launch_runs` 不写、`setup_debugger` 在 CLI 下静默 no-op），抓取被阻塞，只能手工拼 | ✅ 新增 `probe::BuildCwcFromWatcher` + `EnsureCompiledCwc`：从 TD 自己的 `syn_1/cw/auto_created_cwc*/*_watcherInst.sv`（总线数/位宽/DIN/深度）+ `phy_1/<prj>_inst.bid`（采集 RAM 的 rid/wid/offset）+ 当前 `user.mdn` **反推并写出 cwc**；`probe_status`/`probe_capture` 在 cwc 缺失时自动补齐。位宽顺序对不上时**拒绝生成**并提示重跑 `["all"]`（猜 bus 顺序 = 错的采样数据） |
+| 4 | 采样时钟/深度 `editable:false`，没有任何工具能改 | 仍是 TD 编译期量（GUI 在 Optimize Gate 之后设）；已在 guide 里写明"要用别的时钟/深度只能改 RTL 或走 GUI"，并把**当前** depth/clock 从 watcher 产物里读出来报给 agent |
+
+### 它指出但本轮**没有**动的
+
+- 改 mdn 后 `probe_verify` 的 hints 与 guide 措辞需一致（已随本轮 changeset 统一，但没重跑它的原始路径验证）。
+- 硬件采样 RAM 在"非 16 位宽总线"后有 5 bit 偏移（它靠数据自洽性还原）；我们生成的 cwc 按 TD 的总线顺序写，
+  但**位序 ↔ 硬件 slot 的对应关系没有独立校验** —— 若要长期依赖，应再加一条"抓已知常数网自检"的用例。
+- `flow_status` 在"客户端崩溃导致 TD 被杀"后没有 `interrupted` 标记（仍是 idle）。列为下一步。

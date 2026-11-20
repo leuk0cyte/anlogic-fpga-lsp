@@ -168,20 +168,37 @@ On-chip logic capture (Anlogic ChipWatcher).
    compiled watcher contains: `present`, `clock`, `sample_depth`, `net_count`,
    `stale`, `missing_in_bit`, `extra_in_bit`, `ready`, `reason`.
 2. `fpga_probe_config {"signals":["WHG/pwm_reg0_i[15:0]"],"write":false}` - dry
-   run listing `added`/`removed`; then `"write":true` to rewrite user.mdn.
-   Ranges are accepted and expanded to per-bit nets.
-3. `fpga_flow_run {"stages":["phy"]}` + `fpga_flow_wait {}` - rerun phy so
-   `insert_debugger` runs again and the probes enter the bitstream.
-4. `fpga_probe_status {}` again - require `present:true`, `ready:true`,
+   run listing `added`/`removed`, plus `bus_count`/`bit_count`/`limits`. Then
+   `"write":true` to rewrite user.mdn. Ranges are expanded to per-bit nets.
+   **Budget: 4 buses / 64 bits.** TD accepts at most 4 buses (a bus = one signal,
+   e.g. `WHG/x[15:0]`); a 5th bus is dropped SILENTLY and an over-budget list
+   yields `empty ChipWatcher configuration` after a full run. The tool rejects
+   such a list up front instead of letting you waste a syn+phy.
+3. `fpga_flow_run {"stages":["all"]}` + `fpga_flow_wait {}` - **`["all"]`, not
+   `["phy"]`**: TD instantiates the ChipWatcher (clock/depth/debug hub/OOC
+   synthesis) right AFTER *Optimize Gate*, i.e. in the syn run. phy-only reuses
+   the old gate netlist and keeps the old (or no) watcher. Measured: with the
+   gate step skipped, phy reports `KIT-2501 : No mark_debug exists in the
+   netlist` and the bit ends up without probes.
+4. `fpga_probe_verify {}` - per-bit answer: `signals{requested,embedded,missing}`,
+   `buses[].{status,reason}`, `missing_nets`, `hints`. Use it to prove the
+   probes really landed (`no-bitstream` = run the flow first;
+   `dropped-by-td` = cross-domain or optimized away).
+5. `fpga_probe_status {}` again - require `present:true`, `ready:true`,
    `stale:false`, `missing_in_bit:[]`, `net_count` > 0.
-5. `fpga_probe_capture {"download":"auto","confirm":true,"trigger_now":true}` -
+6. `fpga_probe_capture {"download":"auto","confirm":true,"trigger_now":true}` -
    captures over JTAG; returns per-sample values, `trigger_index`, CSV path.
    Measured: 17.4 s when the bitstream is already loaded, plus the SRAM load
    when `download` reloads it.
 
 ## Preconditions
 * `phy_1/cw/compiled.cwc` **and** `phy_1/cw/compiled.bit` exist (a probe build
-  was done). No cwc -> run phy; there is no other way to get one.
+  was done). A batch (`launch_runs`) phy run does **not** write `compiled.cwc`
+  even when the bit really contains the watcher (only the TD GUI ChipWatcher
+  saves it). If the file is missing but `syn_1/cw/auto_created_cwc*/` exists,
+  the probes ARE embedded: copy any cwc that matches the current `user.mdn`
+  (e.g. an earlier capture's `.fpgalsp/probe/trigger_*.cwc`) to that path, or
+  save once from the TD GUI.
 * A board on a cable, and no other hardware operation (programming or another
   capture) - the cable is leased per process, a conflict returns `busy`.
 * `download:"auto"|"true"` needs `confirm:true` because it reprograms SRAM;

@@ -179,6 +179,12 @@ std::string CompiledData(const project::Project& project);
 // ⚠ `stale:true` = 改了 `chip_debugger/user.mdn` 但没重跑**完整** Place & Route。
 //   增量布线（只跑 route）不会重新执行 opt_place 阶段的 insert_debugger，
 //   `compiled.cwc` 时间戳不变，探针根本没进 bit —— 这是本功能最容易骗过用户的坑。
+// 当 `phy_1/cw/compiled.cwc` 缺失但 ChipWatcher 已经建好（syn_1/cw/auto_created_cwc* 存在）时，
+// 从 TD 自己的产物（*_watcherInst.sv + <prj>_inst.bid + user.mdn）反推并**写出** cwc。
+// 批量 `launch_runs` 不会写这个 sidecar，而 `probe_capture` 需要它拿 instance 名与触发配置。
+// 返回 {"ok":bool, "existed":bool, "written":bool, ...}；失败时带 reason（不改 ok 语义）。
+jsonrpc::Json EnsureCompiledCwc(const project::Project& project);
+
 jsonrpc::Json Status(const project::Project& project);
 
 // 把请求的信号写成 user.mdn。signals 为空 = 读取当前清单（dry run，不落盘）。
