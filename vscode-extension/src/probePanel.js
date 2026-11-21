@@ -37,16 +37,50 @@ class ProbePanel {
     }
 
     // 命令入口：把底栏那个视图聚焦（视图没被创建过时 registerWebviewViewProvider
-    // 会在第一次 focus 时调 resolveWebviewView）
-    show() {
-        if (!this.view && this.viewId) {
-            return this.vscode.commands.executeCommand(`${this.viewId}.focus`);
+    // 会在第一次 focus 时调 resolveWebviewView）。
+    // 0.19.1：focus 之后仍拿不到视图（例如扩展宿主没注册 provider、用户把面板藏了），
+    // 就退回"编辑区 webviewPanel"——保证 mark_debug 清单永远能编辑，不再出现
+    // “没有可提供视图数据的已注册数据提供程序”。
+    async show() {
+        if (this.view) {
+            return this.refresh();
         }
+        if (this.viewId) {
+            try {
+                await this.vscode.commands.executeCommand(`${this.viewId}.focus`);
+            } catch (err) {
+                // ignore: fall through to the editor panel
+            }
+            await new Promise((resolve) => setTimeout(resolve, 800));
+            if (this.view) {
+                return this.refresh();
+            }
+        }
+        return this.openInEditor();
+    }
+
+    // 编辑区里的同一份面板（兜底路径）。
+    openInEditor() {
+        if (this.editorPanel) {
+            this.editorPanel.reveal(this.editorPanel.viewColumn || 1);
+            return this.refresh();
+        }
+        const panel = this.vscode.window.createWebviewPanel(
+            'fpgaLspProbePanel', 'ChipWatcher', 1, { enableScripts: true, retainContextWhenHidden: true });
+        this.editorPanel = panel;
+        panel.webview.onDidReceiveMessage((message) => this.onMessage(message), null, []);
+        panel.onDidDispose(() => { this.editorPanel = null; }, null, []);
+        this.renderInto(panel.webview);
         return this.refresh();
     }
 
+    renderInto(webview) {
+        webview.html = renderProbePanelHtml(this.state || {});
+        this.editorWebview = webview;
+    }
+
     async refresh() {
-        if (!this.view) return undefined;
+        if (!this.view && !this.editorWebview) return undefined;
         try {
             this.state = await this.service.getStatus();
         } catch (err) {
@@ -57,12 +91,17 @@ class ProbePanel {
     }
 
     render() {
-        if (!this.view) return;
-        this.view.webview.html = renderProbePanelHtml(this.state || {});
+        if (this.view) {
+            this.view.webview.html = renderProbePanelHtml(this.state || {});
+        }
+        if (this.editorWebview) {
+            this.editorWebview.html = renderProbePanelHtml(this.state || {});
+        }
     }
 
     say(text) {
         if (this.view) this.view.webview.postMessage({ type: 'status', text });
+        if (this.editorWebview) this.editorWebview.postMessage({ type: 'status', text });
     }
 
     async onMessage(message) {
@@ -115,6 +154,8 @@ class ProbePanel {
 
     dispose() {
         this.view = null;
+        this.editorWebview = null;
+        this.editorPanel = null;
     }
 }
 

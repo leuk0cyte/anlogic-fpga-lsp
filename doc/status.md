@@ -317,9 +317,9 @@ flash +0.5~0.7 %。
 
 | 项 | 值 |
 | --- | --- |
-| 扩展包 | `vscode-extension/fpga-lsp-anlogic-0.19.0.vsix`（230 文件，3,291,875 B） |
-| 打包内置的服务端 | `build/bin/fpgalsp-native.exe`（Release + 全量 LTO，6,721,000 B，SHA256 `CF797EE2…3F63AF`） |
-| 一致性校验 | 解包后 `extension/server/bin/fpgalsp-native.exe` 的 SHA256 与该二进制**逐字节相同**；`extension/package.json` 版本 = 0.19.0 |
+| 扩展包 | `vscode-extension/fpga-lsp-anlogic-0.19.1.vsix`（230 文件，3,292,627 B） |
+| 打包内置的服务端 | `build/bin/fpgalsp-native.exe`（Release + 全量 LTO，6,723,000 B，SHA256 `A0ED69CB…C1090`） |
+| 一致性校验 | 解包后 `extension/server/bin/fpgalsp-native.exe` 的 SHA256 与该二进制**逐字节相同**；`extension/package.json` 版本 = 0.19.1 |
 
 ### 升级后工程侧的变化
 
@@ -574,3 +574,19 @@ GUI 的 phy 让 TD 写 `compiled.cwc`），把那份文件留给我 —— 我�
   写之前用 watcher 的位宽逐位校验总线顺序，顺序对不上就拒绝并提示用 `probe_config{cwc_bus_order:[...]}`。
 - 混合位宽（如 16/5/16/16）时 TD 会重排总线且产物里没有总线名 —— 需要 `cwc_bus_order` 提示一次；
   等宽总线（如 4×16）不需要。
+
+### 第六轮：按用户实测事实去掉写死的探针上限 + ChipWatcher 进状态栏
+
+用户的实测事实（覆盖我之前的推断）：
+- GUI 里**可以对任意信号 mark_debug**；只有"Optimize Gate 之后跑 phy"时信号太多才会 error，
+  而且**每颗芯片上限不同**；GUI 里还能 enable/disable 列表条目，**disable 的不占 debug 资源**。
+- 所以后端**不该写死 4 总线 / 64 bit**：`fpga_probe_config` 现在只报 `bus_count`/`bit_count`/
+  `budget{capped:false,note}`，超过 4/64 时给一句 warning，真正的上限让 TD 在 phy 阶段自己报错。
+  实测 9 总线 / 93 bit 的 dry run 返回 `ok:true`（之前会被直接拒绝）。
+
+ChipWatcher 面板：
+- 状态栏新增 `$(pulse) ChipWatcher` 条目（点了开面板；有探针时显示 `ChipWatcher: <net 数>`，
+  stale 会写进 tooltip）。
+- `fpgaLsp.showProbePanel` / "Edit probe signal list" 现在有**兜底路径**：底栏 webview view
+  拿不到时自动退回编辑区 webviewPanel，不会再出现"没有可提供视图数据的已注册数据提供程序"。
+- `package.json` 补 `onView:fpgaLsp.probeView` 激活事件。

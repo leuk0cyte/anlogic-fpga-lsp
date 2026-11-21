@@ -1677,8 +1677,6 @@ jsonrpc::Json Configure(const project::Project& project, const std::vector<std::
         const std::string base = open == std::string::npos ? signal : signal.substr(0, open);
         ++bus_widths[base];
     }
-    constexpr int kMaxBuses = 4;
-    constexpr int kMaxBits = 64;
     jsonrpc::Json buses_json = jsonrpc::Json::array();
     for (const auto& [name, width] : bus_widths) {
         jsonrpc::Json item = jsonrpc::Json::object();
@@ -1689,20 +1687,23 @@ jsonrpc::Json Configure(const project::Project& project, const std::vector<std::
     out["buses"] = std::move(buses_json);
     out["bus_count"] = static_cast<int>(bus_widths.size());
     out["bit_count"] = static_cast<int>(after.size());
-    jsonrpc::Json limits = jsonrpc::Json::object();
-    limits["buses"] = kMaxBuses;
-    limits["bits"] = kMaxBits;
-    out["limits"] = std::move(limits);
-
-    const bool over_budget =
-        static_cast<int>(bus_widths.size()) > kMaxBuses || static_cast<int>(after.size()) > kMaxBits;
-    if (over_budget) {
-        out["reason"] =
-            "probe budget exceeded: TD's ChipWatcher accepts at most 4 buses / 64 bits - "
-            "extra buses are dropped SILENTLY and an over-budget list yields "
-            "'empty ChipWatcher configuration' after a full syn+phy run. "
-            "Keep <=4 signals (a bus counts once, e.g. WHG/x[15:0]) and <=64 bits total.";
-        return out;  // ok 保持 false：连 dry run 也不放行
+    // ⚠ 故意**不**设上限：每颗芯片的 ChipWatcher 预算不同（TD 在 phy 阶段自己会报错），
+    //   而且 GUI 里可以对任意信号 mark_debug、也可以 disable 掉列表里的条目
+    //   （disable 的条目不占 debug 资源）。后端只报数量，超了让 TD 自己报错。
+    jsonrpc::Json budget = jsonrpc::Json::object();
+    budget["buses"] = static_cast<int>(bus_widths.size());
+    budget["bits"] = static_cast<int>(after.size());
+    budget["capped"] = false;
+    budget["note"] =
+        "no cap is applied here: every device has its own ChipWatcher budget and TD reports "
+        "it during the phy stage. Disabled entries do not consume debug resources - remove or "
+        "disable signals there if TD complains.";
+    out["budget"] = std::move(budget);
+    if (static_cast<int>(bus_widths.size()) > 4 || static_cast<int>(after.size()) > 64) {
+        out["warning"] =
+            "this is a large probe list (4 buses / 64 bits is what worked on PH1A100SFG676); "
+            "TD enforces the real per-device limit at the phy stage - if it errors, mark fewer "
+            "signals (a bus counts once, e.g. WHG/x[15:0]) and rerun stages:[\"all\"].";
     }
 
     if (!write) {

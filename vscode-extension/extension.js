@@ -1374,7 +1374,35 @@ function activate(context) {
     vscode.window.registerWebviewViewProvider(VIEWS.probe, probePanel, {
         webviewOptions: { retainContextWhenHidden: true },
     });
-    const showProbePanel = async () => { await probePanel.show(); };
+
+    // 0.19.1：状态栏入口 —— 用户明确要求"chipwatcher 放到状态栏"。
+    // 点了就开面板（底栏视图拿不到时自动退回编辑区）；文字顺便显示探针规模。
+    const probeItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 89);
+    probeItem.command = VSCodeCommands.showProbePanel;
+    probeItem.text = '$(pulse) ChipWatcher';
+    probeItem.tooltip = 'Anlogic ChipWatcher — click to open the probe panel (mark_debug list, trigger, capture)';
+    probeItem.show();
+    context.subscriptions.push(probeItem);
+    const renderProbeItem = (state) => {
+        const watcher = (state && state.watcher) || {};
+        const nets = Number(watcher.net_count || 0);
+        if (state && state.present && nets > 0) {
+            probeItem.text = `$(pulse) ChipWatcher: ${nets}`;
+            probeItem.tooltip =
+                `ChipWatcher embedded: ${nets} net(s), clock ${state.clock || '?'}, depth ` +
+                `${state.sample_depth || '?'}` + (watcher.stale ? ' — STALE vs user.mdn' : '');
+        } else {
+            probeItem.text = '$(pulse) ChipWatcher';
+            probeItem.tooltip = 'ChipWatcher — click to open the probe panel (no probes embedded yet)';
+        }
+    };
+    renderProbeItem(undefined);
+    probeService.getStatus().then(renderProbeItem).catch(() => renderProbeItem(undefined));
+
+    const showProbePanel = async () => {
+        const state = await probePanel.show();
+        if (state) renderProbeItem(state);
+    };
 
     register(VSCodeCommands.doctor, async () => {
         try {

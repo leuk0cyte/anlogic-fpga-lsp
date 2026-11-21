@@ -168,12 +168,14 @@ On-chip logic capture (Anlogic ChipWatcher).
    compiled watcher contains: `present`, `clock`, `sample_depth`, `net_count`,
    `stale`, `missing_in_bit`, `extra_in_bit`, `ready`, `reason`.
 2. `fpga_probe_config {"signals":["WHG/pwm_reg0_i[15:0]"],"write":false}` - dry
-   run listing `added`/`removed`, plus `bus_count`/`bit_count`/`limits`. Then
+   run listing `added`/`removed`, plus `bus_count`/`bit_count`/`budget`. Then
    `"write":true` to rewrite user.mdn. Ranges are expanded to per-bit nets.
-   **Budget: 4 buses / 64 bits.** TD accepts at most 4 buses (a bus = one signal,
-   e.g. `WHG/x[15:0]`); a 5th bus is dropped SILENTLY and an over-budget list
-   yields `empty ChipWatcher configuration` after a full run. The tool rejects
-   such a list up front instead of letting you waste a syn+phy.
+   **No artificial cap.** Every device has its own ChipWatcher budget (on
+   PH1A100SFG676 4 buses / 64 bits is what worked; 5 buses dropped the extra one
+   and a very long list ended in `empty ChipWatcher configuration`). The tool
+   reports the counts and lets TD raise the error at the phy stage, because the
+   GUI can mark any signal and disabled entries do not consume debug resources.
+   If TD errors, mark fewer signals and rerun `["all"]`.
 3. `fpga_flow_run {"stages":["all"]}` + `fpga_flow_wait {}` - **`["all"]`, not
    `["phy"]`**: TD instantiates the ChipWatcher (clock/depth/debug hub/OOC
    synthesis) right AFTER *Optimize Gate*, i.e. in the syn run. phy-only reuses
