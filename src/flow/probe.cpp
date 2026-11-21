@@ -867,19 +867,6 @@ std::string ResolveSampleClock(const project::Project& project) {
             }
         }
     }
-    // 只读回退：旧版本把状态目录放在工程里，历史 cwc 可能还留在那儿。
-    // 现在不再往这里写，但读一下不破坏任何东西（采样时钟只能从历史 cwc 取）。
-    const std::filesystem::path legacy_history =
-        std::filesystem::path(project.dir + "/.fpgalsp/probe");
-    if (std::filesystem::is_directory(legacy_history, ec)) {
-        for (std::filesystem::directory_iterator it(legacy_history, ec), end; !ec && it != end;
-             it.increment(ec)) {
-            const std::string name = it->path().filename().string();
-            if (name.size() > 4 && name.rfind(".cwc") == name.size() - 4) {
-                candidates.push_back(it->path().string());
-            }
-        }
-    }
     ec.clear();
     const std::filesystem::path project_cwc = std::filesystem::path(project.dir + "/cwc");
     if (std::filesystem::is_directory(project_cwc, ec)) {
@@ -1204,12 +1191,17 @@ std::string BuildCwcFromWatcher(const project::Project& project, const MdnConfig
     const std::vector<BidEram> erams = ParseBidErams(ReadText(bid_path), cwc1_name);
     if (erams.empty()) return fail("no ERAM entries for " + cwc1_name + " in " + bid_path);
 
-    // 4) 采样时钟（TD 不落文本，只能从历史 cwc 取）
-    const std::string clock = ResolveSampleClock(project);
+    // 4) 采样时钟：优先用落盘配置（由 `report_cwc_status` 从工程 gate 数据库问 TD 得到），
+    //    然后才退回扫描现有 cwc（phy sidecar、工程 cwc/ 目录）。不再读旧 .fpgalsp。
+    const ProbeBuildConfig clock_config = ReadProbeBuildConfig(project);
+    const std::string clock =
+        clock_config.has_clock && !clock_config.clock.empty() ? clock_config.clock
+                                                             : ResolveSampleClock(project);
     if (clock.empty()) {
-        return fail("cannot determine the ChipWatcher sample clock: no existing .cwc anywhere "
-                    "under phy_1/cw, .fpgalsp/probe or cwc/. Save the ChipWatcher once from the "
-                    "TD GUI (or capture once with a valid cwc) and retry");
+        return fail("cannot determine the ChipWatcher sample clock: no compiled cwc and no "
+                    "cwc/*.cwc in the project. Pass clock to fpga_probe_config "
+                    "(e.g. {\"clock\":\"reg_init/clk\"}) - TD needs it when it authors the "
+                    "watcher config");
     }
 
     // 5) 拼 XML（格式与 TD 自己写出的 compiled.cwc 逐字段一致）
@@ -2178,6 +2170,95 @@ jsonrpc::Json WriteCompiledCwcAfterPhy(const project::Project& project) {
     return out;
 }
 
+// =============================================================================
+// 采样时钟：直接从**工程的 gate 数据库**问 TD
+// =============================================================================
+//  TD 只把采样时钟写进它自己的产物（watcher RTL 里没有、bid 里也没有），但
+//  `report_cwc_status` 在 gate 数据库上会打印一行 `Wathcer | depth | Clock | ...`。
+//  这就是"从用户工程读取"的正路：只要 syn 跑过（有 `<prj>_gate.db`），就能拿到 TD
+//  为这些信号推导出的时钟，不依赖任何历史 cwc。
+//  结果按 gate.db 的 (mtime,size) 缓存在 state dir，避免每次抓取都起一次 TD。
+std::string QuerySampleClockFromGateDb(const td::TdChoice& td, const project::Project& project,
+                                       std::string* error) {
+    const auto fail = [error](const std::string& why) {
+        if (error != nullptr) *error = why;
+        return std::string();
+    };
+    const std::string gate_db =
+        RunsDir(project) + "/syn_1/" + project.name + "_gate.db";
+    std::error_code ec;
+    if (!IsFile(gate_db)) {
+        return fail("no " + gate_db + " - run stages:[\"all\"] first");
+    }
+    const auto stamp = std::filesystem::last_write_time(std::filesystem::path(gate_db), ec);
+    const std::uintmax_t size = std::filesystem::file_size(std::filesystem::path(gate_db), ec);
+    const std::string key = std::to_string(static_cast<long long>(stamp.time_since_epoch().count())) +
+                            ":" + std::to_string(size);
+    const std::string cache_path = StateProbeDir(project) + "/clock-cache.txt";
+    if (IsFile(cache_path)) {
+        const std::string cached = ReadText(cache_path);
+        const std::size_t newline = cached.find('\n');
+        if (newline != std::string::npos && cached.substr(0, newline) == key) {
+            std::string value = cached.substr(newline + 1);
+            while (!value.empty() && (value.back() == '\n' || value.back() == '\r')) value.pop_back();
+            if (!value.empty()) return value;
+        }
+    }
+
+    td::TdSessionOptions options;
+    options.work_dir = StateProbeDir(project);
+    (void)fpgalsp::platform::ensure_directory(options.work_dir);
+    std::unique_ptr<td::TdSession> session;
+    try {
+        session = std::make_unique<td::TdSession>(td, options);
+    } catch (const std::exception& e) {
+        return fail(std::string("cannot start TD: ") + e.what());
+    }
+    const std::string al = Slashes(project.al_path);
+    const std::string commands =
+        td::MakeImportDeviceCommand("ph1_100.db", project.device, project.speed) + "\n" +
+        "cd {" + Slashes(project.dir) + "}\n" +
+        "open_project {" + al + "} -single_run\n" +
+        "import_db {" + Slashes(gate_db) + "}\n" +
+        "report_cwc_status\n";
+    const std::string out = session->Run(commands, 240.0);
+    session->Kill();
+
+    // 解析：`auto_created_cwc1 | 1024 | reg_init/clk | 0 | ...`
+    std::string clock;
+    std::size_t pos = 0;
+    while (pos < out.size() && clock.empty()) {
+        const std::size_t end = out.find('\n', pos);
+        const std::string line = out.substr(pos, end == std::string::npos ? std::string::npos
+                                                                        : end - pos);
+        pos = end == std::string::npos ? out.size() : end + 1;
+        if (line.find('|') == std::string::npos) continue;
+        std::vector<std::string> fields;
+        std::size_t begin = 0;
+        while (begin <= line.size()) {
+            const std::size_t bar = line.find('|', begin);
+            fields.push_back(Trim(line.substr(begin, bar == std::string::npos ? std::string::npos
+                                                                             : bar - begin)));
+            if (bar == std::string::npos) break;
+            begin = bar + 1;
+        }
+        if (fields.size() < 3) continue;
+        if (fields[0].find("auto_created_cwc") == std::string::npos &&
+            fields[0].find("chipwatcher") == std::string::npos) {
+            continue;
+        }
+        const std::string candidate = fields[2];
+        if (candidate.empty() || candidate == "Clock") continue;
+        clock = candidate;
+    }
+    if (clock.empty()) {
+        return fail("report_cwc_status did not report a watcher clock (is the watcher built? run "
+                    "stages:[\"all\"] first)");
+    }
+    (void)fpgalsp::platform::write_file_utf8(cache_path, key + "\n" + clock + "\n");
+    return clock;
+}
+
 jsonrpc::Json EnsureCompiledCwc(const project::Project& project,
                                    const std::vector<std::string>& bus_order) {
     jsonrpc::Json out = jsonrpc::Json::object();
@@ -2984,6 +3065,26 @@ jsonrpc::Json Capture(const td::TdChoice& td, const project::Project& project,
     out["ok"] = false;
     out["stage"] = "precheck";
 
+    // 采样时钟：没有 sidecar（也就没有 TD 写的 clock）时，**直接从工程的 gate 数据库
+    // 问 TD**（report_cwc_status），并落盘到 state dir 的 probe/config.txt，
+    // 后续 flow 写 user.cfg 时直接复用 —— 不再依赖任何历史 cwc。
+    if (!IsFile(CompiledCwc(project))) {
+        const ProbeBuildConfig existing = ReadProbeBuildConfig(project);
+        if (!existing.has_clock) {
+            std::string clock_error;
+            const std::string clock = QuerySampleClockFromGateDb(td, project, &clock_error);
+            if (!clock.empty()) {
+                ProbeBuildConfig updated = existing;
+                updated.has_clock = true;
+                updated.clock = clock;
+                (void)WriteProbeBuildConfig(project, updated);
+                out["clock_from_td"] = clock;
+            } else if (!clock_error.empty()) {
+                out["clock_query"] = clock_error;
+            }
+        }
+    }
+
     // 抓取前按需补齐 sidecar：默认不生成（generate_cwc=false），因为生成的 ERAM 段
     // 没有经过 bit 侧校验；只有调用方明确要求时才生成并承担风险。
     jsonrpc::Json ensured = jsonrpc::Json::object();
@@ -3073,7 +3174,7 @@ jsonrpc::Json Capture(const td::TdChoice& td, const project::Project& project,
 
     CaptureOptions effective = options;
     if (effective.cwd.empty()) {
-        effective.cwd = Slashes(project.dir + "/.fpgalsp/probe");
+        effective.cwd = Slashes(fpgalsp::platform::state_dir(project.dir) + "/probe");
     }
     (void)fpgalsp::platform::ensure_directory(effective.cwd);
     const std::string instance =
@@ -3146,6 +3247,10 @@ jsonrpc::Json Capture(const td::TdChoice& td, const project::Project& project,
     // 2) 打开工程（单 run 模式，只为了拿到 ChipWatcher 上下文）
     {
         out["stage"] = "open_project";
+        // TD 解析 .al 里的相对路径以它自己的 cwd 为基准；会话 cwd 现在在系统 temp
+        // （不污染工程），所以这里显式 cd 到工程目录，否则会报
+        // `HDL-8007 cannot open Verilog file '/al_ip/...'`。cd 不会往工程里写日志。
+        (void)session->Run("cd {" + Slashes(project.dir) + "}", 60.0);
         const std::string command =
             "open_project " + td::TclQuoteGrouped(Slashes(project.al_path)) + " -single_run";
         const std::string text = session->Run(command, 300.0);

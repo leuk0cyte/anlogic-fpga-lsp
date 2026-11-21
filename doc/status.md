@@ -900,3 +900,32 @@ temp has project dir? True
 工程目录保持干净。旧工程 `.fpgalsp` 里的 3 个历史 cwc 已迁到 temp 的 probe/ 后删除备份。
 
 `ctest` 64/64、插件 44/44。
+
+### 第十九轮：采样时钟改为"从工程直接问 TD"（不再依赖任何历史 cwc）
+
+用户要求：去掉对旧 `.fpgalsp` 的只读回退；采样时钟应该能从用户工程里直接读。
+
+改动：
+1. **删掉 legacy 回退**：`ResolveSampleClock` 不再扫描 `<工程>/.fpgalsp/probe`。
+2. **新增 `QuerySampleClockFromGateDb(td, project)`**：起一个 TD 会话
+   `import_device → cd <工程> → open_project -single_run → import_db <gate.db> → report_cwc_status`，
+   解析 `auto_created_cwc* | depth | Clock | ...` 那一行的时钟列。
+   结果按 gate.db 的 (mtime,size) 缓存在 `<state>/probe/clock-cache.txt`，重复调用不再起 TD。
+3. `Capture` 在没有 sidecar、配置里也没有 clock 时**自动**调用它，并写回
+   `probe/config.txt` 的 `clock=`，后续 flow 写 user.cfg 直接复用。
+4. 时钟解析顺序：`config.txt` 的 clock → phy sidecar（TD 自己写的 compiled.cwc）→
+   `report_cwc_status`（工程 gate 库）→ 工程 `cwc/*.cwc`。
+
+顺带修一个由"状态目录移到 temp"引入的问题：TD 解析 `.al` 里的相对路径以它自己的 cwd 为基准，
+会话 cwd 在 temp 时会报 `HDL-8007 cannot open Verilog file '/al_ip/...'`。
+现在在 `open_project` 前显式 `cd {<工程目录>}`（实测不会往工程里写日志）。
+
+**实测**（把 sidecar、probe 历史 cwc、clock-cache、config 里的 clock 全删掉后）：
+```
+probe_config bits=32
+capture ok=True samples=1024 clock_from_td=reg_init/clk columns=[pwm_reg0_i, pwm_reg1_i]
+config after: clock=reg_init/clk
+```
+即：采样时钟确实是从工程的 gate 数据库里问出来的，不依赖任何历史文件。
+
+`ctest` 64/64、插件 44/44。
