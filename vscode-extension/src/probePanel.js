@@ -30,6 +30,8 @@ class ProbePanel {
     // WebviewViewProvider 的实现
     resolveWebviewView(view) {
         this.view = view;
+        this.viewResolved = true;
+        if (typeof this.onResolve === 'function') this.onResolve();
         view.webview.options = { enableScripts: true };
         view.webview.onDidReceiveMessage((message) => this.onMessage(message), null, []);
         view.onDidDispose(() => { this.view = null; }, null, []);

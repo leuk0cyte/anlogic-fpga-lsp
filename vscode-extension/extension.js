@@ -1371,12 +1371,18 @@ function activate(context) {
             COMMANDS.probeCapture, [{ confirm: true, trigger: trigger || {} }])) || {},
     };
     const probePanel = new ProbePanel(vscode, probeService, VIEWS.probe);
+    const probeView = { registeredAt: new Date().toLocaleTimeString(), resolved: false };
+    probePanel.onResolve = () => { probeView.resolved = true; };
     vscode.window.registerWebviewViewProvider(VIEWS.probe, probePanel, {
         webviewOptions: { retainContextWhenHidden: true },
     });
+    // 0.19.2：底栏视图在某些机器上一直停在 "没有可提供视图数据的已注册数据提供程序"
+    // （扩展宿主没把 provider 和视图关联起来）。所以命令/状态栏**直接开编辑区面板**，
+    // 底栏视图保留给能正常工作的环境。
+    console.log(`[fpgalsp] probe view provider registered for '${VIEWS.probe}' at ${probeView.registeredAt}`);
 
     // 0.19.1：状态栏入口 —— 用户明确要求"chipwatcher 放到状态栏"。
-    // 点了就开面板（底栏视图拿不到时自动退回编辑区）；文字顺便显示探针规模。
+    // 点了就开面板（编辑区，保证可用）；文字顺便显示探针规模。
     const probeItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 89);
     probeItem.command = VSCodeCommands.showProbePanel;
     probeItem.text = '$(pulse) ChipWatcher';
@@ -1386,22 +1392,24 @@ function activate(context) {
     const renderProbeItem = (state) => {
         const watcher = (state && state.watcher) || {};
         const nets = Number(watcher.net_count || 0);
+        const diag = `\nview provider: registered ${probeView.registeredAt}; bottom view resolved: ` +
+            (probeView.resolved ? 'yes' : 'no (status bar opens the editor panel)');
         if (state && state.present && nets > 0) {
             probeItem.text = `$(pulse) ChipWatcher: ${nets}`;
             probeItem.tooltip =
                 `ChipWatcher embedded: ${nets} net(s), clock ${state.clock || '?'}, depth ` +
-                `${state.sample_depth || '?'}` + (watcher.stale ? ' — STALE vs user.mdn' : '');
+                `${state.sample_depth || '?'}` + (watcher.stale ? ' — STALE vs user.mdn' : '') + diag;
         } else {
             probeItem.text = '$(pulse) ChipWatcher';
-            probeItem.tooltip = 'ChipWatcher — click to open the probe panel (no probes embedded yet)';
+            probeItem.tooltip = 'ChipWatcher — click to open the probe panel (no probes embedded yet)' + diag;
         }
     };
     renderProbeItem(undefined);
     probeService.getStatus().then(renderProbeItem).catch(() => renderProbeItem(undefined));
 
     const showProbePanel = async () => {
-        const state = await probePanel.show();
-        if (state) renderProbeItem(state);
+        const state = await probePanel.openInEditor();
+        renderProbeItem(state);
     };
 
     register(VSCodeCommands.doctor, async () => {

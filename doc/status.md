@@ -590,3 +590,15 @@ ChipWatcher 面板：
 - `fpgaLsp.showProbePanel` / "Edit probe signal list" 现在有**兜底路径**：底栏 webview view
   拿不到时自动退回编辑区 webviewPanel，不会再出现"没有可提供视图数据的已注册数据提供程序"。
 - `package.json` 补 `onView:fpgaLsp.probeView` 激活事件。
+
+### 0.19.2：ChipWatcher 面板一律走编辑区（底栏 provider 在某些环境不生效）
+
+用户在底栏仍然看到"没有可提供视图数据的已注册数据提供程序"，但同一批注册的活动栏视图
+（Device / Flow 六步 / Reports）是正常的 —— 说明扩展已激活，只是底栏 panel 视图的
+provider 没和视图关联上（VS Code 侧行为，未在扩展里找到可控开关）。
+
+处理：
+- **状态栏 `$(pulse) ChipWatcher` 与 "Edit probe signal list" 现在直接开编辑区 webviewPanel**，
+  不再依赖底栏视图；底栏注册保留（能用的环境照旧）。
+- 状态栏 tooltip 带诊断：provider 注册时间、底栏视图是否真的 resolve 过；
+- 激活时 `console.log('[fpgalsp] probe view provider registered for ...')` 进 Exthost 日志。
