@@ -1028,6 +1028,8 @@ const protocol = require('../src/protocol');
     eq(showProbePanel.title, 'FPGA: ChipWatcher (signals, trigger, capture)', 'showProbePanel title');
     ok(declared.has('fpgaLsp.probeToggleSignal'), 'probeToggleSignal declared');
     ok(declared.has('fpgaLsp.probeAddSignals'), 'probeAddSignals declared');
+    ok(declared.has('fpgaLsp.probeSetClock'), 'probeSetClock declared (sample clock)');
+    ok(declared.has('fpgaLsp.probeSetDepth'), 'probeSetDepth declared (sample depth)');
     ok(declared.has('fpgaLsp.refreshProbe'), 'refreshProbe declared');
     const probeTitleMenus = manifest.contributes.menus['view/title']
         .filter((entry) => entry.when === 'view == fpgaLsp.probeView');

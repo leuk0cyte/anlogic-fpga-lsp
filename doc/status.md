@@ -1002,3 +1002,20 @@ probe_verify: cntT_q embedded 16/16、d1_tx_s1 embedded 16/16、missing=[]
    `probe_status` 也加了 `bit_has_watcher` 与对应的 `note`。
 
 **仍待做**：多实例下的 per-bus 状态与抓取（需要一个实例一份 cwc），以及回到 corpus_delta 工程复验。
+
+### 第二十三轮：插件补上 ChipWatcher 采样时钟/深度配置 + 分步 Run/Reset run（进行中）
+
+用户指出插件里看不到"采样时钟"配置。现在补上（后端与 MCP 早已支持，缺的是 UI）：
+
+- **ChipWatcher 树的 Actions** 新增两行：
+  - `Set sample clock…`（显示当前值）→ 输入框 → `probe_config{clock}` → 提示 `stages:["all"]` 重跑
+  - `Set sample depth…`（显示当前值，校验 128..65536）→ `probe_config{depth}`
+- `extension.js` 的 `applyConfig` 现在把 `clock`/`depth` 透传给后端（之前只发 signals/disabled）。
+- `package.json` 声明 `fpgaLsp.probeSetClock` / `fpgaLsp.probeSetDepth`；`test/run.js` 增加断言。
+
+同时开始的 Flow 分步控制（后端已落地，插件菜单待接）：
+- `FlowRunner::StartFromStep(step, force)`：`force=false` 时该步已完成则 `{ok:true,skipped:true}`；
+  `force=true` 清掉该步及下游标记后重跑（对应 GUI 的 Run / Reset run）。
+- **跑 syn 时把 phy 的三步标记与 watcher 产物一起清掉** → Flow 视图里 phy 立刻回到 not run
+  （这正是用户反馈"点了 run synthesis，phy 状态还显示完成"的根因）。
+- MCP 新增工具 `fpga_flow_run_step{step,force,jobs}`。

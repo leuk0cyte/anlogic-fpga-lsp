@@ -4,7 +4,7 @@
 ------
 1. `fpgalsp-native.exe --mcp` 启动，`initialize` → 断言协议版本协商、能力声明、
    serverInfo、instructions（agent 会读到这段文字）。
-2. `tools/list` → 默认 38 个只读工具；加 `--allow-flow --allow-write` 后 48 个；
+2. `tools/list` → 默认 38 个只读工具；加 `--allow-flow --allow-write` 后 49 个；
    每个工具都要有 name/title/description/inputSchema/annotations。
 3. 逐个调用**只读**工具（不碰 TD、不写文件）：
       fpga_project_list / fpga_project_info / fpga_project_files
@@ -42,7 +42,7 @@ CORPUS = os.path.join(REPO_ROOT, "tests", "gate-corpus", "corpus_alpha")
 
 FALLBACK_SERVER = os.path.join(REPO_ROOT, "build", "bin", "fpgalsp-native.exe")
 EXPECTED_READONLY_TOOLS = 38
-EXPECTED_ALL_TOOLS = 48
+EXPECTED_ALL_TOOLS = 49
 
 
 class McpProcess:

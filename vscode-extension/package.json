@@ -2,7 +2,7 @@
     "name": "fpga-lsp-anlogic",
     "displayName": "Anlogic FPGA LSP (TangDynasty)",
     "description": "Language support and IDE views for Anlogic TD FPGA projects: ADC pin constraints, SDC, project .al, Verilog index, TD-backed diagnostics, module hierarchy, syn/phy flow control and QoR/timing/area reports.",
-    "version": "0.20.8",
+    "version": "0.20.9",
     "publisher": "fpga-lsp",
     "license": "AGPL-3.0-or-later",
     "engines": {
@@ -16,7 +16,7 @@
     "activationEvents": [
         "onView:fpgaLsp.modulesView",
         "onView:fpgaLsp.flowView",
-      "onView:fpgaLsp.probeView",
+        "onView:fpgaLsp.probeView",
         "onLanguage:verilog",
         "onLanguage:systemverilog",
         "onLanguage:vhdl",
@@ -533,6 +533,16 @@
                 "title": "FPGA: ChipWatcher (signals, trigger, capture)",
                 "category": "FPGA",
                 "icon": "$(circuit-board)"
+            },
+            {
+                "command": "fpgaLsp.probeSetClock",
+                "title": "FPGA: ChipWatcher Sample Clock",
+                "category": "FPGA"
+            },
+            {
+                "command": "fpgaLsp.probeSetDepth",
+                "title": "FPGA: ChipWatcher Sample Depth",
+                "category": "FPGA"
             }
         ],
         "menus": {

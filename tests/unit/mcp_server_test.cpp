@@ -157,9 +157,9 @@ TEST_F(McpServerTest, PingReturnsEmptyResult) {
 
 // --------------------------------------------------------------- tools/list
 
-TEST_F(McpServerTest, ToolsListAllModesReturns48) {
+TEST_F(McpServerTest, ToolsListAllModesReturns49) {
     const Json response = Call(Request("tools/list", Json::object()));
-    EXPECT_EQ(response.at("result").at("tools").size(), 48u);
+    EXPECT_EQ(response.at("result").at("tools").size(), 49u);
 }
 
 TEST_F(McpServerTest, ToolsListDefaultHidesFlowAndWriteTools) {

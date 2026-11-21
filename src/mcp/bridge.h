@@ -176,6 +176,7 @@ class Bridge : public ToolDispatcher {
     Json FlowIssues(const Json& arguments);
     Json FlowWait(const Json& arguments);
     Json FlowRunTool(const Json& arguments);
+    Json FlowRunStepTool(const Json& arguments);
     Json FlowCancelTool(const Json& arguments);
     // P-B5：job = runId 的稳定别名（flow_run 已经异步，这里补查询/取消入口）
     Json JobStatusTool(const Json& arguments);

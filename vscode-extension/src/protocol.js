@@ -128,6 +128,9 @@ const VSCodeCommands = Object.freeze({
     probeCapture: 'fpgaLsp.probeCapture',
     probeToggleSignal: 'fpgaLsp.probeToggleSignal',
     probeAddSignals: 'fpgaLsp.probeAddSignals',
+    // 采样时钟/深度：TD 是编译期量（gate 之后才能设），设置后需要重跑 stages:["all"]
+    probeSetClock: 'fpgaLsp.probeSetClock',
+    probeSetDepth: 'fpgaLsp.probeSetDepth',
     refreshProbe: 'fpgaLsp.refreshProbe',
     showProbePanel: 'fpgaLsp.showProbePanel',
 });

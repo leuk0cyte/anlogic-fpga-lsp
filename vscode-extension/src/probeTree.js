@@ -549,6 +549,22 @@ class ProbeTreeProvider {
                 },
                 {
                     kind: 'action',
+                    id: 'probe:action:clock',
+                    label: 'Set sample clock…',
+                    description: (status.watcher && status.watcher.clock) || 'not set',
+                    icon: ICONS.signal,
+                    command: { command: VSCodeCommands.probeSetClock, title: 'ChipWatcher sample clock' },
+                },
+                {
+                    kind: 'action',
+                    id: 'probe:action:depth',
+                    label: 'Set sample depth…',
+                    description: String((status.watcher && status.watcher.sample_depth) || ''),
+                    icon: ICONS.signal,
+                    command: { command: VSCodeCommands.probeSetDepth, title: 'ChipWatcher sample depth' },
+                },
+                {
+                    kind: 'action',
                     id: 'probe:action:panel',
                     label: 'Open rich panel',
                     description: 'editor tab',

@@ -132,6 +132,12 @@ public:
     // 立即返回，实际工作在线程里。
     jsonrpc::Json Start(const std::vector<std::string>& stages, int jobs = 6);
 
+    // 按 GUI 的单个步骤启动（对应 Flow 视图每步右键的 Run / Reset run）。
+    //   step: read_design / opt_rtl / opt_gate / opt_place / opt_route / bitgen
+    //   force=false（Run）：该步已完成 -> {"ok":true,"skipped":true}
+    //   force=true （Reset run）：清掉该步及其下游的标记后重跑
+    jsonrpc::Json StartFromStep(const std::string& step, bool force, int jobs = 6);
+
     // 请求取消：写 .stop.f + 终止 TD 进程树。没在跑时返回 {"ok":true,"note":"not running"}。
     jsonrpc::Json Cancel();
 

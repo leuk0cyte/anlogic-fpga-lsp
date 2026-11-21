@@ -957,8 +957,47 @@ struct FlowRunner::Impl {
         }
     }
 
+    // 清掉 phy 侧"已跑过"的痕迹：步骤标记、watcher 旁路文件、旧 bit。
+    // 只删除**步骤标记与会被重新生成的产物**，不碰用户的 _Runs 之外的东西。
+    void ResetDownstreamPhy() {
+        const std::string phy = RunDirOf("phy_1");
+        std::error_code ec;
+        for (const char* step : {"opt_place", "opt_route", "bitgen"}) {
+            for (const char* suffix : {".begin.f", ".end.f", ".error.f"}) {
+                std::filesystem::remove(std::filesystem::path(phy + "/." + step + suffix), ec);
+            }
+        }
+        std::filesystem::remove_all(std::filesystem::path(phy + "/cw"), ec);
+        std::filesystem::remove(std::filesystem::path(phy + "/" + project_name() + ".bit"), ec);
+    }
+
+    std::string project_name() const { return owner->project_.name; }
+
+    // 某个 run 的产物目录（<prj>_Runs/<run>），供按步骤启动时检查步骤标记。
+    std::string StageRunDirOf(const std::string& run_name) const { return RunDirOf(run_name); }
+
+    // 清掉某个 run 及其下游的步骤标记：GUI 的 reset run 语义。
+    void ResetDownstreamOf(const std::string& run_name) {
+        if (run_name == "syn_1") {
+            ResetDownstreamPhy();
+            const std::string syn = RunDirOf("syn_1");
+            std::error_code ec;
+            for (const char* step : {"read_design", "opt_rtl", "opt_gate"}) {
+                for (const char* suffix : {".begin.f", ".end.f", ".error.f"}) {
+                    std::filesystem::remove(std::filesystem::path(syn + "/." + step + suffix), ec);
+                }
+            }
+        }
+    }
+
     Failure RunStage(const std::string& run_name, int jobs) {
         ClearStopFlags();
+        // GUI 语义：运行 syn（Read Design / Optimize RTL / Optimize Gate）后，
+        // phy 的三步必须回到 "not run" —— 因为它们依赖 syn 的产物，旧产物已经作废。
+        // 实现：删掉 phy_1 的步骤标记与 watcher 产物（bit 也不再可信）。
+        if (run_name == "syn_1") {
+            ResetDownstreamPhy();
+        }
         Emit("progress", "reset_runs {" + run_name + "}");
         // B7 / S-01：run_name 目前都是内部常量（syn_1/phy_1），但仍按"不可信"处理，
         // 走 TclQuoteGrouped —— 正常名字输出与旧实现逐字节相同（`{ syn_1 }`）。
@@ -1693,6 +1732,51 @@ jsonrpc::Json FlowRunner::Start(const std::vector<std::string>& stages, int jobs
         out["note"] = auto_added;
     }
     return out;
+}
+
+jsonrpc::Json FlowRunner::StartFromStep(const std::string& step, bool force, int jobs) {
+    // GUI 的 6 步 -> 我们两个 run 的映射
+    struct StepInfo {
+        const char* name;   // GUI 名
+        const char* run;    // syn_1 / phy_1
+        const char* marker; // <run>/.<marker>.end.f
+    };
+    static const StepInfo kSteps[] = {
+        {"read_design", "syn_1", "read_design"}, {"opt_rtl", "syn_1", "opt_rtl"},
+        {"opt_gate", "syn_1", "opt_gate"},       {"opt_place", "phy_1", "opt_place"},
+        {"opt_route", "phy_1", "opt_route"},     {"bitgen", "phy_1", "bitgen"},
+    };
+    const StepInfo* found = nullptr;
+    for (const StepInfo& info : kSteps) {
+        if (step == info.name) found = &info;
+    }
+    if (found == nullptr) {
+        jsonrpc::Json out = jsonrpc::Json::object();
+        out["ok"] = false;
+        out["error"] = "unknown step; use read_design / opt_rtl / opt_gate / opt_place / "
+                       "opt_route / bitgen (or a stage: syn / phy / all)";
+        return out;
+    }
+    // Run（非 force）：这一步已经完成就直接跳过，不重跑（与 GUI 的 run 一致）。
+    if (!force) {
+        const std::string marker =
+            impl_->StageRunDirOf(found->run) + "/." + found->marker + ".end.f";
+        std::error_code ec;
+        if (std::filesystem::is_regular_file(std::filesystem::path(marker), ec)) {
+            jsonrpc::Json out = jsonrpc::Json::object();
+            out["ok"] = true;
+            out["skipped"] = true;
+            out["step"] = std::string(found->name);
+            out["reason"] = "step already completed (use reset to force a rerun)";
+            return out;
+        }
+    }
+    // Reset run：清掉该 run 及其下游的步骤标记，再从该 run 重新跑。
+    impl_->ResetDownstreamOf(found->run);
+    jsonrpc::Json started = Start({std::string(found->run) == "syn_1" ? "syn" : "phy"}, jobs);
+    started["step"] = std::string(found->name);
+    started["force"] = force;
+    return started;
 }
 
 jsonrpc::Json FlowRunner::Cancel() {

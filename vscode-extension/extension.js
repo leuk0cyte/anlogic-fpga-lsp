@@ -1378,6 +1378,9 @@ function activate(context) {
             COMMANDS.probeConfig, [{
                 signals: Array.isArray(options && options.signals) ? options.signals : [],
                 disabled: Array.isArray(options && options.disabled) ? options.disabled : [],
+                // 采样时钟 / 深度：TD 把它们当编译期量，设置后要重建 watcher 才生效
+                ...(options && options.clock ? { clock: options.clock } : {}),
+                ...(options && options.depth ? { depth: options.depth } : {}),
                 write: true,
                 apply_build_config: false,
             }])) || {},
@@ -1707,6 +1710,50 @@ function activate(context) {
     register(VSCodeCommands.probeCapture, () => probeCapture());
     register(VSCodeCommands.probeToggleSignal, (argument) => probeToggleSignal(argument));
     register(VSCodeCommands.probeAddSignals, () => probeAddSignals());
+    // 采样时钟 / 深度：TD 在 Optimize Gate 之后才消费它们，所以这里只落盘 + 提示重跑。
+    register(VSCodeCommands.probeSetClock, async () => {
+        const state = await probeService.getStatus().catch(() => ({}));
+        const current = (state && state.watcher && state.watcher.clock) || '';
+        const value = await vscode.window.showInputBox({
+            title: 'ChipWatcher sample clock',
+            prompt: 'Net name used to sample the probes (e.g. reg_init/clk). Takes effect after the next stages:["all"] run.',
+            value: current,
+        });
+        if (value === undefined) return;
+        const clock = String(value).trim();
+        const result = await probeService.applyConfig({ clock });
+        if (result && result.ok === false) {
+            openErrors(`ChipWatcher clock update failed - ${(result.reason || result.error) || 'unknown error'}`);
+            return;
+        }
+        vscode.window.showInformationMessage(
+            `FPGA: sample clock saved as "${clock}". TD applies it when it rebuilds the watcher - run stages:["all"].`);
+        await probeTree.refresh();
+    });
+    register(VSCodeCommands.probeSetDepth, async () => {
+        const state = await probeService.getStatus().catch(() => ({}));
+        const current = (state && state.watcher && state.watcher.sample_depth) || 1024;
+        const value = await vscode.window.showInputBox({
+            title: 'ChipWatcher sample depth',
+            prompt: 'Samples per capture (TD default 1024, range 128..65536). Applied on the next stages:["all"] run.',
+            value: String(current),
+            validateInput: (text) => {
+                const n = Number(text);
+                if (!Number.isFinite(n) || n < 128 || n > 65536) return 'Enter a number between 128 and 65536';
+                return '';
+            },
+        });
+        if (value === undefined) return;
+        const depth = Number(String(value).trim());
+        const result = await probeService.applyConfig({ depth });
+        if (result && result.ok === false) {
+            openErrors(`ChipWatcher depth update failed - ${(result.reason || result.error) || 'unknown error'}`);
+            return;
+        }
+        vscode.window.showInformationMessage(
+            `FPGA: sample depth saved as ${depth}. TD applies it when it rebuilds the watcher - run stages:["all"].`);
+        await probeTree.refresh();
+    });
     register(VSCodeCommands.refreshProbe, () => probeTree.refresh());
     register(VSCodeCommands.showProbePanel, () => showProbePanel());
 

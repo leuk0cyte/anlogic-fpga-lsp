@@ -1979,6 +1979,7 @@ Json Bridge::Call(std::string_view handler, const Json& arguments) {
     if (name == "flow_issues") return FlowIssues(arguments);
     if (name == "flow_wait") return FlowWait(arguments);
     if (name == "flow_run") return FlowRunTool(arguments);
+    if (name == "flow_run_step") return FlowRunStepTool(arguments);
     if (name == "flow_cancel") return FlowCancelTool(arguments);
     // P-B5：job 是 runId 的稳定别名（flow_run 启动异步线程后立刻返回 runId）
     if (name == "testbench") {
@@ -3571,6 +3572,26 @@ Json Bridge::FlowRunTool(const Json& arguments) {
         started["async"] = true;  // 已经在后台线程跑，本调用立刻返回
     }
     return started;
+}
+
+// GUI Flow 视图每步右键的两个动作：
+//   force=false（Run）     -> 已完成则跳过
+//   force=true （Reset run）-> 清掉该步及下游标记后重跑
+Json Bridge::FlowRunStepTool(const Json& arguments) {
+    const project::Project& proj = ProjectFor(arguments);
+    std::string step = arguments.value("step", std::string());
+    const bool force = arguments.value("force", false);
+    int jobs = 6;
+    if (const auto it = arguments.find("jobs"); it != arguments.end() && it->is_number_integer()) {
+        jobs = std::clamp(it->get<int>(), 1, 64);
+    }
+    flow::FlowRunner* runner = EnsureFlowRunner(proj);
+    Json out = runner->StartFromStep(step, force, jobs);
+    if (out.is_object() && out.contains("runId")) {
+        out["job"] = out["runId"];
+        out["async"] = true;
+    }
+    return out;
 }
 
 Json Bridge::FlowCancelTool(const Json& arguments) {
