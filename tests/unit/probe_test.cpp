@@ -17,6 +17,7 @@
 
 #include "flow/probe.h"
 #include "platform/encoding.h"
+#include "platform/path.h"
 
 namespace {
 
@@ -721,7 +722,8 @@ TEST(ProbeCwc, WatcherPathRendersDisabledAndChecksOnlyEnabledWidths) {
     Write(fpgalsp::probe::MdnPath(project), MarkDebugLine(MatchingSignals()));
 
     // 采样时钟只能从历史 cwc 取（ResolveSampleClock 读 `clock="..."`）
-    Write(project.dir + "/.fpgalsp/probe/history.cwc",
+    // 状态目录已迁到系统 temp（platform::state_dir）；测试跟着写同一处
+    Write(fpgalsp::platform::state_dir(project.dir) + "/probe/history.cwc",
           "<chipwatcher><watcher_nodes>"
           "<bus name=\"pwm_reg0_i[15:0]\" clock=\"reg_init/clk\" inst=\"auto_created_cwc1\" "
           "type=\"MARK_DEBUG_PROBE\" is_enabled=\"yes\"/></watcher_nodes></chipwatcher>\n");

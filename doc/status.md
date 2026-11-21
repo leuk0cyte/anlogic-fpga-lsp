@@ -871,3 +871,32 @@ capture: ok=true samples=1024 columns=[pwm_reg0_i, pwm_reg1_i]   ← 被 disable
 只要让 TD 用完整 user.cfg 自己生成 sidecar，disabled 位流完全可以抓。
 `probe_capture` 的 disabled 拦截一并移除（保留 `allow_disabled_capture` 参数兼容旧调用）。
 单测 `ProbeUserCfg.PatchesTemplateAndFallsBackWhenBusSetDiffers` 覆盖写入规则。
+
+### 第十八轮：状态目录彻底移出工程（全部落到系统 temp）
+
+用户要求：插件/后端不要再往工程目录写 `.fpgalsp`。
+
+改动：
+1. **C++ 侧默认值改掉**：`platform::state_dir()` 未设 `FPGALSP_STATE_DIR` 时不再返回
+   `<project>/.fpgalsp`，而是 `<os tmp>/fpgalsp/<工程目录名>-<hash8>`；
+   hash = FNV-1a 32（输入：小写、正斜杠的绝对路径），**与插件 `src/stateDir.js` 算法逐字节一致**，
+   所以插件不传环境变量时两侧仍然落到同一目录。
+2. **所有硬编码写入点收口到 `state_dir()`**：
+   `mcp/bridge.cpp`（TD 会话 work_dir、flow 根）、`server/commands.cpp`（analysis / device cache）、
+   `server/lsp_server.cpp`（run dir）、`flow/strategy.cpp`（compare 工作根）、
+   `flow/probe.cpp`（probe 历史目录、生成配置时的 cwd）。
+3. **只读回退保留**：`ResolveSampleClock` 仍会读旧的 `<project>/.fpgalsp/probe/*.cwc`
+   （采样时钟只能从历史 cwc 取），但**不再往那里写**。
+4. 文案更新：guide/tools/错误信息里 `.fpgalsp/probe/config.txt` → "state dir 的 probe/config.txt
+   （默认 %TEMP%\\fpgalsp\\<project>-<hash>）"。
+
+实测（裸后端、不传 FPGALSP_STATE_DIR、先把工程里的 .fpgalsp 移走）：
+```
+probe_status ok=True present=True nets=48
+project .fpgalsp recreated? False
+temp has project dir? True
+```
+即：后端默认只写 `%TEMP%\fpgalsp\corpus_delta-36bad370\{logs,flow,cache,probe,run}`，
+工程目录保持干净。旧工程 `.fpgalsp` 里的 3 个历史 cwc 已迁到 temp 的 probe/ 后删除备份。
+
+`ctest` 64/64、插件 44/44。

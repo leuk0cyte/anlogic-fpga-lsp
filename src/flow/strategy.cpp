@@ -19,6 +19,7 @@
 
 #include "flow/flow_logic.h"
 #include "platform/encoding.h"
+#include "platform/path.h"
 #include "reports/qor.h"
 #include "reports/report_text.h"
 #include "td/td_device.h"
@@ -313,8 +314,9 @@ jsonrpc::Json CompareStrategies(const project::Project& project, const td::TdCho
     }
 
     const std::string work_root =
-        options.work_root.empty() ? Join(Join(project.dir, ".fpgalsp"), "compare")
-                                  : options.work_root;
+        options.work_root.empty()
+            ? Join(platform::state_dir(project.dir), "compare")
+            : options.work_root;
     // 子目录名 = 本地时间戳（与 Python 的 "%Y%m%d_%H%M%S" 同构，字典序即时间序）
     char stamp[32] = "run";
     {

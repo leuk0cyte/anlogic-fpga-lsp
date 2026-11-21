@@ -15,6 +15,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <cctype>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -460,8 +461,56 @@ bool ReadStateDirEnv(std::string* out) {
 std::string state_dir(std::string_view project_or_base) {
     std::string from_env;
     if (ReadStateDirEnv(&from_env)) return normalize_path(from_env);
-    // 未设置环境变量：必须与 Wave 3 之前逐字节一致（CLI/MCP 直连、单测、Python 对拍都依赖它）。
-    return path_join(project_or_base, ".fpgalsp");
+    // 默认放系统临时目录：`<tmp>/fpgalsp/<工程目录名>-<hash8>`，**不再往工程里写 .fpgalsp**。
+    // 与插件 src/stateDir.js 逐字节一致（FNV-1a 32 位，输入 = 小写、正斜杠的绝对路径），
+    // 插件没传 FPGALSP_STATE_DIR 时两侧仍落到同一目录。
+    std::string root;
+    if (!project_or_base.empty()) {
+        root = normalize_path(project_or_base);
+    } else {
+        std::error_code cwd_ec;
+        const std::filesystem::path cwd = std::filesystem::current_path(cwd_ec);
+        root = cwd_ec ? std::string("workspace") : cwd.string();
+    }
+    for (char& c : root) {
+        if (c == '\\') c = '/';
+        c = ascii_lower(c);
+    }
+
+    std::string name = "workspace";
+    const std::size_t slash = root.find_last_of('/');
+    if (slash != std::string::npos && slash + 1 < root.size()) {
+        name = root.substr(slash + 1);
+    } else if (slash == std::string::npos && !root.empty()) {
+        name = root;
+    }
+    for (char& c : name) {
+        const bool keep = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' ||
+                          c == '_' || c == '-';
+        if (!keep) c = '_';
+    }
+    if (name.empty()) name = "workspace";
+
+    std::uint32_t hash = 0x811c9dc5u;
+    for (const char c : root) {
+        hash ^= static_cast<std::uint32_t>(static_cast<unsigned char>(c));
+        hash *= 0x01000193u;
+    }
+    static const char kHex[] = "0123456789abcdef";
+    std::string suffix(8, '0');
+    for (int i = 7; i >= 0; --i) {
+        suffix[static_cast<std::size_t>(i)] = kHex[hash & 0xFu];
+        hash >>= 4;
+    }
+
+    std::error_code ec;
+    const std::filesystem::path tmp = std::filesystem::temp_directory_path(ec);
+    const std::string base = ec ? std::string() : tmp.string();
+    if (base.empty()) {
+        return path_join(project_or_base.empty() ? std::string(".") : std::string(project_or_base),
+                         ".fpgalsp");
+    }
+    return path_join(path_join(base, "fpgalsp"), name + "-" + suffix);
 }
 
 bool state_dir_from_env() {

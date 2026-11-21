@@ -800,7 +800,7 @@ struct FlowRunner::Impl {
 
         // 写 `chip_debugger/user.cfg`（TD 格式的 watcher 配置）—— 这是 TD 真正读的探针配置，
         // 优先级高于 user.mdn。不写它，改 mdn 后 gate 仍按旧配置建 watcher（用户必须"reset" 的原因）。
-        // 只在 syn 写；旧文件备份到 .fpgalsp/probe/user.cfg.bak。
+        // 只在 syn 写；旧文件备份到 <state dir>/probe/user.cfg.bak（状态目录默认在系统 temp，不写工程）。
         {
             std::string user_cfg_error;
             if (probe::WriteUserCfgFromMdn(owner->project_, &user_cfg_error)) {

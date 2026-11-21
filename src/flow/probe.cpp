@@ -856,7 +856,7 @@ std::string ResolveSampleClock(const project::Project& project) {
     std::vector<std::string> candidates;
     candidates.push_back(CompiledCwc(project));
     const std::filesystem::path history =
-        std::filesystem::path(project.dir + "/.fpgalsp/probe");
+        std::filesystem::path(fpgalsp::platform::state_dir(project.dir) + "/probe");
     std::error_code ec;
     if (std::filesystem::is_directory(history, ec)) {
         for (std::filesystem::directory_iterator it(history, ec), end; !ec && it != end;
@@ -867,6 +867,20 @@ std::string ResolveSampleClock(const project::Project& project) {
             }
         }
     }
+    // 只读回退：旧版本把状态目录放在工程里，历史 cwc 可能还留在那儿。
+    // 现在不再往这里写，但读一下不破坏任何东西（采样时钟只能从历史 cwc 取）。
+    const std::filesystem::path legacy_history =
+        std::filesystem::path(project.dir + "/.fpgalsp/probe");
+    if (std::filesystem::is_directory(legacy_history, ec)) {
+        for (std::filesystem::directory_iterator it(legacy_history, ec), end; !ec && it != end;
+             it.increment(ec)) {
+            const std::string name = it->path().filename().string();
+            if (name.size() > 4 && name.rfind(".cwc") == name.size() - 4) {
+                candidates.push_back(it->path().string());
+            }
+        }
+    }
+    ec.clear();
     const std::filesystem::path project_cwc = std::filesystem::path(project.dir + "/cwc");
     if (std::filesystem::is_directory(project_cwc, ec)) {
         for (std::filesystem::directory_iterator it(project_cwc, ec), end; !ec && it != end;
@@ -986,7 +1000,7 @@ std::string ResolveClockPeriod(const project::Project& project) {
     std::vector<std::string> candidates;
     candidates.push_back(CompiledCwc(project));
     std::error_code ec;
-    for (const std::string& sub : {"/.fpgalsp/probe", "/cwc"}) {
+    for (const std::string& sub : {"/cwc"}) {
         const std::filesystem::path dir(project.dir + sub);
         if (!std::filesystem::is_directory(dir, ec)) continue;
         for (std::filesystem::directory_iterator it(dir, ec), end; !ec && it != end;
@@ -2365,7 +2379,7 @@ jsonrpc::Json Status(const project::Project& project) {
                 ? "the ChipWatcher was built and placed (syn_1/cw/auto_created_cwc* exists) but "
                   "TD did not write phy_1/cw/compiled.cwc - batch runs never write that sidecar. "
                   "Copy any cwc that matches the current user.mdn there (e.g. an earlier "
-                  ".fpgalsp/probe/trigger_*.cwc), or save once from the TD GUI; capture needs it "
+                  "a trigger_*.cwc in the state dir's probe/), or save once from the TD GUI; capture needs it "
                   "for the instance name and trigger setup."
                 : "no ChipWatcher yet - run stages [\"all\"] (NOT [\"phy\"]): TD creates the "
                   "watcher right after Optimize Gate, which belongs to the syn run";
@@ -2517,7 +2531,7 @@ jsonrpc::Json Configure(const project::Project& project, const std::vector<std::
         out["written"] = false;
         out["reason"] = "dry run (pass write:true to update chip_debugger/user.mdn" +
                         std::string(disabled_plan.Any()
-                                        ? " and .fpgalsp/probe/config.txt's disabled= line)"
+                                        ? " and the state dir's probe/config.txt disabled= line)"
                                         : ")");
         return out;
     }

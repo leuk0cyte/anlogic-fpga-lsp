@@ -204,7 +204,8 @@ backend can only express it through the `cwc` it hands to `insert_debugger -cwc`
 1. `fpga_probe_config {"signals":[...],"disabled":["WHG/e2e_hstat"],"write":true,
    "apply_build_config":true}` - `disabled` takes a bus base (`WHG/e2e_hstat`, all
    of its bits) or a single bit (`WHG/e2e_hstat[2]`); ranges are expanded. It is
-   persisted as `disabled=...` in `.fpgalsp/probe/config.txt`. Check
+   persisted as `disabled=...` in the state dir's `probe/config.txt` (default
+`%TEMP%\fpgalsp\<project>-<hash>\probe`; the project directory is never written). Check
    `enabled_bus_count` / `enabled_bit_count` (disabled bits excluded) and
    `unresolved_disabled` / `warning` for entries that are not in `signals`
    (a warning, not a failure).
@@ -225,7 +226,7 @@ them), so `fpga_probe_verify` still counts them as embedded - use
   even when the bit really contains the watcher (only the TD GUI ChipWatcher
   saves it). If the file is missing but `syn_1/cw/auto_created_cwc*/` exists,
   the probes ARE embedded: copy any cwc that matches the current `user.mdn`
-  (e.g. an earlier capture's `.fpgalsp/probe/trigger_*.cwc`) to that path, or
+  (e.g. an earlier capture's `trigger_*.cwc` in the state dir's `probe/`) to that path, or
   save once from the TD GUI.
 * A board on a cable, and no other hardware operation (programming or another
   capture) - the cable is leased per process, a conflict returns `busy`.

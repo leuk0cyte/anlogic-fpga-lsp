@@ -468,8 +468,7 @@ Json LspServer::FeatureReports(const Json& params) {
 
     // 上次 analysis 缓存（B5 会写；没有就保持缺省，与 Python 一致）
     const std::string cache = platform::path_join(
-        platform::path_join(platform::path_join(project->dir, ".fpgalsp"), "cache"),
-        "analysis.json");
+        platform::path_join(platform::state_dir(project->dir), "cache"), "analysis.json");
     std::error_code ec;
     if (std::filesystem::is_regular_file(cache, ec)) {
         try {
@@ -634,9 +633,9 @@ std::optional<DeviceSummary> LspServer::CachedDevice(const project::Project& pro
 
     // 对应 Python _device_cached：先看工程目录下的磁盘缓存（不启动 TD）
     if (project.dir.empty()) return std::nullopt;
-    const std::string cache_path = platform::path_join(
-        platform::path_join(project.dir, ".fpgalsp/cache"),
-        td::DeviceCacheKey(project.device, project.family, project.speed));
+    const std::string cache_path =
+        platform::path_join(platform::path_join(platform::state_dir(project.dir), "cache"),
+                            td::DeviceCacheKey(project.device, project.family, project.speed));
     const std::optional<std::string> text = docs_.GetText(platform::path_to_uri(cache_path));
     if (!text.has_value()) return std::nullopt;
     const Json root = Json::parse(*text, nullptr, false);

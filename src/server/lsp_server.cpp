@@ -71,7 +71,7 @@ std::string ReadEnv(std::string_view name) {
 // 没有工程目录时回落到临时目录（Python 用 ~/.fpgalsp/run）。
 std::string RunDir(const project::Project& project) {
     if (!project.dir.empty()) {
-        return platform::path_join(project.dir, ".fpgalsp/run");
+        return platform::path_join(platform::state_dir(project.dir), "run");
     }
     std::error_code ec;
     const auto temp = std::filesystem::temp_directory_path(ec);

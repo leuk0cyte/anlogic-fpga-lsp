@@ -943,7 +943,7 @@ td::TdSession& Bridge::EnsureSession(const project::Project& project) {
     // D-3：显式给 scratch cwd。B7 已把 TdSession 的默认 cwd 改成 %TEMP% 下的独立目录，
     // "不设"也不会污染调用者目录；这里仍显式指向工程，是为了让 TD 会话日志留在
     // `<project>/.fpgalsp/run/`（与 Python 的 `_run_dir()` 同一位置，便于两侧对照排障）。
-    session_options.work_dir = path_join(project.dir, ".fpgalsp/run");
+    session_options.work_dir = path_join(platform::state_dir(project.dir), "run");
     session_ = std::make_unique<td::TdSession>(*td_choice_, session_options);
     return *session_;
 }
@@ -2969,7 +2969,7 @@ Json IdleFlowState() {
 }
 
 std::string FlowBase(const project::Project& proj) {
-    return path_join(proj.dir, ".fpgalsp/flow");
+    return path_join(platform::state_dir(proj.dir), "flow");
 }
 
 std::vector<std::string> FlowDirs(const project::Project& proj) {
