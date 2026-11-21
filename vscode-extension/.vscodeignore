@@ -46,3 +46,6 @@ scripts/
 #   server/bin/       ← 原生语言服务器 fpgalsp-native.exe
 #   src/              ← extension.js 运行期 require('./src/...')
 #   resources/        ← 图标与 webview 资源
+
+# 真机扩展宿主测试的工作区（scripts/run-vscode-test.ps1 生成），不进包
+.vsc_test/**

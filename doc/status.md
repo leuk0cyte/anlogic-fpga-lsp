@@ -676,3 +676,26 @@ Optimize Routing 88s / Generate Bitstream 0s` —— 名称与顺序与 TD GUI �
 TD 自己认可的宽度口径）。
 
 工程状态已恢复：4 总线/53 bit、sidecar 10,313 B、`probe_capture` ok / 1024 点。
+
+### 第十轮：在**真实 VS Code** 里验证视图与六步（不再是猜）
+
+新增 `vscode-suite` 断言并用 `scripts/run-vscode-test.ps1` 真机跑（扩展宿主，非 mock）：
+
+```
+[PASS] probe commands registered  all present
+[PASS] duplicate probe command removed (fpgaLsp.probeConfig)
+[PASS] FPGA sidebar order = flow, reports, probe
+       fpgaLsp.flowView,fpgaLsp.reportsView,fpgaLsp.probeView
+[PASS] Module Hierarchy lives in the explorer sidebar   fpgaLsp.modulesView
+[PASS] no bottom-panel probe view remains
+[PASS] probe tree refresh command runs
+[PASS] flow tree refresh command runs
+[PASS] flowStatus returns the TD GUI six steps (idle window)
+       Read Design | Optimize RTL | Optimize Gate | Optimize Placement | Optimize Routing | Generate Bitstream
+```
+
+说明：
+- 六步那条是在宿主里直接起 `fpgalsp-native.exe --mcp` 问 `fpga_flow_status`（idle、没跑过 flow），
+  证明"刚加载窗口也有六步"是数据层就成立，不依赖 UI 渲染猜测。
+- 套件里仍有 4 条历史失败（completion 标签、semantic tokens、copy symbol path、doctor 报告），
+  是把测试工程从 CorpusAlpha 换到 CorpusAlpha 后的既有差异，与本次改动无关（探针/视图 7 条全过）。

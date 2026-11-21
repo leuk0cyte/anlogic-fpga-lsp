@@ -61,6 +61,86 @@ exports.run = async function () {
         check('v3 commands registered', v3.every((id) => ours.indexOf(id) >= 0),
             v3.filter((id) => ours.indexOf(id) < 0).join(',') || 'all present');
 
+        // ---- 0.19.x：ChipWatcher 视图/命令（用户明确要求过的结构）----
+        const probeCmds = ['fpgaLsp.showProbePanel', 'fpgaLsp.probeToggleSignal',
+            'fpgaLsp.probeAddSignals', 'fpgaLsp.refreshProbe', 'fpgaLsp.probeStatus',
+            'fpgaLsp.probeCapture'];
+        check('probe commands registered', probeCmds.every((id) => ours.indexOf(id) >= 0),
+            probeCmds.filter((id) => ours.indexOf(id) < 0).join(',') || 'all present');
+        check('duplicate probe command removed (fpgaLsp.probeConfig)',
+            ours.indexOf('fpgaLsp.probeConfig') < 0);
+        const views = (ext.packageJSON.contributes && ext.packageJSON.contributes.views) || {};
+        const fpgaViewIds = (views.fpgaLsp || []).map((v) => v.id);
+        check('FPGA sidebar order = flow, reports, probe',
+            JSON.stringify(fpgaViewIds) === JSON.stringify(['fpgaLsp.flowView', 'fpgaLsp.reportsView', 'fpgaLsp.probeView']),
+            fpgaViewIds.join(','));
+        const explorerIds = (views.explorer || []).map((v) => v.id);
+        check('Module Hierarchy lives in the explorer sidebar',
+            explorerIds.indexOf('fpgaLsp.modulesView') >= 0, explorerIds.join(','));
+        check('no bottom-panel probe view remains', !views.panel);
+        try {
+            await vscode.commands.executeCommand('fpgaLsp.refreshProbe');
+            check('probe tree refresh command runs', true);
+        } catch (err) {
+            check('probe tree refresh command runs', false, (err && err.message) || String(err));
+        }
+        try {
+            await vscode.commands.executeCommand('fpgaLsp.refreshFlow');
+            check('flow tree refresh command runs', true);
+        } catch (err) {
+            check('flow tree refresh command runs', false, (err && err.message) || String(err));
+        }
+
+        // ---- 0.19.6：刚开窗口（还没跑过 flow）也必须能拿到 TD GUI 的六步 ----
+        try {
+            const cp = require('child_process');
+            const exe = path.join(ext.extensionPath, 'server', 'bin', 'fpgalsp-native.exe');
+            const steps = await new Promise((resolve) => {
+                let child;
+                try {
+                    child = cp.spawn(exe, ['--mcp', '--root', folder.uri.fsPath], { stdio: ['pipe', 'pipe', 'pipe'] });
+                } catch (err) {
+                    resolve([]);
+                    return;
+                }
+                let buf = '';
+                const send = (obj) => { try { child.stdin.write(JSON.stringify(obj) + '\n'); } catch (_) { /* ignore */ } };
+                const timer = setTimeout(() => { try { child.kill(); } catch (_) { /* ignore */ } resolve([]); }, 20000);
+                child.stdout.on('data', (chunk) => {
+                    buf += chunk.toString();
+                    let idx;
+                    while ((idx = buf.indexOf('\n')) >= 0) {
+                        const line = buf.slice(0, idx);
+                        buf = buf.slice(idx + 1);
+                        let msg;
+                        try { msg = JSON.parse(line); } catch (_) { continue; }
+                        if (msg.id === 1) {
+                            send({ jsonrpc: '2.0', method: 'notifications/initialized' });
+                            send({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'fpga_flow_status', arguments: {} } });
+                        } else if (msg.id === 2) {
+                            const content = (msg.result && msg.result.content) || [];
+                            let payload = {};
+                            try { payload = JSON.parse(content[0] ? content[0].text : '{}'); } catch (_) { payload = {}; }
+                            clearTimeout(timer);
+                            try { child.kill(); } catch (_) { /* ignore */ }
+                            resolve((payload.flow && payload.flow.steps) || []);
+                        }
+                    }
+                });
+                child.on('error', () => { clearTimeout(timer); resolve([]); });
+                send({ jsonrpc: '2.0', id: 1, method: 'initialize',
+                       params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'suite', version: '1' } } });
+            });
+            const names = steps.map((s) => s.name).join(' | ');
+            const expected = ['Read Design', 'Optimize RTL', 'Optimize Gate',
+                'Optimize Placement', 'Optimize Routing', 'Generate Bitstream'];
+            check('flowStatus returns the TD GUI six steps (idle window)',
+                steps.length === 6 && expected.every((name) => names.indexOf(name) >= 0),
+                names || 'no steps');
+        } catch (err) {
+            check('flowStatus returns the TD GUI six steps (idle window)', false, (err && err.message) || String(err));
+        }
+
         // wait until the client answers a real request (this is what used to fail:
         // "command 'fpgalsp.check' already exists" aborted the connection during initialize)
         const topPath = path.join(folder.uri.fsPath, 'src', 'top.v');

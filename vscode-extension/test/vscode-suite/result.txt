@@ -1,0 +1,56 @@
+extension host: 1.144.0
+workspaceFolders: ["y:\\CorpusAlpha"]
+  [PASS] a workspace folder is open  y:\CorpusAlpha
+  [PASS] extension found
+extensionPath: Y:\fpga-lsp-cpp\vscode-extension
+version: 0.19.6
+  [PASS] extension activates
+  [PASS] commands registered  74 commands
+  [PASS] v3 commands registered  all present
+  [PASS] probe commands registered  all present
+  [PASS] duplicate probe command removed (fpgaLsp.probeConfig)
+  [PASS] FPGA sidebar order = flow, reports, probe  fpgaLsp.flowView,fpgaLsp.reportsView,fpgaLsp.probeView
+  [PASS] Module Hierarchy lives in the explorer sidebar  fpgaLsp.modulesView
+  [PASS] no bottom-panel probe view remains
+  [PASS] probe tree refresh command runs
+  [PASS] flow tree refresh command runs
+  [PASS] flowStatus returns the TD GUI six steps (idle window)  Read Design | Optimize RTL | Optimize Gate | Optimize Placement | Optimize Routing | Generate Bitstream
+  [PASS] language client connected (documentSymbol round-trip)  1 top-level symbols
+  [PASS] module symbol carries port children  96 children
+  [FAIL] completion returns project modules  281 labels
+  [PASS] completion offers instantiation snippets  ad_7924 (instantiate) format=undefined
+  [PASS] go-to-definition resolves the module file  <ws>\src\system\pwm_gen.v
+  [PASS] hover/definition agree on an instance port connection  hover=**refclk** — `port`  input  module: `pll def=1
+  [PASS] find references on a module  2 references
+  [PASS] verilog/systemverilog/vhdl languages registered  verilog,systemverilog,vhdl
+  [PASS] bundled grammars present  verilog.tmLanguage.json,verilog.tmLanguage.json,vhdl.tmLanguage.json
+  [PASS] HDL snippet contributions present  verilog,systemverilog,vhdl,adc,sdc
+  [PASS] semantic token scopes map symbol kinds to distinct themes  class,namespace,property,variable,parameter,function,type,keyword,number,string,comment,operator,macro
+  [PASS] top.v languageId is verilog  verilog
+  [PASS] .vhd languageId is vhdl  vhdl
+  [PASS] .sv languageId is systemverilog  systemverilog
+  [PASS] highlight diagnostics report written  y:\CorpusAlpha\.fpgalsp\logs\highlight.txt
+  [PASS] report sees verilog language  verilog
+  [FAIL] server returns semantic tokens for the project file  0
+  code actions raw: [{"title":"Insert instantiation of pwm_gen","kind":{"value":"refactor"},"edit":[[{"$mid":1,"fsPath":"y:\\CorpusAlpha\\src\\top.v","_sep":1,"external":"file:///y%3A/CorpusAlpha/src/top.v","path":"/y:/CorpusAlpha/src/top.v","scheme":"file"},[{"range":[{"line":415,"character":0},{"line":415,"character":0}],"newText":"pwm_gen #(\n    .DEADTIME (DEADTIME)\n) u_pwm_gen (\n    .clk (clk),\n    .rst_n (rst_n),\n    .cnt_period (cnt_period),\n    .cnt_init (cnt_init),\n    .rise_init (rise_init),\n    .pwm_reset (pwm_reset),\n    .mod_a (mod_a),\n    .mod_b (mod_b),\n    .mod_c (mod_c),\n    .pwmlock (pwm
+  [PASS] quick-instantiate code action available  Insert instantiation of pwm_gen | Verible: apply lint autofixes | Modify
+  [PASS] rename provider returns edits  size=2
+  [PASS] folding ranges include the module  24 ranges
+  [PASS] inlay hints annotate instances  19 hints
+  [PASS] range formatting works (Verible or built-in fallback)  750 edits
+  [PASS] call hierarchy incoming calls  top
+  [PASS] separate syn/phy report pages open
+  [PASS] copy instantiation puts a template on the clipboard      top #(
+        .DEY_CNT (DEY_CNT)
+    ) u_top (
+        
+  [FAIL] copy symbol path uses the hierarchy  top/oc_chk_lock
+  [PASS] Show Cable / Device produces a report  ok
+  [PASS] format document works inside the workspace  lang=verilog edits=4
+  [PASS] format document works outside the workspace  lang=verilog edits=4
+  [PASS] MCP dynamic provider disabled by default  workspace config required
+  [PASS] MCP stdio server definition constructor accepts our options
+  [FAIL] doctor command opens a status report  module fmt_check;
+  [PASS] reports panel command works
+elapsed ms: 7027
+SUITE: FAIL (4)
