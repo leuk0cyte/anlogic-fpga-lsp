@@ -818,16 +818,26 @@ struct FlowRunner::Impl {
         std::string insert_body = "insert_debugger {" + debugger_dir + "}";
         {
             const probe::ProbeBuildConfig build = probe::ReadProbeBuildConfig(owner->project_);
-            if (build.apply_build_config &&
+            // ⚠ `-cwc` 只给 **syn** 的 rtl/gate 步：watcher 是 gate 之后由 TD 建立的。
+            // phy 的 place 步只做普通 insert_debugger —— 在 place 再喂一份"按 disabled
+            // 改小过"的 cwc，TD 看到的 netlist 还是 4 总线/53 bit、配置却是 3/48，
+            // opt_place 会直接崩（实测）。深度/时钟也同理，只在这一步生效。
+            if (run_name == "syn_1" && build.apply_build_config &&
                 (build.has_depth || build.has_clock || !build.disabled.empty())) {
                 const probe::MdnConfig mdn = probe::ReadMdn(probe::MdnPath(owner->project_));
                 std::string config_error;
                 jsonrpc::Json config_info = jsonrpc::Json::object();
-                // ⚠ gate 阶段的输入 cwc **不能**带 <logic_eram>：ERAM 行是 place 之后
-                // 才有的（由位流决定）。带上旧位流的 ERAM 行会让 place 直接
-                // "Run phy_1 has exited unexpectedly"（实测 2026-11-21）。
-                const std::string cwc_text = probe::BuildCwcFromConfig(
-                    owner->project_, mdn, build, &config_error, &config_info, /*include_eram=*/true);
+                // 优先"拿 TD 验证过的 cwc 当模板只打 enable/disable 补丁"：实测从零
+                // 生成的 cwc 会让 phy 的 opt_place 崩（PRJ-8806），而模板 + 补丁
+                // place 正常、disable 真的生效（4 总线/53 bit -> 3 总线/48 bit）。
+                std::string cwc_text =
+                    probe::BuildCwcFromTemplate(owner->project_, mdn, build, &config_error, &config_info);
+                if (cwc_text.empty()) {
+                    Emit("log", run_name + ": 没有可用的 cwc 模板，退回从零生成（place 可能失败）：" +
+                                    config_error);
+                    cwc_text = probe::BuildCwcFromConfig(owner->project_, mdn, build, &config_error,
+                                                         &config_info, /*include_eram=*/true);
+                }
                 const std::string config_path = Join(RunDir(), "probe_config.cwc");
                 if (!cwc_text.empty() && WriteTextFile(config_path, cwc_text)) {
                     insert_body += " -cwc {" + config_path + "}";

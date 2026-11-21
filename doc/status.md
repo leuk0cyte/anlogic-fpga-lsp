@@ -646,3 +646,33 @@ provider 没和视图关联上（VS Code 侧行为，未在扩展里找到可控
 实测（工程当前状态，idle、无 runner）：
 `Read Design 1s(done) / Optimize RTL 41s / Optimize Gate 56s / Optimize Placement 187s /
 Optimize Routing 88s / Generate Bitstream 0s` —— 名称与顺序与 TD GUI 一致。
+
+### 第九轮：disable 真正进了位流（3 总线/48 bit），cwc 改用"模板打补丁"
+
+三个实测结论：
+
+1. **`-cwc` 机制本身没问题**：把"TD 认可的那份 cwc"原样交给 `insert_debugger -cwc`
+   跑完整 syn+phy，**place 正常**。之前一直崩是因为我们从零生成配置。
+2. **模板 + 只改 enable 属性 = disable 生效**：同一份 cwc 只把 `e2e_hstat` 标成
+   `is_enabled="no"` / `data="disable"`，syn 建出 **3 总线 / 48 bit**（正常 4/53），
+   **place 成功**（`.opt_place.end.f`，无 error）。
+3. **`-cwc` 只能给 syn 的 rtl/gate 步**：phy 的 place 步再喂一份"按 disabled 改小"的
+   cwc 会让 TD 看到 4/53 的 netlist 配 3/48 的配置 → opt_place 必崩。已改成只在
+   `run_name == "syn_1"` 时生成并挂 `-cwc`，phy 走普通 `insert_debugger`。
+
+据此改后端：
+- 新增 `probe::BuildCwcFromTemplate`：拿 `phy_1/cw/compiled.cwc` 当模板，按"尾名"把模板总线
+  映射到 mdn 总线（**允许顺序不同**），只改 `is_enabled` / `data` / `trig`；打不出来就
+  退回 `BuildCwcFromConfig` 并在日志里说明。
+- 修 `NewestWatcherDir`：`phy_1/cw/compiled.cwc` 名字里也含 "cwc"，以前被当成 watcher 目录，
+  于是生成的 cwc 里 `inst="compiled.cwc"`；现在只认目录。
+- `fpga_probe_config{apply_build_config:false}` 现在**双向**生效（以前只置 true，残留的
+  apply=1 会让下一次正常 flow 被带成自写 cwc 并崩 place）。
+
+**仍未解决**：disabled 位流的**抓取**报
+`KIT-8445 ERROR: readback data ... sample depth is shorter than the set value (54/48)` ——
+硬件按 54 位、配置按 48 位算，说明 disable 后 `<logic_eram width>` 该用"物理/ERAM 合计宽度"
+而不是 enable 位数（试过 48/53/54 都没过）。这一步留待下一轮（需要拿到禁用后位流里
+TD 自己认可的宽度口径）。
+
+工程状态已恢复：4 总线/53 bit、sidecar 10,313 B、`probe_capture` ok / 1024 点。

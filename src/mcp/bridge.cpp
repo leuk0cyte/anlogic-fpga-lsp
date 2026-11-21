@@ -3801,10 +3801,13 @@ Json Bridge::ProbeConfigTool(const Json& arguments) {
     }
     Json out = probe::Configure(proj, signals, write, has_clock, clock, depth, disabled,
                                 has_disabled);
-    if (apply_build_config || arguments.contains("cwc_bus_order") ||
-        arguments.contains("write_sidecar_cwc")) {
+    if (apply_build_config || arguments.contains("apply_build_config") ||
+        arguments.contains("cwc_bus_order") || arguments.contains("write_sidecar_cwc")) {
         probe::ProbeBuildConfig config = probe::ReadProbeBuildConfig(proj);
-        if (apply_build_config) config.apply_build_config = true;
+        // 显式传了 apply_build_config 就**双向**生效：传 false 必须把旧的 apply=1 清掉，
+        // 否则上一轮的 opt-in 会一直残留（实测：正常 flow 被残留的 apply=1 带成自写 cwc，
+        // place 直接崩）。
+        if (arguments.contains("apply_build_config")) config.apply_build_config = apply_build_config;
         if (const auto it = arguments.find("write_sidecar_cwc");
             it != arguments.end() && it->is_boolean()) {
             config.write_sidecar_cwc = it->get<bool>();

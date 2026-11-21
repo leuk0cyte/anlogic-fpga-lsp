@@ -833,6 +833,11 @@ std::string NewestWatcherDir(const project::Project& project) {
         for (std::filesystem::directory_iterator it(cw, ec), end; !ec && it != end; it.increment(ec)) {
             const std::string name = it->path().filename().string();
             if (name.find("cwc") == std::string::npos) continue;
+            // ⚠ 只认目录：`phy_1/cw/compiled.cwc` 名字里也含 "cwc"，以前会被当成
+            // watcher 目录，于是 inst 变成 "compiled.cwc"，生成的 cwc 里
+            // inst/bram_name/trigger 全带着这个假名字。
+            std::error_code dir_ec;
+            if (!it->path().empty() && !std::filesystem::is_directory(it->path(), dir_ec)) continue;
             std::error_code tec;
             const auto stamp = std::filesystem::last_write_time(it->path(), tec);
             if (tec) continue;
@@ -1539,6 +1544,177 @@ std::string BuildCwcFromConfig(const project::Project& project, const MdnConfig&
         (*info)["enabled_bits"] = enabled_total;
         (*info)["disabled_bits"] = static_cast<int>(disabled.bits.size());
         (*info)["eram"] = static_cast<int>(erams.size());
+    }
+    return out;
+}
+
+// =============================================================================
+// 以 TD 验证过的 cwc 为模板，只打 enable/disable 补丁
+// =============================================================================
+//  为什么：从零生成的 cwc 交给 `insert_debugger -cwc` 会让 phy 的 opt_place 崩
+//  （PRJ-8806，TD 进程直接退出，日志里没有 PHY 错误）；而"TD 自己写的" cwc 原样
+//  传进去 place 正常，把其中一条总线改成 is_enabled="no" / data="disable" 之后
+//  place 仍然正常、watcher 真的从 4 总线/53 bit 变成 3 总线/48 bit（实测 2026-11-21）。
+//  所以 disable 的正确实现是：拿现有 sidecar 当模板，只改 enable 属性。
+namespace {
+
+// 名字的"尾段"比较：`WHG/e2e_hstat` 与 `e2e_hstat` 视为同一条总线。
+std::string_view TailName(std::string_view name) {
+    const std::size_t slash = name.rfind('/');
+    return slash == std::string_view::npos ? name : name.substr(slash + 1);
+}
+
+// 把 `attr="old"` 的值替换成 value；没有这个属性就补在行尾的 `>` 之前。
+void ReplaceAttr(std::string* line, std::string_view attr, std::string_view value) {
+    const std::string key = std::string(attr) + "=\"";
+    const std::size_t at = line->find(key);
+    if (at == std::string::npos) return;
+    const std::size_t begin = at + key.size();
+    const std::size_t close = line->find('"', begin);
+    if (close == std::string::npos) return;
+    line->replace(begin, close - begin, std::string(value));
+}
+
+// 取第一个 <bus name="..." 里的名称（不区分大小写无所谓，TD 用小写）。
+std::vector<std::string> TemplateBusNames(const std::string& text) {
+    std::vector<std::string> names;
+    const std::string key = "<bus name=\"";
+    std::size_t pos = 0;
+    while (true) {
+        const std::size_t at = text.find(key, pos);
+        if (at == std::string::npos) break;
+        const std::size_t begin = at + key.size();
+        const std::size_t close = text.find('"', begin);
+        if (close == std::string::npos) break;
+        std::string name = text.substr(begin, close - begin);
+        const std::size_t bracket = name.find('[');
+        if (bracket != std::string::npos) name.erase(bracket);
+        bool seen = false;
+        for (const std::string& item : names) seen = seen || item == name;
+        if (!seen) names.push_back(name);
+        pos = close + 1;
+    }
+    return names;
+}
+
+}  // namespace
+
+std::string BuildCwcFromTemplate(const project::Project& project, const MdnConfig& mdn,
+                                 const ProbeBuildConfig& config, std::string* error,
+                                 jsonrpc::Json* info) {
+    const auto fail = [error](const std::string& why) {
+        if (error != nullptr) *error = why;
+        return std::string();
+    };
+    const std::string path = CompiledCwc(project);
+    if (!IsFile(path)) return fail("no template cwc at " + path);
+    const std::string text = ReadText(path);
+    if (text.empty()) return fail("template cwc is empty");
+
+    // mdn 的总线（按出现顺序 + 位宽）
+    std::vector<std::pair<std::string, int>> buses;
+    for (const std::string& signal : mdn.signals) {
+        std::string base = signal;
+        const std::size_t open = signal.rfind('[');
+        if (open != std::string::npos) base = signal.substr(0, open);
+        if (buses.empty() || buses.back().first != base) buses.emplace_back(base, 0);
+        ++buses.back().second;
+    }
+    // 模板里的总线（watcher_nodes 段）
+    const std::vector<std::string> template_buses = TemplateBusNames(text);
+    if (template_buses.size() != buses.size()) {
+        return fail("template cwc has " + std::to_string(template_buses.size()) +
+                    " buses, mdn has " + std::to_string(buses.size()) +
+                    " - cannot patch, rebuild instead");
+    }
+    // 模板的总线顺序就是 TD 当初编译时用的顺序（常常与 user.mdn 的顺序不同），
+    // 所以按"尾名"做一次映射，而不是要求两边顺序一致。
+    std::vector<std::size_t> template_to_mdn(template_buses.size(), buses.size());
+    for (std::size_t t = 0; t < template_buses.size(); ++t) {
+        for (std::size_t m = 0; m < buses.size(); ++m) {
+            if (TailName(template_buses[t]) == TailName(buses[m].first)) {
+                template_to_mdn[t] = m;
+                break;
+            }
+        }
+        if (template_to_mdn[t] == buses.size()) {
+            return fail("template cwc bus '" + template_buses[t] + "' is not in user.mdn");
+        }
+    }
+
+    const DisabledPlan plan = ResolveDisabled(mdn.signals, config.disabled);
+    // 每条总线是否"整条 disable"
+    std::vector<bool> bus_off(buses.size(), false);
+    for (std::size_t i = 0; i < buses.size(); ++i) {
+        bool all = true;
+        for (int bit = 0; bit < buses[i].second; ++bit) {
+            const std::string one = buses[i].first + "[" + std::to_string(bit) + "]";
+            if (!plan.IsBitDisabled(one)) {
+                all = false;
+                break;
+            }
+        }
+        bus_off[i] = all && buses[i].second > 0;
+    }
+
+    // 逐行打补丁：<bus ... is_enabled> 与 <net ... data/trig>
+    std::string out;
+    out.reserve(text.size() + 256);
+    std::size_t pos = 0;
+    int current_bus = -1;
+    std::size_t current_mdn = buses.size();
+    while (pos < text.size()) {
+        const std::size_t end = text.find('\n', pos);
+        std::string line = text.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
+        pos = end == std::string::npos ? text.size() : end + 1;
+
+        const std::size_t bus_at = line.find("<bus name=\"");
+        const std::size_t net_at = line.find("<net name=\"");
+        if (bus_at != std::string::npos) {
+            const std::size_t begin = bus_at + 11;
+            const std::size_t quote = line.find('"', begin);
+            const std::string name = line.substr(begin, quote - begin);
+            const std::string base = name.substr(0, name.find('['));
+            current_bus = -1;
+            for (std::size_t i = 0; i < template_buses.size(); ++i) {
+                if (TailName(template_buses[i]) == TailName(base)) current_bus = static_cast<int>(i);
+            }
+            current_mdn =
+                current_bus >= 0 ? template_to_mdn[static_cast<std::size_t>(current_bus)] : buses.size();
+            const bool off = current_mdn < buses.size() && bus_off[current_mdn];
+            ReplaceAttr(&line, "is_enabled", off ? "no" : "yes");
+        } else if (net_at != std::string::npos) {
+            const std::size_t begin = net_at + 11;
+            const std::size_t quote = line.find('"', begin);
+            const std::string name = line.substr(begin, quote - begin);
+            std::string full = name;
+            if (current_mdn < buses.size()) {
+                full = buses[current_mdn].first + name.substr(name.find('['));
+            }
+            const bool off = plan.IsBitDisabled(full) || plan.IsBitDisabled(name);
+            // 只改 data/trig —— 实测把 signal_vec 的 cond/capture_cond 也改成
+            // dont_care 会让 TD 在 opt_gate 直接崩；手工只改 data/trig 的那份
+            // place 完全正常（4 总线/53 bit -> 3 总线/48 bit）。
+            if (line.find("data=\"") != std::string::npos) {
+                ReplaceAttr(&line, "data", off ? "disable" : "enable");
+                ReplaceAttr(&line, "trig", off ? "disable" : "enable");
+            }
+        }
+        out += line;
+        out += '\n';
+    }
+
+    if (info != nullptr) {
+        int disabled_bits = 0;
+        for (std::size_t i = 0; i < buses.size(); ++i) {
+            if (bus_off[i]) disabled_bits += buses[i].second;
+        }
+        (*info)["ok"] = true;
+        (*info)["template"] = path;
+        (*info)["buses"] = static_cast<int>(buses.size());
+        (*info)["disabled_buses"] = static_cast<int>(
+            std::count(bus_off.begin(), bus_off.end(), true));
+        (*info)["disabled_bits"] = disabled_bits;
     }
     return out;
 }

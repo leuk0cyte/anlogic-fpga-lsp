@@ -241,6 +241,18 @@ std::string BuildCwcFromConfig(const project::Project& project, const MdnConfig&
                                const ProbeBuildConfig& config, std::string* error,
                                jsonrpc::Json* info, bool include_eram = true);
 
+// 拿**TD 验证过的** cwc（`phy_1/cw/compiled.cwc`）当模板，只按当前 mdn/disabled 计划
+// 打 enable/disable 补丁。为什么必须这样：实测（2026-11-21 14:5x）从零生成的 cwc 交给
+// `insert_debugger -cwc`，syn 能建出 watcher，但 phy 的 opt_place 必崩（PRJ-8806，
+// TD 进程退出）；而同一份"TD 自己写的" cwc 原样传进去 place 完全正常，把其中一条总线
+// 改成 `is_enabled="no"` / `data="disable"` 之后 place 仍然正常、watcher 真的从
+// 4 总线/53 bit 变成 3 总线/48 bit。
+// 模板的总线集合必须与当前 mdn 一致（只差 enable/disable）；否则返回空串让调用方
+// 退回 BuildCwcFromConfig。
+std::string BuildCwcFromTemplate(const project::Project& project, const MdnConfig& mdn,
+                                 const ProbeBuildConfig& config, std::string* error,
+                                 jsonrpc::Json* info);
+
 // 用 TD 自己的 watcher 产物（`*_watcherInst.sv` 的 CWC_BUS_* + `_inst.bid` 的 ERAM）
 // 反推 cwc；总线顺序可用 bus_order 指定。disabled 仍渲染进 XML，但只按 enable 的位
 // 校验 CWC_BUS_WIDTH/DIN（容忍 TD 把 disable 的位从 watcher 里摘掉）。
