@@ -838,6 +838,7 @@ const std::vector<std::string>& ExecuteCommandNames() {
         "fpgalsp.metrics",      "fpgalsp.compareRuns", "fpgalsp.runs",      "fpgalsp.testbench", "fpgalsp.constraintTable",
         // 0.16.0 片上探针（ChipWatcher）
         "fpgalsp.probeStatus",  "fpgalsp.probeConfig", "fpgalsp.probeCapture",
+        "fpgalsp.probeClocks",
     };
     return kNames;
 }
@@ -1461,6 +1462,22 @@ HandlerResult LspServer::HandleExecuteCommand(const Json& params) {
 
     // ---- 0.16.0：片上探针（ChipWatcher）----
     //   与 program/svfgen 同一形状：只解析参数，逻辑在 probe::，TD 由这里解析后传进去。
+    // 采样时钟候选：与 TD GUI 的 ChipWatcher 时钟下拉框同源（时钟树报告）。
+    if (command == "fpgalsp.probeClocks") {
+        const auto project = CurrentProject();
+        if (!project.has_value()) return Failure(".al project not found");
+        Json out = Json::object();
+        out["ok"] = true;
+        std::vector<std::string> names = probe::ClockCandidatesFromReports(*project);
+        Json clocks = Json::array();
+        for (const std::string& name : names) clocks.push_back(name);
+        out["clocks"] = std::move(clocks);
+        if (names.empty()) {
+            out["reason"] = "no clock tree report yet - run stages:[\"all\"] once";
+        }
+        return OkObject(std::move(out));
+    }
+
     if (command == "fpgalsp.probeStatus") {
         const auto project = CurrentProject();
         if (!project.has_value()) return Failure(".al project not found");

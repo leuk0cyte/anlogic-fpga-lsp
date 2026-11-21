@@ -276,6 +276,11 @@ jsonrpc::Json WriteCompiledCwcFromGate(const project::Project& project,
 // phy_1/cw/compiled.cwc（实测 0.20.3：之后 probe_capture ok / 1024 点）。
 bool WriteUserCfgFromMdn(const project::Project& project, std::string* error);
 
+// 采样时钟候选（对应 TD GUI 的采样时钟下拉框）：从 TD 的时钟树报告
+// （phy_1/{place,route}_clock_utilization.txt）里提取真实时钟网名。
+// 纯文件读取，不需要 TD 会话、不需要硬件。
+std::vector<std::string> ClockCandidatesFromReports(const project::Project& project);
+
 std::string MdnPath(const project::Project& project);
 std::string CompiledBit(const project::Project& project);
 std::string CompiledCwc(const project::Project& project);

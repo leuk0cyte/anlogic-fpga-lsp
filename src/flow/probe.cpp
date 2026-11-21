@@ -2183,6 +2183,50 @@ jsonrpc::Json WriteCompiledCwcAfterPhy(const project::Project& project) {
 // =============================================================================
 // 采样时钟：直接从**工程的 gate 数据库**问 TD
 // =============================================================================
+// =============================================================================
+// 采样时钟候选（对应 TD GUI ChipWatcher 的采样时钟下拉框）
+// =============================================================================
+//  GUI 的候选来自**时钟树里的时钟网名**。TD 在 place/route 阶段会把时钟树写成
+//  `phy_1/place_clock_utilization.txt` / `route_clock_utilization.txt`，其中带全局时钟的
+//  真实网名（实测 corpus_delta：`reg_init/clk`、`pll_100M/clk0_buf`、
+//  `ANPC_init0/ANPC_SVPWM_init/pwm_clk` …）。优先读现成报告（零成本、不用起 TD 会话）。
+namespace {
+
+bool LooksLikeClockNet(const std::string& name) {
+    if (name.empty() || name.size() < 3) return false;
+    if (name.find('/') == std::string::npos) return false;
+    if (name.find("PH1_PHY") != std::string::npos) return false;
+    if (name.find(".clkc") != std::string::npos) return false;
+    if (name.find(' ') != std::string::npos) return false;
+    std::string lower = name;
+    for (char& c : lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return lower.find("clk") != std::string::npos || lower.find("clock") != std::string::npos;
+}
+
+}  // namespace
+
+std::vector<std::string> ClockCandidatesFromReports(const project::Project& project) {
+    std::vector<std::string> out;
+    const std::string runs = RunsDir(project);
+    for (const char* rel : {"/phy_1/route_clock_utilization.txt",
+                            "/phy_1/place_clock_utilization.txt"}) {
+        const std::string path = runs + rel;
+        if (!IsFile(path)) continue;
+        const std::string text = ReadText(path);
+        static const re2::RE2 net_re(R"(([A-Za-z_][A-Za-z0-9_\[\]$.]*/[A-Za-z0-9_\[\]$.]+))");
+        re2::StringPiece input(text);
+        std::string match;
+        while (RE2::FindAndConsume(&input, net_re, &match)) {
+            if (!LooksLikeClockNet(match)) continue;
+            bool seen = false;
+            for (const std::string& item : out) seen = seen || item == match;
+            if (!seen) out.push_back(match);
+        }
+        if (!out.empty()) break;
+    }
+    return out;
+}
+
 //  TD 只把采样时钟写进它自己的产物（watcher RTL 里没有、bid 里也没有），但
 //  `report_cwc_status` 在 gate 数据库上会打印一行 `Wathcer | depth | Clock | ...`。
 //  这就是"从用户工程读取"的正路：只要 syn 跑过（有 `<prj>_gate.db`），就能拿到 TD

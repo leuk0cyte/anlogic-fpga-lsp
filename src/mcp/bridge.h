@@ -187,6 +187,7 @@ class Bridge : public ToolDispatcher {
     Json ProbeStatusTool(const Json& arguments);
     Json ProbeConfigTool(const Json& arguments);
     Json ProbeVerifyTool(const Json& arguments);
+    Json ProbeClocksTool(const Json& arguments);
     Json ProbeCaptureTool(const Json& arguments);
     Json CompletionTool(const Json& arguments);
     Json InstantiationTool(const Json& arguments);

@@ -1714,13 +1714,43 @@ function activate(context) {
     register(VSCodeCommands.probeSetClock, async () => {
         const state = await probeService.getStatus().catch(() => ({}));
         const current = (state && state.watcher && state.watcher.clock) || '';
-        const value = await vscode.window.showInputBox({
-            title: 'ChipWatcher sample clock',
-            prompt: 'Net name used to sample the probes (e.g. reg_init/clk). Takes effect after the next stages:["all"] run.',
-            value: current,
-        });
-        if (value === undefined) return;
-        const clock = String(value).trim();
+        // 与 TD GUI 一致：时钟是**从列表里选**，不是手输。
+        // 列表来自后端的 fpgalsp.probeClocks（TD 时钟树报告里的时钟网名）。
+        const listed = await runWithProgress('FPGA: reading clock tree...',
+            COMMANDS.probeClocks, []).catch(() => ({}));
+        const names = Array.isArray(listed && listed.clocks) ? listed.clocks : [];
+        let clock;
+        if (names.length) {
+            const items = names.map((name) => ({
+                label: name,
+                description: name === current ? 'current' : '',
+            }));
+            items.push({ label: '$(edit) Enter manually…', description: '' });
+            const picked = await vscode.window.showQuickPick(items, {
+                title: 'ChipWatcher sample clock',
+                placeHolder: 'Clock net used to sample the probes (TD lists the clock tree nets here)',
+            });
+            if (!picked) return;
+            if (String(picked.label).indexOf('Enter manually') >= 0) {
+                const typed = await vscode.window.showInputBox({
+                    title: 'ChipWatcher sample clock',
+                    value: current,
+                    prompt: 'Net name used to sample the probes',
+                });
+                if (typed === undefined) return;
+                clock = String(typed).trim();
+            } else {
+                clock = String(picked.label);
+            }
+        } else {
+            const typed = await vscode.window.showInputBox({
+                title: 'ChipWatcher sample clock',
+                prompt: 'No clock tree report yet - run stages:["all"] once, or type a net name (e.g. reg_init/clk).',
+                value: current,
+            });
+            if (typed === undefined) return;
+            clock = String(typed).trim();
+        }
         const result = await probeService.applyConfig({ clock });
         if (result && result.ok === false) {
             openErrors(`ChipWatcher clock update failed - ${(result.reason || result.error) || 'unknown error'}`);

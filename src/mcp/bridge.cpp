@@ -2006,6 +2006,7 @@ Json Bridge::Call(std::string_view handler, const Json& arguments) {
     if (name == "cables") return CablesTool(arguments);
     if (name == "probe_status") return ProbeStatusTool(arguments);
     if (name == "probe_config") return ProbeConfigTool(arguments);
+    if (name == "probe_clocks") return ProbeClocksTool(arguments);
     if (name == "probe_verify") return ProbeVerifyTool(arguments);
     if (name == "probe_capture") return ProbeCaptureTool(arguments);
     if (name == "completion") return CompletionTool(arguments);
@@ -3892,6 +3893,40 @@ Json Bridge::ProbeConfigTool(const Json& arguments) {
                                  ? out["warning"].get<std::string>() + " " + warning
                                  : warning;
         }
+    }
+    return out;
+}
+
+// 采样时钟候选（对应 TD GUI 的采样时钟下拉框）：只读文件，不起 TD、不碰硬件。
+Json Bridge::ProbeClocksTool(const Json& arguments) {
+    const project::Project& proj = ProjectFor(arguments);
+    Json out = Json::object();
+    out["ok"] = true;
+    std::vector<std::string> names = probe::ClockCandidatesFromReports(proj);
+    // 补充：现有 watcher/配置里已经在用的时钟（保证"当前值"一定在列表里）
+    std::string current;
+    const probe::ProbeBuildConfig config = probe::ReadProbeBuildConfig(proj);
+    if (config.has_clock && !config.clock.empty()) current = config.clock;
+    const probe::CwcSnapshot cwc = probe::ReadCwc(probe::CompiledCwc(proj));
+    if (current.empty() && cwc.ok && !cwc.clock.empty()) current = cwc.clock;
+    if (!current.empty()) {
+        bool seen = false;
+        for (const std::string& name : names) seen = seen || name == current;
+        if (!seen) names.insert(names.begin(), current);
+    }
+    Json clocks = Json::array();
+    for (const std::string& name : names) {
+        Json item = Json::object();
+        item["name"] = name;
+        item["current"] = (name == current);
+        clocks.push_back(std::move(item));
+    }
+    out["clocks"] = std::move(clocks);
+    out["current"] = current;
+    out["source"] = "phy_1/{route,place}_clock_utilization.txt";
+    if (names.empty()) {
+        out["reason"] = "no clock tree report yet - run stages:[\"all\"] once (TD writes "
+                        "place_clock_utilization.txt), then reopen this list";
     }
     return out;
 }

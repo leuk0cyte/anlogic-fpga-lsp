@@ -56,6 +56,8 @@ const COMMANDS = Object.freeze({
     updateProject: 'fpgalsp.updateProject',
     // 0.16.0: on-chip probe (Anlogic ChipWatcher)
     probeStatus: 'fpgalsp.probeStatus',
+    // 采样时钟候选（与 TD GUI 的时钟下拉框同源：TD 的时钟树报告）
+    probeClocks: 'fpgalsp.probeClocks',
     probeConfig: 'fpgalsp.probeConfig',
     probeCapture: 'fpgalsp.probeCapture',
 });

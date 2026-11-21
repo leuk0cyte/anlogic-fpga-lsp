@@ -1019,3 +1019,27 @@ probe_verify: cntT_q embedded 16/16、d1_tx_s1 embedded 16/16、missing=[]
 - **跑 syn 时把 phy 的三步标记与 watcher 产物一起清掉** → Flow 视图里 phy 立刻回到 not run
   （这正是用户反馈"点了 run synthesis，phy 状态还显示完成"的根因）。
 - MCP 新增工具 `fpga_flow_run_step{step,force,jobs}`。
+
+### 第二十四轮：采样时钟改成"像 GUI 一样从列表里选"
+
+用户指出：TD GUI 的采样时钟是**下拉选**，不该让人手输。研究结论：
+
+- TD 把时钟树导出成 `phy_1/route_clock_utilization.txt`（`place_clock_utilization.txt` 同理），
+  里面每个全局时钟都带**真实时钟网名**：实测 corpus_delta 工程能拿到
+  `reg_init/clk`、`pll_100M/clk0_buf`、`ANPC_init0/ANPC_SVPWM_init/pwm_clk`、
+  `rgmii_interface_init/…` 等 **49 个**候选，当前用的是 `reg_init/clk`（与 GUI 的 cwc 一致）。
+- 其它命令（`report_clock_summary` / `<prj>_gate.clktree`）只给时钟组名或 PLL 引脚名
+  （`pll_100M/pll_inst.clkc[0]`），不是可用的采样时钟网名，所以不用它们。
+
+实现：
+1. 后端 `probe::ClockCandidatesFromReports(project)`：解析 `phy_1/{route,place}_clock_utilization.txt`
+   里的时钟网名（过滤 `PH1_PHY*`、`.clkc`、纯数字），去重。纯文件读取，零成本、不碰硬件。
+2. MCP 新工具 **`fpga_probe_clocks`**（工具总数 49→50）：返回 `clocks[{name,current}]` + `current` + `source`；
+   没有时钟树报告时给出可执行提示（先跑一次 `stages:["all"]`）。
+3. LSP 命令 `fpgalsp.probeClocks`（插件用）。
+4. 插件 `Set sample clock…` 改成 **QuickPick 列表**（当前值标 `current`，末尾保留 "Enter manually…" 兜底）；
+   拿不到列表时退回输入框并说明原因。
+
+实测：`fpga_probe_clocks` 在 corpus_delta 上返回 49 个候选、`current=reg_init/clk`。
+
+`ctest` 64/64、插件 44/44。

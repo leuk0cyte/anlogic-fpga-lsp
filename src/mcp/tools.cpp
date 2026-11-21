@@ -423,6 +423,13 @@ const std::vector<Tool>& AllTools() {
                       {"csv", Str("Optional absolute CSV output path (default phy_1/cw/capture_<timestamp>.csv).")}},
                      {}),
              "probe_capture", "flow"},
+        Tool{"fpga_probe_clocks",
+             "List ChipWatcher sample-clock candidates",
+             "The same list the TD GUI offers in the ChipWatcher sample-clock drop-down: the clock nets TD recorded in the clock tree (phy_1/route_clock_utilization.txt or place_clock_utilization.txt), plus the clock currently in use. Read-only - no TD session, no hardware.\n"
+             "Use it before fpga_probe_config{clock}: pick a name from `clocks[].name` instead of typing one. Empty list = no clock tree report yet; run stages:[\"all\"] once first.\n"
+             "Example: {}",
+             Schema({{"project", Str("Optional .al path, project directory, or project name. Default: active project.")}}, {}),
+             "probe_clocks", "flow"},
         Tool{"fpga_probe_verify",
              "Verify probe coverage",
              "Explain which requested probes made it into the bitstream and which were dropped, by comparing the mark_debug list in chip_debugger/user.mdn with phy_1/cw/compiled.cwc bit by bit. `buses` gives per-bus width/embedded_bits/missing_bits/status with a reason (no-bitstream | dropped-by-td | not-in-build | partial), `missing_nets` lists the exact net names to fix, `stale` says whether the bit still matches the mdn, and `hints` carries the one actionable next step. Read-only: no TD session, no hardware, no bitstream rewrite.\n"

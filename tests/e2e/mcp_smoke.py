@@ -42,7 +42,7 @@ CORPUS = os.path.join(REPO_ROOT, "tests", "gate-corpus", "corpus_alpha")
 
 FALLBACK_SERVER = os.path.join(REPO_ROOT, "build", "bin", "fpgalsp-native.exe")
 EXPECTED_READONLY_TOOLS = 38
-EXPECTED_ALL_TOOLS = 49
+EXPECTED_ALL_TOOLS = 50
 
 
 class McpProcess:
