@@ -497,4 +497,20 @@ std::vector<FlowStep> CollectAllFlowSteps(const std::string& runs_root) {
     return steps;
 }
 
+jsonrpc::Json StepsToJson(const std::vector<FlowStep>& steps) {
+    jsonrpc::Json out = jsonrpc::Json::array();
+    for (const FlowStep& step : steps) {
+        jsonrpc::Json item = jsonrpc::Json::object();
+        item["name"] = step.name;
+        item["stage"] = step.stage;
+        item["status"] = step.status;
+        item["wall"] = step.wall;
+        item["cpu"] = step.cpu;
+        item["mem_mb"] = step.mem_mb;
+        // run 名（syn_1 / phy_1）由调用方在合并时补，这里不写。
+        out.push_back(std::move(item));
+    }
+    return out;
+}
+
 }  // namespace fpgalsp::flow

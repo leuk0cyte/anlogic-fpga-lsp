@@ -27,6 +27,7 @@
 #include <vector>
 
 #include "flow/flow_runner.h"
+#include "flow/flow_status.h"
 #include "flow/probe.h"
 #include "flow/programmer.h"
 #include "flow/strategy.h"
@@ -535,6 +536,13 @@ Json LspServer::FeatureFlowStatus(const Json& params) {
     Json result = Json::object();
     result["ok"] = true;
     Json flow = CurrentFlowObject(runner);
+    // 刚打开窗口时 runner 还不存在（flow 只在本次会话跑过才有），但磁盘上可能有
+    // 上一轮 syn_1/phy_1 的 flow.status —— 直接从磁盘算 6 步，否则 Flow 视图
+    // 永远是空/旧的，用户看到的就不是 TD GUI 那 6 行。
+    if (const auto project = CurrentProject(); project.has_value()) {
+        const std::string runs_dir = reports::RunsDirectory(project->dir, project->name);
+        flow["steps"] = flow::StepsToJson(flow::CollectAllFlowSteps(runs_dir));
+    }
     flow::FlowState state;
     bool have_state = false;
     if (runner) {

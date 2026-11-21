@@ -29,6 +29,7 @@
 #include "analysis/analysis.h"
 #include "constraints/adc.h"
 #include "flow/flow_runner.h"
+#include "flow/flow_status.h"
 #include "flow/programmer.h"
 #include "flow/probe.h"
 #include "flow/strategy.h"
@@ -3641,6 +3642,12 @@ Json Bridge::FlowStatus(const Json& arguments) {
         out["flow"] = flow_runner_->Status().ToJson();
     } else {
         out["flow"] = IdleFlowState();
+    }
+    // 与 LSP 通道一致：即使 runner 不在（本次会话没跑过 flow），也从磁盘的
+    // syn_1/phy_1 flow.status 算出 TD GUI 的 6 步，避免 agent 看到空列表。
+    {
+        const std::string runs_dir = reports::RunsDirectory(proj.dir, proj.name);
+        out["flow"]["steps"] = flow::StepsToJson(flow::CollectAllFlowSteps(runs_dir));
     }
     out["artifacts"] = data.contains("artifacts") ? data["artifacts"] : Json::object();
     return out;

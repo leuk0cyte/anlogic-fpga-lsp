@@ -49,6 +49,8 @@
 #include <string_view>
 #include <vector>
 
+#include "jsonrpc/json_util.h"
+
 namespace fpgalsp::flow {
 
 // Flow 视图里的一步（对应 TD GUI 的一行）
@@ -101,5 +103,9 @@ std::vector<RunFlowSteps> CollectRunsFlowSteps(const std::string& runs_root);
 // 上面两段摊平成固定的 6 条（缺的步骤补 pending、耗时 0），顺序即 GUI 顺序。
 // 供 flowStatus 的 steps 数组与单测使用。
 std::vector<FlowStep> CollectAllFlowSteps(const std::string& runs_root);
+
+// 6 条步骤 -> JSON 数组（{name,stage,status,wall,cpu,mem_mb,run}）。
+// 两个通道（LSP flowStatus / MCP fpga_flow_status）共用，避免两边字段写歪。
+jsonrpc::Json StepsToJson(const std::vector<FlowStep>& steps);
 
 }  // namespace fpgalsp::flow

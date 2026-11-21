@@ -632,3 +632,17 @@ provider 没和视图关联上（VS Code 侧行为，未在扩展里找到可控
      `apply_build_config` 继续默认 false，文档写明上述崩溃。
 6. sidecar 生成增加"形状"判断：`net_count/disabled_net_count` 与当前 mdn+disabled 计划不一致就重建，
    不再"只补缺"导致 disable 后仍用旧的 53-bit cwc。
+
+### 第八轮：Flow 视图"刚开窗口也要有 TD GUI 六步"（后端补数据源）
+
+用户的抱怨是准确的：`flowStatus` 只在**本次会话跑过 flow**（runner 存在）时才有 `steps`；
+刚打开窗口时 runner 为空，返回的 idle 对象里根本没有 `steps`，插件只能显示旧的/空的。
+
+修复：两条通道都改成**从磁盘的 `syn_1/flow.status`、`phy_1/place_flow.status`、
+`phy_1/route_flow.status` 现算 6 步**（`flow::CollectAllFlowSteps` + 新增 `flow::StepsToJson`）：
+- LSP `fpgaLsp/flowStatus`：`flow.steps` 一律由磁盘计算（覆盖 idle 情况）；
+- MCP `fpga_flow_status`：同样补 `flow.steps`。
+
+实测（工程当前状态，idle、无 runner）：
+`Read Design 1s(done) / Optimize RTL 41s / Optimize Gate 56s / Optimize Placement 187s /
+Optimize Routing 88s / Generate Bitstream 0s` —— 名称与顺序与 TD GUI 一致。
