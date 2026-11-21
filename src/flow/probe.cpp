@@ -2643,6 +2643,28 @@ jsonrpc::Json Capture(const td::TdChoice& td, const project::Project& project,
         return out;
     }
 
+    // disabled 探针的位流抓不了（TD 2026.2 批量流程的硬限制）：
+    // 实测 8 种 cwc 变体（模板 / 新 ERAM / width 48/49/50/53/54/55 / 删掉 disabled 总线）
+    // 全部失败，且只有两种结局：
+    //   a) 触发成功但回读报 KIT-8445 "sample depth is shorter than the set value (54/48)"
+    //      —— 位流里的采集 RAM 仍按 disable 前的宽度分配（54），而 cwc 只有 48 个 enabled 位；
+    //   b) 换一份"宽度对齐"的 cwc 就变成 Chipwatcher code 与位流不一致，
+    //      `wait_on_hw_cw` 永远等不到触发（会话挂 30 s）。
+    // 与其让 agent 白等并杀掉会话，不如立刻拒绝并给出可执行的两条路。
+    if (cwc.disabled_net_count > 0 && !options.allow_disabled_capture) {
+        out["refused"] = true;
+        out["stage"] = "precheck";
+        out["disabled_net_count"] = cwc.disabled_net_count;
+        out["reason"] =
+            "this bitstream was built with disabled probes - TD 2026.2 batch capture cannot read it "
+            "back (readback wants the pre-disable ERAM width: KIT-8445 \"sample depth is shorter "
+            "than the set value (54/48)\", and any cwc whose width matches turns into a "
+            "Chipwatcher-code mismatch that hangs wait_on_hw_cw). Either clear the disabled list "
+            "(fpga_probe_config{\"disabled\":[]}) and rerun stages:[\"all\"], or capture from the TD "
+            "GUI. Pass allow_disabled_capture:true only if you want to try anyway.";
+        return out;
+    }
+
     // 清单与 bit 不一致 -> 默认拒绝（采回来的不是清单里写的信号）
     if (!options.allow_stale) {
         const MdnConfig mdn = ReadMdn(MdnPath(project));

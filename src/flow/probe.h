@@ -370,6 +370,8 @@ struct CaptureOptions {
     // ⚠ 生成的 ERAM 段没有经过 bit 侧校验，实测可能让 TD 在 write_hw_cw_data 时崩；
     //   宁可拒绝并让调用方提供一份可用的 cwc，也不要静默给出错误的采样数据。
     bool generate_cwc = false;
+    // 位流里含 disabled 探针时是否仍然尝试抓取（默认 false：TD 批量回读读不了，会挂）。
+    bool allow_disabled_capture = false;
 };
 
 // 把一份 compiled.cwc 的触发字段改掉（纯文本替换，不动 <logic_eram> 的 depth，

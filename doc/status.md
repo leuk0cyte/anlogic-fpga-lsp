@@ -699,3 +699,29 @@ TD 自己认可的宽度口径）。
   证明"刚加载窗口也有六步"是数据层就成立，不依赖 UI 渲染猜测。
 - 套件里仍有 4 条历史失败（completion 标签、semantic tokens、copy symbol path、doctor 报告），
   是把测试工程从 CorpusAlpha 换到 CorpusAlpha 后的既有差异，与本次改动无关（探针/视图 7 条全过）。
+
+### 第十一轮：disabled 位流的抓取 = TD 2026.2 批量流程的硬限制（已定位，做快速失败）
+
+**实验矩阵**（disabled 建出的位流 + 8 类 cwc 变体，均 `download:true` 实测）：
+
+| cwc 变体 | Chipwatcher code | 结果 |
+|---|---|---|
+| gate cwc（53 net，5 个 `data="disable"`，旧 ERAM 行 section 54） | 1110011100101110 | 触发成功，回读报 **KIT-8445 (54/48)** |
+| gate cwc + `logic_eram width` = 48/49/50/54/55 | 同上 | 报错数字不变（54/48），说明 54 来自位流侧、48 才是 cwc 的 enabled 位数 |
+| gate cwc + section_size 改 49 | 同上 | 仍 (54/48) |
+| 新 sidecar（48 net 全 enable / 带 disable 标志） | 0000101010001110 | code 与位流不一致 → `wait_on_hw_cw` 挂死 |
+| 删掉 disabled 总线（3 总线 48 net） | 1110011100101110 | 挂死 |
+| gate cwc + 新 bid 的 ERAM 行（width 48/49/54） | 1010101011001010 | 挂死 / 会话崩 |
+
+结论：**位流里的采集 RAM 仍按 disable 前的宽度（54）分配**，而 cwc 里只有 48 个 enabled 位；
+把 cwc 改成 54 宽又会让 `Chipwatcher code` 与位流不一致（TD 把 code 写进了位流）。
+批量流程没有"重建 RAM + 重算 code"的接口，所以 **disabled 位流在 batch 下读不出来**。
+
+处理（0.19.8）：
+- `fpga_probe_capture` 在 `disabled_net_count > 0` 时**立刻拒绝**（0.3 s，不再挂 30 s），
+  文案给出两条可执行路径：清空 `disabled` 重跑 `stages:["all"]`，或走 TD GUI 抓；
+- 新增 `allow_disabled_capture:true` 让人可以强行尝试（默认关）；
+- 正常（无 disable）位流验证未受影响：4 总线/53 bit、`probe_capture` ok / 1024 点。
+
+下一步若要真正打通，需要一份 **TD GUI 为 disabled 配置亲笔写的 `compiled.cwc`** ——
+对比它的 `<logic_eram>`/code 才能知道 TD 自己怎么表达"禁用后的 RAM"。

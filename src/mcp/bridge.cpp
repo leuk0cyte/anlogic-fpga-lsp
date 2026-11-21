@@ -3990,6 +3990,10 @@ Json Bridge::ProbeCaptureTool(const Json& arguments) {
         it != arguments.end() && it->is_boolean()) {
         capture_options.generate_cwc = it->get<bool>();
     }
+    if (const auto it = arguments.find("allow_disabled_capture");
+        it != arguments.end() && it->is_boolean()) {
+        capture_options.allow_disabled_capture = it->get<bool>();
+    }
     // per-bus 触发值：`[{name, op, value}]`，value 是**二进制位串**（与采集 CSV 同格式）。
     // 校验放在这里而不是后面：TD 对未知 op / 缺名字的元素不会报错，只会静默按默认处理，
     // 那种失败在 agent 侧看起来就是"工具不支持这个条件"。
