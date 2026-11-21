@@ -806,7 +806,26 @@ struct FlowRunner::Impl {
             if (probe::WriteUserCfgFromMdn(owner->project_, &user_cfg_error)) {
                 Emit("log", run_name + ": 已按 user.mdn 重写 chip_debugger/user.cfg");
             } else {
-                Emit("log", run_name + ": 生成 user.cfg 失败：" + user_cfg_error);
+                // 写不出来（最常见：没有 gate 数据库 -> 拿不到采样时钟）时，**把旧 user.cfg
+                // 挪走**，让 TD 回退到"按 user.mdn 自动建 watcher"。留着旧文件更糟：它与当前
+                // mdn 不一致，TD 会按旧配置建 watcher，抓取时判 stale 直接拒绝。
+                const std::string user_cfg = owner->project_.dir + "/chip_debugger/user.cfg";
+                if (IsFile(user_cfg)) {
+                    std::error_code ec;
+                    const std::string backup = fpgalsp::platform::state_dir(owner->project_.dir) +
+                                               "/probe/user.cfg.stale.bak";
+                    std::filesystem::create_directories(
+                        std::filesystem::path(backup).parent_path(), ec);
+                    std::filesystem::copy_file(user_cfg, backup,
+                                               std::filesystem::copy_options::overwrite_existing,
+                                               ec);
+                    std::filesystem::remove(std::filesystem::path(user_cfg), ec);
+                    Emit("log", run_name + ": 生成 user.cfg 失败（" + user_cfg_error +
+                                    "），已把旧文件移到 " + backup +
+                                    "；本次由 TD 按 user.mdn 自动建 watcher");
+                } else {
+                    Emit("log", run_name + ": 生成 user.cfg 失败：" + user_cfg_error);
+                }
             }
         }
 

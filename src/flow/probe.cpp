@@ -3098,9 +3098,18 @@ jsonrpc::Json Capture(const td::TdChoice& td, const project::Project& project,
     if (!cwc.ok) {
         out["cwc"] = ensured;
         out["refused"] = true;
-        out["reason"] = cwc.error.empty()
-                            ? "no compiled ChipWatcher (phy_1/cw/compiled.cwc) - run the phy flow"
-                            : cwc.error;
+        if (out.contains("clock_query")) {
+            // 时钟都拿不到时，"empty ChipWatcher configuration" 会误导：真正缺的是
+            // syn 产物（gate 数据库）或显式 clock。
+            out["reason"] = std::string("cannot determine the ChipWatcher sample clock: ") +
+                            out["clock_query"].get<std::string>() +
+                            " - run stages:[\"all\"] first, or pass clock to "
+                            "fpga_probe_config (e.g. {\"clock\":\"reg_init/clk\"})";
+        } else {
+            out["reason"] = cwc.error.empty()
+                                ? "no compiled ChipWatcher (phy_1/cw/compiled.cwc) - run the phy flow"
+                                : cwc.error;
+        }
         return out;
     }
     if (!IsFile(CompiledBit(project))) {

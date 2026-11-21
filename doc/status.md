@@ -929,3 +929,20 @@ config after: clock=reg_init/clk
 即：采样时钟确实是从工程的 gate 数据库里问出来的，不依赖任何历史文件。
 
 `ctest` 64/64、插件 44/44。
+
+### 第二十轮：`report_cwc_status`（gate 库）拿不到时的行为 + 两处收敛
+
+**行为矩阵（实测）**：
+
+| 场景 | 结果 |
+| --- | --- |
+| 无 gate 库、无 cwc、无历史 cwc（`generate_cwc:true`） | 立刻拒绝（precheck），`clock_query` 明确写 `no <...>_gate.db - run stages:["all"] first`；`reason` 提示两条出路（跑 `all` 或 `probe_config{clock:...}`） |
+| 无 gate 库，但**有**旧 user.cfg/cwc（模板总线集与 mdn 一致） | 仍可工作：模板里带 clock，只按 disabled 打补丁 |
+| 无 gate 库 → 跑 `stages:["all"]` | flow **照常成功**（hook 写 user.cfg 失败只留痕），TD 按 user.mdn 自动建 watcher 并写 `phy_1/cw/compiled.cwc`；实测 `nets=32 stale=false`、`capture ok / 1024 点` |
+
+两处顺带收敛：
+1. `probe_capture`：时钟查不到时不再回 `empty ChipWatcher configuration`，直接给出
+   "cannot determine the ChipWatcher sample clock: …" + 两条可执行建议。
+2. flow hook：写不出 user.cfg 时**把旧 user.cfg 移到 `<state>/probe/user.cfg.stale.bak`**，
+   让 TD 回退到"按 user.mdn 自动建 watcher"。之前留着旧文件会导致 TD 按旧配置建 watcher、
+   抓取时判 stale 直接拒绝（实测踩到）。
