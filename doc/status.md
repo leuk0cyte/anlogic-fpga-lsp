@@ -755,3 +755,27 @@ TD 自己认可的宽度口径）。
 说明"gate cwc + 新 ERAM"还不是充分条件，可能还与 TD OOC watcher 的编译缓存/位流内容有关。
 需要再定位的点：同一份 gate cwc 下，TD 生成的位流里 `RAM_LEN`（48）与 cwc 的
 `<logic_eram width>`（49）为什么要差 1，以及为什么有时触发逻辑不响应。
+
+### 第十三轮：disabled 抓取复现性结论 —— 系统性失败，改为快速失败
+
+**复现实验**（2 次连续 disabled 重建，各用自己的 sidecar 与对方的 sidecar 交叉抓取）：
+
+| 尝试 | 结果 |
+|---|---|
+| build1 自己的 sidecar（gate cwc + 新 bid ERAM） | code `1110011100101110`，`wait_on_hw_cw` 不返回 → 会话退出 |
+| build2 + build1 的 sidecar | 同上 |
+| build2 自己的 sidecar | 同上 |
+
+三次全失败；两次构建的 watcher 都是 `DIN=48 / RAM_LEN=48`。
+结合 20:06 唯一一次成功（同配方，1024 点），判断为 **TD 侧的系统性问题**（OOC watcher /
+触发逻辑在不同构建下行为不一致），不是 cwc 字段能修好的：
+- 换 `logic_eram width`（48/49/50/53/54/55）、`section_size`、整份重生成、删 disabled 总线，
+  全部要么 `KIT-8445 (54/48)` 要么 `Chipwatcher code` 不一致而挂死；
+- 保留 gate cwc 的总线/触发/时钟、只换 ERAM 行，是唯一一次成功过的组合，但不可复现。
+
+**落地**：`fpga_probe_capture` 在 `disabled_net_count > 0` 时**立刻拒绝**（0.3 s），文案写清
+"TD 批量回读不可靠：触发不返回；清空 disabled 重跑 stages:["all"]，或走 TD GUI"，
+并保留 `allow_disabled_capture:true` 让人强行试。
+
+**工程已恢复**：手动 syn+phy（plain insert）→ 4 总线/53 bit → `compiled.bit` 同步 →
+生成 sidecar 10,313 B → `probe_capture` ok / 1024 点。

@@ -2761,14 +2761,28 @@ jsonrpc::Json Capture(const td::TdChoice& td, const project::Project& project,
     // disabled 位流现在可以抓了：sidecar 由 `WriteCompiledCwcFromGate` 写成
     // "gate cwc（总线/触发/时钟原样）+ 新 bid 的 <logic_eram> 行"，实测触发完成、1024 点。
     // 但如果 cwc 里 disabled 计数与位流不符（比如还留着上一轮的 sidecar），先给出提示。
+    // disabled 位流的抓取：实测 2026-11-21 有 1 次成功（gate cwc + 新 bid ERAM -> 1024 点），
+    // 但随后 2 次重建 × 3 份 cwc（各自的 sidecar 互相交换）= 6 次尝试全部失败：
+    // 触发过程 `wait_on_hw_cw` 不返回，TD 会话退出。属于 TD 侧的系统性问题，
+    // 不是我们 cwc 字段写错。默认立刻拒绝（0.3 s），别让 agent 白等 30 s 并杀会话。
+    if (cwc.disabled_net_count > 0 && !options.allow_disabled_capture) {
+        out["refused"] = true;
+        out["stage"] = "precheck";
+        out["disabled_net_count"] = cwc.disabled_net_count;
+        out["reason"] =
+            "this bitstream was built with disabled probes and TD 2026.2 cannot read it back "
+            "reliably in batch mode: the trigger never completes (wait_on_hw_cw hangs, session "
+            "exits). One attempt succeeded with a sidecar made of the gate cwc plus fresh bid "
+            "ERAM rows, but it is not reproducible (2 rebuilds x 3 cwc variants all failed). "
+            "Clear the disabled list (fpga_probe_config{\"disabled\":[]}) and rerun "
+            "stages:[\"all\"], or capture this bitstream from the TD GUI. Pass "
+            "allow_disabled_capture:true to try anyway.";
+        return out;
+    }
     if (cwc.disabled_net_count > 0) {
         out["disabled_net_count"] = cwc.disabled_net_count;
-        out["warning"] =
-            "this bitstream was built with disabled probes; capturing it is experimental. If the "
-            "trigger never completes (TD sits in wait_on_hw_cw), clear the disabled list "
-            "(fpga_probe_config{\"disabled\":[]}) and rerun stages:[\"all\"], or capture from the "
-            "TD GUI. The sidecar is written as the gate cwc with fresh bid ERAM rows, which "
-            "captured successfully once (1024 samples) but is not yet reproducible across rebuilds.";
+        out["warning"] = "capturing a bitstream with disabled probes - TD may hang at the trigger "
+                         "stage; this path is experimental.";
     }
 
     // 清单与 bit 不一致 -> 默认拒绝（采回来的不是清单里写的信号）
