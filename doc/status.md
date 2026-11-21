@@ -796,3 +796,29 @@ TD 自己认可的宽度口径）。
 后端已按"快速失败 + 明确指引"处理，并保留了唯一成功过的 sidecar 写法
 （`WriteCompiledCwcFromGate`）与单测，等 TD 修复/换版本后可直接启用。
 若要立刻用：`fpga_probe_config{"disabled":[]}` 清空后重跑 `stages:["all"]`，或走 GUI 抓。
+
+### 第十五轮：用户 GUI 参照揭示的真实语义 + 两个根因
+
+**用户给的 GUI 参照（4 条总线，gate 后把 reg6 的 Data 关掉、reg7 的 Instance 清空）** ——
+TD 亲笔写的 `compiled.cwc` 说明：
+
+| GUI 勾选 | cwc 表达 |
+| --- | --- |
+| Data ✓ / Trigger ✓ | net `data="enable" trig="enable"` |
+| Data ✗ / Trigger ✓ | net `data="disable" trig="enable"`，仍进 `<signal_vec>`，`op="not_equal"` |
+| Trigger ✗ / Data ✓ | net `trig="disable"` |
+| Instance 空 / is_enabled=no | bus `is_enabled="no"` + **`inst=""`**，**不进** `<signal_vec>` |
+
+`<logic_eram width>` 只计 **Data 使能**的位（32），`section_size=33`（=32+1）。
+用它抓取**成功**（`ok=true`、1024 点、2 列）。
+
+**两个根因（都实测）**：
+1. `chip_debugger/user.cfg` 是 TD 的 watcher 实例配置，**优先于 user.mdn**。不删它，改 mdn 后
+   gate 仍然按旧配置建 watcher（这就是用户必须"reset"的原因）。删掉后同一份 mdn 立刻建出
+   `CWC_BUS_NUM=3 / DIN=48`。
+2. 我们在 **phy 的 place** 也挂了 `insert_debugger` 钩子 —— 在 syn 已建过 watcher 的状态下会
+   让 `opt_place` 直接崩（PRJ-8806，2 秒内退出）。不挂这个钩子 phy 完全正常。已改成**只在 syn 挂钩子**。
+
+**runs 配置污染（用户明确要求修）**：`set_param -run ... tcl_beforestep/afterstep` 会写进 .al。
+现在每次流程结束（成功/失败/取消）都会把这三个参数**清空**还原；`get_param` 回读的值在 TD 日志里
+会被掩码成 "NNN"，所以不能回写原值，只能清空。

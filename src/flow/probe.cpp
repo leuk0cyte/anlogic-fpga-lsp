@@ -1219,9 +1219,13 @@ std::string BuildCwcFromWatcher(const project::Project& project, const MdnConfig
         for (int bit = 0; bit < bus.second; ++bit) {
             if (!bit_disabled(bus.first, bit)) ++enabled_bits;
         }
+        // 整条 disable 的总线：TD 自己写的 cwc 里是 is_enabled="no" **且 inst=""**，
+        // 并且**不**出现在 <signal_vec> 里。照抄这个语义，回读时 TD 才会把它当作
+        // "不参与 watcher"（实测：GUI 就是这么表达 disable 的）。
+        const bool bus_off = enabled_bits == 0;
         out += "\t\t<bus name=\"" + rel_name(bus.first) + "[" + std::to_string(bus.second - 1) + ":0]\" clock=\"" +
-               clock + "\" inst=\"" + cwc1_name + "\" type=\"MARK_DEBUG_PROBE\" is_enabled=\"" +
-               (enabled_bits == 0 ? "no" : "yes") + "\">\n";
+               clock + "\" inst=\"" + (bus_off ? std::string() : cwc1_name) +
+               "\" type=\"MARK_DEBUG_PROBE\" is_enabled=\"" + (bus_off ? "no" : "yes") + "\">\n";
         for (int bit = bus.second - 1; bit >= 0; --bit) {
             const std::string state = bit_disabled(bus.first, bit) ? "disable" : "enable";
             out += "\t\t\t<net name=\"" + rel_name(bus.first) + "[" + std::to_string(bit) +
@@ -1239,6 +1243,12 @@ std::string BuildCwcFromWatcher(const project::Project& project, const MdnConfig
            "\"/>\n";
     out += "\t\t<signal_vec>\n\t\t\t<watcher_nodes>\n";
     for (const auto& bus : buses) {
+        // 整条 disable 的总线不进 signal_vec（TD 的写法）；否则 TD 会把它算进触发网表。
+        int signal_vec_bits = 0;
+        for (int bit = 0; bit < bus.second; ++bit) {
+            if (!bit_disabled(bus.first, bit)) ++signal_vec_bits;
+        }
+        if (signal_vec_bits == 0) continue;
         out += "\t\t\t\t<bus name=\"" + rel_name(bus.first) + "[" + std::to_string(bus.second - 1) +
                ":0]\" compatator_num=\"1\" op=\"dont_care\" capture_op=\"dont_care\">\n";
         for (int bit = bus.second - 1; bit >= 0; --bit) {
@@ -1782,13 +1792,19 @@ jsonrpc::Json WriteCompiledCwcFromGate(const project::Project& project,
         out["reason"] = "no ERAM rows for " + inst + " in " + bid_path;
         return out;
     }
-    int data_bits = 0;
     int depth = 1024;
     for (const BidEram& eram : erams) {
-        data_bits += std::atoi(eram.width.c_str());
         if (!eram.depth.empty()) depth = std::atoi(eram.depth.c_str());
     }
-    const std::string block = EramBlockXml(erams, inst, data_bits, depth);
+    // disable 之后采集 RAM 只按 **data 使能**的位分配（TD 自己写的 cwc：2 条总线 ->
+    // logic_eram width="32"，而 phy bid 的各 mem 宽度和是 33）。所以 width 用
+    // "mdn 总位数 - disabled 位数"，不能用 bid 宽度和。
+    const MdnConfig mdn_now = ReadMdn(MdnPath(project));
+    const ProbeBuildConfig cfg_now = ReadProbeBuildConfig(project);
+    const DisabledPlan plan_now = ResolveDisabled(mdn_now.signals, cfg_now.disabled);
+    const int enabled_bits = static_cast<int>(mdn_now.signals.size()) -
+                             static_cast<int>(plan_now.bits.size());
+    const std::string block = EramBlockXml(erams, inst, enabled_bits, depth);
     const std::size_t begin = text.find("\t\t<logic_eram");
     const std::size_t end = text.find("</logic_eram>", begin);
     if (begin == std::string::npos || end == std::string::npos) {
@@ -1796,6 +1812,72 @@ jsonrpc::Json WriteCompiledCwcFromGate(const project::Project& project,
         return out;
     }
     text = text.substr(0, begin) + block + text.substr(end + std::string("</logic_eram>").size());
+
+    // 整条 disable 的总线：TD 的写法是 bus `is_enabled="no"` + `inst=""`，且不进
+    // `<signal_vec>`。门控用的 cwc 里这些总线还是 "参与" 的形态，必须在这里改成
+    // TD 回读时期望的样子（实测 GUI 生成的 cwc 就是这样，按它抓取成功）。
+    {
+        std::set<std::string> off_buses;
+        for (const auto& bus : mdn_now.signals) {
+            (void)bus;
+        }
+        std::map<std::string, int> totals;
+        std::map<std::string, int> offs;
+        for (const std::string& signal : mdn_now.signals) {
+            std::string base = signal;
+            const std::size_t open = signal.rfind('[');
+            if (open != std::string::npos) base = signal.substr(0, open);
+            ++totals[base];
+            if (plan_now.IsBitDisabled(signal)) ++offs[base];
+        }
+        for (const auto& [base, total] : totals) {
+            if (offs[base] >= total) off_buses.insert(base);
+        }
+        if (!off_buses.empty()) {
+            const auto is_off = [&off_buses](const std::string& name) {
+                std::string base = name;
+                const std::size_t open = name.rfind('[');
+                if (open != std::string::npos) base = name.substr(0, open);
+                for (const std::string& off : off_buses) {
+                    if (off == base || TailName(off) == TailName(base)) return true;
+                }
+                return false;
+            };
+            std::string out;
+            std::size_t pos = 0;
+            bool in_signal_vec = false;
+            bool skipping = false;
+            while (pos < text.size()) {
+                const std::size_t next = text.find('\n', pos);
+                std::string line = text.substr(pos, next == std::string::npos ? std::string::npos
+                                                                              : next - pos);
+                pos = next == std::string::npos ? text.size() : next + 1;
+                if (line.find("<signal_vec>") != std::string::npos) in_signal_vec = true;
+                if (line.find("</signal_vec>") != std::string::npos) in_signal_vec = false;
+                const std::size_t bus_at = line.find("<bus name=\"");
+                if (bus_at != std::string::npos) {
+                    const std::size_t begin_q = bus_at + 11;
+                    const std::size_t close_q = line.find('"', begin_q);
+                    const std::string name = line.substr(begin_q, close_q - begin_q);
+                    const bool off = is_off(name);
+                    if (in_signal_vec) {
+                        skipping = off;
+                        if (off) continue;
+                    } else if (off) {
+                        ReplaceAttr(&line, "inst", "");
+                        ReplaceAttr(&line, "is_enabled", "no");
+                    }
+                }
+                if (skipping) {
+                    if (line.find("</bus>") != std::string::npos) skipping = false;
+                    continue;
+                }
+                out += line;
+                out += '\n';
+            }
+            text = std::move(out);
+        }
+    }
     std::error_code ec;
     std::filesystem::create_directories(
         std::filesystem::path(CompiledCwc(project)).parent_path(), ec);
@@ -1821,7 +1903,7 @@ jsonrpc::Json WriteCompiledCwcFromGate(const project::Project& project,
     out["net_count"] = written.net_count;
     out["disabled_net_count"] = written.disabled_net_count;
     out["eram_rows"] = static_cast<int>(erams.size());
-    out["eram_width"] = data_bits;
+    out["eram_width"] = enabled_bits;
     if (!written.ok) out["reason"] = "generated cwc does not parse back";
     return out;
 }

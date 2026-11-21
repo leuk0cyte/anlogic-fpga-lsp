@@ -393,6 +393,10 @@ struct FlowRunner::Impl {
     // key 存在 = 已经尝试过（成功或判定不支持），避免每次 RunStage 重复发 set_param。
     std::mutex hook_mutex;
     std::map<std::string, bool> probe_hook_state;
+    // 挂钩子前 `get_param` 读到的原值（key = "run step keyword"）。
+    // 流程结束必须原样写回：set_param 会写进 .al 的 run 配置，留着会打乱用户在
+    // TD GUI 里的正常操作（用户实测：不 reset runs 就看不到 mark_debug 的网）。
+    std::map<std::string, std::string> saved_hook_values;
     // 本次 run 交给 TD 的 gate 配置（`insert_debugger -cwc`）。phy 成功后要用它写 sidecar：
     // 保留总线/触发/时钟（Chipwatcher code 才跟位流一致），只换 <logic_eram> 的几何。
     std::string gate_cwc_path;
@@ -778,9 +782,12 @@ struct FlowRunner::Impl {
         if (!HasProbeMdn(owner->project_)) return;  // 没配探针就什么都不做
         // 综合只做到 gate：在 rtl 步骤前插探针；布局布线的 place 步骤前再插一次
         // （两次 run 是两条独立的流程，钩子不会自动继承）。
-        const std::string step =
-            run_name == "syn_1" ? "rtl" : (run_name == "phy_1" ? "place" : std::string());
-        if (step.empty()) return;
+        // ⚠ 只在 **syn** 挂钩子。phy 的 place 再跑一次 `insert_debugger` 会在
+        // "syn 已经建过 watcher" 的状态下把 opt_place 直接搞崩（实测 PRJ-8806：
+        // 不挂这个钩子 phy 完全正常）。GUI 的 phy 是由 TD 自己的流程接管 watcher 的；
+        // phy-only 的安全性由 PromoteSynWhenProbesDirty 自动补 syn 来保证。
+        if (run_name != "syn_1") return;
+        const std::string step = "rtl";
 
         {
             std::lock_guard<std::mutex> lock(hook_mutex);
@@ -802,6 +809,22 @@ struct FlowRunner::Impl {
         const auto set_hook = [this, &run_name](const std::string& step_name,
                                                 const std::string& keyword,
                                                 const std::string& hook_path) {
+            // 先记住原值（空 = 原来没有钩子），流程结束后还原。
+            const std::string key = run_name + " " + step_name + " " + keyword;
+            {
+                const std::string probe =
+                    "set fpgalsp_q [get_param -run " + run_name + " " + step_name + " " + keyword +
+                    "]; puts \"FPGALSP_HOOK_BEGIN$fpgalsp_q-FPGALSP_HOOK_END\"";
+                const std::string out = RunCommand(probe, 120.0);
+                std::string value;
+                const std::size_t begin = out.find("FPGALSP_HOOK_BEGIN");
+                const std::size_t finish = out.find("-FPGALSP_HOOK_END", begin);
+                if (begin != std::string::npos && finish != std::string::npos) {
+                    value = out.substr(begin + 17, finish - (begin + 17));
+                }
+                std::lock_guard<std::mutex> lock(hook_mutex);
+                saved_hook_values[key] = value;
+            }
             const std::string command = "set_param -run " + run_name + " " + step_name + " " +
                                         keyword + " " + td::TclQuoteGrouped(hook_path);
             const std::string out = RunCommand(command, 120.0);
@@ -1411,6 +1434,7 @@ struct FlowRunner::Impl {
             }
 
             const std::string summary = SummaryFromReports(report_json);
+            RestoreProbeHooks();
             {
                 std::lock_guard<std::mutex> lock(mutex);
                 state.running = false;
@@ -1436,6 +1460,35 @@ struct FlowRunner::Impl {
         std::lock_guard<std::mutex> lock(session_mutex);
         if (session) session->Close();
         session.reset();
+    }
+
+    // 把 set_param 写进 .al 的探针钩子还原成原值（空值 = 清空）。
+    // 必须走 `set_param ... {}` —— 实测空值就是清除（get_param 回空）。
+    void RestoreProbeHooks() noexcept {
+        std::map<std::string, std::string> pending;
+        {
+            std::lock_guard<std::mutex> lock(hook_mutex);
+            pending.swap(saved_hook_values);
+        }
+        for (const auto& [key, value] : pending) {
+            std::istringstream parts(key);
+            std::string run_name;
+            std::string step_name;
+            std::string keyword;
+            parts >> run_name >> step_name >> keyword;
+            if (run_name.empty() || step_name.empty() || keyword.empty()) continue;
+            // 一律清空（默认值就是空）。**不要**回写抓到的原值：`get_param` 的输出在
+            // TD 日志里会被掩码成 "NNN"，回写进去等于给 run 配了一个不存在的脚本，
+            // 下一次 place 直接 PRJ-8806（实测踩过）。
+            const std::string command = "set_param -run " + run_name + " " + step_name + " " +
+                                        keyword + " {}";
+            (void)value;
+            try {
+                RunCommand(command, 60.0);
+            } catch (...) {
+                // 还原失败不阻塞收尾
+            }
+        }
     }
 
     // 给 catch 处理器用的安全版：FinishError 自己绝不能再抛
@@ -1468,6 +1521,7 @@ struct FlowRunner::Impl {
         Emit("error", was_cancelled ? "Cancelled" : "Failed: " + effective, false);
 
         // 失败/取消也必须收尾（heartbeat 与 worker 的常驻路径都会走到这里）
+        RestoreProbeHooks();
         heartbeat_stop.store(true);
         CloseSession();
         LogToHost(was_cancelled ? "flow cancelled" : "flow failed: " + effective);
