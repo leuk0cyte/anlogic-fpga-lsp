@@ -2046,6 +2046,16 @@ bool WriteUserCfgFromMdn(const project::Project& project, std::string* error) {
         }
         text = std::move(out);
     }
+    // ⚠ 没有 `<logic_eram>` 的配置**不能**写给 TD：实测（2026-11-22 02:1x）TD 在
+    // Optimize Gate 阶段读这份不完整的 user.cfg 会直接崩（PRJ-8806，syn 就挂）。
+    // 有 ERAM 的完整配置才写；否则宁可退回"TD 按 user.mdn 自动建 watcher"。
+    if (text.find("<phy_eram") == std::string::npos) {
+        if (error != nullptr) {
+            *error = "generated config has no <phy_eram> rows (no phy bid yet) - leaving the "
+                     "watcher to TD (auto-created from user.mdn)";
+        }
+        return false;
+    }
     const std::string user_cfg = project.dir + "/chip_debugger/user.cfg";
     if (IsFile(user_cfg)) {
         std::error_code ec;
@@ -2206,7 +2216,8 @@ std::string QuerySampleClockFromGateDb(const td::TdChoice& td, const project::Pr
     }
 
     td::TdSessionOptions options;
-    options.work_dir = StateProbeDir(project);
+    // cwd = .al 所在目录（与 TD GUI 一致）：TD 的会话日志与相对路径解析都依赖它。
+    options.work_dir = project.dir;
     (void)fpgalsp::platform::ensure_directory(options.work_dir);
     std::unique_ptr<td::TdSession> session;
     try {
@@ -2217,7 +2228,6 @@ std::string QuerySampleClockFromGateDb(const td::TdChoice& td, const project::Pr
     const std::string al = Slashes(project.al_path);
     const std::string commands =
         td::MakeImportDeviceCommand("ph1_100.db", project.device, project.speed) + "\n" +
-        "cd {" + Slashes(project.dir) + "}\n" +
         "open_project {" + al + "} -single_run\n" +
         "import_db {" + Slashes(gate_db) + "}\n" +
         "report_cwc_status\n";
@@ -3183,7 +3193,8 @@ jsonrpc::Json Capture(const td::TdChoice& td, const project::Project& project,
 
     CaptureOptions effective = options;
     if (effective.cwd.empty()) {
-        effective.cwd = Slashes(fpgalsp::platform::state_dir(project.dir) + "/probe");
+        // cwd = .al 所在目录，与 TD GUI 一致（TD 自己会往 `<prj>_Runs`/`log` 写东西）。
+        effective.cwd = Slashes(project.dir);
     }
     (void)fpgalsp::platform::ensure_directory(effective.cwd);
     const std::string instance =
@@ -3256,10 +3267,6 @@ jsonrpc::Json Capture(const td::TdChoice& td, const project::Project& project,
     // 2) 打开工程（单 run 模式，只为了拿到 ChipWatcher 上下文）
     {
         out["stage"] = "open_project";
-        // TD 解析 .al 里的相对路径以它自己的 cwd 为基准；会话 cwd 现在在系统 temp
-        // （不污染工程），所以这里显式 cd 到工程目录，否则会报
-        // `HDL-8007 cannot open Verilog file '/al_ip/...'`。cd 不会往工程里写日志。
-        (void)session->Run("cd {" + Slashes(project.dir) + "}", 60.0);
         const std::string command =
             "open_project " + td::TclQuoteGrouped(Slashes(project.al_path)) + " -single_run";
         const std::string text = session->Run(command, 300.0);

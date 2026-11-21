@@ -538,19 +538,39 @@ std::vector<SemToken> HdlSideTokens(const hdl::HdlIndex* index, std::string_view
     CandidateTable sink(lines);
 
     // a) 索引里的 module / port / instance
+    //
+    // ⚠ 索引可能比缓冲区**旧**：格式化会把整篇代码的行号改掉，而索引要等下一次
+    //   重新解析才更新。此时若照抄索引里的 (line, character)，token 会落到错误的
+    //   位置上 —— 用户看到的就是"格式化后语法高亮全乱，切走再切回来又好了"。
+    //   这里逐条做**文本校验**：该位置上的实际文本必须等于索引里的名字，否则丢弃。
+    //   丢弃是安全的：行内正则（b）仍会给关键字/类型/数字上色，只是少了 9/8/7 那三类。
+    const auto position_matches = [&lines](int line, int character, std::string_view name) {
+        if (line < 0 || static_cast<std::size_t>(line) >= lines.rows.size()) return false;
+        const std::string_view row = lines.rows[static_cast<std::size_t>(line)];
+        if (character < 0 || static_cast<std::size_t>(character) + name.size() > row.size()) {
+            return false;
+        }
+        return row.substr(static_cast<std::size_t>(character), name.size()) == name;
+    };
     if (const hdl::ParsedFile* parsed = index->File(path); parsed != nullptr) {
         for (const hdl::ModuleInfo& info : parsed->modules) {
-            sink.Add(info.module.line, info.module.character,
-                     static_cast<int>(info.module.name.size()), kClass, 9);
+            if (position_matches(info.module.line, info.module.character, info.module.name)) {
+                sink.Add(info.module.line, info.module.character,
+                         static_cast<int>(info.module.name.size()), kClass, 9);
+            }
             for (const hdl::Port& port : info.module.ports) {
-                sink.Add(port.line, port.character, static_cast<int>(port.name.size()),
-                         kProperty, 8);
+                if (position_matches(port.line, port.character, port.name)) {
+                    sink.Add(port.line, port.character, static_cast<int>(port.name.size()),
+                             kProperty, 8);
+                }
             }
         }
     }
     for (const hdl::Instance* instance : index->InstancesOfFile(path)) {
-        sink.Add(instance->line, instance->character,
-                 static_cast<int>(instance->name.size()), kFunction, 7);
+        if (position_matches(instance->line, instance->character, instance->name)) {
+            sink.Add(instance->line, instance->character,
+                     static_cast<int>(instance->name.size()), kFunction, 7);
+        }
     }
 
     // b) 行内正则（注释/字符串已掩码成空格）

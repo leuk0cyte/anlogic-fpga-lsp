@@ -946,3 +946,28 @@ config after: clock=reg_init/clk
 2. flow hook：写不出 user.cfg 时**把旧 user.cfg 移到 `<state>/probe/user.cfg.stale.bak`**，
    让 TD 回退到"按 user.mdn 自动建 watcher"。之前留着旧文件会导致 TD 按旧配置建 watcher、
    抓取时判 stale 直接拒绝（实测踩到）。
+
+### 第二十一轮：TD 会话 cwd 对齐 GUI（= `.al` 所在目录）+ 格式化后高亮错乱的修复
+
+用户澄清：**TD GUI 的会话 cwd 就是 `.al` 所在目录**，所以它把 `<prj>_Runs/`、`log/`、`chip_debugger/`
+都写在 `.al` 同级；"不污染工作目录"指的是**我们插件/后端不要额外输出**，TD 自己的行为照旧。
+实测确认：`%WORKSPACE%\CorpusDelta\CorpusDelta_Runs` 与 `corpus_delta.al`
+同级；`%WORKSPACE%\CorpusAlpha\demo_project_Runs` 与 `demo_project.al` 同级，规则一致。
+
+改动：
+1. **所有 TD 会话 cwd 改为 `<project.dir>`（.al 所在目录）**：
+   `flow_runner`（TdFlowSession）、`probe.cpp`（抓取会话 + 时钟查询）、`mcp/bridge.cpp`、
+   `server/lsp_server.cpp` 的 RunDir。**我们自己的**文件（LSP/MCP 日志、probe 配置、
+   clock 缓存、flow 记录）仍在 `%TEMP%\fpgalsp\<project>-<hash>`。
+2. 删掉之前为"cwd 在 temp"加的 `cd {工程目录}` 兜底（现在 cwd 本身就是它）。
+3. **修复格式化后语法高亮错乱**：`HdlSideTokens` 里从**索引**取的 module/port/instance
+   token 现在先做**文本校验**（该位置的文本必须等于索引里的名字），不一致就丢弃。
+   根因：格式化会整体挪动行号，而索引要等重新解析才更新；照抄旧行号就会把
+   class/property/function 画到错位置 —— 用户看到"切走再切回来又好了"正是因为
+   期间索引被重新解析、token 回到正确位置。新增单测
+   `SemanticsTokens.StaleIndexDoesNotMisplaceTokens`。
+
+**实测（小工程 %WORKSPACE%\CorpusAlpha）**：`stages:["syn"]` → `flow ok`，`demo_project_Runs/`（含
+`syn_1/phy_1/best_result`）与 `log/` 都出现在 `.al` 同级，和 TD GUI 一致。
+
+`ctest` 64/64、插件 44/44。

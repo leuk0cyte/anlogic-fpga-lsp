@@ -480,3 +480,37 @@ TEST(SemanticsCorpus, CrlfTextProducesSameTokens) {
     EXPECT_EQ(FoldingRanges(text).size(), FoldingRanges(lf).size());
 }
 }  // namespace
+
+// 索引比缓冲区旧时（典型：格式化把行号整体挪动），从索引拿的 module/port/instance
+// token 必须被丢弃，而不是画到错误的位置上。用户现象：格式化后高亮全乱，切走再回来又好了。
+TEST(SemanticsTokens, StaleIndexDoesNotMisplaceTokens) {
+    const std::string original =
+        "module demo (\n"
+        "  input  wire clk\n"
+        ");\n"
+        "endmodule\n";
+    const std::string path = "stale_demo.v";
+    HdlIndex index = IndexFor(path, original);
+
+    // 模拟格式化：在文件开头插入几行注释，所有行号 +3
+    const std::string formatted =
+        "// header 1\n"
+        "// header 2\n"
+        "// header 3\n" + original;
+    const std::vector<SemToken> tokens = SemanticTokens(&index, path, formatted);
+
+    // 不允许出现"索引位置"(旧行 0/1) 上的 class/property token —— 那里现在是注释
+    for (const SemToken& token : tokens) {
+        if (token.line < 3 && (token.type == fpgalsp::semantics::kClass ||
+                               token.type == fpgalsp::semantics::kProperty)) {
+            ADD_FAILURE() << "stale index token at line " << token.line << " start "
+                          << token.start << " type " << token.type;
+        }
+    }
+    // 新位置上 module 名仍应由行内规则/Verible 上色（至少有 keyword "module"）
+    bool keyword_module = false;
+    for (const SemToken& token : tokens) {
+        if (token.line == 3 && token.type == fpgalsp::semantics::kKeyword) keyword_module = true;
+    }
+    EXPECT_TRUE(keyword_module);
+}

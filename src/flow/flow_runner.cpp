@@ -254,6 +254,9 @@ std::string RunLogErrorTail(std::string_view run_log_path) {
 
 class TdFlowSession final : public FlowSession {
 public:
+    // cwd = `.al` 所在目录：与 TD GUI 完全一致（GUI 的会话 cwd 就是工程目录，
+    // 所以它把 `<prj>_Runs/`、`log/`、`chip_debugger/` 都写在 .al 同级）。
+    // 这也让 `.al` 里的相对路径（`al_ip/xxx.v`）能正常解析。
     TdFlowSession(const td::TdChoice& td, const std::string& work_dir) {
         td::TdSessionOptions options;
         options.work_dir = work_dir;
@@ -872,6 +875,10 @@ struct FlowRunner::Impl {
         // 采样时钟/深度 + disabled：只有在 `-cwc <配置>` 里给 TD 才会被采纳
         //（实测 depth 2048 生效；disable 也只能通过自写 cwc 表达）。
         // 参数来自 `fpga_probe_config{clock,depth,disabled}` 落盘的那份 config。
+        // 与 TD GUI 的语义对齐：
+        //   * `syn rtl`（= Optimize RTL，Read Design 之后）只做 mark_debug/insert；
+        //   * `syn gate`（= Optimize Gate，结束后）才带上**采样深度/时钟/disable** 的配置。
+        // GUI 里"完成 Optimize Gate 后才能设置深度/时钟"，所以把 `-cwc` 只挂在 gate 之后。
         std::string insert_body = "insert_debugger {" + debugger_dir + "}";
         {
             const probe::ProbeBuildConfig build = probe::ReadProbeBuildConfig(owner->project_);
@@ -916,6 +923,15 @@ struct FlowRunner::Impl {
         }
         insert_body += "\n";
 
+        // ⚠ 配置（`-cwc`：采样深度/时钟/disable）必须在 **rtl 之前**也交给 TD。
+        // 实测对照（2026-11-22 02:0x）：
+        //   * rtl+gate 都带 `-cwc` -> syn 建出正确 watcher（2 总线/32 bit）、phy place 正常；
+        //   * 只挂在 gate 之后（严格照 GUI "gate 之后才能设深度/时钟"）-> syn 仍建出
+        //     2/32 的 watcher，但 **phy place 直接崩**（PRJ-8806），因为 phy 看到的网表
+        //     还是"未按 disable 裁剪"的版本。
+        // 所以这里保持"两处都带"，与 GUI 的差别只是**交配置的时刻更早**，TD 实际仍是在
+        // Optimize Gate 之后建立 watcher 时才消费它。
+        const bool has_config = insert_body.find(" -cwc ") != std::string::npos;
         if (!write_hook(insert_hook, insert_body)) {
             std::lock_guard<std::mutex> lock(hook_mutex);
             probe_hook_state[run_name] = false;
@@ -927,6 +943,7 @@ struct FlowRunner::Impl {
         // syn 还要在 **gate 之后**再插一次：watcher 实例（clock/depth/hub/OOC）是在
         // "Optimize Gate 完成"那一刻建立的，缺了这一步 phy 只会看到一个空 watcher，
         // 最终 bit 里没有探针。这是本轮实测定位到的根因。
+        // 带 `-cwc` 的那份只挂在这里（与 GUI "gate 之后才能设置深度/时钟"一致）。
         if (run_name == "syn_1") {
             applied = set_hook("gate", "tcl_afterstep", insert_hook) && applied;
         }
@@ -1431,7 +1448,10 @@ struct FlowRunner::Impl {
                     return;
                 }
             } else {
-                // Python 不检查 open_project 的输出（失败会在 launch_runs 阶段暴露），保持一致
+                // TD 用**自己的 cwd** 解析 .al 里的相对路径；会话工作目录现在在系统 temp
+                // （不污染工程），所以先 cd 到工程目录 —— 否则报
+                // `HDL-8007 cannot open Verilog file '/al_ip/...'`，syn 会在缺源的情况下
+                // "成功"跑完、探针一个都不建。cd 不会往工程里写日志。
                 (void)RunCommand("open_project " + td::TclQuoteGrouped(Slashes(owner->project_.al_path)),
                          300.0);
                 Emit("progress", "Project loaded: " + owner->project_.name);

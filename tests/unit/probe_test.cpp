@@ -945,8 +945,19 @@ TEST(ProbeUserCfg, PatchesTemplateAndFallsBackWhenBusSetDiffers) {
     }
     tmpl += "\t</watcher_nodes>\n\t<instance name=\"auto_created_cwc1\" id=\"0\" ipgen=\"false\" "
             "inst_enable=\"true\">\n\t\t<clock clk_name=\"reg_init/clk\" clk_peroid=\"10ns\"/>\n";
+    // 必须有至少一条 <phy_eram>：没有 ERAM 行的配置会让 TD 在 gate 阶段崩，
+    // 生成器也因此拒绝写出（WriteUserCfgFromMdn 的守卫）。
     tmpl += "\t\t<logic_eram name=\"auto_created_cwc1/wrapper_cwc_top/U_cwc_ram\" width=\"32\" "
-            "depth=\"1024\">\n\t\t</logic_eram>\n\t</instance>\n</chipwatcher>\n";
+            "depth=\"1024\">\n";
+    tmpl += "\t\t\t<phy_eram name=\"auto_created_cwc1/wrapper_cwc_top/U_cwc_ram/mem_syn_11\" "
+            "wid=\"0X00000241\" rid=\"0X00000241\" model_type=\"2\" width_a=\"20\" "
+            "width_b=\"20\" debuggable=\"enable\" initialized=\"enable\" width=\"20\" "
+            "depth=\"1024\" address_offset=\"0\" data_offset=\"0\" address_step=\"1\" "
+            "num_section=\"1\" section_size=\"33\" width_per_section=\"20\" "
+            "bytes_in_per_section=\"1\" working_mode_depth=\"1024\" "
+            "working_mode_width=\"20\" working_mode_ecc=\"disable\" "
+            "working_mode_num_byte=\"2\" working_mode_super_wide=\"disable\"/>\n";
+    tmpl += "\t\t</logic_eram>\n\t</instance>\n</chipwatcher>\n";
     fs::create_directories(fs::path(temp.path() + "/chip_debugger"));
     Write(temp.path() + "/phy_1_cw_compiled.cwc", tmpl);
     Write(fpgalsp::probe::CompiledCwc(project), tmpl);
