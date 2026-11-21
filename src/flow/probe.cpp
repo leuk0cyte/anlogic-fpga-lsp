@@ -1807,11 +1807,18 @@ jsonrpc::Json WriteCompiledCwcFromGate(const project::Project& project,
     const std::string block = EramBlockXml(erams, inst, enabled_bits, depth);
     const std::size_t begin = text.find("\t\t<logic_eram");
     const std::size_t end = text.find("</logic_eram>", begin);
-    if (begin == std::string::npos || end == std::string::npos) {
-        out["reason"] = "gate cwc has no <logic_eram> block to replace";
-        return out;
+    if (begin != std::string::npos && end != std::string::npos) {
+        text = text.substr(0, begin) + block + text.substr(end + std::string("</logic_eram>").size());
+    } else {
+        // 我们自己写的 user.cfg 故意不带 ERAM（建 watcher 时 TD 也不需要），
+        // 这里补在 </instance> 之前即可。
+        const std::size_t close = text.find("</instance>");
+        if (close == std::string::npos) {
+            out["reason"] = "template cwc has neither <logic_eram> nor </instance>";
+            return out;
+        }
+        text = text.substr(0, close) + block + "\n\t" + text.substr(close);
     }
-    text = text.substr(0, begin) + block + text.substr(end + std::string("</logic_eram>").size());
 
     // 整条 disable 的总线：TD 的写法是 bus `is_enabled="no"` + `inst=""`，且不进
     // `<signal_vec>`。门控用的 cwc 里这些总线还是 "参与" 的形态，必须在这里改成
@@ -1953,6 +1960,20 @@ jsonrpc::Json WriteCompiledCwcAfterPhy(const project::Project& project) {
                                    std::filesystem::copy_options::overwrite_existing, copy_ec);
         out["bit_copied"] = !copy_ec;
     };
+    // 优先用 TD 自己的 `chip_debugger/user.cfg` 当模板：它是 TD 格式的 watcher 配置
+    //（总线/时钟/触发都正确），只要把 <logic_eram> 换成当前位流的 ERAM 行就能抓。
+    // 实测（2026-11-21 23:4x）：user.cfg + 新 bid -> ok / 1024 点 / 触发完成。
+    {
+        const std::string user_cfg = project.dir + "/chip_debugger/user.cfg";
+        if (IsFile(user_cfg)) {
+            const jsonrpc::Json from_user_cfg = WriteCompiledCwcFromGate(project, user_cfg);
+            if (from_user_cfg.value("ok", false)) {
+                out = from_user_cfg;
+                out["source"] = "chip_debugger/user.cfg";
+                return out;
+            }
+        }
+    }
     if (config.write_sidecar_cwc == false) {
         // 默认只同步位流：我们生成的 cwc 与 TD 自己那份不等价（Chipwatcher code 不同 ->
         // 抓取挂死），写出去反而会被后续 capture 误用。

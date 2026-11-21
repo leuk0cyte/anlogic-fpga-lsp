@@ -822,3 +822,25 @@ TD 亲笔写的 `compiled.cwc` 说明：
 **runs 配置污染（用户明确要求修）**：`set_param -run ... tcl_beforestep/afterstep` 会写进 .al。
 现在每次流程结束（成功/失败/取消）都会把这三个参数**清空**还原；`get_param` 回读的值在 TD 日志里
 会被掩码成 "NNN"，所以不能回写原值，只能清空。
+
+### 第十六轮：`chip_debugger/user.cfg` 才是 TD 真正的探针配置（重大发现）
+
+**user.cfg 与 compiled.cwc 同格式**（9660 vs 10630 字节，差异只有 HMAC 注释、trigger-only 总线行、ERAM 行）。
+TD 在 gate 阶段读的就是 `chip_debugger/user.cfg`，**优先级高于 user.mdn**：
+- 不删/不更新它 → 改 mdn 后 gate 仍按旧配置建 watcher（用户必须"reset"的根因）；
+- 删掉它 → 同一份 mdn 立刻建出 `CWC_BUS_NUM=3 / DIN=48`（实测）。
+
+**成功的抓取组合（已实测 ok/1024 点）**：
+> `user.cfg`（完整 TD 格式，带总线/时钟/触发）+ 把 `<logic_eram>` 换成**当前 phy bid** 的行
+> （width = data 位数 48、section_size 49、正确 rid/wid）→ code `0101100101110111`、触发完成。
+
+据此本轮落地：
+- `EnsureProbeHook`（仅 syn）在跑流程前**按 user.mdn 重写 `chip_debugger/user.cfg`**（旧文件备份到
+  `.fpgalsp/probe/user.cfg.bak`），从此不再依赖 `-cwc`，也不再需要用户手动 reset；
+- `WriteCompiledCwcAfterPhy` **优先用 user.cfg 当模板** + 新 phy bid 的 ERAM 行写 sidecar
+  （模板没有 `<logic_eram>` 时自动补在 `</instance>` 之前）；
+- 流程结束仍会把 syn/phy 的 tcl 钩子参数清空还原（不污染 .al 的 runs 配置）。
+
+**仍未稳定**：自动生成的 sidecar 与手工那份 `Chipwatcher code` 相同（`0101100101110111`），
+但抓取时 TD 仍会在 `wait_on_hw_cw` 崩/挂；手工那次（同一 code）能成功。差异尚未定位，
+怀疑与「TD 建 watcher 时读到的 user.cfg 是否带 ERAM」有关（下一轮做 A/B）。
