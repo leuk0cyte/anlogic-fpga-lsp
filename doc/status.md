@@ -1043,3 +1043,33 @@ probe_verify: cntT_q embedded 16/16、d1_tx_s1 embedded 16/16、missing=[]
 实测：`fpga_probe_clocks` 在 corpus_delta 上返回 49 个候选、`current=reg_init/clk`。
 
 `ctest` 64/64、插件 44/44。
+
+### 第二十五轮：Flow 六步右键 Run / Reset run（完成）+ 多实例抓取（第一半）
+
+**A. Flow 六步右键菜单（已完成并验证）**
+
+- `flowTree.js`：六个 GUI 步骤节点带 `contextValue='fpgaFlowStep'` 与 `flowStep` id
+  （`GUI_STEP_IDS` 把 `Read Design` … `Generate Bitstream` 映射成
+  `read_design/opt_rtl/opt_gate/opt_place/opt_route/bitgen`，只在这一处翻译）。
+- `package.json`：新增 `fpgaLsp.flowStepRun` / `fpgaLsp.flowStepReset`，
+  `view/item/context` 里 `view == fpgaLsp.flowView && viewItem == fpgaFlowStep` 时出现。
+- `extension.js`：两条命令都走 `fpgalsp.runFlowStep{step,force,jobs}`；
+  `Run` 返回 `skipped:true` 时提示"已完成，用 Reset run 强制重跑"。
+- 后端 `fpgalsp.runFlowStep` → `FlowRunner::StartFromStep`；`force=false` 已完成则跳过，
+  `force=true` 清掉该步及下游标记后重跑。
+
+实测（CorpusAlpha）：`fpga_flow_run_step{step:"opt_gate",force:false}` →
+`{ok:true, skipped:true, reason:"step already completed (use reset to force a rerun)"}`。
+
+**B. 多实例抓取（第一半已落地）**
+
+- `probe::EnumerateWatcherInstances(project)`：从 `syn_1/cw/auto_created_cwc*` 读出
+  每个实例的名字、目录、`CWC_BUS_NUM` / `CWC_BUS_DIN_NUM`。
+- `probe_status` 的 `instances` 改为对象数组 + 新增 `instance_count` / `multi_instance_note`。
+  实测 CorpusAlpha：`[{name:auto_created_cwc1,buses:1,bits:16},{name:auto_created_cwc2,buses:1,bits:16}]`，
+  即"两个时钟域 = 两个 watcher"。
+- `BuildCwcFromWatcher` 内部拆出 `BuildCwcFromWatcherImpl(..., watcher_dir)`，
+  为"按实例生成 cwc"铺好路（旧签名保持不变）。
+
+**下一步（B 的第二半）**：用 `report_cwc_status` 的节点表得到 `bus -> instance` 映射（缓存），
+把 mdn 按实例切分后按实例生成 cwc，`probe_capture{instance}` 即可逐实例抓取。

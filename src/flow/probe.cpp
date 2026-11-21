@@ -1012,9 +1012,9 @@ std::string ResolveClockPeriod(const project::Project& project) {
     return "10ns";
 }
 
-std::string BuildCwcFromWatcher(const project::Project& project, const MdnConfig& mdn,
-                                const std::vector<std::string>& bus_order, std::string* error,
-                                jsonrpc::Json* info) {
+std::string BuildCwcFromWatcherImpl(const project::Project& project, const MdnConfig& mdn,
+                                    const std::vector<std::string>& bus_order, std::string* error,
+                                    jsonrpc::Json* info, const std::string& watcher_dir) {
     const auto fail = [error, info](const std::string& why) {
         if (error != nullptr) *error = why;
         if (info != nullptr) (*info)["ok"] = false;
@@ -1079,7 +1079,7 @@ std::string BuildCwcFromWatcher(const project::Project& project, const MdnConfig
     }
 
     // 2) 读 TD 的 watcher 元数据（总线数/位宽/DIN 位置/深度）
-    const std::string dir = NewestWatcherDir(project);
+    const std::string dir = watcher_dir.empty() ? NewestWatcherDir(project) : watcher_dir;
     if (dir.empty()) return fail("no watcher OOC artifacts (syn_1/cw/auto_created_cwc*) - the "
                                  "ChipWatcher was never built; run stages:[\"all\"]");
     const std::filesystem::path dir_path(dir);
@@ -1562,6 +1562,12 @@ std::string BuildCwcFromConfig(const project::Project& project, const MdnConfig&
         (*info)["eram"] = static_cast<int>(erams.size());
     }
     return out;
+}
+
+std::string BuildCwcFromWatcher(const project::Project& project, const MdnConfig& mdn,
+                                const std::vector<std::string>& bus_order, std::string* error,
+                                jsonrpc::Json* info) {
+    return BuildCwcFromWatcherImpl(project, mdn, bus_order, error, info, std::string());
 }
 
 // =============================================================================
@@ -2184,6 +2190,45 @@ jsonrpc::Json WriteCompiledCwcAfterPhy(const project::Project& project) {
 // 采样时钟：直接从**工程的 gate 数据库**问 TD
 // =============================================================================
 // =============================================================================
+// 多实例（多时钟域）支持
+// =============================================================================
+//  TD 会按时钟域把一个 mdn 拆成多个 watcher：`syn_1/cw/auto_created_cwc1`、
+//  `auto_created_cwc2` …（CorpusAlpha 实测：cntT_q->clk->cwc1，d1_tx_s1->trans/clk->cwc2）。
+//  抓取只能一个实例一个实例来（`config_chatcher` 一次只导入一个实例），所以需要：
+//    1. 列出实例（名字 + 目录 + 位宽/DIN）；
+//    2. 把 mdn 按"该实例包含哪些总线"切开（用 TD 的 `report_cwc_status` 节点表，
+//       它逐条给出 `bus | type | enabled | clock | instance`）。
+//  这里先做 1；2 的映射由 QueryWatcherMap 提供（report_cwc_status 解析）。
+std::vector<WatcherInstanceInfo> EnumerateWatcherInstances(const project::Project& project) {
+    std::vector<WatcherInstanceInfo> out;
+    const std::string cw = RunsDir(project) + "/syn_1/cw";
+    std::error_code ec;
+    if (!std::filesystem::is_directory(cw, ec)) return out;
+    for (std::filesystem::directory_iterator it(cw, ec), end; !ec && it != end; it.increment(ec)) {
+        const std::string name = it->path().filename().string();
+        if (name.find("auto_created_cwc") == std::string::npos) continue;
+        const std::string sv = it->path().string() + "/" + name + "_watcherInst.sv";
+        if (!IsFile(sv)) continue;
+        WatcherInstanceInfo info;
+        info.name = name;
+        info.dir = it->path().string();
+        const std::string text = ReadText(sv);
+        if (const std::size_t at = text.find("CWC_BUS_NUM = ");
+            at != std::string::npos) {
+            info.bus_num = std::atoi(text.c_str() + at + 14);
+        }
+        if (const std::size_t at = text.find("CWC_BUS_DIN_NUM = ");
+            at != std::string::npos) {
+            info.din_num = std::atoi(text.c_str() + at + 18);
+        }
+        out.push_back(std::move(info));
+    }
+    return out;
+}
+
+std::vector<std::string> ClockCandidatesFromReports(const project::Project& project);
+
+// =============================================================================
 // 采样时钟候选（对应 TD GUI ChipWatcher 的采样时钟下拉框）
 // =============================================================================
 //  GUI 的候选来自**时钟树里的时钟网名**。TD 在 place/route 阶段会把时钟树写成
@@ -2509,17 +2554,24 @@ jsonrpc::Json Status(const project::Project& project) {
     // 这里的 cwc 只代表其中一个实例，所以额外把 syn 产物里所有 `auto_created_cwc*`
     // 列出来，并给出"位流里到底有没有 watcher"的判据（phy bid 里有 U_cwc_ram）。
     {
+        // 多实例（多时钟域）：TD 按时钟域拆 watcher，这里给出每个实例的名字与位宽。
         jsonrpc::Json instances = jsonrpc::Json::array();
-        std::error_code inst_ec;
-        const std::string cw_dir = RunsDir(project) + "/syn_1/cw";
-        if (std::filesystem::is_directory(cw_dir, inst_ec)) {
-            for (std::filesystem::directory_iterator it(cw_dir, inst_ec), end;
-                 !inst_ec && it != end; it.increment(inst_ec)) {
-                const std::string name = it->path().filename().string();
-                if (name.find("auto_created_cwc") != std::string::npos) instances.push_back(name);
-            }
+        const std::vector<WatcherInstanceInfo> enumerated = EnumerateWatcherInstances(project);
+        for (const WatcherInstanceInfo& info : enumerated) {
+            jsonrpc::Json item = jsonrpc::Json::object();
+            item["name"] = info.name;
+            item["buses"] = info.bus_num;
+            item["bits"] = info.din_num;
+            instances.push_back(std::move(item));
         }
         out["instances"] = std::move(instances);
+        out["instance_count"] = static_cast<int>(enumerated.size());
+        if (enumerated.size() > 1) {
+            out["multi_instance_note"] =
+                "this design has " + std::to_string(enumerated.size()) +
+                " watchers (one per clock domain); capture one instance at a time with "
+                "fpga_probe_capture{instance:\"...\"}";
+        }
         bool bit_has_watcher = false;
         const std::string bid = RunsDir(project) + "/phy_1/" + project.name + "_inst.bid";
         if (IsFile(bid) && ReadText(bid).find("U_cwc_ram") != std::string::npos) {

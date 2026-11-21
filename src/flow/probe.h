@@ -281,6 +281,15 @@ bool WriteUserCfgFromMdn(const project::Project& project, std::string* error);
 // 纯文件读取，不需要 TD 会话、不需要硬件。
 std::vector<std::string> ClockCandidatesFromReports(const project::Project& project);
 
+// 多实例（多时钟域）：TD 按时钟域把 mdn 拆成多个 watcher，抓取要按实例来。
+struct WatcherInstanceInfo {
+    std::string name;   // auto_created_cwc1
+    std::string dir;    // <runs>/syn_1/cw/auto_created_cwc1
+    int bus_num = 0;    // CWC_BUS_NUM
+    int din_num = 0;    // CWC_BUS_DIN_NUM
+};
+std::vector<WatcherInstanceInfo> EnumerateWatcherInstances(const project::Project& project);
+
 std::string MdnPath(const project::Project& project);
 std::string CompiledBit(const project::Project& project);
 std::string CompiledCwc(const project::Project& project);

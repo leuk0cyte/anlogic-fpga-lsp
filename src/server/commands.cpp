@@ -830,6 +830,7 @@ const std::vector<std::string>& ExecuteCommandNames() {
         "fpgalsp.info",         "fpgalsp.projects",        "fpgalsp.setProject",
         "fpgalsp.tdInfo",       "fpgalsp.device",          "fpgalsp.check",
         "fpgalsp.restart",      "fpgalsp.cancelFlow",      "fpgalsp.runFlow",
+        "fpgalsp.runFlowStep",
         "fpgalsp.compareStrategies", "fpgalsp.cables",     "fpgalsp.program",
         "fpgalsp.svfgen",       "fpgalsp.reports",         "fpgalsp.runAnalysis",
         "fpgalsp.instantiate",  "fpgalsp.copyInstantiation", "fpgalsp.symbolPath",
@@ -1382,6 +1383,21 @@ HandlerResult LspServer::HandleExecuteCommand(const Json& params) {
         const int jobs = jsonrpc::GetInt(options, "jobs", 6);
         const std::shared_ptr<flow::FlowRunner> runner = EnsureFlowRunner(*project, *td);
         return OkObject(runner->Start(stages, jobs));
+    }
+
+    // Flow 视图每步右键的 Run / Reset run（对应 TD GUI 同名动作）。
+    //   force=false（Run）：该步已完成则不重跑；force=true（Reset run）：清掉该步及下游后重跑。
+    if (command == "fpgalsp.runFlowStep") {
+        const auto project = CurrentProject();
+        if (!project.has_value()) return Failure(".al project not found");
+        const std::optional<td::TdChoice> td = FindTdCached(settings_.td_path);
+        if (!td.has_value()) return Failure("no TD install found");
+        const Json options = args.empty() || !args.front().is_object() ? Json::object() : args.front();
+        const std::string step = jsonrpc::GetString(options, "step");
+        const bool force = jsonrpc::GetBool(options, "force", false);
+        const int jobs = jsonrpc::GetInt(options, "jobs", 6);
+        const std::shared_ptr<flow::FlowRunner> runner = EnsureFlowRunner(*project, *td);
+        return OkObject(runner->StartFromStep(step, force, jobs));
     }
 
     if (command == "fpgalsp.compareStrategies") {

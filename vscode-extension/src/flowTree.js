@@ -73,6 +73,21 @@ function statusIcon(status) {
 
 // syn / phy 的分组：后端 steps 的 stage 是 TD 的参数命名空间
 // （design/rtl/gate = 综合，place/route/bitgen = 布局布线），run 是 syn_1/phy_1。
+// TD GUI 六步的固定 id（与后端 flow_run_step 的 step 参数一致）。
+// 名字 -> id 的映射只在这里做一次，别处不要重复翻译。
+const GUI_STEP_IDS = {
+    'Read Design': 'read_design',
+    'Optimize RTL': 'opt_rtl',
+    'Optimize Gate': 'opt_gate',
+    'Optimize Placement': 'opt_place',
+    'Optimize Routing': 'opt_route',
+    'Generate Bitstream': 'bitgen',
+};
+
+function guiStepId(name) {
+    return GUI_STEP_IDS[String(name || '')] || '';
+}
+
 function guiGroup(stage, run) {
     const text = `${stage || ''} ${run || ''}`.toLowerCase();
     if (/place|route|bitgen|phy/.test(text)) return 'phy';
@@ -136,6 +151,9 @@ function stageNode(row, group, canonicalId) {
         status: row.status,
         group,
         wall: row.wall,
+        // GUI 步骤 id：右键菜单 Run / Reset run 要用（后端 flow_run_step 的入参）
+        step: guiStepId(row.name),
+        stepName: String(row.name || ''),
     };
 }
 
@@ -608,7 +626,10 @@ class FlowTreeProvider {
                 item.description = node.description || undefined;
                 item.iconPath = statusIcon(node.status);
                 item.tooltip = `${node.label}${node.description ? ` — ${node.description}` : ''}`;
-                item.contextValue = 'fpgaStage';
+                // GUI 六步可以右键 Run / Reset run；其它（老格式多出来的行）没有这一步
+                item.contextValue = node.step ? 'fpgaFlowStep' : 'fpgaStage';
+                item.flowStep = node.step || '';
+                item.flowStepName = node.stepName || '';
                 return item;
             }
             case 'message': {

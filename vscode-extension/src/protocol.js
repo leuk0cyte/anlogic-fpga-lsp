@@ -33,6 +33,8 @@ const REPORT_SECTIONS = Object.freeze({
 const COMMANDS = Object.freeze({
     executeCommand: 'workspace/executeCommand',
     runFlow: 'fpgalsp.runFlow',
+    // GUI Flow 每步右键的 Run / Reset run（force=false / true）
+    runFlowStep: 'fpgalsp.runFlowStep',
     cancelFlow: 'fpgalsp.cancelFlow',
     check: 'fpgalsp.check',
     info: 'fpgalsp.info',
@@ -135,6 +137,9 @@ const VSCodeCommands = Object.freeze({
     probeSetDepth: 'fpgaLsp.probeSetDepth',
     refreshProbe: 'fpgaLsp.refreshProbe',
     showProbePanel: 'fpgaLsp.showProbePanel',
+    // Flow 六步右键：run = 已完成则跳过；reset run = 强制重跑该步及下游
+    flowStepRun: 'fpgaLsp.flowStepRun',
+    flowStepReset: 'fpgaLsp.flowStepReset',
 });
 
 const VIEWS = Object.freeze({
