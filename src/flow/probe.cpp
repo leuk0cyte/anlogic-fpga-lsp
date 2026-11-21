@@ -1915,6 +1915,147 @@ jsonrpc::Json WriteCompiledCwcFromGate(const project::Project& project,
     return out;
 }
 
+// 按 mdn + disabled 计划，用**现有的完整配置**当模板生成 `chip_debugger/user.cfg`。
+// 为什么要模板：TD 只有拿到"带 <logic_eram> 的完整 watcher 配置"才在 **phy** 阶段插入
+// watcher 并自己写出 phy_1/cw/compiled.cwc（实测 0.20.3：user.cfg 完整 -> TD 写 cwc ->
+// probe_capture ok/1024 点）。我们自己从零生成的 user.cfg（无 ERAM）会让 TD 在 syn 阶段
+// 用一个不同几何的 watcher，抓取时 wait_on_hw_cw 挂死。
+bool WriteUserCfgFromMdn(const project::Project& project, std::string* error) {
+    const MdnConfig mdn = ReadMdn(MdnPath(project));
+    if (!mdn.exists || mdn.signals.empty()) {
+        if (error != nullptr) *error = "no probes marked in user.mdn";
+        return false;
+    }
+    const ProbeBuildConfig config = ReadProbeBuildConfig(project);
+    // 模板优先级：现有 compiled.cwc（上一次 TD 自己写的）> user.cfg > 从零生成
+    std::vector<std::string> candidates{CompiledCwc(project),
+                                        project.dir + "/chip_debugger/user.cfg"};
+    std::string text;
+    for (const std::string& path : candidates) {
+        if (!IsFile(path)) continue;
+        const CwcSnapshot snapshot = ReadCwc(path);
+        if (!snapshot.ok) continue;
+        text = ReadText(path);
+        if (!text.empty()) break;
+    }
+    // 模板的总线集合必须与 mdn 一致，否则不能"打补丁"（会留下 mdn 里没有的总线，
+    // 让 mdn↔cwc 逐位比对判 stale，抓取被拒）。集合不一致就从零生成（ERAM 取当前 bid）。
+    if (!text.empty()) {
+        std::vector<std::string> template_buses = TemplateBusNames(text);
+        std::vector<std::string> mdn_buses;
+        for (const std::string& signal : mdn.signals) {
+            std::string base = signal;
+            const std::size_t open = signal.rfind('[');
+            if (open != std::string::npos) base = signal.substr(0, open);
+            bool seen = false;
+            for (const std::string& item : mdn_buses) seen = seen || TailName(item) == TailName(base);
+            if (!seen) mdn_buses.push_back(base);
+        }
+        bool same = template_buses.size() == mdn_buses.size();
+        if (same) {
+            for (const std::string& base : mdn_buses) {
+                bool found = false;
+                for (const std::string& other : template_buses) {
+                    found = found || TailName(other) == TailName(base);
+                }
+                if (!found) {
+                    same = false;
+                    break;
+                }
+            }
+        }
+        if (!same) text.clear();
+    }
+    if (text.empty()) {
+        jsonrpc::Json info = jsonrpc::Json::object();
+        text = BuildCwcFromConfig(project, mdn, config, error, &info, /*include_eram=*/true);
+        if (text.empty()) return false;
+    } else {
+        // 模板打补丁：按 disabled 计划改 is_enabled/inst/data/trig
+        const DisabledPlan plan = ResolveDisabled(mdn.signals, config.disabled);
+        std::map<std::string, int> totals;
+        std::map<std::string, int> offs;
+        for (const std::string& signal : mdn.signals) {
+            std::string base = signal;
+            const std::size_t open = signal.rfind('[');
+            if (open != std::string::npos) base = signal.substr(0, open);
+            ++totals[base];
+            if (plan.IsBitDisabled(signal)) ++offs[base];
+        }
+        std::string out;
+        std::size_t pos = 0;
+        bool in_signal_vec = false;
+        bool skipping = false;
+        std::string current_bus;
+        while (pos < text.size()) {
+            const std::size_t next = text.find('\n', pos);
+            std::string line =
+                text.substr(pos, next == std::string::npos ? std::string::npos : next - pos);
+            pos = next == std::string::npos ? text.size() : next + 1;
+            if (line.find("<signal_vec>") != std::string::npos) in_signal_vec = true;
+            if (line.find("</signal_vec>") != std::string::npos) in_signal_vec = false;
+            const std::size_t bus_at = line.find("<bus name=\"");
+            if (bus_at != std::string::npos) {
+                const std::size_t begin_q = bus_at + 11;
+                const std::size_t close_q = line.find('"', begin_q);
+                std::string name = line.substr(begin_q, close_q - begin_q);
+                const std::size_t open = name.rfind('[');
+                if (open != std::string::npos) name.erase(open);
+                current_bus = name;
+                bool off = false;
+                for (const auto& [base, total] : totals) {
+                    if (TailName(base) == TailName(name)) off = offs[base] >= total;
+                }
+                if (in_signal_vec && off) {
+                    skipping = true;
+                    continue;
+                }
+                if (!in_signal_vec) {
+                    ReplaceAttr(&line, "is_enabled", off ? "no" : "yes");
+                    if (off) ReplaceAttr(&line, "inst", "");
+                }
+            }
+            if (skipping) {
+                if (line.find("</bus>") != std::string::npos) skipping = false;
+                continue;
+            }
+            const std::size_t net_at = line.find("<net name=\"");
+            if (net_at != std::string::npos && !in_signal_vec) {
+                const std::size_t begin_q = net_at + 11;
+                const std::size_t close_q = line.find('"', begin_q);
+                const std::string bit_name = line.substr(begin_q, close_q - begin_q);
+                std::string full = bit_name;
+                for (const auto& [base, total] : totals) {
+                    (void)total;
+                    if (TailName(base) == TailName(current_bus)) {
+                        full = base + bit_name.substr(bit_name.find('['));
+                    }
+                }
+                const bool off = plan.IsBitDisabled(full) || plan.IsBitDisabled(bit_name);
+                ReplaceAttr(&line, "data", off ? "disable" : "enable");
+                ReplaceAttr(&line, "trig", off ? "disable" : "enable");
+            }
+            out += line;
+            out += '\n';
+        }
+        text = std::move(out);
+    }
+    const std::string user_cfg = project.dir + "/chip_debugger/user.cfg";
+    if (IsFile(user_cfg)) {
+        std::error_code ec;
+        const std::string backup =
+            fpgalsp::platform::state_dir(project.dir) + "/probe/user.cfg.bak";
+        std::filesystem::create_directories(std::filesystem::path(backup).parent_path(), ec);
+        std::filesystem::copy_file(user_cfg, backup,
+                                   std::filesystem::copy_options::overwrite_existing, ec);
+    }
+    if (!fpgalsp::platform::write_file_utf8(user_cfg, text)) {
+        if (error != nullptr) *error = "cannot write " + user_cfg;
+        return false;
+    }
+    return true;
+}
+
 jsonrpc::Json WriteCompiledCwcAfterPhy(const project::Project& project) {
     jsonrpc::Json out = jsonrpc::Json::object();
     out["ok"] = false;
@@ -2868,7 +3009,10 @@ jsonrpc::Json Capture(const td::TdChoice& td, const project::Project& project,
     // 但随后 2 次重建 × 3 份 cwc（各自的 sidecar 互相交换）= 6 次尝试全部失败：
     // 触发过程 `wait_on_hw_cw` 不返回，TD 会话退出。属于 TD 侧的系统性问题，
     // 不是我们 cwc 字段写错。默认立刻拒绝（0.3 s），别让 agent 白等 30 s 并杀会话。
-    if (cwc.disabled_net_count > 0 && !options.allow_disabled_capture) {
+    // disabled 位流现在可以正常抓（0.20.3 实测）：只要 chip_debugger/user.cfg 是完整配置，
+    // TD 会在 phy 阶段自己写 phy_1/cw/compiled.cwc，config_chatcher/回读都正常。
+    // 保留 allow_disabled_capture 参数只为兼容旧调用；默认不再拦截。
+    if (false && cwc.disabled_net_count > 0 && !options.allow_disabled_capture) {
         out["refused"] = true;
         out["stage"] = "precheck";
         out["disabled_net_count"] = cwc.disabled_net_count;

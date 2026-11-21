@@ -918,3 +918,48 @@ TEST(ProbeCwc, GateSidecarKeepsBusListAndSplicesFreshEramRows) {
     EXPECT_EQ(written.find("</logic_eram>\t</instance>"), std::string::npos)
         << "拼接后必须保留换行结构";
 }
+
+// user.cfg 是 TD 真正读的探针配置（优先级高于 user.mdn）。写入规则：
+//   1) 模板（compiled.cwc / user.cfg）总线集合与 mdn 一致 -> 只按 disabled 打补丁；
+//   2) 集合不一致 -> 从零生成（否则会留下 mdn 里没有的总线，判 stale 抓不了）。
+TEST(ProbeUserCfg, PatchesTemplateAndFallsBackWhenBusSetDiffers) {
+    ScopedTempDir temp("user_cfg");
+    const fpgalsp::project::Project project = MakeProject(temp.path());
+    Write(fpgalsp::probe::MdnPath(project), MarkDebugLine(MatchingSignals()));
+
+    // 模板：两条总线全 enable（与 mdn 一致）
+    std::string tmpl;
+    tmpl += "<chipwatcher version=\"3.070000\" project_name=\"corpus_delta\" "
+            "chip_name=\"PH1A100SFG676\">\n";
+    tmpl += "\t<watcher_nodes>\n";
+    for (const char* bus : {"pwm_reg0_i", "pwm_reg1_i"}) {
+        tmpl += std::string("\t\t<bus name=\"") + bus + "[15:0]\" clock=\"reg_init/clk\" "
+                "inst=\"auto_created_cwc1\" type=\"MARK_DEBUG_PROBE\" is_enabled=\"yes\">\n";
+        for (int bit = 15; bit >= 0; --bit) {
+            tmpl += std::string("\t\t\t<net name=\"") + bus + "[" + std::to_string(bit) +
+                    "]\" const=\"false\" data=\"enable\" trig=\"enable\"/>\n";
+        }
+        tmpl += "\t\t</bus>\n";
+    }
+    tmpl += "\t</watcher_nodes>\n\t<instance name=\"auto_created_cwc1\" id=\"0\" ipgen=\"false\" "
+            "inst_enable=\"true\">\n\t\t<clock clk_name=\"reg_init/clk\" clk_peroid=\"10ns\"/>\n";
+    tmpl += "\t\t<logic_eram name=\"auto_created_cwc1/wrapper_cwc_top/U_cwc_ram\" width=\"32\" "
+            "depth=\"1024\">\n\t\t</logic_eram>\n\t</instance>\n</chipwatcher>\n";
+    fs::create_directories(fs::path(temp.path() + "/chip_debugger"));
+    Write(temp.path() + "/phy_1_cw_compiled.cwc", tmpl);
+    Write(fpgalsp::probe::CompiledCwc(project), tmpl);
+
+    fpgalsp::probe::ProbeBuildConfig cfg;
+    cfg.disabled = {"WHG/pwm_reg1_i"};
+    ASSERT_TRUE(fpgalsp::probe::WriteProbeBuildConfig(project, cfg));
+    std::string error;
+    ASSERT_TRUE(fpgalsp::probe::WriteUserCfgFromMdn(project, &error)) << error;
+
+    const std::string written = fpgalsp::platform::try_read_file_utf8(
+                                    temp.path() + "/chip_debugger/user.cfg")
+                                    .value_or("");
+    ASSERT_FALSE(written.empty());
+    EXPECT_NE(written.find("is_enabled=\"no\""), std::string::npos) << "整条 disable 的总线";
+    EXPECT_NE(written.find("data=\"disable\""), std::string::npos);
+    EXPECT_NE(written.find("pwm_reg0_i[15:0]"), std::string::npos);
+}

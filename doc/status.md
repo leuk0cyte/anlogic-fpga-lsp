@@ -844,3 +844,30 @@ TD 在 gate 阶段读的就是 `chip_debugger/user.cfg`，**优先级高于 user
 **仍未稳定**：自动生成的 sidecar 与手工那份 `Chipwatcher code` 相同（`0101100101110111`），
 但抓取时 TD 仍会在 `wait_on_hw_cw` 崩/挂；手工那次（同一 code）能成功。差异尚未定位，
 怀疑与「TD 建 watcher 时读到的 user.cfg 是否带 ERAM」有关（下一轮做 A/B）。
+
+### 第十七轮（收尾）：**disabled 位流抓取打通** —— 关键是给 TD 一份完整的 user.cfg
+
+**最终机制（实测 2026-11-22 00:31）**：
+1. 按 user.mdn + disabled 计划写 **`chip_debugger/user.cfg`**（完整 TD 格式：总线/net 的
+   data/trig 标志、clock、config、signal_vec、trigger、`<logic_eram>`）；
+   - 模板优先用现有 `phy_1/cw/compiled.cwc`/`user.cfg`（TD 自己写的）；
+   - 模板总线集合与 mdn 不一致时**从零生成**（ERAM 行取当前 `phy_1/<prj>_inst.bid`）；
+   - 旧文件备份到 `.fpgalsp/probe/user.cfg.bak`。
+2. 跑 `stages:["all"]`：TD 在 **phy** 阶段自己插入 watcher，并**自己写出**
+   `phy_1/cw/compiled.cwc`（这是之前一直没拿到 sidecar 的真正原因）。
+3. `fpga_probe_capture` 直接用它：`ok=true`、1024 点。
+
+**实测结果**（mdn = pwm_reg0/1/6，disabled = pwm_reg6_i）：
+```
+config: disabled=16 enabled_bits=32
+flow ok=true
+user.cfg 8310 B（我们写） -> TD 写 compiled.cwc 7962 B
+cwc: inst=""×1, is_enabled="no"×1, data="disable"×16, logic_eram width=32
+status: present=true nets=48 enabled=32 disabled=16 stale=false
+capture: ok=true samples=1024 columns=[pwm_reg0_i, pwm_reg1_i]   ← 被 disable 的 reg6 不在数据列
+```
+
+**结论**：`KIT-8445 (54/48)` 的根因是"我们自己拼的 cwc 与位流几何不一致"。
+只要让 TD 用完整 user.cfg 自己生成 sidecar，disabled 位流完全可以抓。
+`probe_capture` 的 disabled 拦截一并移除（保留 `allow_disabled_capture` 参数兼容旧调用）。
+单测 `ProbeUserCfg.PatchesTemplateAndFallsBackWhenBusSetDiffers` 覆盖写入规则。

@@ -802,35 +802,11 @@ struct FlowRunner::Impl {
         // 优先级高于 user.mdn。不写它，改 mdn 后 gate 仍按旧配置建 watcher（用户必须"reset" 的原因）。
         // 只在 syn 写；旧文件备份到 .fpgalsp/probe/user.cfg.bak。
         {
-            const probe::MdnConfig mdn = probe::ReadMdn(probe::MdnPath(owner->project_));
-            if (mdn.exists && !mdn.signals.empty()) {
-                const probe::ProbeBuildConfig build = probe::ReadProbeBuildConfig(owner->project_);
-                std::string cfg_error;
-                jsonrpc::Json cfg_info = jsonrpc::Json::object();
-                const std::string user_cfg_text = probe::BuildCwcFromConfig(
-                    owner->project_, mdn, build, &cfg_error, &cfg_info, /*include_eram=*/false);
-                const std::string user_cfg =
-                    owner->project_.dir + "/chip_debugger/user.cfg";
-                if (!user_cfg_text.empty()) {
-                    if (IsFile(user_cfg)) {
-                        std::error_code ec;
-                        const std::string backup =
-                            fpgalsp::platform::state_dir(owner->project_.dir) + "/probe/user.cfg.bak";
-                        std::filesystem::create_directories(
-                            std::filesystem::path(backup).parent_path(), ec);
-                        std::filesystem::copy_file(user_cfg, backup,
-                                                   std::filesystem::copy_options::overwrite_existing,
-                                                   ec);
-                    }
-                    if (WriteTextFile(user_cfg, user_cfg_text)) {
-                        Emit("log", run_name + ": 已按 user.mdn 重写 chip_debugger/user.cfg（" +
-                                        std::to_string(mdn.signals.size()) + " net）");
-                    } else {
-                        Emit("log", run_name + ": 无法写 chip_debugger/user.cfg");
-                    }
-                } else {
-                    Emit("log", run_name + ": 生成 user.cfg 失败：" + cfg_error);
-                }
+            std::string user_cfg_error;
+            if (probe::WriteUserCfgFromMdn(owner->project_, &user_cfg_error)) {
+                Emit("log", run_name + ": 已按 user.mdn 重写 chip_debugger/user.cfg");
+            } else {
+                Emit("log", run_name + ": 生成 user.cfg 失败：" + user_cfg_error);
             }
         }
 

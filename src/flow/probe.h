@@ -271,6 +271,11 @@ jsonrpc::Json WriteCompiledCwcAfterPhy(const project::Project& project);
 jsonrpc::Json WriteCompiledCwcFromGate(const project::Project& project,
                                        const std::string& gate_cwc_path);
 
+// 按 user.mdn + disabled 计划，用现有完整配置（compiled.cwc > user.cfg > 从零生成）当模板，
+// 生成 chip_debugger/user.cfg —— TD 只有拿到完整配置才会在 phy 阶段插入 watcher 并自己写
+// phy_1/cw/compiled.cwc（实测 0.20.3：之后 probe_capture ok / 1024 点）。
+bool WriteUserCfgFromMdn(const project::Project& project, std::string* error);
+
 std::string MdnPath(const project::Project& project);
 std::string CompiledBit(const project::Project& project);
 std::string CompiledCwc(const project::Project& project);
