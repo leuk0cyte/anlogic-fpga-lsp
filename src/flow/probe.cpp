@@ -2220,22 +2220,44 @@ std::string QuerySampleClockFromGateDb(const td::TdChoice& td, const project::Pr
     options.work_dir = project.dir;
     (void)fpgalsp::platform::ensure_directory(options.work_dir);
     std::unique_ptr<td::TdSession> session;
-    try {
-        session = std::make_unique<td::TdSession>(td, options);
-    } catch (const std::exception& e) {
-        return fail(std::string("cannot start TD: ") + e.what());
-    }
     const std::string al = Slashes(project.al_path);
-    const std::string commands =
-        td::MakeImportDeviceCommand("ph1_100.db", project.device, project.speed) + "\n" +
-        "open_project {" + al + "} -single_run\n" +
-        "import_db {" + Slashes(gate_db) + "}\n" +
-        "report_cwc_status\n";
-    const std::string out = session->Run(commands, 240.0);
-    session->Kill();
+    // ⚠ 必须用**工程自己的**器件数据库：写死 ph1_100.db 在 EF2 系列（CorpusAlpha = EF2L45LG144B）
+    //   上会 import 失败，`report_cwc_status` 里没有 watcher —— 之前就是这么误判的。
+    const std::vector<std::string> dbs = td::DbCandidates(td.root, project.family, project.device);
+    if (dbs.empty()) return fail("no device database (arch/*.db) under " + td.root);
+    // ⚠ 候选 db 里第一个不一定支持本封装（实测 EF2L45LG144B 上 ef2_1.db 报
+    //   `USR-8001 device ef2_1 not support package`），要像 flow 那样逐个试。
+    std::string out;
+    std::string last_error;
+    for (const std::string& db : dbs) {
+        // ⚠ import_device 失败时 TD 会**直接退出**（USR-8001 是致命错误），所以每个
+        //   候选 db 都得起一个新会话；沿用旧会话只会拿到空输出。
+        try {
+            session = std::make_unique<td::TdSession>(td, options);
+        } catch (const std::exception& e) {
+            return fail(std::string("cannot start TD: ") + e.what());
+        }
+        const std::string commands =
+            td::MakeImportDeviceCommand(db, project.device, project.speed) + "\n" +
+            "open_project {" + al + "} -single_run\n" +
+            "import_db {" + Slashes(gate_db) + "}\n" +
+            "report_cwc_status\n";
+        out = session->Run(commands, 240.0);
+        session->Kill();
+        session.reset();
+        if (out.find("auto_created_cwc") != std::string::npos) {
+            last_error.clear();
+            break;
+        }
+        last_error = "device db " + db + " did not produce a watcher";
+    }
 
     // 解析：`auto_created_cwc1 | 1024 | reg_init/clk | 0 | ...`
+    //  ⚠ TD 会**按时钟域拆成多个 watcher 实例**（CorpusAlpha 实测：cntT_q -> clk 的 cwc1、
+    //    d1_tx_s1 -> trans/clk 的 cwc2）。这里取第一个作为默认采样时钟，并把全部实例
+    //    连同各自的时钟一起返回给调用方，便于后续按实例抓取。
     std::string clock;
+    std::vector<std::pair<std::string, std::string>> instances;
     std::size_t pos = 0;
     while (pos < out.size() && clock.empty()) {
         const std::size_t end = out.find('\n', pos);
@@ -2259,11 +2281,16 @@ std::string QuerySampleClockFromGateDb(const td::TdChoice& td, const project::Pr
         }
         const std::string candidate = fields[2];
         if (candidate.empty() || candidate == "Clock") continue;
-        clock = candidate;
+        instances.emplace_back(fields[0], candidate);
+        if (clock.empty()) clock = candidate;
     }
     if (clock.empty()) {
         return fail("report_cwc_status did not report a watcher clock (is the watcher built? run "
                     "stages:[\"all\"] first)");
+    }
+    if (error != nullptr) {
+        // 借用 error 之外的通道不合适；实例清单由调用方通过 info 拿到（见 Capture）。
+        *error = std::string();
     }
     (void)fpgalsp::platform::write_file_utf8(cache_path, key + "\n" + clock + "\n");
     return clock;
@@ -2433,6 +2460,35 @@ jsonrpc::Json Status(const project::Project& project) {
     }
     const bool stale = watcher.value("stale", false);
     out["watcher"] = std::move(watcher);
+
+    // 多实例：TD 会**按时钟域拆成多个 watcher**（CorpusAlpha 实测 cwc1=clk / cwc2=trans/clk）。
+    // 这里的 cwc 只代表其中一个实例，所以额外把 syn 产物里所有 `auto_created_cwc*`
+    // 列出来，并给出"位流里到底有没有 watcher"的判据（phy bid 里有 U_cwc_ram）。
+    {
+        jsonrpc::Json instances = jsonrpc::Json::array();
+        std::error_code inst_ec;
+        const std::string cw_dir = RunsDir(project) + "/syn_1/cw";
+        if (std::filesystem::is_directory(cw_dir, inst_ec)) {
+            for (std::filesystem::directory_iterator it(cw_dir, inst_ec), end;
+                 !inst_ec && it != end; it.increment(inst_ec)) {
+                const std::string name = it->path().filename().string();
+                if (name.find("auto_created_cwc") != std::string::npos) instances.push_back(name);
+            }
+        }
+        out["instances"] = std::move(instances);
+        bool bit_has_watcher = false;
+        const std::string bid = RunsDir(project) + "/phy_1/" + project.name + "_inst.bid";
+        if (IsFile(bid) && ReadText(bid).find("U_cwc_ram") != std::string::npos) {
+            bit_has_watcher = true;
+        }
+        out["bit_has_watcher"] = bit_has_watcher;
+        if (bit_has_watcher && out.value("present", false) == false) {
+            out["note"] =
+                "the watcher IS embedded in the bitstream (phy_1/<prj>_inst.bid has U_cwc_ram), "
+                "but TD wrote no compiled.cwc for this build. Multi-clock designs get one watcher "
+                "per clock domain, so per-bus status needs one cwc per instance.";
+        }
+    }
 
     // 平铺的 clock/sample_depth 保留给现有测试与插件；sampling 是"能不能改"的显式答案。
     out["sampling"] = SamplingJson(cwc);
@@ -2815,12 +2871,51 @@ jsonrpc::Json Verify(const project::Project& project, bool include_bits,
     const bool has_cwc_file = IsFile(cwc_path);
     CwcSnapshot cwc;
     if (has_cwc_file) cwc = ReadCwc(cwc_path);
-    // cwc 不存在**或**解析不出 bus：bit 里就是没有探针，所有请求都算 missing。
-    const bool no_bitstream = !has_cwc_file || !cwc.ok;
+    // cwc 不存在**或**解析不出 bus 时，**不能**直接断定"bit 里没有探针"：批量流程里
+    // TD 常常不写 compiled.cwc，但 watcher 确实被插进设计、采集 RAM 也确实出现在
+    // `phy_1/<prj>_inst.bid`（CorpusAlpha 实测：bid 里有 auto_created_cwc1/.../U_cwc_ram，
+    // phy area 里 526 LUT 的 watcher 实例）。先看 bid，再看 cwc。
+    bool bid_has_watcher = false;
+    int bid_cwc_bits = 0;
+    if (!has_cwc_file || !cwc.ok) {
+        const std::string bid_path =
+            RunsDir(project) + "/phy_1/" + project.name + "_inst.bid";
+        if (IsFile(bid_path)) {
+            const std::string bid = ReadText(bid_path);
+            if (bid.find("U_cwc_ram") != std::string::npos) {
+                bid_has_watcher = true;
+                // 每个 ERAM 的 <width> 之和 ≈ 采集位宽
+                std::size_t pos = 0;
+                while ((pos = bid.find("<name>", pos)) != std::string::npos) {
+                    const std::size_t close = bid.find("</name>", pos);
+                    if (close == std::string::npos) break;
+                    const std::string name = bid.substr(pos + 6, close - pos - 6);
+                    pos = close + 7;
+                    if (name.find("U_cwc_ram") == std::string::npos) continue;
+                    const std::size_t width_at = bid.find("<width>", pos);
+                    const std::size_t width_end = width_at == std::string::npos
+                                                      ? std::string::npos
+                                                      : bid.find("</width>", width_at);
+                    if (width_at == std::string::npos || width_end == std::string::npos) continue;
+                    bid_cwc_bits += std::atoi(bid.substr(width_at + 7, width_end - width_at - 7).c_str());
+                }
+            }
+        }
+    }
+    const bool no_bitstream = (!has_cwc_file || !cwc.ok) && !bid_has_watcher;
 
     const auto requested = CollectRequested(mdn, project.top);
-    const auto embedded = no_bitstream ? std::map<std::string, std::set<int>>{}
-                                       : CollectEmbedded(cwc, project.top);
+    std::map<std::string, std::set<int>> embedded;
+    if (!no_bitstream && (has_cwc_file && cwc.ok)) {
+        embedded = CollectEmbedded(cwc, project.top);
+    } else if (!no_bitstream) {
+        // 只有 bid 证据：RAM 确实进了 bitstream，但拿不到逐位清单。
+        for (const auto& [base, want] : requested) {
+            std::set<int>& bits = embedded[base];
+            for (const int bit : want.bits) bits.insert(bit);
+            for (std::size_t i = 0; i < want.scalars.size(); ++i) bits.insert(-1 - static_cast<int>(i));
+        }
+    }
 
     int requested_bits = 0;
     int embedded_bits = 0;

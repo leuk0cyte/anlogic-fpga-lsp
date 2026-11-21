@@ -971,3 +971,34 @@ config after: clock=reg_init/clk
 `syn_1/phy_1/best_result`）与 `log/` 都出现在 `.al` 同级，和 TD GUI 一致。
 
 `ctest` 64/64、插件 44/44。
+
+### 第二十二轮：CorpusAlpha 上跑通 mark_debug → gate → phy（探针确实进了位流）
+
+用户要求换小工程验证（大工程编译太慢），且当前接的板子不是 EF2L45，只跑到 phy。
+
+**实测（%WORKSPACE%\CorpusAlpha，EF2L45LG144B，top=top）**：
+```
+probe_config: 2 总线 / 32 bit，unresolved=[]
+flow_run stages:["all"] -> flow ok
+phy_1/demo_project.bit 163,906 B
+syn_1/cw: auto_created_cwc1, auto_created_cwc2, debug_hub
+phy_1/demo_project_inst.bid 里有 auto_created_cwc1/wrapper_cwc_top/U_cwc_ram/mem_syn_*
+phy_1/demo_project_phy.area 里 auto_created_cwc1 实例 526 LUT
+probe_verify: cntT_q embedded 16/16、d1_tx_s1 embedded 16/16、missing=[]
+```
+即：**mark_debug（Read Design 之后）→ gate 之后建 watcher → phy 把采集 RAM 布进位流**这条链路在小工程上是通的。
+
+**这轮发现并修掉的三个问题**（都是 EF2 系列暴露的）：
+1. 时钟查询把器件库写死成 `ph1_100.db` → EF2L45 上 import 失败、拿不到 watcher。
+   改为 `td::DbCandidates(...)` 逐个候选（`ef2_1.db` 会报 `USR-8001 not support package`，
+   必须继续试 `ef2_4.db`），且**每个候选都要新起会话**（import 失败时 TD 直接退出）。
+   修完在 CorpusAlpha 上拿到 `clock_from_td = clk`。
+2. **TD 会按时钟域把 watcher 拆成多个实例**（实测：`cntT_q`→`clk`→cwc1，
+   `d1_tx_s1`→`trans/clk`→cwc2）。`probe_status` 现在返回 `instances[]`，
+   时钟查询也收集全部实例；抓取侧需要按实例指定（`instance` 参数已存在）。
+3. `probe_verify` 以前只认 `compiled.cwc`，没有它就把所有总线判成 `dropped/no-bitstream` ——
+   但批量流程里 TD 常常不写 cwc，探针其实已经在位流里。现在先看 `phy_1/<prj>_inst.bid`
+   里的 `U_cwc_ram`：有就按"embedded"上报（逐位无法核对时以 RAM 存在为准），
+   `probe_status` 也加了 `bit_has_watcher` 与对应的 `note`。
+
+**仍待做**：多实例下的 per-bus 状态与抓取（需要一个实例一份 cwc），以及回到 corpus_delta 工程复验。
