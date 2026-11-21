@@ -41,6 +41,7 @@
 #include <vector>
 
 #include "jsonrpc/json_util.h"
+#include "td/td_device.h"
 #include "project/al_project.h"
 #include "td/td_install.h"
 
@@ -289,6 +290,13 @@ struct WatcherInstanceInfo {
     int din_num = 0;    // CWC_BUS_DIN_NUM
 };
 std::vector<WatcherInstanceInfo> EnumerateWatcherInstances(const project::Project& project);
+
+// 按实例生成 cwc（多时钟域抓取用）：mdn 按 `report_cwc_status` 的 bus->instance 映射切分，
+// 用该实例的 watcher 目录与时钟生成，写到 <state>/probe/cwc_<instance>.cwc。
+// 返回生成的路径；失败返回空串并填 error。需要 TD 会话（结果按 gate.db 版本缓存）。
+std::string EnsureCwcForInstance(const td::TdChoice& td, const project::Project& project,
+                                 const std::string& instance, std::string* error,
+                                 jsonrpc::Json* info);
 
 std::string MdnPath(const project::Project& project);
 std::string CompiledBit(const project::Project& project);

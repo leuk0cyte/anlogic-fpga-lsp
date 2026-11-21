@@ -1014,7 +1014,8 @@ std::string ResolveClockPeriod(const project::Project& project) {
 
 std::string BuildCwcFromWatcherImpl(const project::Project& project, const MdnConfig& mdn,
                                     const std::vector<std::string>& bus_order, std::string* error,
-                                    jsonrpc::Json* info, const std::string& watcher_dir) {
+                                    jsonrpc::Json* info, const std::string& watcher_dir,
+                                    const std::string& clock_override = std::string()) {
     const auto fail = [error, info](const std::string& why) {
         if (error != nullptr) *error = why;
         if (info != nullptr) (*info)["ok"] = false;
@@ -1195,8 +1196,9 @@ std::string BuildCwcFromWatcherImpl(const project::Project& project, const MdnCo
     //    然后才退回扫描现有 cwc（phy sidecar、工程 cwc/ 目录）。不再读旧 .fpgalsp。
     const ProbeBuildConfig clock_config = ReadProbeBuildConfig(project);
     const std::string clock =
-        clock_config.has_clock && !clock_config.clock.empty() ? clock_config.clock
-                                                             : ResolveSampleClock(project);
+        !clock_override.empty()                       ? clock_override
+        : clock_config.has_clock && !clock_config.clock.empty() ? clock_config.clock
+                                                               : ResolveSampleClock(project);
     if (clock.empty()) {
         return fail("cannot determine the ChipWatcher sample clock: no compiled cwc and no "
                     "cwc/*.cwc in the project. Pass clock to fpga_probe_config "
@@ -2229,6 +2231,169 @@ std::vector<WatcherInstanceInfo> EnumerateWatcherInstances(const project::Projec
 std::vector<std::string> ClockCandidatesFromReports(const project::Project& project);
 
 // =============================================================================
+// bus -> watcher 实例映射（多时钟域抓取的前提）
+// =============================================================================
+//  `report_cwc_status` 的节点表逐条给出：`bus[15:0] | MARK_DEBUG_PROBE | Yes | clock | instance`
+//  （CorpusAlpha 实测：cntT_q -> cwc1/clk，d1_tx_s1 -> cwc2/trans/clk）。有了它才能把 mdn 按实例
+//  切开、按实例生成 cwc 再逐个抓取。结果按 gate.db 的 (mtime,size) 缓存在 state dir。
+struct WatcherMapNode {
+    std::string bus;
+    std::string instance;
+    std::string clock;
+};
+
+struct WatcherMap {
+    std::vector<WatcherMapNode> nodes;
+    std::vector<std::pair<std::string, std::string>> instances;  // (name, clock)
+
+    bool empty() const { return nodes.empty() && instances.empty(); }
+};
+
+std::string WatcherMapCachePath(const project::Project& project) {
+    return StateProbeDir(project) + "/watcher-map.txt";
+}
+
+WatcherMap ParseWatcherMap(const std::string& text) {
+    WatcherMap map;
+    std::size_t pos = 0;
+    while (pos < text.size()) {
+        const std::size_t end = text.find('\n', pos);
+        std::string line = text.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
+        pos = end == std::string::npos ? text.size() : end + 1;
+        while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
+        std::vector<std::string> parts;
+        std::size_t begin = 0;
+        while (begin <= line.size()) {
+            const std::size_t bar = line.find('\t', begin);
+            parts.push_back(line.substr(begin, bar == std::string::npos ? std::string::npos
+                                                                       : bar - begin));
+            if (bar == std::string::npos) break;
+            begin = bar + 1;
+        }
+        if (parts.size() == 3 && parts[0] == "node") {
+            map.nodes.push_back(WatcherMapNode{Trim(parts[1]), Trim(parts[2]), std::string()});
+        } else if (parts.size() == 3 && parts[0] == "nodeclock") {
+            // 兼容：node 行的时钟单独一行
+            if (!map.nodes.empty()) map.nodes.back().clock = Trim(parts[1]);
+            (void)parts[2];
+        } else if (parts.size() == 3 && parts[0] == "inst") {
+            map.instances.emplace_back(Trim(parts[1]), Trim(parts[2]));
+        }
+    }
+    return map;
+}
+
+std::string SerializeWatcherMap(const std::string& key, const WatcherMap& map) {
+    std::string out = "key\t" + key + "\n";
+    for (const WatcherMapNode& node : map.nodes) {
+        out += "node\t" + node.bus + "\t" + node.instance + "\n";
+        if (!node.clock.empty()) out += "nodeclock\t" + node.clock + "\t-\n";
+    }
+    for (const auto& [name, clock] : map.instances) {
+        out += "inst\t" + name + "\t" + clock + "\n";
+    }
+    return out;
+}
+
+// 从 gate 数据库问 TD 要 bus->instance 映射（带缓存，按 gate.db mtime+size 判新旧）。
+bool QueryWatcherMap(const td::TdChoice& td, const project::Project& project, WatcherMap* map,
+                     std::string* error) {
+    const auto fail = [error](const std::string& why) {
+        if (error != nullptr) *error = why;
+        return false;
+    };
+    const std::string gate_db = RunsDir(project) + "/syn_1/" + project.name + "_gate.db";
+    std::error_code ec;
+    if (!IsFile(gate_db)) return fail("no " + gate_db + " - run stages:[\"all\"] first");
+    const auto stamp = std::filesystem::last_write_time(std::filesystem::path(gate_db), ec);
+    const std::uintmax_t size = std::filesystem::file_size(std::filesystem::path(gate_db), ec);
+    const std::string key = std::to_string(static_cast<long long>(stamp.time_since_epoch().count())) +
+                            ":" + std::to_string(size);
+    const std::string cache_path = WatcherMapCachePath(project);
+    if (IsFile(cache_path)) {
+        const std::string cached = ReadText(cache_path);
+        if (cached.rfind("key\t" + key + "\n", 0) == 0) {
+            *map = ParseWatcherMap(cached);
+            if (!map->empty()) return true;
+        }
+    }
+
+    const std::vector<std::string> dbs = td::DbCandidates(td.root, project.family, project.device);
+    if (dbs.empty()) return fail("no device database (arch/*.db) under " + td.root);
+    td::TdSessionOptions options;
+    options.work_dir = project.dir;
+    (void)fpgalsp::platform::ensure_directory(options.work_dir);
+    const std::string al = Slashes(project.al_path);
+    std::string out_text;
+    for (const std::string& db : dbs) {
+        std::unique_ptr<td::TdSession> session;
+        try {
+            session = std::make_unique<td::TdSession>(td, options);
+        } catch (const std::exception& e) {
+            return fail(std::string("cannot start TD: ") + e.what());
+        }
+        const std::string commands =
+            td::MakeImportDeviceCommand(db, project.device, project.speed) + "\n" +
+            "open_project {" + al + "} -single_run\n" +
+            "import_db {" + Slashes(gate_db) + "}\n" +
+            "report_cwc_status\n";
+        out_text = session->Run(commands, 240.0);
+        session->Kill();
+        // 报告里有节点表（MARK_DEBUG_PROBE）或实例名，都算拿到了 watcher 信息
+        if (out_text.find("MARK_DEBUG_PROBE") != std::string::npos ||
+            out_text.find("auto_created_cwc") != std::string::npos) {
+            break;
+        }
+    }
+    if (out_text.find("MARK_DEBUG_PROBE") == std::string::npos &&
+        out_text.find("auto_created_cwc") == std::string::npos) {
+        return fail("report_cwc_status found no watcher rows (is the watcher built? run stages:[\"all\"])");
+    }
+
+    // 解析两张表：节点表（bus|type|enabled|clock|instance）与实例表（name|depth|clock|...）
+    std::size_t pos = 0;
+    while (pos < out_text.size()) {
+        const std::size_t end = out_text.find('\n', pos);
+        const std::string line =
+            out_text.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
+        pos = end == std::string::npos ? out_text.size() : end + 1;
+        if (line.find('|') == std::string::npos) continue;
+        std::vector<std::string> fields;
+        std::size_t begin = 0;
+        while (begin <= line.size()) {
+            const std::size_t bar = line.find('|', begin);
+            fields.push_back(Trim(line.substr(begin, bar == std::string::npos ? std::string::npos
+                                                                             : bar - begin)));
+            if (bar == std::string::npos) break;
+            begin = bar + 1;
+        }
+        // 报告行首带日志前缀（`RUN-1001 :`），不剥掉会污染 bus/instance 名
+        const auto strip_prefix = [](std::string value) {
+            const std::size_t colon = value.find(" : ");
+            if (colon != std::string::npos && colon < 24) value = value.substr(colon + 3);
+            return Trim(value);
+        };
+        for (std::string& field : fields) field = strip_prefix(std::move(field));
+        if (fields.size() >= 5 && fields[1] == "MARK_DEBUG_PROBE") {
+            // bus | type | enabled | clock | instance
+            map->nodes.push_back(WatcherMapNode{fields[0], fields[4], fields[3]});
+        } else if (fields.size() >= 3 && fields[0].find("auto_created_cwc") != std::string::npos) {
+            bool seen = false;
+            for (const auto& [name, clock] : map->instances) {
+                (void)clock;
+                seen = seen || name == fields[0];
+            }
+            if (!seen) map->instances.emplace_back(fields[0], fields[2]);
+        }
+    }
+    if (map->nodes.empty() && map->instances.empty()) {
+        return fail("report_cwc_status produced no parseable watcher rows");
+    }
+    (void)fpgalsp::platform::write_file_utf8(cache_path, SerializeWatcherMap(key, *map));
+    return true;
+}
+
+// =============================================================================
 // 采样时钟候选（对应 TD GUI ChipWatcher 的采样时钟下拉框）
 // =============================================================================
 //  GUI 的候选来自**时钟树里的时钟网名**。TD 在 place/route 阶段会把时钟树写成
@@ -2383,6 +2548,77 @@ std::string QuerySampleClockFromGateDb(const td::TdChoice& td, const project::Pr
     }
     (void)fpgalsp::platform::write_file_utf8(cache_path, key + "\n" + clock + "\n");
     return clock;
+}
+
+// 按实例生成 cwc：把 mdn 里属于该实例的总线切出来，用该实例的 watcher 目录与时钟生成，
+// 写到 `<state>/probe/cwc_<instance>.cwc`。抓取时 `config_chatcher` 一次只认一个实例。
+std::string EnsureCwcForInstance(const td::TdChoice& td, const project::Project& project,
+                                 const std::string& instance, std::string* error,
+                                 jsonrpc::Json* info) {
+    const auto fail = [error](const std::string& why) {
+        if (error != nullptr) *error = why;
+        return std::string();
+    };
+    const MdnConfig mdn = ReadMdn(MdnPath(project));
+    if (!mdn.exists || mdn.signals.empty()) return fail("no probes marked in user.mdn");
+
+    WatcherMap map;
+    std::string map_error;
+    if (!QueryWatcherMap(td, project, &map, &map_error)) {
+        return fail("cannot resolve bus->watcher mapping: " + map_error);
+    }
+    // 该实例负责的总线（按叶子名匹配）
+    // 报告里的总线名带位宽（`cntT_q[15:0]`），mdn 里是 `top/cntT_q[0]`；两者都归一到
+    // "去掉层级前缀与位宽"的基名再比较，否则永远匹配不上（实测踩过）。
+    const auto base_of = [](const std::string& name) {
+        std::string text = name;
+        const std::size_t open = text.rfind('[');
+        if (open != std::string::npos) text.erase(open);
+        return std::string(TailName(text));
+    };
+    std::vector<std::string> buses;
+    for (const WatcherMapNode& node : map.nodes) {
+        if (node.instance != instance) continue;
+        const std::string base = base_of(node.bus);
+        bool seen = false;
+        for (const std::string& other : buses) seen = seen || other == base;
+        if (!seen) buses.push_back(base);
+    }
+    if (buses.empty()) {
+        return fail("no marked bus belongs to watcher " + instance);
+    }
+    MdnConfig subset;
+    subset.exists = true;
+    subset.path = mdn.path;
+    for (const std::string& signal : mdn.signals) {
+        std::string base = signal;
+        const std::size_t open = signal.rfind('[');
+        if (open != std::string::npos) base = signal.substr(0, open);
+        for (const std::string& bus : buses) {
+            if (bus == base_of(base)) {
+                subset.signals.push_back(signal);
+                break;
+            }
+        }
+    }
+    if (subset.signals.empty()) {
+        return fail("mdn has no nets for watcher " + instance + " (mapping looks stale)");
+    }
+    std::string clock;
+    for (const auto& [name, inst_clock] : map.instances) {
+        if (name == instance) clock = inst_clock;
+    }
+    const std::string dir = RunsDir(project) + "/syn_1/cw/" + instance;
+    std::string impl_error;
+    jsonrpc::Json impl_info = jsonrpc::Json::object();
+    const std::string text = BuildCwcFromWatcherImpl(project, subset, {}, &impl_error, &impl_info,
+                                                     dir, clock);
+    if (text.empty()) return fail(impl_error.empty() ? "cannot build cwc for " + instance : impl_error);
+    const std::string path = StateProbeDir(project) + "/cwc_" + instance + ".cwc";
+    (void)fpgalsp::platform::ensure_directory(StateProbeDir(project));
+    if (!fpgalsp::platform::write_file_utf8(path, text)) return fail("cannot write " + path);
+    if (info != nullptr) *info = impl_info;
+    return path;
 }
 
 jsonrpc::Json EnsureCompiledCwc(const project::Project& project,
@@ -3266,6 +3502,47 @@ jsonrpc::Json Capture(const td::TdChoice& td, const project::Project& project,
     out["ok"] = false;
     out["stage"] = "precheck";
 
+    // ---- 多实例（多时钟域）----
+    // TD 按时钟域把一个 mdn 拆成多个 watcher，`config_chatcher` 一次只能导入一个实例：
+    //   * 指定 instance -> 用（必要时生成）该实例的 cwc；
+    //   * 未指定且只有一个实例 -> 走原来的 compiled.cwc；
+    //   * 未指定且有多个 -> 返回实例清单让人选，而不是抓错实例。
+    std::string cwc_path = CompiledCwc(project);
+    {
+        const std::vector<WatcherInstanceInfo> instances = EnumerateWatcherInstances(project);
+        if (!options.instance.empty()) {
+            std::string inst_error;
+            jsonrpc::Json inst_info = jsonrpc::Json::object();
+            const std::string built =
+                EnsureCwcForInstance(td, project, options.instance, &inst_error, &inst_info);
+            if (built.empty()) {
+                out["refused"] = true;
+                out["instance"] = options.instance;
+                out["reason"] = "cannot prepare watcher " + options.instance + ": " + inst_error;
+                return out;
+            }
+            cwc_path = built;
+            out["instance"] = options.instance;
+            out["cwc_path"] = built;
+        } else if (instances.size() > 1) {
+            jsonrpc::Json list = jsonrpc::Json::array();
+            for (const WatcherInstanceInfo& info : instances) {
+                jsonrpc::Json item = jsonrpc::Json::object();
+                item["name"] = info.name;
+                item["buses"] = info.bus_num;
+                item["bits"] = info.din_num;
+                list.push_back(std::move(item));
+            }
+            out["refused"] = true;
+            out["multi_instance"] = true;
+            out["instances"] = std::move(list);
+            out["reason"] =
+                "this design has one watcher per clock domain; pick one with "
+                "fpga_probe_capture{\"instance\":\"<name>\"} (each capture reads a single watcher).";
+            return out;
+        }
+    }
+
     // 采样时钟：没有 sidecar（也就没有 TD 写的 clock）时，**直接从工程的 gate 数据库
     // 问 TD**（report_cwc_status），并落盘到 state dir 的 probe/config.txt，
     // 后续 flow 写 user.cfg 时直接复用 —— 不再依赖任何历史 cwc。
@@ -3295,7 +3572,7 @@ jsonrpc::Json Capture(const td::TdChoice& td, const project::Project& project,
             out["cwc_generated"] = true;
         }
     }
-    const CwcSnapshot cwc = ReadCwc(CompiledCwc(project));
+    const CwcSnapshot cwc = ReadCwc(cwc_path);
     if (!cwc.ok) {
         out["cwc"] = ensured;
         out["refused"] = true;
@@ -3313,11 +3590,19 @@ jsonrpc::Json Capture(const td::TdChoice& td, const project::Project& project,
         }
         return out;
     }
-    if (!IsFile(CompiledBit(project))) {
+    // 位流：优先用 sidecar；批量流程没写 sidecar 时，直接用 phy 产物里的位流。
+    std::string bit_path = CompiledBit(project);
+    if (!IsFile(bit_path)) {
+        const std::string alt = RunsDir(project) + "/phy_1/" + project.name + ".bit";
+        if (IsFile(alt)) bit_path = alt;
+    }
+    if (!IsFile(bit_path)) {
         out["refused"] = true;
-        out["reason"] = "phy_1/cw/compiled.bit is missing - run the phy flow again";
+        out["reason"] = "no bitstream (neither cw/compiled.bit nor phy_1/" + project.name +
+                        ".bit) - run the phy flow again";
         return out;
     }
+    out["bit_path"] = bit_path;
 
     // disabled 探针的位流抓不了（TD 2026.2 批量流程的硬限制）：
     // 实测 8 种 cwc 变体（模板 / 新 ERAM / width 48/49/50/53/54/55 / 删掉 disabled 总线）
@@ -3362,7 +3647,10 @@ jsonrpc::Json Capture(const td::TdChoice& td, const project::Project& project,
         const MdnConfig mdn = ReadMdn(MdnPath(project));
         const auto wanted = GroupBitSignals(mdn.signals, project.top);
         const auto embedded = GroupBusRanges(cwc.buses);
-        if (mdn.exists && wanted != embedded) {
+        // 多实例：指定了 instance 时，cwc 只覆盖该实例的总线子集，和整份 mdn 必然不同；
+        // 这不是 stale（子集是由 bus->instance 映射切出来的）。
+        const bool instance_scoped = !options.instance.empty();
+        if (mdn.exists && !instance_scoped && wanted != embedded) {
             out["refused"] = true;
             out["stage"] = "stale";
             out["reason"] =
@@ -3473,19 +3761,19 @@ jsonrpc::Json Capture(const td::TdChoice& td, const project::Project& project,
     //    config_chipwatcher（实测 position 127->512 后 CSV 的 Trigger 行就落在 512）。
     {
         out["stage"] = "config_chipwatcher";
-        std::string cwc_path = CompiledCwc(project);
+        std::string cwc_path2 = cwc_path;
         if (effective.trigger.Any()) {
-            const std::string patched = PatchTrigger(ReadText(CompiledCwc(project)),
+            const std::string patched = PatchTrigger(ReadText(cwc_path),
                                                      effective.trigger);
             const std::string target = effective.cwd + "/trigger_" + Timestamp() + ".cwc";
             if (fpgalsp::platform::write_file_utf8(target, patched)) {
-                cwc_path = target;
+                cwc_path2 = target;
                 out["trigger_cwc"] = target;
             } else {
                 record("cannot write the patched .cwc, falling back to compiled.cwc");
             }
         }
-        const std::string command = "config_chipwatcher " + td::TclQuoteGrouped(cwc_path);
+        const std::string command = "config_chipwatcher " + td::TclQuoteGrouped(cwc_path2);
         const std::string text = session->Run(command, 180.0);
         for (const std::string& line : ErrorLines(text, 4)) record(line);
         // 成功判据用**文本锚**为主、消息号为辅：
@@ -3541,7 +3829,7 @@ jsonrpc::Json Capture(const td::TdChoice& td, const project::Project& project,
         out["stage"] = "download";
         const std::string spd = std::to_string(effective.speed);
         for (const char* mode : {"jtag_burst", "jtag"}) {
-            std::string command = "download -bit " + td::TclQuoteGrouped(CompiledBit(project)) +
+            std::string command = "download -bit " + td::TclQuoteGrouped(Slashes(bit_path)) +
                                   " -mode " + mode + " -spd " + spd + " -cable " + effective.cable;
             if (std::string(mode) == "jtag_burst") {
                 command += " -total_dev 1 -cur_dev 1 -bypass 11111111";

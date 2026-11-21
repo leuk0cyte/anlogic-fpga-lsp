@@ -1073,3 +1073,29 @@ probe_verify: cntT_q embedded 16/16、d1_tx_s1 embedded 16/16、missing=[]
 
 **下一步（B 的第二半）**：用 `report_cwc_status` 的节点表得到 `bus -> instance` 映射（缓存），
 把 mdn 按实例切分后按实例生成 cwc，`probe_capture{instance}` 即可逐实例抓取。
+
+### 第二十六轮：多实例抓取打通到触发阶段
+
+链路（全部实测，工程 `%WORKSPACE%\CorpusAlpha`，两个时钟域）：
+
+```
+probe_capture{}                     -> refused: "one watcher per clock domain; pick one with instance"
+probe_capture{instance:cwc1}        -> cwc_path=<state>/probe/cwc_auto_created_cwc1.cwc（4043 B，16 net）
+                                       bit_path=<runs>/phy_1/demo_project.bit（sidecar 缺失时的回退）
+                                       -> TD: config_chatcher 接受、run_hw_cw/wait_on_hw_cw
+                                       -> KIT-8000 超时（板子是 PH1A100，EF2L45 没接 → 等不到触发，属预期）
+```
+
+实现要点：
+1. **`QueryWatcherMap(td, project)`**：跑一次 `report_cwc_status`，解析节点表
+   （`bus | MARK_DEBUG_PROBE | Yes | clock | instance`）与实例表，得到 `bus→instance` 与
+   `instance→clock`；按 gate.db 的 (mtime,size) 缓存到 `<state>/probe/watcher-map.txt`。
+   踩坑：报告行首带 `RUN-1001 :` 前缀，必须先剥掉再按 `|` 切分，否则 bus/instance 名全被污染。
+2. **`EnsureCwcForInstance`**：把 mdn 按映射切成该实例的子集（总线名比较用"去层级/去位宽"的基名，
+   `cntT_q[15:0]` 与 `top/cntT_q[0]` 要能对上），用该实例的 watcher 目录 + 该实例时钟生成 cwc，
+   写到 `<state>/probe/cwc_<instance>.cwc`。`BuildCwcFromWatcherImpl` 增加 `clock_override`。
+3. **Capture**：未指定 instance 且多实例 → 直接返回实例清单让人选；指定 instance → 用该实例 cwc，
+   并且 stale 检查按实例作用域豁免（子集本来就和整份 mdn 不同）。
+4. 位流回退：sidecar `cw/compiled.bit` 缺失时直接用 `phy_1/<prj>.bit`（批量流程常不写 sidecar）。
+
+`ctest` 64/64、插件 44/44。
