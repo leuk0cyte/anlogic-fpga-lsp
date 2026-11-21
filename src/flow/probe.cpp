@@ -889,6 +889,39 @@ bool EnableWord(const std::string& value) {
 }  // namespace
 
 // 生成 cwc 文本；失败时返回空串并把原因写进 error。
+// 采样时钟周期（ns）。TD 的 cwc 里 `<clock clk_name="..." clk_peroid="10ns"/>` 缺了
+// `clk_peroid` 时，`config_chipwatcher` 仍会接受（KIT-1004 照打），但算出来的
+// `Chipwatcher code` 与设计不一致，随后 `wait_on_hw_cw` 永远等不到触发（会话挂死）。
+// 周期只能从历史 cwc 里取（TD 不把它写成单独产物）；取不到时按 10 ns（100 MHz）兜底。
+std::string ResolveClockPeriod(const project::Project& project) {
+    std::vector<std::string> candidates;
+    candidates.push_back(CompiledCwc(project));
+    std::error_code ec;
+    for (const std::string& sub : {"/.fpgalsp/probe", "/cwc"}) {
+        const std::filesystem::path dir(project.dir + sub);
+        if (!std::filesystem::is_directory(dir, ec)) continue;
+        for (std::filesystem::directory_iterator it(dir, ec), end; !ec && it != end;
+             it.increment(ec)) {
+            const std::string name = it->path().filename().string();
+            if (name.size() > 4 && name.rfind(".cwc") == name.size() - 4) {
+                candidates.push_back(it->path().string());
+            }
+        }
+    }
+    for (const std::string& path : candidates) {
+        if (!IsFile(path)) continue;
+        const std::string text = ReadText(path);
+        const std::size_t at = text.find("clk_peroid=\"");
+        if (at == std::string::npos) continue;
+        const std::size_t begin = at + 12;
+        const std::size_t end = text.find('"', begin);
+        if (end == std::string::npos || end == begin) continue;
+        const std::string value = text.substr(begin, end - begin);
+        if (!value.empty()) return value;
+    }
+    return "10ns";
+}
+
 std::string BuildCwcFromWatcher(const project::Project& project, const MdnConfig& mdn,
                                 const std::vector<std::string>& bus_order, std::string* error,
                                 jsonrpc::Json* info) {
@@ -1063,7 +1096,8 @@ std::string BuildCwcFromWatcher(const project::Project& project, const MdnConfig
     }
     out += "\t</watcher_nodes>\n";
     out += "\t<instance name=\"" + cwc1_name + "\" id=\"0\" ipgen=\"false\" inst_enable=\"true\">\n";
-    out += "\t\t<clock clk_name=\"" + clock + "\"/>\n";
+    const std::string clock_period = ResolveClockPeriod(project);
+    out += "\t\t<clock clk_name=\"" + clock + "\" clk_peroid=\"" + clock_period + "\"/>\n";
     out += "\t\t<config bram_name=\"" + cwc1_name + "/wrapper_cwc_top/U_cwc_ram\" debughub_name=\"\" " +
            "input_pipe_num=\"" + std::to_string(inst.pipe_in) + "\" output_pipe_num=\"" +
            std::to_string(inst.pipe_out) + "\" sample_depth=\"" + std::to_string(inst.depth) +
@@ -1098,7 +1132,7 @@ std::string BuildCwcFromWatcher(const project::Project& project, const MdnConfig
                "\" width_per_section=\"" + eram.width_per_section +
                "\" bytes_in_per_section=\"" + eram.bytes_in_per_section +
                "\" working_mode_depth=\"" + eram.wm_depth + "\" working_mode_width=\"" +
-               eram.wm_width + "\" working_mode_ecc=\"" +
+               (eram.width_a.empty() ? eram.wm_width : eram.width_a) + "\" working_mode_ecc=\"" +
                (eram.wm_ecc == "0" ? "disable" : "enable") + "\" working_mode_num_byte=\"" +
                eram.wm_num_byte + "\" working_mode_super_wide=\"disable\"/>\n";
     }
@@ -1311,7 +1345,8 @@ std::string BuildCwcFromConfig(const project::Project& project, const MdnConfig&
                "\" section_size=\"" + eram.section_size + "\" width_per_section=\"" +
                eram.width_per_section + "\" bytes_in_per_section=\"" +
                eram.bytes_in_per_section + "\" working_mode_depth=\"" + std::to_string(depth) +
-               "\" working_mode_width=\"" + eram.wm_width + "\" working_mode_ecc=\"" +
+               "\" working_mode_width=\"" + (eram.width_a.empty() ? eram.wm_width : eram.width_a) +
+               "\" working_mode_ecc=\"" +
                (eram.wm_ecc == "0" ? "disable" : "enable") + "\" working_mode_num_byte=\"" +
                eram.wm_num_byte + "\" working_mode_super_wide=\"disable\"/>\n";
     }
@@ -1363,7 +1398,7 @@ jsonrpc::Json WriteCompiledCwcAfterPhy(const project::Project& project) {
                                    std::filesystem::copy_options::overwrite_existing, copy_ec);
         out["bit_copied"] = !copy_ec;
     };
-    if (!config.write_sidecar_cwc) {
+    if (config.write_sidecar_cwc == false) {
         // 默认只同步位流：我们生成的 cwc 与 TD 自己那份不等价（Chipwatcher code 不同 ->
         // 抓取挂死），写出去反而会被后续 capture 误用。
         copy_bit_sidecar();

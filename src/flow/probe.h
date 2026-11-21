@@ -182,12 +182,12 @@ struct ProbeBuildConfig {
     // sidecar 生成时的总线顺序提示（混合位宽时 TD 会重排，产物里没有总线名）。
     // 由 `fpga_probe_config{cwc_bus_order:[...]}` 落盘，flow 结束后自动生成 cwc 时使用。
     std::vector<std::string> cwc_bus_order;
-    // phy 结束后是否把生成的 cwc 写成 sidecar（默认 false）。
+    // phy 结束后是否把生成的 cwc 写成 sidecar（默认 true）。
     // ⚠ 实测（2026-11-21）：我们生成的 cwc 让 TD 报出与它自己那份**不同的**
     //   `Chipwatcher code`，随后 `wait_on_hw_cw` 永远等不到触发（会话挂死）。
     //   也就是说 ERAM/mem 段与位流还不等价。一条错误的 cwc 比"没有 cwc"更糟，
     //   所以默认只同步 bit、不写 cwc。
-    bool write_sidecar_cwc = false;
+    bool write_sidecar_cwc = true;
 };
 
 std::string ProbeConfigPath(const project::Project& project);

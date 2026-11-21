@@ -317,9 +317,9 @@ flash +0.5~0.7 %。
 
 | 项 | 值 |
 | --- | --- |
-| 扩展包 | `vscode-extension/fpga-lsp-anlogic-0.18.9.vsix`（230 文件，3,290,231 B） |
-| 打包内置的服务端 | `build/bin/fpgalsp-native.exe`（Release + 全量 LTO，6,718,000 B，SHA256 `EC53503E…48A8F`） |
-| 一致性校验 | 解包后 `extension/server/bin/fpgalsp-native.exe` 的 SHA256 与该二进制**逐字节相同**；`extension/package.json` 版本 = 0.18.9 |
+| 扩展包 | `vscode-extension/fpga-lsp-anlogic-0.19.0.vsix`（230 文件，3,291,875 B） |
+| 打包内置的服务端 | `build/bin/fpgalsp-native.exe`（Release + 全量 LTO，6,721,000 B，SHA256 `CF797EE2…3F63AF`） |
+| 一致性校验 | 解包后 `extension/server/bin/fpgalsp-native.exe` 的 SHA256 与该二进制**逐字节相同**；`extension/package.json` 版本 = 0.19.0 |
 
 ### 升级后工程侧的变化
 
@@ -555,3 +555,22 @@ TD 会按我们的配置编译 watcher（2048 深度那组实验已经证明 `-c
 **要做的一件事（需要 GUI 一次）**：在 TD GUI 里给当前设计保存一次 ChipWatcher（或直接跑一次
 GUI 的 phy 让 TD 写 `compiled.cwc`），把那份文件留给我 —— 我按它 diff 出生成器的差异，
 之后"无 GUI 抓取 + 采样深度可调"就能一起闭环。
+
+### 第五轮：cwc 生成器修好了 —— 两个字段的事
+
+把"能用的那份 cwc"（干净 agent 手工拼的）与我们生成的逐行 diff，差异只有两处：
+
+| 差异 | 错的样子 | 对的样子 | 后果 |
+| --- | --- | --- | --- |
+| `<clock>` 缺 `clk_peroid` | `<clock clk_name="reg_init/clk"/>` | `<clock clk_name="reg_init/clk" clk_peroid="10ns"/>` | `config_chipwatcher` 照样打 KIT-1004，但算出的 `Chipwatcher code` 与设计不一致 → `wait_on_hw_cw` 永远等不到触发、会话挂死 |
+| `phy_eram` 的 `working_mode_width` | 用了数据位宽（14） | 用**物理位宽** `width_a`（20） | 同上（code 不一致） |
+| （无关）`trigger position` | 127 | 256 | 运行期量，不影响 code |
+
+修掉这两处后：**生成的 cwc 与"能用的那份"一致，抓取立刻成功**（`ok:true`、1024 点、`trigger_index` 127/256 随设置）。
+
+配套：
+- `probe::ResolveClockPeriod`：周期从历史 cwc 里取（TD 不单独产出），取不到按 `10ns` 兜底。
+- `phy` 结束后自动写 sidecar 恢复为**默认开启**（`write_sidecar_cwc`，可用 `probe_config{write_sidecar_cwc:false}` 关掉）；
+  写之前用 watcher 的位宽逐位校验总线顺序，顺序对不上就拒绝并提示用 `probe_config{cwc_bus_order:[...]}`。
+- 混合位宽（如 16/5/16/16）时 TD 会重排总线且产物里没有总线名 —— 需要 `cwc_bus_order` 提示一次；
+  等宽总线（如 4×16）不需要。
