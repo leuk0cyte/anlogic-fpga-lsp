@@ -1719,6 +1719,113 @@ std::string BuildCwcFromTemplate(const project::Project& project, const MdnConfi
     return out;
 }
 
+// =============================================================================
+// 用 gate 阶段的 cwc + 新位流的 ERAM 行写 sidecar
+// =============================================================================
+//  为什么必须这样：disabled 位流的采集 RAM 宽度是 gate 那次编译时定下的（48 bit），
+//  但 cwc 的 <logic_eram> 行还停留在上一轮的几何（section 54）。直接拿 gate cwc 抓取
+//  会报 KIT-8445 "(54/48)"；而重新生成整份 cwc 又会改变 Chipwatcher code（code 被写进
+//  位流），导致 wait_on_hw_cw 永远等不到触发。
+//  实测（2026-11-21 20:0x）：**保留 gate cwc 的总线/触发/时钟原样，只把 <logic_eram>
+//  换成新 bid 的行** -> 触发完成、读到 1024 点；width 写 48/49/50 都行。
+std::string EramBlockXml(const std::vector<BidEram>& erams, const std::string& inst,
+                         int width, int depth) {
+    std::string out;
+    out += "\t\t<logic_eram name=\"" + inst + "/wrapper_cwc_top/U_cwc_ram\" width=\"" +
+           std::to_string(width) + "\" depth=\"" + std::to_string(depth) + "\">\n";
+    for (const BidEram& eram : erams) {
+        out += "\t\t\t<phy_eram name=\"" + eram.name + "\" wid=\"" + eram.wid + "\" rid=\"" +
+               eram.rid + "\" model_type=\"" + eram.model_type + "\" width_a=\"" + eram.width_a +
+               "\" width_b=\"" + eram.width_b + "\" debuggable=\"" +
+               (EnableWord(eram.debuggable) ? "enable" : "disable") + "\" initialized=\"" +
+               (EnableWord(eram.initialized) ? "enable" : "disable") + "\" width=\"" + eram.width +
+               "\" depth=\"" + eram.depth + "\" address_offset=\"" + eram.address_offset +
+               "\" data_offset=\"" + eram.data_offset + "\" address_step=\"" + eram.address_step +
+               "\" num_section=\"" + eram.num_section + "\" section_size=\"" + eram.section_size +
+               "\" width_per_section=\"" + eram.width_per_section +
+               "\" bytes_in_per_section=\"" + eram.bytes_in_per_section +
+               "\" working_mode_depth=\"" + eram.wm_depth + "\" working_mode_width=\"" +
+               (eram.width_a.empty() ? eram.wm_width : eram.width_a) + "\" working_mode_ecc=\"" +
+               (eram.wm_ecc == "0" ? "disable" : "enable") + "\" working_mode_num_byte=\"" +
+               eram.wm_num_byte + "\" working_mode_super_wide=\"disable\"/>\n";
+    }
+    out += "\t\t</logic_eram>";
+    return out;
+}
+
+jsonrpc::Json WriteCompiledCwcFromGate(const project::Project& project,
+                                       const std::string& gate_cwc_path) {
+    jsonrpc::Json out = jsonrpc::Json::object();
+    out["ok"] = false;
+    if (gate_cwc_path.empty() || !IsFile(gate_cwc_path)) {
+        out["reason"] = "no gate cwc at " + gate_cwc_path;
+        return out;
+    }
+    std::string text = ReadText(gate_cwc_path);
+    if (text.empty()) {
+        out["reason"] = "gate cwc is empty";
+        return out;
+    }
+    // 新位流的 ERAM 行
+    const std::string bid_path =
+        project.dir + "/" + project.name + "_Runs/phy_1/" + project.name + "_inst.bid";
+    if (!IsFile(bid_path)) {
+        out["reason"] = "no " + bid_path + " - run the phy stage first";
+        return out;
+    }
+    std::string inst = "auto_created_cwc1";
+    if (const std::string dir = NewestWatcherDir(project); !dir.empty()) {
+        inst = std::filesystem::path(dir).filename().string();
+    }
+    const std::vector<BidEram> erams = ParseBidErams(ReadText(bid_path), inst);
+    if (erams.empty()) {
+        out["reason"] = "no ERAM rows for " + inst + " in " + bid_path;
+        return out;
+    }
+    int data_bits = 0;
+    int depth = 1024;
+    for (const BidEram& eram : erams) {
+        data_bits += std::atoi(eram.width.c_str());
+        if (!eram.depth.empty()) depth = std::atoi(eram.depth.c_str());
+    }
+    const std::string block = EramBlockXml(erams, inst, data_bits, depth);
+    const std::size_t begin = text.find("\t\t<logic_eram");
+    const std::size_t end = text.find("</logic_eram>", begin);
+    if (begin == std::string::npos || end == std::string::npos) {
+        out["reason"] = "gate cwc has no <logic_eram> block to replace";
+        return out;
+    }
+    text = text.substr(0, begin) + block + text.substr(end + std::string("</logic_eram>").size());
+    std::error_code ec;
+    std::filesystem::create_directories(
+        std::filesystem::path(CompiledCwc(project)).parent_path(), ec);
+    if (!fpgalsp::platform::write_file_utf8(CompiledCwc(project), text)) {
+        out["reason"] = "cannot write " + CompiledCwc(project);
+        return out;
+    }
+    // bit 侧 sidecar 同步（disabled 位流同样需要）
+    if (!IsFile(CompiledBit(project))) {
+        const std::string run_bit =
+            project.dir + "/" + project.name + "_Runs/phy_1/" + project.name + ".bit";
+        if (IsFile(run_bit)) {
+            std::error_code copy_ec;
+            std::filesystem::copy_file(run_bit, CompiledBit(project),
+                                       std::filesystem::copy_options::overwrite_existing, copy_ec);
+            out["bit_copied"] = !copy_ec;
+        }
+    }
+    const CwcSnapshot written = ReadCwc(CompiledCwc(project));
+    out["ok"] = written.ok;
+    out["written"] = true;
+    out["source"] = gate_cwc_path;
+    out["net_count"] = written.net_count;
+    out["disabled_net_count"] = written.disabled_net_count;
+    out["eram_rows"] = static_cast<int>(erams.size());
+    out["eram_width"] = data_bits;
+    if (!written.ok) out["reason"] = "generated cwc does not parse back";
+    return out;
+}
+
 jsonrpc::Json WriteCompiledCwcAfterPhy(const project::Project& project) {
     jsonrpc::Json out = jsonrpc::Json::object();
     out["ok"] = false;
@@ -2651,18 +2758,17 @@ jsonrpc::Json Capture(const td::TdChoice& td, const project::Project& project,
     //   b) 换一份"宽度对齐"的 cwc 就变成 Chipwatcher code 与位流不一致，
     //      `wait_on_hw_cw` 永远等不到触发（会话挂 30 s）。
     // 与其让 agent 白等并杀掉会话，不如立刻拒绝并给出可执行的两条路。
-    if (cwc.disabled_net_count > 0 && !options.allow_disabled_capture) {
-        out["refused"] = true;
-        out["stage"] = "precheck";
+    // disabled 位流现在可以抓了：sidecar 由 `WriteCompiledCwcFromGate` 写成
+    // "gate cwc（总线/触发/时钟原样）+ 新 bid 的 <logic_eram> 行"，实测触发完成、1024 点。
+    // 但如果 cwc 里 disabled 计数与位流不符（比如还留着上一轮的 sidecar），先给出提示。
+    if (cwc.disabled_net_count > 0) {
         out["disabled_net_count"] = cwc.disabled_net_count;
-        out["reason"] =
-            "this bitstream was built with disabled probes - TD 2026.2 batch capture cannot read it "
-            "back (readback wants the pre-disable ERAM width: KIT-8445 \"sample depth is shorter "
-            "than the set value (54/48)\", and any cwc whose width matches turns into a "
-            "Chipwatcher-code mismatch that hangs wait_on_hw_cw). Either clear the disabled list "
-            "(fpga_probe_config{\"disabled\":[]}) and rerun stages:[\"all\"], or capture from the TD "
-            "GUI. Pass allow_disabled_capture:true only if you want to try anyway.";
-        return out;
+        out["warning"] =
+            "this bitstream was built with disabled probes; capturing it is experimental. If the "
+            "trigger never completes (TD sits in wait_on_hw_cw), clear the disabled list "
+            "(fpga_probe_config{\"disabled\":[]}) and rerun stages:[\"all\"], or capture from the "
+            "TD GUI. The sidecar is written as the gate cwc with fresh bid ERAM rows, which "
+            "captured successfully once (1024 samples) but is not yet reproducible across rebuilds.";
     }
 
     // 清单与 bit 不一致 -> 默认拒绝（采回来的不是清单里写的信号）

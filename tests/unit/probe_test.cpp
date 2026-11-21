@@ -818,3 +818,103 @@ TEST(ProbeStatus, ReportsDisabledRequestAndRenderedCounts) {
     EXPECT_EQ(watcher_after.value("disabled_net_count", 0), 16);
     EXPECT_EQ(watcher_after.value("enabled_net_count", 0), 32 - 16);
 }
+
+// disabled 位流的 sidecar：必须"保留 gate cwc 的总线/触发/时钟，只换 <logic_eram> 的几何"。
+// 这是 2026-11-21 实测出来的唯一可行组合（gate cwc + 新 bid 的 ERAM 行 -> 触发完成、1024 点）：
+//   * 整份重生成 -> Chipwatcher code 与位流不一致，wait_on_hw_cw 挂死；
+//   * 不换 ERAM   -> KIT-8445 "sample depth is shorter than the set value (54/48)"。
+TEST(ProbeCwc, GateSidecarKeepsBusListAndSplicesFreshEramRows) {
+    ScopedTempDir temp("cwc_gate_sidecar");
+    const fpgalsp::project::Project project = MakeProject(temp.path());
+
+    // 新位流的 bid（三条 ERAM，宽度 20/20/9，data_offset 0/20/40，section 49）
+    const std::string bid_dir = temp.path() + "/corpus_delta_Runs/phy_1";
+    fs::create_directories(fs::path(bid_dir));
+    std::string bid = "<All_Bram_Infos version=\"2.0\">\n";
+    const int widths[] = {20, 20, 9};
+    const int offsets[] = {0, 20, 40};
+    const char* names[] = {"mem_syn_11", "mem_syn_32", "mem_syn_53"};
+    const char* rids[] = {"0X0000044E", "0X0000044D", "0X0000044F"};
+    for (int i = 0; i < 3; ++i) {
+        bid += "\t<INST_" + std::to_string(i + 1) + ">\n";
+        bid += "\t\t<rid>" + std::string(rids[i]) + "</rid>\n";
+        bid += "\t\t<wid>" + std::string(rids[i]) + "</wid>\n";
+        bid += "\t\t<is_debuggable>y</is_debuggable>\n\t\t<is_initialize>y</is_initialize>\n";
+        bid += "\t\t<model_type>2</model_type>\n";
+        bid += "\t\t<name>auto_created_cwc1/wrapper_cwc_top/U_cwc_ram/" + std::string(names[i]) +
+               "</name>\n";
+        bid += "\t\t<width_a>20</width_a>\n\t\t<width_b>20</width_b>\n";
+        bid += "\t\t<logic_width>49</logic_width>\n\t\t<logic_depth>1024</logic_depth>\n";
+        bid += "\t\t<sub_bid_info>\n\t\t\t<address_offset>0</address_offset>\n";
+        bid += "\t\t\t<data_offset>" + std::to_string(offsets[i]) + "</data_offset>\n";
+        bid += "\t\t\t<depth>1024</depth>\n\t\t\t<width>" + std::to_string(widths[i]) +
+               "</width>\n";
+        bid += "\t\t\t<num_section>1</num_section>\n\t\t\t<section_size>49</section_size>\n";
+        bid += "\t\t\t<width_per_section>" + std::to_string(widths[i]) +
+               "</width_per_section>\n";
+        bid += "\t\t\t<bytes_in_per_section>1</bytes_in_per_section>\n";
+        bid += "\t\t\t<working_mode>\n\t\t\t\t<address_step>1</address_step>\n";
+        bid += "\t\t\t\t<depth>1024</depth>\n\t\t\t\t<mode_type>2</mode_type>\n";
+        bid += "\t\t\t\t<width>20</width>\n\t\t\t\t<num_byte>2</num_byte>\n";
+        bid += "\t\t\t\t<ecc>0</ecc>\n\t\t\t</working_mode>\n\t\t</sub_bid_info>\n\t</INST_" +
+               std::to_string(i + 1) + ">\n";
+    }
+    bid += "</All_Bram_Infos>\n";
+    Write(bid_dir + "/corpus_delta_inst.bid", bid);
+
+    // NewestWatcherDir 需要一个 watcher 目录（inst 名从目录名来）
+    fs::create_directories(fs::path(temp.path() +
+                                    "/corpus_delta_Runs/syn_1/cw/auto_created_cwc1"));
+
+    // gate cwc：两条总线、一条 disabled、旧 ERAM（section 54）—— 正是"抓不了"的那份
+    std::string gate;
+    gate += "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n";
+    gate += "<chipwatcher version=\"3.070000\" project_name=\"corpus_delta\" "
+            "chip_name=\"PH1A100SFG676\">\n\t<watcher_nodes>\n";
+    gate += "\t\t<bus name=\"pwm_reg0_i[15:0]\" clock=\"reg_init/clk\" "
+            "inst=\"auto_created_cwc1\" type=\"MARK_DEBUG_PROBE\" is_enabled=\"yes\">\n";
+    gate += "\t\t\t<net name=\"pwm_reg0_i[15]\" const=\"false\" data=\"enable\" "
+            "trig=\"enable\"/>\n\t\t</bus>\n";
+    gate += "\t\t<bus name=\"pwm_reg1_i[15:0]\" clock=\"reg_init/clk\" "
+            "inst=\"auto_created_cwc1\" type=\"MARK_DEBUG_PROBE\" is_enabled=\"no\">\n";
+    gate += "\t\t\t<net name=\"pwm_reg1_i[15]\" const=\"false\" data=\"disable\" "
+            "trig=\"disable\"/>\n\t\t</bus>\n";
+    gate += "\t</watcher_nodes>\n\t<instance name=\"auto_created_cwc1\" id=\"0\" "
+            "ipgen=\"false\" inst_enable=\"true\">\n";
+    gate += "\t\t<clock clk_name=\"reg_init/clk\" clk_peroid=\"10ns\"/>\n";
+    gate += "\t\t<trigger name=\"auto_created_cwc1_trigger\" position=\"127\" window_num=\"1\" "
+            "window_depth=\"1024\">\n";
+    gate += "\t\t\t<condition level=\"1\" enabled=\"yes\" type=\"basic_and\" "
+            "capture_type=\"basic_and\"/>\n\t\t</trigger>\n";
+    gate += "\t\t<logic_eram name=\"auto_created_cwc1/wrapper_cwc_top/U_cwc_ram\" width=\"53\" "
+            "depth=\"1024\">\n";
+    gate += "\t\t\t<phy_eram name=\"auto_created_cwc1/wrapper_cwc_top/U_cwc_ram/mem_syn_53\" "
+            "width=\"14\" depth=\"1024\" address_offset=\"0\" data_offset=\"40\" "
+            "section_size=\"54\"/>\n";
+    gate += "\t\t</logic_eram>\n\t</instance>\n</chipwatcher>\n";
+    const std::string gate_path = temp.path() + "/gate_probe_config.cwc";
+    Write(gate_path, gate);
+
+    const fpgalsp::jsonrpc::Json out =
+        fpgalsp::probe::WriteCompiledCwcFromGate(project, gate_path);
+    ASSERT_TRUE(out.value("ok", false)) << out.value("reason", std::string("?"));
+    EXPECT_EQ(out.value("eram_rows", 0), 3);
+
+    const std::string written =
+        fpgalsp::platform::try_read_file_utf8(fpgalsp::probe::CompiledCwc(project)).value_or("");
+    ASSERT_FALSE(written.empty());
+    // 总线/触发/时钟原样保留（Chipwatcher code 才跟位流一致）
+    EXPECT_NE(written.find("<bus name=\"pwm_reg1_i[15:0]\" clock=\"reg_init/clk\""),
+              std::string::npos);
+    EXPECT_NE(written.find("is_enabled=\"no\""), std::string::npos);
+    EXPECT_NE(written.find("clk_peroid=\"10ns\""), std::string::npos);
+    EXPECT_NE(written.find("position=\"127\""), std::string::npos);
+    // ERAM 换成新 bid 的几何
+    EXPECT_EQ(written.find("section_size=\"54\""), std::string::npos)
+        << "旧 bid 的 section_size 必须被替换掉";
+    EXPECT_NE(written.find("data_offset=\"40\""), std::string::npos);
+    EXPECT_NE(written.find("section_size=\"49\""), std::string::npos);
+    EXPECT_NE(written.find("mem_syn_53"), std::string::npos);
+    EXPECT_EQ(written.find("</logic_eram>\t</instance>"), std::string::npos)
+        << "拼接后必须保留换行结构";
+}

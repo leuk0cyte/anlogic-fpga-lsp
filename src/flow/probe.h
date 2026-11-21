@@ -265,6 +265,12 @@ std::string BuildCwcFromWatcher(const project::Project& project, const MdnConfig
 // `phy_1/cw/compiled.cwc`（批量 launch_runs 不会写这个 sidecar）。
 jsonrpc::Json WriteCompiledCwcAfterPhy(const project::Project& project);
 
+// 用 gate 阶段的 cwc（TD 编译时用的那份）+ 新位流的 ERAM 行写 sidecar。
+// disabled 位流必须走这条：保留总线/触发/时钟（Chipwatcher code 才与位流一致），
+// 只把 <logic_eram> 换成新 bid 的几何（实测 2026-11-21：触发完成、读到 1024 点）。
+jsonrpc::Json WriteCompiledCwcFromGate(const project::Project& project,
+                                       const std::string& gate_cwc_path);
+
 std::string MdnPath(const project::Project& project);
 std::string CompiledBit(const project::Project& project);
 std::string CompiledCwc(const project::Project& project);

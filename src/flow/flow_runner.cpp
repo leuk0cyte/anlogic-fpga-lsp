@@ -393,6 +393,9 @@ struct FlowRunner::Impl {
     // key 存在 = 已经尝试过（成功或判定不支持），避免每次 RunStage 重复发 set_param。
     std::mutex hook_mutex;
     std::map<std::string, bool> probe_hook_state;
+    // 本次 run 交给 TD 的 gate 配置（`insert_debugger -cwc`）。phy 成功后要用它写 sidecar：
+    // 保留总线/触发/时钟（Chipwatcher code 才跟位流一致），只换 <logic_eram> 的几何。
+    std::string gate_cwc_path;
 
     std::string run_dir;
     std::string stage_run;
@@ -841,6 +844,7 @@ struct FlowRunner::Impl {
                 const std::string config_path = Join(RunDir(), "probe_config.cwc");
                 if (!cwc_text.empty() && WriteTextFile(config_path, cwc_text)) {
                     insert_body += " -cwc {" + config_path + "}";
+                    gate_cwc_path = config_path;
                     Emit("log", run_name + ": 探针构建参数 clock=" +
                                     (build.has_clock ? build.clock : std::string("<from cwc>")) +
                                     " depth=" + std::to_string(build.depth) +
@@ -993,7 +997,10 @@ struct FlowRunner::Impl {
             // phy 完成后用**新**位流的 ERAM + 我们指定的 clock/depth 写回 sidecar
             // （批量 launch_runs 不写 compiled.cwc，而 capture 需要它）。
             if (HasProbeMdn(owner->project_)) {
-                const jsonrpc::Json written = probe::WriteCompiledCwcAfterPhy(owner->project_);
+                const jsonrpc::Json written =
+                    gate_cwc_path.empty()
+                        ? probe::WriteCompiledCwcAfterPhy(owner->project_)
+                        : probe::WriteCompiledCwcFromGate(owner->project_, gate_cwc_path);
                 if (written.value("ok", false)) {
                     Emit("log", run_name + ": wrote phy_1/cw/compiled.cwc (depth " +
                                     std::to_string(written.value("depth", 0)) + ", " +

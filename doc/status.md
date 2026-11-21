@@ -725,3 +725,33 @@ TD 自己认可的宽度口径）。
 
 下一步若要真正打通，需要一份 **TD GUI 为 disabled 配置亲笔写的 `compiled.cwc`** ——
 对比它的 `<logic_eram>`/code 才能知道 TD 自己怎么表达"禁用后的 RAM"。
+
+### 第十二轮：disabled 抓取的"正确配方"找到了，但复现性未稳定
+
+**找到的配方**（2026-11-21 20:06 实测成功）：
+
+> sidecar = **gate 阶段的 cwc**（总线/触发/时钟**原样保留**，含 `is_enabled="no"` 与
+> `data="disable"`）+ 把 `<logic_eram>` 整块换成**当前位流 bid** 的行（widths 20/20/9、
+> data_offset 0/20/40、section_size 49、正确的 rid/wid）。
+
+结果：`ok=True`、`samples=1024`、`Chipwatcher code` 与位流一致（触发完成）。
+`logic_eram width` 写 48 / 49 / 50 都能过（说明它不影响 code，也不影响回读）。
+
+对照失败：
+- 整份重生成 sidecar → code 变（`0000101010001110`）→ `wait_on_hw_cw` 挂死；
+- 只改 gate cwc 的 width（48/49/50/53/54/55）或 section_size 不改 ERAM 行 → `KIT-8445 (54/48)`。
+
+**已固化进后端**：
+- 新增 `probe::WriteCompiledCwcFromGate(project, gate_cwc_path)`：phy 成功后，若本次 run
+  给 TD 交过 `-cwc`（`gate_cwc_path` 非空），就用它写 sidecar（splice 新 bid 的 ERAM 块），
+  否则仍走原来的 `BuildCwcAfterPhy`；
+- 单测 `ProbeCwc.GateSidecarKeepsBusListAndSplicesFreshEramRows` 覆盖：总线/触发/时钟保留、
+  旧 section_size 被替换、新 data_offset 出现、换行结构不被破坏；
+- `probe_capture` 遇到含 disabled 的位流会给 `warning`（实验性；若触发不完成就清空 disabled
+  重跑或走 GUI），不再一刀切拒绝。
+
+**未稳定**：20:06 之后又重建了 3 次 disabled 位流，同样的 sidecar 写法有两次在
+`wait_on_hw_cw` 挂住 / 会话退出（一次是硬件瞬态：正常位流也连不上，重跑后恢复）。
+说明"gate cwc + 新 ERAM"还不是充分条件，可能还与 TD OOC watcher 的编译缓存/位流内容有关。
+需要再定位的点：同一份 gate cwc 下，TD 生成的位流里 `RAM_LEN`（48）与 cwc 的
+`<logic_eram width>`（49）为什么要差 1，以及为什么有时触发逻辑不响应。
