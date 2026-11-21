@@ -779,3 +779,20 @@ TD 自己认可的宽度口径）。
 
 **工程已恢复**：手动 syn+phy（plain insert）→ 4 总线/53 bit → `compiled.bit` 同步 →
 生成 sidecar 10,313 B → `probe_capture` ok / 1024 点。
+
+### 第十四轮（收尾）：CLI 路径全部排除，disabled 抓取阻塞在 TD 侧
+
+最后一搏：place 之后跑 `setup_debugger <chip_debugger> -prj <prj>`，期望 TD 自己写出
+`phy_1/cw/compiled.cwc`。实测：exit 0、日志无 KIT 输出、**cwc 未被创建/修改**（静默空操作）。
+（gate 阶段调用会 coredump 0xE06D7363；bitgen 阶段此前也验证为空操作。）
+
+至此 CLI 侧能试的都试完了：
+1. 我们自己写 cwc（模板打补丁 / 整份生成 / 各种 width）→ code 不一致挂死 或 KIT-8445(54/48)；
+2. 让 TD 自己写（insert_debugger -cwc / setup_debugger）→ 前者只有唯一一次成功且不可复现，
+   后者在任何阶段都是空操作；
+3. 交叉验证（2 次重建 × 3 份 cwc）→ 3/3 失败。
+
+**结论：disabled 位流的抓取在 TD 2026.2 的批量流程里不可用**（GUI 可能可以）。
+后端已按"快速失败 + 明确指引"处理，并保留了唯一成功过的 sidecar 写法
+（`WriteCompiledCwcFromGate`）与单测，等 TD 修复/换版本后可直接启用。
+若要立刻用：`fpga_probe_config{"disabled":[]}` 清空后重跑 `stages:["all"]`，或走 GUI 抓。
