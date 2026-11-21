@@ -602,3 +602,33 @@ provider 没和视图关联上（VS Code 侧行为，未在扩展里找到可控
   不再依赖底栏视图；底栏注册保留（能用的环境照旧）。
 - 状态栏 tooltip 带诊断：provider 注册时间、底栏视图是否真的 resolve 过；
 - 激活时 `console.log('[fpgalsp] probe view provider registered for ...')` 进 Exthost 日志。
+
+### 第七轮（团队模式）：视图重排 + ChipWatcher 原生树 + disable 端到端结论
+
+用户要求与结论：
+1. **视图结构**（已改）：活动栏 FPGA 容器自上而下 = Project & Flow / Reports / ChipWatcher；
+   Module Hierarchy 移到**资源管理器**侧栏；删掉 `views.panel`（底栏那个在所有环境都不显示）。
+2. **命令去重**（已改）：`fpgaLsp.probeConfig`（Edit probe signal list）与
+   `fpgaLsp.showProbePanel`（ChipWatcher probe panel）本来就是同一个动作，已删前者，
+   只留 `showProbePanel`（编辑区面板）。
+3. **ChipWatcher 改成原生 TreeView**（新 `src/probeTree.js`）：状态行 / Signals（每条总线
+   带 enable-disable 勾选，disabled 用 `circle-slash`）/ Actions（Capture、Add signals、富面板、Refresh）。
+   改原生树的理由：底栏 webview view 在用户环境里始终不显示 provider，而同一批注册的
+   活动栏 TreeView 一直正常 —— 换成同机制后不再依赖 webview provider。
+4. **Flow 六步常显**（已改）：无 run 也渲染 Read Design / Optimize RTL / Optimize Gate /
+   Optimize Placement / Optimize Routing / Generate Bitstream，状态 `not run`。
+5. **disable 条目写进 cwc 的 `data="disable"`（已实现，端到端有硬结论）**：
+   - `fpga_probe_config{disabled:[...]}`（整条总线 / 单根 / 范围）→ 落盘 config.txt；
+   - cwc 渲染：bus `is_enabled="no"`、net `data="disable" trig="disable"`、signal_vec `cond="dont_care"`；
+     disabled 不计入 enabled_* 计数与 `<logic_eram width>`，但仍完整写进 XML；
+   - **实测（14:15）**：`disabled:["WHG/e2e_hstat"] + apply_build_config:true` → syn 阶段 TD
+     **确实按 3 总线 / 48 bit 建 watcher**（`CWC_BUS_NUM=3`、`CWC_BUS_DIN_NUM=48`，正常是 4/53），
+     证明 disable 语义正确传进了 TD；
+   - **但 phy 的 opt_place 直接崩**（`PRJ-8806 ERROR: Run phy_1 has exited unexpectedly`，
+     TD 进程退出、日志无 PHY 错误）：**TD 2026.2 批量流程无法 place 由自写 cwc 建出的 watcher**。
+     这不是我们 cwc 字段写错（`clk_peroid`/`working_mode_width` 都已对齐，补 `<logic_eram>` 也一样崩），
+     而是 `-cwc` 路径在 batch 下的硬限制。
+   - 结论：**disable 目前只能走 GUI**；后端 API 与渲染保留（数据模型正确、单测覆盖），
+     `apply_build_config` 继续默认 false，文档写明上述崩溃。
+6. sidecar 生成增加"形状"判断：`net_count/disabled_net_count` 与当前 mdn+disabled 计划不一致就重建，
+   不再"只补缺"导致 disable 后仍用旧的 53-bit cwc。

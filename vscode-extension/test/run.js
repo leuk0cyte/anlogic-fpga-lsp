@@ -238,6 +238,39 @@ const sampleInfo = {
     al: '%WORKSPACE%/CorpusAlpha/demo_project.al',
 };
 
+// 0.19.3：后端 probeStatus 的真实形状（字段来自 src/flow/probe.cpp::Status）：
+// watcher 里才有 present/clock/sample_depth/net_count，disabled[] 是 0.19.3+ 新加的。
+function sampleProbeStatus() {
+    return {
+        ok: true,
+        ready: true,
+        project: 'demo_project',
+        target: 'EG4S20BG256',
+        matches_user_mdn: true,
+        reason: 'ready to capture on reg_init/clk',
+        chip_debugger: {
+            path: '%WORKSPACE%/CorpusAlpha/chip_debugger/user.mdn',
+            exists: true,
+            count: 3,
+            signals: ['WHG/b[1]', 'WHG/b[0]', 'WHG/a[7]'],
+        },
+        watcher: {
+            present: true,
+            instance: 'auto_created_cwc1',
+            clock: 'reg_init/clk',
+            sample_depth: 1024,
+            net_count: 3,
+            stale: false,
+            // 真实 compiled.cwc 的 bus 名不带顶层前缀（`e2e_cnt2l[15:0]`），
+            // user.mdn 里是带前缀的逐位名（`WHG/e2e_cnt2l[0]`）—— 树必须按叶子名合并。
+            buses: [
+                { name: 'b[1:0]', clock: 'reg_init/clk', type: 'MARK_DEBUG_PROBE', enabled: true },
+                { name: 'a[7:7]', clock: 'reg_init/clk', type: 'MARK_DEBUG_PROBE', enabled: true },
+            ],
+        },
+    };
+}
+
 // ------------------------------------------------------------------ module tree tests
 
 test('module tree: nested payload builds depth, blackbox and primitive icons', async () => {
@@ -587,10 +620,37 @@ test('flow tree: backend flow.steps renders the six GUI steps with wall times', 
     includes(nodes[2].description, 'done');
     includes(nodes[2].description, 'cpu 3m58s');   // 238 s
     includes(nodes[2].description, '1125 MB');
-    includes(nodes[5].description, 'pending');
+    // 后端对没跑过的步骤给 status:"pending"；0.19.3 起树里统一显示成 TD GUI 的 "not run"。
+    includes(nodes[5].description, 'not run');
     // 组上的小结：3 步 + 该 run 的累计耗时
     includes(groups[0].description, '3 steps');
     includes(groups[0].description, '1m53s');      // 2 + 40 + 71 = 113 s
+
+    // 0.19.3: 没有 flow 运行时（后端没回 steps / 旧服务器）也必须按 TD GUI 六步渲染，
+    // 缺的步骤统一说明成 "not run"，而不是只给两个空分组。
+    const idleProvider = new FlowTreeProvider(
+        { request: async () => ({ ok: false, error: 'no flow data' }) },
+        async () => sampleInfo
+    );
+    await idleProvider.refresh();
+    const idleFlow = idleProvider.getChildren().find((section) => section.id === 'section:flow');
+    ok(idleFlow, 'flow section present without a run');
+    const idleGroups = idleProvider.getChildren(idleFlow).filter((node) => node.kind === 'section');
+    eq(idleGroups.length, 2, 'syn / phy groups without a run');
+    const idleSteps = idleGroups.flatMap((group) => idleProvider.getChildren(group));
+    eq(idleSteps.length, 6, 'six GUI steps without a run');
+    eq(
+        idleSteps.map((node) => node.label).join('|'),
+        'Read Design|Optimize RTL|Optimize Gate|Optimize Placement|Optimize Routing|Generate Bitstream',
+        'canonical TD GUI step names'
+    );
+    eq(idleSteps.map((node) => node.status).join(','), 'not run,not run,not run,not run,not run,not run',
+        'every idle step says not run');
+    includes(idleProvider.getTreeItem(idleSteps[0]).tooltip, 'Read Design');
+    eq(idleGroups[0].description, 'not run', 'idle syn group summary');
+    eq(idleGroups[1].description, 'not run', 'idle phy group summary');
+    // 后端对「没跑过」给的 status 是 pending；树里统一显示成 TD GUI 的 not run。
+    eq(idleProvider.getTreeItem(idleSteps[5]).iconPath.id, 'circle-outline', 'idle step icon');
 });
 
 test('flow tree: tolerates reports.py flowStatus object with steps', async () => {
@@ -628,6 +688,18 @@ test('extension: activation wires views, commands, reports panel and flow events
         'fpgaLsp/reports': async () => sampleReports(),
         'workspace/executeCommand': async (payload) => {
             if (payload && payload.command === 'fpgalsp.info') return sampleInfo;
+            if (payload && payload.command === 'fpgalsp.probeStatus') return sampleProbeStatus();
+            if (payload && payload.command === 'fpgalsp.probeConfig') {
+                const options = (payload.arguments && payload.arguments[0]) || {};
+                // 0.19.3+ 后端认识 disabled[]，并把它回显出来（旧后端没有这个字段）。
+                return {
+                    ok: true,
+                    count: (options.signals || []).length,
+                    disabled: options.disabled || [],
+                    enabled_bus_count: 1,
+                    enabled_bit_count: 1,
+                };
+            }
             if (payload && payload.command === 'fpgalsp.runFlow') {
                 return { ok: true, runId: 'r1', stages: payload.arguments[0].stages };
             }
@@ -638,10 +710,15 @@ test('extension: activation wires views, commands, reports panel and flow events
 
     // extension.js is loaded lazily so the mocked vscode-languageclient above is used.
     const extension = require('../extension.js');
+    const globalStateStore = new Map();
     const context = {
     extensionPath: path.join(__dirname, '..'),
     subscriptions: [],
     workspaceState: { get: () => undefined, update: () => Promise.resolve() },
+    globalState: {
+        get: (key) => globalStateStore.get(key),
+        update: async (key, value) => { globalStateStore.set(key, value); },
+    },
 };
     extension.activate(context);
     await new Promise((resolve) => setTimeout(resolve, 40));
@@ -649,6 +726,49 @@ test('extension: activation wires views, commands, reports panel and flow events
     eq(mock.__state.treeViews.length, 3, 'tree view count');
     eq(mock.__state.treeViews[0].viewId, 'fpgaLsp.modulesView');
     eq(mock.__state.treeViews[1].viewId, 'fpgaLsp.flowView');
+
+    // 0.19.3: ChipWatcher is a native TreeView (registerTreeDataProvider), NOT a
+    // bottom-panel webview view. This is the whole point of the change: a tree view
+    // cannot get stuck on "no data provider registered for the view".
+    eq(Object.prototype.hasOwnProperty.call(mock.__state.webviewViewProviders, 'fpgaLsp.probeView'), false,
+        'no webview view provider for ChipWatcher');
+    const probeProvider = mock.__state.treeDataProviders['fpgaLsp.probeView'];
+    ok(probeProvider, 'ChipWatcher tree data provider registered');
+    await probeProvider.refresh();
+    const probeRoot = probeProvider.getChildren();
+    eq(probeRoot.map((node) => node.id).join(','), 'probe:status,probe:signals,probe:actions',
+        'ChipWatcher root rows');
+
+    const probeStatusItem = probeProvider.getTreeItem(probeRoot[0]);
+    includes(probeStatusItem.label, 'ready');
+    eq(probeStatusItem.iconPath.id, 'check', 'ready status icon');
+    includes(probeStatusItem.description, 'clock reg_init/clk');
+    includes(probeStatusItem.description, 'depth 1024');
+    includes(probeStatusItem.description, '3 nets');
+
+    const busNodes = probeProvider.getChildren(probeRoot[1]);
+    eq(busNodes.map((node) => node.label).join(','), 'WHG/a[7],WHG/b[1:0]',
+        'signals grouped into buses from user.mdn');
+    const busNode = busNodes.find((node) => node.label === 'WHG/b[1:0]');
+    const busItem = probeProvider.getTreeItem(busNode);
+    eq(busItem.iconPath.id, 'check', 'enabled bus icon');
+    includes(busItem.description, 'width 2');
+    eq(busItem.command.command, 'fpgaLsp.probeToggleSignal');
+    eq(busItem.command.arguments[0], 'WHG/b');
+    const actionNodes = probeProvider.getChildren(probeRoot[2]);
+    ok(actionNodes.some((node) => node.id === 'probe:action:capture'), 'Capture now action');
+    ok(actionNodes.some((node) => node.id === 'probe:action:add'), 'Add signals action');
+
+    // 点击总线 -> disabled 列表进 globalState + 后端 probeConfig（0.19.3+ 回显 disabled[]）。
+    // 总线级 toggle 会展开成逐位名字交给后端（后端 ResolveDisabled 的逐位语义最稳）。
+    await mock.commands.executeCommand('fpgaLsp.probeToggleSignal', 'WHG/b');
+    eq((globalStateStore.get('fpgaLsp.probe.disabled') || []).join(','), 'WHG/b[1],WHG/b[0]',
+        'disabled list persisted in globalState');
+    const toggledBus = probeProvider.getChildren()[1].children.find((node) => node.label === 'WHG/b[1:0]');
+    eq(probeProvider.getTreeItem(toggledBus).iconPath.id, 'circle-slash', 'disabled bus icon');
+    includes(probeProvider.getTreeItem(toggledBus).description, 'disabled');
+    ok(mock.__state.messages.info.some((entry) => /disabled/.test(String(entry.message))),
+        'toggle result reported');
 
     for (const entry of require('../package.json').contributes.commands) {
         ok(mock.__state.commands.has(entry.command), `command registered: ${entry.command}`);
@@ -887,6 +1007,32 @@ const protocol = require('../src/protocol');
     for (const id of declared) {
         ok(registered.has(id), `declared command ${id} is registered in extension.js`);
     }
+
+    // 0.19.3 view layout: Project & Flow / Reports / ChipWatcher in the FPGA container,
+    // Module Hierarchy moved to the Explorer, and no bottom-panel ChipWatcher any more.
+    const views = manifest.contributes.views;
+    eq(Object.prototype.hasOwnProperty.call(views, 'panel'), false, 'no panel view container');
+    eq(views.explorer.map((view) => view.id).join(','), 'fpgaLsp.modulesView', 'explorer views');
+    eq(views.explorer.map((view) => view.name).join(','), 'Module Hierarchy', 'explorer view title');
+    eq(views.fpgaLsp.map((view) => view.id).join(','),
+        'fpgaLsp.flowView,fpgaLsp.reportsView,fpgaLsp.probeView', 'fpgaLsp view order');
+    eq(views.fpgaLsp.map((view) => view.name).join(','), 'Project & Flow,Reports,ChipWatcher',
+        'fpgaLsp view titles');
+    for (const view of ['fpgaLsp.modulesView', 'fpgaLsp.flowView', 'fpgaLsp.probeView']) {
+        ok(manifest.activationEvents.includes(`onView:${view}`), `activation event ${view}`);
+    }
+    // The duplicate "Edit probe signal list" command is gone: showProbePanel is the only
+    // rich-panel entry point, and the tree itself is the signal list.
+    ok(!declared.has('fpgaLsp.probeConfig'), 'duplicate probeConfig command removed');
+    const showProbePanel = manifest.contributes.commands.find((entry) => entry.command === 'fpgaLsp.showProbePanel');
+    eq(showProbePanel.title, 'FPGA: ChipWatcher (signals, trigger, capture)', 'showProbePanel title');
+    ok(declared.has('fpgaLsp.probeToggleSignal'), 'probeToggleSignal declared');
+    ok(declared.has('fpgaLsp.probeAddSignals'), 'probeAddSignals declared');
+    ok(declared.has('fpgaLsp.refreshProbe'), 'refreshProbe declared');
+    const probeTitleMenus = manifest.contributes.menus['view/title']
+        .filter((entry) => entry.when === 'view == fpgaLsp.probeView');
+    ok(probeTitleMenus.some((entry) => entry.command === 'fpgaLsp.refreshProbe'), 'probe title refresh button');
+    ok(probeTitleMenus.some((entry) => entry.command === 'fpgaLsp.showActions'), 'probe title actions button');
 });
 
 // ------------------------------------------------------------------ A4: event-driven refresh

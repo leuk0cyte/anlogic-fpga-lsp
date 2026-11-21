@@ -35,6 +35,7 @@
 #include <cstdint>
 #include <functional>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -66,6 +67,37 @@ std::vector<std::string> ExpandSignalRanges(const std::vector<std::string>& sign
 // 返回 nullopt = 空串或含 0/1 以外的字符 —— MCP 层据此直接报 ToolError，
 // 而不是把这个值悄悄当 0 传给 TD（那会得到"永远不触发"却看不出原因）。
 std::optional<std::uint64_t> ParseBitString(std::string_view bits);
+
+// -----------------------------------------------------------------------------
+// disabled（被 disable 的条目不占 debug 资源）
+// -----------------------------------------------------------------------------
+// 语义依据（用户实测 TD GUI）：ChipWatcher 列表里的条目可以 enable/disable，
+// 被 disable 的条目**不占** debug 资源；TD 自己写出的 cwc 里表现为 bus 的
+// `is_enabled="no"` 与 net 的 `data="disable" trig="disable"`。
+//
+// `chip_debugger/user.mdn` 只有 `mark_debug {...}`、**没有** disable 语法，所以
+// disable 只能通过本后端自写的 cwc（`insert_debugger <dir> -cwc <file>`）表达
+// —— 也就是说它只在 `apply_build_config:true` 时才会真的进 TD。
+//
+// 条目写法：整条总线 `WHG/e2e_hstat`（该总线当前清单里的每一位）、单根
+// `WHG/e2e_hstat[2]`，范围 `WHG/e2e_hstat[4:0]` 会展开。匹配对 `/` 边界做
+// 尾段宽松（用户常只写叶子名，而 cwc 里的名字不带顶层前缀）。
+struct DisabledPlan {
+    // 规范化后仍能落到 signals 上的条目（整条总线保持基名，单根/范围逐位列出）
+    std::vector<std::string> entries;
+    // 被 disable 的逐位名字（写法与 signals 里的原样一致，带顶层前缀）
+    std::set<std::string> bits;
+    // 不在 signals 里的条目：调用方只告警、**不**判失败（可能清单刚被替换）
+    std::vector<std::string> unresolved;
+
+    bool IsBitDisabled(std::string_view name) const {
+        return bits.find(std::string(name)) != bits.end();
+    }
+    bool Any() const { return !bits.empty(); }
+};
+
+DisabledPlan ResolveDisabled(const std::vector<std::string>& signals,
+                             const std::vector<std::string>& disabled);
 
 struct MdnConfig {
     bool ok = false;
@@ -119,6 +151,10 @@ struct CwcSnapshot {
     bool trigger_enabled = false;
     std::vector<CwcBus> buses;
     int net_count = 0;
+    // disabled（不占 debug 资源）的计数：TD/GUI 用 bus 的 `is_enabled="no"` 与
+    // net 的 `data="disable"` 表达。按名字去重（同一份清单在文件里出现两次）。
+    int disabled_bus_count = 0;
+    int disabled_net_count = 0;
 };
 
 CwcSnapshot ParseCwc(std::string_view text);
@@ -166,7 +202,7 @@ std::string ChipDebuggerDir(const project::Project& project);
 // `insert_debugger <dir> -cwc <file>` 的参数传进去，TD 会按它重建 watcher ——
 // 深度 2048 传进去后新的 `*_watcherInst.sv` 里 `RAM_DATA_DEPTH = 2048`。
 // 所以我们用"自己作者化一份 cwc + 落盘参数"的方式把 depth/clock 变成可配置量。
-// 落盘位置：`<project>/.fpgalsp/probe/config.json`。
+// 落盘位置：`<project>/.fpgalsp/probe/config.txt`（key=value，见 ProbeConfigPath）。
 struct ProbeBuildConfig {
     bool has_clock = false;
     std::string clock;      // 例如 reg_init/clk
@@ -182,6 +218,11 @@ struct ProbeBuildConfig {
     // sidecar 生成时的总线顺序提示（混合位宽时 TD 会重排，产物里没有总线名）。
     // 由 `fpga_probe_config{cwc_bus_order:[...]}` 落盘，flow 结束后自动生成 cwc 时使用。
     std::vector<std::string> cwc_bus_order;
+    // 被 disable 的探针条目（`WHG/e2e_hstat` / `WHG/e2e_hstat[2]`）。落盘为
+    // `disabled=WHG/a,WHG/b`。它们仍写在生成的 cwc 里（bus `is_enabled="no"`、
+    // net `data="disable" trig="disable"`），但**不计入** DIN 位序/位宽与
+    // `<logic_eram width>` —— 被 disable 的条目不占 debug 资源。
+    std::vector<std::string> disabled;
     // phy 结束后是否把生成的 cwc 写成 sidecar（默认 true）。
     // ⚠ 实测（2026-11-21）：我们生成的 cwc 让 TD 报出与它自己那份**不同的**
     //   `Chipwatcher code`，随后 `wait_on_hw_cw` 永远等不到触发（会话挂死）。
@@ -200,6 +241,14 @@ std::string BuildCwcFromConfig(const project::Project& project, const MdnConfig&
                                const ProbeBuildConfig& config, std::string* error,
                                jsonrpc::Json* info, bool include_eram = true);
 
+// 用 TD 自己的 watcher 产物（`*_watcherInst.sv` 的 CWC_BUS_* + `_inst.bid` 的 ERAM）
+// 反推 cwc；总线顺序可用 bus_order 指定。disabled 仍渲染进 XML，但只按 enable 的位
+// 校验 CWC_BUS_WIDTH/DIN（容忍 TD 把 disable 的位从 watcher 里摘掉）。
+// 公开给单测覆盖这条 sidecar 路径。
+std::string BuildCwcFromWatcher(const project::Project& project, const MdnConfig& mdn,
+                                const std::vector<std::string>& bus_order, std::string* error,
+                                jsonrpc::Json* info);
+
 // phy 成功后调用：用**新**位流的 ERAM + 我们指定的 clock/depth/总线顺序写
 // `phy_1/cw/compiled.cwc`（批量 launch_runs 不会写这个 sidecar）。
 jsonrpc::Json WriteCompiledCwcAfterPhy(const project::Project& project);
@@ -215,7 +264,9 @@ std::string CompiledData(const project::Project& project);
 
 // { ok, project_target, chip_debugger, mdn:{exists,signals,count}, watcher:{present,
 //   compiled_cwc, compiled_bit, clock, sample_depth, buses, stale, missing_in_bit,
-//   extra_in_bit}, sampling:{clock,depth,editable,reason}, ready, matches_user_mdn, reason }
+//   extra_in_bit, disabled_count, disabled_bus_count, disabled_net_count},
+//   disabled:[...], disabled_count, sampling:{clock,depth,editable,reason}, ready,
+//   matches_user_mdn, reason }
 //
 // ⚠ `sampling` 是"不可改 + 原因"的显式表达：采样时钟/深度在 TD 里是**编译期**
 //   属性（GUI 的 ChipWatcher 实例在 Gate 阶段写死），CLI 没有 setter，本后端也从不
@@ -235,10 +286,16 @@ jsonrpc::Json EnsureCompiledCwc(const project::Project& project,
 jsonrpc::Json Status(const project::Project& project);
 
 // 把请求的信号写成 user.mdn。signals 为空 = 读取当前清单（dry run，不落盘）。
-// 返回 { ok, path, before, after, added, removed, written, reason }
+// `disabled`（可选，`has_disabled=true` 表示调用方显式给了这一项）落到
+// `.fpgalsp/probe/config.txt` 的 `disabled=`，语义见 DisabledPlan。
+// 返回 { ok, path, before, after, added, removed, written, disabled, disabled_count,
+//        unresolved_disabled, bus_count, bit_count, enabled_bus_count,
+//        enabled_bit_count, buses, budget, requires_apply_build_config, reason }
 jsonrpc::Json Configure(const project::Project& project, const std::vector<std::string>& signals,
                         bool write, bool has_clock = false,
-                        const std::string& clock = std::string(), int depth = 0);
+                        const std::string& clock = std::string(), int depth = 0,
+                        const std::vector<std::string>& disabled = {},
+                        bool has_disabled = false);
 
 // -----------------------------------------------------------------------------
 // 采集（碰硬件）

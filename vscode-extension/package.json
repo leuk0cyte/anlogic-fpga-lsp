@@ -2,7 +2,7 @@
     "name": "fpga-lsp-anlogic",
     "displayName": "Anlogic FPGA LSP (TangDynasty)",
     "description": "Language support and IDE views for Anlogic TD FPGA projects: ADC pin constraints, SDC, project .al, Verilog index, TD-backed diagnostics, module hierarchy, syn/phy flow control and QoR/timing/area reports.",
-    "version": "0.19.2",
+    "version": "0.19.4",
     "publisher": "fpga-lsp",
     "license": "AGPL-3.0-or-later",
     "engines": {
@@ -113,17 +113,13 @@
             ]
         },
         "views": {
-            "panel": [
-                {
-                    "id": "fpgaLsp.probeView",
-                    "name": "ChipWatcher"
-                }
-            ],
-            "fpgaLsp": [
+            "explorer": [
                 {
                     "id": "fpgaLsp.modulesView",
                     "name": "Module Hierarchy"
-                },
+                }
+            ],
+            "fpgaLsp": [
                 {
                     "id": "fpgaLsp.flowView",
                     "name": "Project & Flow"
@@ -131,6 +127,10 @@
                 {
                     "id": "fpgaLsp.reportsView",
                     "name": "Reports"
+                },
+                {
+                    "id": "fpgaLsp.probeView",
+                    "name": "ChipWatcher"
                 }
             ]
         },
@@ -511,14 +511,26 @@
                 "icon": "$(circuit-board)"
             },
             {
-                "command": "fpgaLsp.probeConfig",
-                "title": "FPGA: Edit Probe Signals (opens ChipWatcher panel)",
+                "command": "fpgaLsp.probeToggleSignal",
+                "title": "FPGA: Toggle ChipWatcher Signal",
                 "category": "FPGA",
-                "icon": "$(list-tree)"
+                "icon": "$(check)"
+            },
+            {
+                "command": "fpgaLsp.probeAddSignals",
+                "title": "FPGA: Add ChipWatcher Signals…",
+                "category": "FPGA",
+                "icon": "$(add)"
+            },
+            {
+                "command": "fpgaLsp.refreshProbe",
+                "title": "FPGA: Refresh ChipWatcher",
+                "category": "FPGA",
+                "icon": "$(refresh)"
             },
             {
                 "command": "fpgaLsp.showProbePanel",
-                "title": "FPGA: ChipWatcher Probe Panel (signals, clock, capture)",
+                "title": "FPGA: ChipWatcher (signals, trigger, capture)",
                 "category": "FPGA",
                 "icon": "$(circuit-board)"
             }
@@ -594,6 +606,21 @@
                     "command": "fpgaLsp.showFlowLog",
                     "when": "view == fpgaLsp.flowView",
                     "group": "navigation@8"
+                },
+                {
+                    "command": "fpgaLsp.refreshProbe",
+                    "when": "view == fpgaLsp.probeView",
+                    "group": "navigation@1"
+                },
+                {
+                    "command": "fpgaLsp.probeCapture",
+                    "when": "view == fpgaLsp.probeView",
+                    "group": "navigation@2"
+                },
+                {
+                    "command": "fpgaLsp.showActions",
+                    "when": "view == fpgaLsp.probeView",
+                    "group": "navigation@3"
                 }
             ],
             "view/item/context": [
@@ -641,6 +668,11 @@
                     "command": "fpgaLsp.selectProject",
                     "when": "view == fpgaLsp.flowView && viewItem =~ /^fpgaProject(File)?$/",
                     "group": "inline@0"
+                },
+                {
+                    "command": "fpgaLsp.probeToggleSignal",
+                    "when": "view == fpgaLsp.probeView && viewItem == fpgaProbeSignal",
+                    "group": "inline@1"
                 }
             ],
             "commandPalette": [
@@ -666,6 +698,14 @@
                 },
                 {
                     "command": "fpgaLsp.openReportFile",
+                    "when": "false"
+                },
+                {
+                    "command": "fpgaLsp.probeToggleSignal",
+                    "when": "false"
+                },
+                {
+                    "command": "fpgaLsp.probeAddSignals",
                     "when": "false"
                 }
             ],

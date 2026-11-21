@@ -10,6 +10,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -569,4 +570,251 @@ TEST(ProbeVerify, TruncatesMissingNetsUnlessIncludeBits) {
     const auto full = fpgalsp::probe::Verify(project, true);
     EXPECT_EQ(full["missing_nets"].size(), 40u);
     EXPECT_FALSE(full.value("truncated", true));
+}
+
+// -----------------------------------------------------------------------------
+// disabled：被 disable 的条目不占 debug 资源，但仍要写进 XML（GUI/回读一致）
+// -----------------------------------------------------------------------------
+
+TEST(ProbeDisabled, ResolvesBusBaseSingleBitAndRangeEntries) {
+    // 整条总线（WHG/e2e_hstat 形态）、单根、范围三种写法都要能落到具体位上
+    const fpgalsp::probe::DisabledPlan plan = fpgalsp::probe::ResolveDisabled(
+        MatchingSignals(), {"WHG/pwm_reg0_i", "WHG/pwm_reg1_i[3]", "WHG/pwm_reg1_i[6:4]"});
+    EXPECT_TRUE(plan.unresolved.empty()) << joined(plan.unresolved);
+    EXPECT_EQ(plan.bits.size(), 16u + 1u + 3u);
+    EXPECT_TRUE(plan.IsBitDisabled("WHG/pwm_reg0_i[0]"));
+    EXPECT_TRUE(plan.IsBitDisabled("WHG/pwm_reg0_i[15]"));
+    EXPECT_TRUE(plan.IsBitDisabled("WHG/pwm_reg1_i[3]"));
+    EXPECT_TRUE(plan.IsBitDisabled("WHG/pwm_reg1_i[4]"));
+    EXPECT_TRUE(plan.IsBitDisabled("WHG/pwm_reg1_i[6]"));
+    EXPECT_FALSE(plan.IsBitDisabled("WHG/pwm_reg1_i[7]"));
+    // 整条总线保持基名，单根/范围展开成逐位
+    EXPECT_NE(std::find(plan.entries.begin(), plan.entries.end(), "WHG/pwm_reg0_i"),
+              plan.entries.end());
+    EXPECT_NE(std::find(plan.entries.begin(), plan.entries.end(), "WHG/pwm_reg1_i[3]"),
+              plan.entries.end());
+}
+
+TEST(ProbeDisabled, ReportsUnresolvedEntriesWithoutFailing) {
+    const fpgalsp::probe::DisabledPlan plan =
+        fpgalsp::probe::ResolveDisabled(MatchingSignals(), {"WHG/typo_sig", "WHG/pwm_reg0_i"});
+    EXPECT_TRUE(plan.IsBitDisabled("WHG/pwm_reg0_i[0]"));
+    ASSERT_EQ(plan.unresolved.size(), 1u);
+    EXPECT_EQ(plan.unresolved[0], "WHG/typo_sig");
+}
+
+TEST(ProbeConfigure, ReportsDisabledAndEnabledCounts) {
+    ScopedTempDir temp("config_disabled");
+    const fpgalsp::project::Project project = MakeProject(temp.path());
+    Write(fpgalsp::probe::MdnPath(project), MarkDebugLine(MatchingSignals()));
+
+    const auto result = fpgalsp::probe::Configure(project, {}, false, false, std::string(), 0,
+                                                  {"WHG/pwm_reg0_i"}, true);
+    EXPECT_TRUE(result.value("ok", false)) << result.dump();
+    ASSERT_EQ(result["disabled"].size(), 1u) << result.dump();
+    EXPECT_EQ(result["disabled"][0].get<std::string>(), "WHG/pwm_reg0_i");
+    EXPECT_EQ(result.value("disabled_count", 0), 16);
+    // bit_count/bus_count 保持"清单全量"的旧语义，enabled_* 才是真正占资源的量
+    EXPECT_EQ(result.value("bit_count", 0), 32);
+    EXPECT_EQ(result.value("bus_count", 0), 2);
+    EXPECT_EQ(result.value("enabled_bit_count", 0), 16);
+    EXPECT_EQ(result.value("enabled_bus_count", 0), 1);
+    EXPECT_TRUE(result.value("requires_apply_build_config", false))
+        << "disable 只能靠自写的 cwc 表达，必须提示 apply_build_config";
+    // dry run：config.txt 不落盘
+    EXPECT_FALSE(std::filesystem::exists(fpgalsp::probe::ProbeConfigPath(project)));
+}
+
+TEST(ProbeConfigure, WarnsButDoesNotFailOnUnresolvedDisabled) {
+    ScopedTempDir temp("config_disabled_unresolved");
+    const fpgalsp::project::Project project = MakeProject(temp.path());
+    Write(fpgalsp::probe::MdnPath(project), MarkDebugLine(MatchingSignals()));
+
+    const auto result = fpgalsp::probe::Configure(project, {}, false, false, std::string(), 0,
+                                                  {"WHG/not_here"}, true);
+    EXPECT_TRUE(result.value("ok", false)) << result.dump();
+    EXPECT_EQ(result.value("disabled_count", 0), 0);
+    ASSERT_TRUE(result.contains("unresolved_disabled")) << result.dump();
+    EXPECT_EQ(result["unresolved_disabled"][0].get<std::string>(), "WHG/not_here");
+    EXPECT_NE(result.value("warning", std::string()).find("not part of the probe list"),
+              std::string::npos);
+}
+
+TEST(ProbeConfigure, PersistsDisabledIntoConfigTxtAndReadsItBack) {
+    ScopedTempDir temp("config_disabled_persist");
+    const fpgalsp::project::Project project = MakeProject(temp.path());
+    Write(fpgalsp::probe::MdnPath(project), MarkDebugLine(MatchingSignals()));
+
+    const auto written = fpgalsp::probe::Configure(project, MatchingSignals(), true, false,
+                                                   std::string(), 0, {"WHG/pwm_reg1_i[7]"}, true);
+    ASSERT_TRUE(written.value("written", false)) << written.dump();
+    const fpgalsp::probe::ProbeBuildConfig config =
+        fpgalsp::probe::ReadProbeBuildConfig(project);
+    ASSERT_EQ(config.disabled.size(), 1u) << fpgalsp::probe::ProbeConfigPath(project);
+    EXPECT_EQ(config.disabled[0], "WHG/pwm_reg1_i[7]");
+
+    // 不给 disabled 参数 = 沿用落盘的那份（按当前清单重新解析）
+    const auto read = fpgalsp::probe::Configure(project, {}, false);
+    EXPECT_EQ(read.value("disabled_count", 0), 1);
+    ASSERT_EQ(read["disabled"].size(), 1u) << read.dump();
+    EXPECT_EQ(read["disabled"][0].get<std::string>(), "WHG/pwm_reg1_i[7]");
+}
+
+TEST(ProbeCwc, RendersDisabledBusesAndNets) {
+    ScopedTempDir temp("cwc_disabled");
+    const fpgalsp::project::Project project = MakeProject(temp.path());
+    Write(fpgalsp::probe::MdnPath(project), MarkDebugLine(MatchingSignals()));
+
+    fpgalsp::probe::ProbeBuildConfig config;
+    config.has_clock = true;
+    config.clock = "reg_init/clk";
+    config.has_depth = true;
+    config.depth = 1024;
+    // 整条 disabled + 单根 disabled 两种形态一起覆盖
+    config.disabled = {"WHG/pwm_reg0_i", "WHG/pwm_reg1_i[3]"};
+    std::string error;
+    fpgalsp::jsonrpc::Json info = fpgalsp::jsonrpc::Json::object();
+    const std::string text = fpgalsp::probe::BuildCwcFromConfig(
+        project, fpgalsp::probe::ReadMdn(fpgalsp::probe::MdnPath(project)), config, &error, &info,
+        /*include_eram=*/false);
+    ASSERT_FALSE(text.empty()) << error;
+
+    // bus 节点：整条 disable 的 is_enabled="no"，只 disable 一根的仍是 "yes"
+    EXPECT_NE(text.find("<bus name=\"pwm_reg0_i[15:0]\" clock=\"reg_init/clk\""),
+              std::string::npos) << "disabled 的 bus 仍必须出现在 XML 里";
+    EXPECT_NE(text.find("type=\"MARK_DEBUG_PROBE\" is_enabled=\"no\""), std::string::npos);
+    EXPECT_NE(text.find("type=\"MARK_DEBUG_PROBE\" is_enabled=\"yes\""), std::string::npos);
+    // net 节点：data/trig 与 signal_vec 的 cond/capture_cond
+    EXPECT_NE(text.find("<net name=\"pwm_reg1_i[3]\" const=\"false\" data=\"disable\" "
+                        "trig=\"disable\"/>"),
+              std::string::npos);
+    EXPECT_NE(text.find("<net name=\"pwm_reg1_i[2]\" const=\"false\" data=\"enable\" "
+                        "trig=\"enable\"/>"),
+              std::string::npos);
+    EXPECT_NE(text.find("<net name=\"pwm_reg1_i[3]\" cond=\"dont_care\" "
+                        "capture_cond=\"dont_care\"/>"),
+              std::string::npos);
+    EXPECT_NE(text.find("<net name=\"pwm_reg1_i[2]\" cond=\"low\" capture_cond=\"low\"/>"),
+              std::string::npos);
+
+    // 回读：cwc 里的 disable 数量（GUI/回读一致性）
+    const fpgalsp::probe::CwcSnapshot snapshot = fpgalsp::probe::ParseCwc(text);
+    ASSERT_TRUE(snapshot.ok) << snapshot.error;
+    ASSERT_EQ(snapshot.buses.size(), 2u);
+    EXPECT_FALSE(snapshot.buses[0].enabled) << "整条 disabled 的 bus";
+    EXPECT_TRUE(snapshot.buses[1].enabled) << "只有 1 根被 disable 的 bus 仍 enabled";
+    EXPECT_EQ(snapshot.disabled_bus_count, 1);
+    EXPECT_EQ(snapshot.disabled_net_count, 16 + 1);
+
+    // disabled 的 bit 不参与位宽/位序：32 - (16 + 1) = 15
+    EXPECT_EQ(info.value("bits", 0), 32);
+    EXPECT_EQ(info.value("enabled_bits", 0), 15);
+    EXPECT_EQ(info.value("disabled_bits", 0), 17);
+}
+
+// BuildCwcFromWatcher 是 phy 之后写 sidecar / 抓取前补 cwc 的那条路径（不是 insert 输入）。
+// 它必须用同一套 disabled 语义渲染，同时用"只剩 enable 位"的投影校验 TD 的
+// CWC_BUS_*（被 disable 的条目不占 debug 资源，TD 可能把它们从 watcher 里摘掉）。
+TEST(ProbeCwc, WatcherPathRendersDisabledAndChecksOnlyEnabledWidths) {
+    ScopedTempDir temp("cwc_watcher_disabled");
+    const fpgalsp::project::Project project = MakeProject(temp.path());
+    Write(fpgalsp::probe::MdnPath(project), MarkDebugLine(MatchingSignals()));
+
+    // 采样时钟只能从历史 cwc 取（ResolveSampleClock 读 `clock="..."`）
+    Write(project.dir + "/.fpgalsp/probe/history.cwc",
+          "<chipwatcher><watcher_nodes>"
+          "<bus name=\"pwm_reg0_i[15:0]\" clock=\"reg_init/clk\" inst=\"auto_created_cwc1\" "
+          "type=\"MARK_DEBUG_PROBE\" is_enabled=\"yes\"/></watcher_nodes></chipwatcher>\n");
+
+    // TD 的 watcher 产物：整条 disabled 的 pwm_reg0_i 已被摘掉，只剩 pwm_reg1_i。
+    // 部分 disabled 的 bus 保留全宽（16），DIN 计数落在 [15,16] —— 容差检查要接住。
+    const std::string watcher_dir =
+        project.dir + "/" + project.name + "_Runs/syn_1/cw/auto_created_cwc1";
+    Write(watcher_dir + "/auto_created_cwc1_watcherInst.sv",
+          "module auto_created_cwc1 ();\n"
+          "    localparam CWC_BUS_NUM = 1;\n"
+          "    localparam CWC_BUS_DIN_NUM = 16;\n"
+          "    localparam RAM_LEN = 16;\n"
+          "    localparam INPUT_PIPE_NUM = 0;\n"
+          "    localparam OUTPUT_PIPE_NUM = 0;\n"
+          "    localparam RAM_DATA_DEPTH = 1024;\n"
+          "    localparam integer CWC_BUS_WIDTH[0:0] = {16};\n"
+          "    localparam integer CWC_BUS_DIN_POS[0:0] = {0};\n"
+          "endmodule\n");
+    Write(project.dir + "/" + project.name + "_Runs/phy_1/" + project.name + "_inst.bid",
+          "<INST_ERAM>\n"
+          "<name>auto_created_cwc1/wrapper_cwc_top/U_cwc_ram/mem_syn_11</name>\n"
+          "<rid>0X00000241</rid>\n<wid>0X00000241</wid>\n<model_type>2</model_type>\n"
+          "<width_a>20</width_a>\n<width_b>20</width_b>\n"
+          "<is_debuggable>enable</is_debuggable>\n<is_initialize>enable</is_initialize>\n"
+          "<sub_bid_info>\n<width>20</width>\n<depth>1024</depth>\n"
+          "<address_offset>0</address_offset>\n<data_offset>0</data_offset>\n"
+          "<num_section>1</num_section>\n<section_size>65</section_size>\n"
+          "<width_per_section>20</width_per_section>\n"
+          "<bytes_in_per_section>1</bytes_in_per_section>\n"
+          "<address_step>1</address_step>\n<num_byte>2</num_byte>\n<ecc>0</ecc>\n"
+          "</sub_bid_info>\n</INST_ERAM>\n");
+
+    fpgalsp::probe::ProbeBuildConfig config;
+    config.disabled = {"WHG/pwm_reg0_i", "WHG/pwm_reg1_i[3]"};
+    ASSERT_TRUE(fpgalsp::probe::WriteProbeBuildConfig(project, config));
+
+    std::string error;
+    fpgalsp::jsonrpc::Json info = fpgalsp::jsonrpc::Json::object();
+    const std::string text = fpgalsp::probe::BuildCwcFromWatcher(
+        project, fpgalsp::probe::ReadMdn(fpgalsp::probe::MdnPath(project)), {}, &error, &info);
+    ASSERT_FALSE(text.empty()) << error;
+
+    EXPECT_EQ(info.value("enabled_bits", 0), 15);
+    EXPECT_EQ(info.value("bits", 0), 32);
+    const fpgalsp::probe::CwcSnapshot snapshot = fpgalsp::probe::ParseCwc(text);
+    ASSERT_TRUE(snapshot.ok) << snapshot.error;
+    ASSERT_EQ(snapshot.buses.size(), 2u) << "disabled 的 bus 仍要写进 XML";
+    EXPECT_FALSE(snapshot.buses[0].enabled);
+    EXPECT_TRUE(snapshot.buses[1].enabled);
+    EXPECT_EQ(snapshot.disabled_bus_count, 1);
+    EXPECT_EQ(snapshot.disabled_net_count, 17);
+    // ram width 用 TD 里的 RAM_LEN（16），而不是 32
+    EXPECT_NE(text.find("width=\"16\" depth=\"1024\""), std::string::npos);
+}
+
+TEST(ProbeStatus, ReportsDisabledRequestAndRenderedCounts) {
+    ScopedTempDir temp("status_disabled");
+    const fpgalsp::project::Project project = MakeProject(temp.path());
+    Write(fpgalsp::probe::MdnPath(project), MarkDebugLine(MatchingSignals()));
+    Write(fpgalsp::probe::CompiledBit(project), "bit");
+
+    // ① 只有请求、compiled.cwc 还是旧的（没有 disable 标记）
+    fpgalsp::probe::ProbeBuildConfig config;
+    config.has_clock = true;
+    config.clock = "reg_init/clk";
+    config.disabled = {"WHG/pwm_reg0_i"};
+    ASSERT_TRUE(fpgalsp::probe::WriteProbeBuildConfig(project, config));
+    Write(fpgalsp::probe::CompiledCwc(project), kRealCwc);
+
+    const auto requested = fpgalsp::probe::Status(project);
+    EXPECT_TRUE(requested.value("ready", false)) << requested.dump();
+    EXPECT_EQ(requested["disabled"].size(), 1u) << requested.dump();
+    EXPECT_EQ(requested.value("disabled_count", 0), 16);
+    const auto watcher_before = requested["watcher"];
+    EXPECT_EQ(watcher_before.value("disabled_count", 0), 16);
+    EXPECT_EQ(watcher_before.value("disabled_bus_count", 0), 0)
+        << "旧 cwc 里还没有 is_enabled=\"no\"";
+    EXPECT_EQ(watcher_before.value("disabled_net_count", 0), 0);
+
+    // ② 生成的 cwc 里确实带 disable 标记
+    std::string error;
+    fpgalsp::jsonrpc::Json info = fpgalsp::jsonrpc::Json::object();
+    const std::string text = fpgalsp::probe::BuildCwcFromConfig(
+        project, fpgalsp::probe::ReadMdn(fpgalsp::probe::MdnPath(project)), config, &error, &info,
+        /*include_eram=*/false);
+    ASSERT_FALSE(text.empty()) << error;
+    Write(fpgalsp::probe::CompiledCwc(project), text);
+
+    const auto rendered = fpgalsp::probe::Status(project);
+    EXPECT_TRUE(rendered.value("ready", false)) << rendered.dump();
+    const auto watcher_after = rendered["watcher"];
+    EXPECT_EQ(watcher_after.value("disabled_bus_count", 0), 1);
+    EXPECT_EQ(watcher_after.value("disabled_net_count", 0), 16);
+    EXPECT_EQ(watcher_after.value("enabled_net_count", 0), 32 - 16);
 }

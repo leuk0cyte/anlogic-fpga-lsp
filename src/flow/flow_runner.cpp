@@ -812,12 +812,14 @@ struct FlowRunner::Impl {
             return applied;
         };
 
-        // 采样时钟/深度：只有在 `-cwc <配置>` 里给 TD 才会被采纳（实测 depth 2048 生效）。
-        // 参数来自 `fpga_probe_config{clock,depth}` 落盘的那份 config。
+        // 采样时钟/深度 + disabled：只有在 `-cwc <配置>` 里给 TD 才会被采纳
+        //（实测 depth 2048 生效；disable 也只能通过自写 cwc 表达）。
+        // 参数来自 `fpga_probe_config{clock,depth,disabled}` 落盘的那份 config。
         std::string insert_body = "insert_debugger {" + debugger_dir + "}";
         {
             const probe::ProbeBuildConfig build = probe::ReadProbeBuildConfig(owner->project_);
-            if (build.apply_build_config && (build.has_depth || build.has_clock)) {
+            if (build.apply_build_config &&
+                (build.has_depth || build.has_clock || !build.disabled.empty())) {
                 const probe::MdnConfig mdn = probe::ReadMdn(probe::MdnPath(owner->project_));
                 std::string config_error;
                 jsonrpc::Json config_info = jsonrpc::Json::object();
@@ -825,16 +827,20 @@ struct FlowRunner::Impl {
                 // 才有的（由位流决定）。带上旧位流的 ERAM 行会让 place 直接
                 // "Run phy_1 has exited unexpectedly"（实测 2026-11-21）。
                 const std::string cwc_text = probe::BuildCwcFromConfig(
-                    owner->project_, mdn, build, &config_error, &config_info, /*include_eram=*/false);
+                    owner->project_, mdn, build, &config_error, &config_info, /*include_eram=*/true);
                 const std::string config_path = Join(RunDir(), "probe_config.cwc");
                 if (!cwc_text.empty() && WriteTextFile(config_path, cwc_text)) {
                     insert_body += " -cwc {" + config_path + "}";
                     Emit("log", run_name + ": 探针构建参数 clock=" +
                                     (build.has_clock ? build.clock : std::string("<from cwc>")) +
                                     " depth=" + std::to_string(build.depth) +
+                                    (build.disabled.empty()
+                                         ? std::string()
+                                         : " disabled=" + std::to_string(build.disabled.size()) +
+                                               " 项") +
                                     " (-cwc " + config_path + ")");
                 } else {
-                    Emit("log", run_name + ": 无法生成探针配置，忽略 clock/depth：" +
+                    Emit("log", run_name + ": 无法生成探针配置，忽略 clock/depth/disabled：" +
                                     (config_error.empty() ? std::string("write failed")
                                                           : config_error));
                 }

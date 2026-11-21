@@ -1471,9 +1471,48 @@ HandlerResult LspServer::HandleExecuteCommand(const Json& params) {
                 if (item.is_string()) signals.push_back(item.get<std::string>());
             }
         }
+        // disabled：整条总线 `WHG/x` 或单根 `WHG/x[2]`，语义与 MCP 的
+        // fpga_probe_config{disabled:[...]} 一致（不占 debug 资源，仍写进 cwc）。
+        std::vector<std::string> disabled;
+        bool has_disabled = false;
+        if (const auto it = options.find("disabled");
+            it != options.end() && it->is_array()) {
+            has_disabled = true;
+            for (const auto& item : *it) {
+                if (item.is_string()) disabled.push_back(item.get<std::string>());
+            }
+        }
+        // 采样时钟/深度：与 MCP 的 fpga_probe_config 同一语义（编译期量，只落盘参数，
+        // 由 flow_runner 在 gate 阶段以 `-cwc` 交给 TD）。
+        bool has_clock = false;
+        std::string clock;
+        if (const auto it = options.find("clock"); it != options.end() && it->is_string()) {
+            clock = it->get<std::string>();
+            has_clock = !clock.empty();
+        }
+        int depth = 0;
+        if (const auto it = options.find("depth");
+            it != options.end() && it->is_number_integer()) {
+            depth = it->get<int>();
+        }
         // ⚠ 写 user.mdn 会改变下一次综合/布局要嵌进 bit 的探针集合，必须显式 write:true
-        return OkObject(probe::Configure(*project, signals,
-                                        jsonrpc::GetBool(options, "write", false)));
+        Json result = probe::Configure(*project, signals, jsonrpc::GetBool(options, "write", false),
+                                       has_clock, clock, depth, disabled, has_disabled);
+        // apply_build_config：把"自写 cwc 送进 insert_debugger -cwc"这条 opt-in 开关
+        // 透传到 probe::ProbeBuildConfig（与 MCP 的 fpga_probe_config{apply_build_config}
+        // 完全等价）。**默认 false 不变**：自写 cwc 进 place 的风险仍是已知问题。
+        bool apply_build_config = false;
+        if (const auto it = options.find("apply_build_config");
+            it != options.end() && it->is_boolean()) {
+            apply_build_config = it->get<bool>();
+        }
+        if (apply_build_config) {
+            probe::ProbeBuildConfig config = probe::ReadProbeBuildConfig(*project);
+            config.apply_build_config = true;
+            probe::WriteProbeBuildConfig(*project, config);
+            result["apply_build_config"] = true;
+        }
+        return OkObject(std::move(result));
     }
 
     if (command == "fpgalsp.probeCapture") {

@@ -3775,12 +3775,25 @@ Json Bridge::ProbeConfigTool(const Json& arguments) {
     if (const auto it = arguments.find("depth"); it != arguments.end() && it->is_number_integer()) {
         depth = it->get<int>();
     }
+    // disabled：被 disable 的条目不占 debug 资源，但仍留在清单/cwc 里
+    // （bus `is_enabled="no"`、net `data="disable" trig="disable"`）。
+    // 条目可以是整条总线（WHG/x）或单根（WHG/x[2]）；不给 = 沿用落盘的那份。
+    std::vector<std::string> disabled;
+    bool has_disabled = false;
+    if (const auto it = arguments.find("disabled");
+        it != arguments.end() && it->is_array()) {
+        has_disabled = true;
+        for (const Json& item : *it) {
+            if (item.is_string()) disabled.push_back(item.get<std::string>());
+        }
+    }
     bool apply_build_config = false;
     if (const auto it = arguments.find("apply_build_config");
         it != arguments.end() && it->is_boolean()) {
         apply_build_config = it->get<bool>();
     }
-    Json out = probe::Configure(proj, signals, write, has_clock, clock, depth);
+    Json out = probe::Configure(proj, signals, write, has_clock, clock, depth, disabled,
+                                has_disabled);
     if (apply_build_config || arguments.contains("cwc_bus_order") ||
         arguments.contains("write_sidecar_cwc")) {
         probe::ProbeBuildConfig config = probe::ReadProbeBuildConfig(proj);
@@ -3838,10 +3851,14 @@ Json Bridge::ProbeConfigTool(const Json& arguments) {
         }
         out["unresolved"] = std::move(unresolved);
         if (out["unresolved"].size() > 0) {
-            out["warning"] =
+            const std::string warning =
                 "some probe names were not found by the HDL index - TD silently drops nets it "
                 "cannot resolve after a full syn+phy run. Check them with fpga_symbol_path "
                 "(it returns the exact <top>/<inst>/<net>[msb:lsb] form).";
+            // 别覆盖 probe::Configure 已经给出的 warning（例如 disabled 里不在清单上的条目）
+            out["warning"] = out.contains("warning") && out["warning"].is_string()
+                                 ? out["warning"].get<std::string>() + " " + warning
+                                 : warning;
         }
     }
     return out;

@@ -15,6 +15,8 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <memory>
 #include <set>
@@ -25,6 +27,7 @@
 
 #include "jsonrpc/dispatcher.h"
 #include "jsonrpc/transport.h"
+#include "platform/encoding.h"
 #include "platform/path.h"
 #include "server/lsp_server.h"
 
@@ -128,6 +131,65 @@ TEST_F(CommandsTest, UnknownCommandFails) {
     EXPECT_FALSE(result->result.at("ok").get<bool>());
     EXPECT_NE(result->result.at("error").get<std::string>().find("unknown command"),
               std::string::npos);
+}
+
+// LSP 的 fpgalsp.probeConfig 必须和 MCP 的 fpga_probe_config 同语义：disabled 只有
+// 经"自写 cwc -> insert_debugger -cwc"才进 bit，而那条路是 apply_build_config 门控的。
+// 插件侧传 apply_build_config:false，所以这里守的是"传了就转发、不传默认关"。
+// config.txt 用 FPGALSP_STATE_DIR 指到临时目录，绝不碰 gate-corpus 工程。
+TEST_F(CommandsTest, ProbeConfigForwardsApplyBuildConfigOptIn) {
+#if defined(_WIN32)
+    namespace fs = std::filesystem;
+    struct StateDirGuard {
+        std::string dir;
+        explicit StateDirGuard(std::string value) : dir(std::move(value)) {
+            std::error_code ec;
+            fs::remove_all(fs::path(dir), ec);
+            fs::create_directories(fs::path(dir), ec);
+            _putenv_s("FPGALSP_STATE_DIR", dir.c_str());
+        }
+        ~StateDirGuard() {
+            _putenv_s("FPGALSP_STATE_DIR", "");
+            std::error_code ec;
+            fs::remove_all(fs::path(dir), ec);
+        }
+    } guard((fs::temp_directory_path() / "fpgalsp_cmd_probe_state").string());
+    const std::string config_path = guard.dir + "/probe/config.txt";
+
+    fpgalsp::jsonrpc::Dispatcher dispatcher(*transport_);
+    server().RegisterAll(dispatcher);
+    const auto invoke = [&dispatcher](Json options) {
+        Json params = Json::object();
+        params["command"] = "fpgalsp.probeConfig";
+        params["arguments"] = Json::array();
+        params["arguments"].push_back(std::move(options));
+        return dispatcher.Invoke("workspace/executeCommand", params);
+    };
+
+    Json on = Json::object();
+    on["write"] = false;  // 只验证参数转发，别改工程的 user.mdn
+    on["apply_build_config"] = true;
+    const auto applied = invoke(std::move(on));
+    ASSERT_TRUE(applied.has_value());
+    ASSERT_FALSE(applied->is_error) << applied->error_message;
+    EXPECT_TRUE(applied->result.value("apply_build_config", false)) << applied->result.dump();
+    const std::string text =
+        fpgalsp::platform::try_read_file_utf8(config_path).value_or("");
+    EXPECT_NE(text.find("apply=1"), std::string::npos) << text;
+
+    // 不传 = 保持 opt-in 默认关闭，不写 apply=1
+    std::error_code ec;
+    fs::remove(fs::path(config_path), ec);
+    Json off = Json::object();
+    off["write"] = false;
+    const auto plain = invoke(std::move(off));
+    ASSERT_TRUE(plain.has_value());
+    ASSERT_FALSE(plain->is_error) << plain->error_message;
+    EXPECT_FALSE(plain->result.value("apply_build_config", false));
+    EXPECT_FALSE(fs::exists(fs::path(config_path))) << "默认不能写 apply=1";
+#else
+    GTEST_SKIP() << "state dir override is Windows-only";
+#endif
 }
 
 }  // namespace

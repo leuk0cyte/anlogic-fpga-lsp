@@ -121,9 +121,14 @@ const VSCodeCommands = Object.freeze({
     renameProject: 'fpgaLsp.renameProject',
     updateProject: 'fpgaLsp.updateProject',
     // 0.16.0: on-chip probe (ChipWatcher)
+    // 0.19.3: ChipWatcher is a native TreeView; probeConfig（“Edit probe signal list”）
+    // was a duplicate of showProbePanel and is gone. The remaining entry point is
+    // showProbePanel + the tree's own actions (toggle / add / refresh).
     probeStatus: 'fpgaLsp.probeStatus',
     probeCapture: 'fpgaLsp.probeCapture',
-    probeConfig: 'fpgaLsp.probeConfig',
+    probeToggleSignal: 'fpgaLsp.probeToggleSignal',
+    probeAddSignals: 'fpgaLsp.probeAddSignals',
+    refreshProbe: 'fpgaLsp.refreshProbe',
     showProbePanel: 'fpgaLsp.showProbePanel',
 });
 

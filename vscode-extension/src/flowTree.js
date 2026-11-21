@@ -63,6 +63,8 @@ function fmtWall(seconds) {
 
 function statusIcon(status) {
     const text = String(status || '').toLowerCase();
+    // "not run" 是 TD GUI 的“没跑过”，不是 running（否则 /run/ 会把它显示成转圈）。
+    if (/^not run$/.test(text)) return new vscode.ThemeIcon('circle-outline');
     if (/fail|error/.test(text)) return new vscode.ThemeIcon('error');
     if (/finish|done|pass|success|met/.test(text)) return new vscode.ThemeIcon('pass');
     if (/run|progress|active/.test(text)) return new vscode.ThemeIcon('sync~spin');
@@ -75,6 +77,66 @@ function guiGroup(stage, run) {
     const text = `${stage || ''} ${run || ''}`.toLowerCase();
     if (/place|route|bitgen|phy/.test(text)) return 'phy';
     return 'syn';
+}
+
+// TD GUI 的六个步骤（syn 3 + phy 3）。**始终**渲染这 6 行：后端 `flow.steps` 的
+// name 已经就是这些 GUI 名（Read Design … Generate Bitstream），不要再翻译一遍；
+// 没有 steps / 没跑过的步骤显示 "not run"。
+const GUI_FLOW_STEPS = Object.freeze([
+    { id: 'design', name: 'Read Design', stage: 'design', group: 'syn' },
+    { id: 'rtl', name: 'Optimize RTL', stage: 'rtl', group: 'syn' },
+    { id: 'gate', name: 'Optimize Gate', stage: 'gate', group: 'syn' },
+    { id: 'place', name: 'Optimize Placement', stage: 'place', group: 'phy' },
+    { id: 'route', name: 'Optimize Routing', stage: 'route', group: 'phy' },
+    { id: 'bitgen', name: 'Generate Bitstream', stage: 'bitgen', group: 'phy' },
+]);
+
+/** 名字比较用：忽略大小写/空格/下划线，`Optimize_RTL` == `Optimize RTL`。 */
+function stepKey(value) {
+    return String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
+/** pending / 缺失 / 空 = 没跑过；TD GUI（和后端 flow.steps）里显示成 "not run"。 */
+function stepStatusLabel(status) {
+    const text = String(status === undefined || status === null ? '' : status).trim();
+    if (!text || /^(pending|not\s*run|notrun|none|idle)$/i.test(text)) return 'not run';
+    return text;
+}
+
+/** 后端 `flowStatus.steps` / 老 `reports.flowStatus` 的统一行形状。 */
+function stepRow(entry, fallbackGroup) {
+    const wall = Number(entry.wall) || 0;
+    return {
+        name: String(entry.name || ''),
+        stage: entry.stage ? String(entry.stage) : '',
+        run: entry.run ? String(entry.run) : '',
+        status: stepStatusLabel(entry.status),
+        wall,
+        cpu: Number(entry.cpu) || 0,
+        mem_mb: Number(entry.mem_mb) || 0,
+        // 老格式（reports.flowStatus）只有现成的 elapsed 文本，没有秒数
+        elapsed: entry.elapsed ? String(entry.elapsed) : '',
+        group: fallbackGroup,
+    };
+}
+
+/** 一行的树节点（标签带 wall 时间，状态用图标 + description 区分）。 */
+function stageNode(row, group, canonicalId) {
+    const description = [
+        row.status,
+        row.elapsed,
+        row.cpu > 0 ? `cpu ${fmtWall(row.cpu)}` : '',
+        row.mem_mb > 0 ? `${row.mem_mb} MB` : '',
+    ].filter(Boolean).join(' · ');
+    return {
+        kind: 'stage',
+        id: `flow:step:${group}:${canonicalId}`,
+        label: row.wall > 0 ? `${row.name} · ${fmtWall(row.wall)}` : row.name,
+        description,
+        status: row.status,
+        group,
+        wall: row.wall,
+    };
 }
 
 /**
@@ -324,61 +386,91 @@ class FlowTreeProvider {
         // 两种数据来源：
         //   1) 后端给出了 `flow.steps`（TD GUI 的 6 步 + 每步耗时）—— 首选；
         //   2) 老服务器只有 `reports.flowStatus`（command 级、没有 status/秒数）—— 回落。
+        // 不管哪种，最终都按 GUI 六步渲染：缺的步骤补 "not run"，老格式多出来的行
+        // （例如 opt_rtl）追加在所属分组末尾，不丢数据。
         const backendSteps = flowRunSteps(flow);
-        let rows;
+        const source = [];
         if (backendSteps.length) {
-            // 6 步固定顺序由后端给（design→rtl→gate→place→route→bitgen），这里只负责
-            // 标签/描述：`Optimize Gate · 1m11s`，状态用图标 + 描述文本区分。
-            rows = backendSteps.map((step, index) => ({
-                kind: 'stage',
-                id: `flow:step:${index}:${step.stage || 'step'}`,
-                label: step.wall > 0 ? `${step.name} · ${fmtWall(step.wall)}` : step.name,
-                description: [
-                    step.status,
-                    step.cpu > 0 ? `cpu ${fmtWall(step.cpu)}` : '',
-                    step.mem_mb > 0 ? `${step.mem_mb} MB` : '',
-                ].filter(Boolean).join(' · '),
-                status: step.status,
-                group: guiGroup(step.stage, step.run),
-                wall: step.wall,
-            }));
+            for (const step of backendSteps) {
+                source.push(stepRow({
+                    name: step.name,
+                    stage: step.stage,
+                    run: step.run,
+                    status: step.status,
+                    wall: step.wall,
+                    cpu: step.cpu,
+                    mem_mb: step.mem_mb,
+                }, guiGroup(step.stage, step.run)));
+            }
         } else {
             const classify = (stage) => {
                 const text = `${stage.step} ${(stage.raw && (stage.raw.stage || stage.raw.name)) || ''}`.toLowerCase();
-                if (/syn|gate|elab|rtl|opt|logic/.test(text)) return 'syn';
                 if (/place|route|phy|pr|hold|bit|timing/.test(text)) return 'phy';
+                if (/syn|gate|elab|rtl|opt|logic/.test(text)) return 'syn';
                 return 'syn';
             };
-            rows = flowSteps(reports).map((stage, index) => ({
-                kind: 'stage',
-                id: `flow:${classify(stage)}:stage:${index}`,
-                label: stage.step || `step ${index + 1}`,
-                description: [stage.status, stage.elapsed].filter(Boolean).join(' · '),
-                status: stage.status,
-                group: classify(stage),
-                wall: 0,
-            }));
+            for (const stage of flowSteps(reports)) {
+                const stageName = (stage.raw && (stage.raw.stage || stage.raw.name)) || '';
+                source.push(stepRow({
+                    name: stage.step || `step ${source.length + 1}`,
+                    stage: stageName,
+                    status: stage.status,
+                    elapsed: stage.elapsed,
+                }, classify(stage)));
+            }
         }
-        const groups = [
+
+        const groups = { syn: [], phy: [] };
+        const used = new Set();
+        for (const canonical of GUI_FLOW_STEPS) {
+            let match = -1;
+            for (let index = 0; index < source.length; index += 1) {
+                if (used.has(index)) continue;
+                const row = source[index];
+                if (stepKey(canonical.name) === stepKey(row.name)
+                    || (row.stage && stepKey(canonical.stage) === stepKey(row.stage))) {
+                    match = index;
+                    break;
+                }
+            }
+            let row;
+            if (match >= 0) {
+                used.add(match);
+                row = source[match];
+            } else {
+                row = stepRow({
+                    name: canonical.name,
+                    stage: canonical.stage,
+                    status: 'not run',
+                }, canonical.group);
+            }
+            groups[canonical.group].push(stageNode(row, canonical.group, canonical.id));
+        }
+        // 老格式 / 非 GUI 名的步骤：追加到各自分组（不丢掉后端给的信息）。
+        for (let index = 0; index < source.length; index += 1) {
+            if (used.has(index)) continue;
+            const row = source[index];
+            const group = row.group === 'phy' ? 'phy' : 'syn';
+            groups[group].push(stageNode(row, group, `extra${index}-${stepKey(row.name) || index}`));
+        }
+
+        const groupDefs = [
             { id: 'syn', label: 'Synthesis (syn)', icon: new vscode.ThemeIcon('chip') },
             { id: 'phy', label: 'Place & Route (phy)', icon: new vscode.ThemeIcon('circuit-board') },
         ];
-        for (const group of groups) {
-            const groupStages = rows.filter((row) => row.group === group.id);
+        for (const group of groupDefs) {
+            const groupStages = groups[group.id];
+            const ranStages = groupStages.filter((row) => !/^not run$/i.test(String(row.status)));
             const groupWall = groupStages.reduce((sum, row) => sum + (Number(row.wall) || 0), 0);
             children.push({
                 kind: 'section',
                 id: `flow:group:${group.id}`,
                 label: group.label,
                 icon: group.icon,
-                description: groupStages.length
+                description: ranStages.length
                     ? [`${groupStages.length} steps`, fmtWall(groupWall)].filter(Boolean).join(' · ')
                     : 'not run',
-                children: groupStages.length ? groupStages : [{
-                    kind: 'placeholder',
-                    id: `flow:${group.id}:placeholder`,
-                    label: group.id === 'syn' ? 'No synthesis run yet' : 'No place & route run yet',
-                }],
+                children: groupStages,
             });
         }
         children.push({
@@ -387,13 +479,6 @@ class FlowTreeProvider {
             label: flow.lastMessage ? String(flow.lastMessage) : 'No flow message yet',
             description: flow.elapsed ? `elapsed ${fmtElapsed(flow.elapsed)}` : '',
         });
-        if (!rows.length && !flow.running) {
-            children.push({
-                kind: 'placeholder',
-                id: 'flow:placeholder',
-                label: 'No flow has run yet — use the buttons in the view title',
-            });
-        }
         return children;
     }
 

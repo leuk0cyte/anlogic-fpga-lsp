@@ -307,6 +307,81 @@ std::vector<std::string> NormaliseSignals(const std::vector<std::string>& signal
     return out;
 }
 
+namespace {
+
+// `WHG/a[3]` -> base=`WHG/a`、bit=3；不是这个形态返回 false。
+bool SplitBitIndex(std::string_view name, std::string* base, int* bit) {
+    const std::size_t open = name.find_last_of('[');
+    if (open == std::string_view::npos || name.empty() || name.back() != ']') return false;
+    const std::string index(name.substr(open + 1, name.size() - open - 2));
+    if (index.empty()) return false;
+    for (const char c : index) {
+        if (c < '0' || c > '9') return false;
+    }
+    *base = std::string(name.substr(0, open));
+    *bit = std::atoi(index.c_str());
+    return true;
+}
+
+// disabled 条目与信号名的匹配：完全相等，或一方是另一方 `/` 边界之后的尾段
+//（用户常只写叶子名；cwc 里的名字又不带顶层前缀）。
+bool SameBusName(std::string_view a, std::string_view b) {
+    if (a == b) return true;
+    const auto tail = [](std::string_view longer, std::string_view shorter) {
+        return longer.size() > shorter.size() &&
+               longer.substr(longer.size() - shorter.size()) == shorter &&
+               longer[longer.size() - shorter.size() - 1] == '/';
+    };
+    return tail(a, b) || tail(b, a);
+}
+
+}  // namespace
+
+// 把 disabled 条目（整条总线 / 单根 / 范围）解析成"逐位名字集合"。
+// 只在 signals 里存在的位才会被 disable；解析不到的条目进 unresolved（调用方告警）。
+DisabledPlan ResolveDisabled(const std::vector<std::string>& signals,
+                             const std::vector<std::string>& disabled) {
+    DisabledPlan plan;
+    if (disabled.empty()) return plan;
+    struct SignalBit {
+        std::string name;  // signals 里的原样写法（带顶层前缀）
+        std::string base;  // 去掉 `[n]`
+        int bit = -1;      // 标量 = -1
+    };
+    std::vector<SignalBit> items;
+    for (const std::string& raw : NormaliseSignals(signals)) {
+        SignalBit item;
+        item.name = raw;
+        if (!SplitBitIndex(raw, &item.base, &item.bit)) item.base = raw;
+        items.push_back(std::move(item));
+    }
+    std::set<std::string> seen_entry;
+    const auto add_entry = [&plan, &seen_entry](const std::string& entry) {
+        if (!seen_entry.insert(entry).second) return;
+        plan.entries.push_back(entry);
+    };
+    for (const std::string& raw : disabled) {
+        const std::string trimmed = Trim(raw);
+        if (trimmed.empty()) continue;
+        bool matched = false;
+        for (const std::string& piece : ExpandSignalRanges({trimmed})) {
+            std::string base;
+            int bit = -1;
+            const bool single_bit = SplitBitIndex(piece, &base, &bit);
+            if (!single_bit) base = piece;  // 整条总线：没有 `[n]`，base 就是条目本身
+            for (const SignalBit& item : items) {
+                if (!SameBusName(item.base, base)) continue;
+                if (single_bit && item.bit != bit) continue;
+                matched = true;
+                plan.bits.insert(item.name);
+                add_entry(single_bit ? item.name : item.base);
+            }
+        }
+        if (!matched) plan.unresolved.push_back(trimmed);
+    }
+    return plan;
+}
+
 MdnConfig ReadMdn(const std::string& path) {
     MdnConfig out;
     out.path = Slashes(path);
@@ -416,6 +491,9 @@ CwcSnapshot ParseCwc(std::string_view text) {
     //   与 `<instance><signal_vec><watcher_nodes>`（触发/采样条件）。必须按名字去重，
     //   否则 4 条总线会被报成 8 条。
     std::map<std::string, std::size_t> bus_index;  // name -> out.buses 下标
+    // disabled：bus 的 `is_enabled="no"` / net 的 `data="disable"`（不占 debug 资源）
+    std::set<std::string> disabled_buses;
+    std::set<std::string> disabled_nets;
     std::size_t pos = 0;
     while (true) {
         const std::size_t open = text.find("<bus ", pos);
@@ -428,6 +506,7 @@ CwcSnapshot ParseCwc(std::string_view text) {
         bus.type = Attr(body, "type");
         const std::string enabled = Attr(body, "is_enabled");
         bus.enabled = enabled.empty() || enabled == "yes" || enabled == "true";
+        if (!bus.enabled && !bus.name.empty()) disabled_buses.insert(bus.name);
         // 这条 bus 自己的 `<net>` 子元素（到下一个 <bus> / </bus> 为止）。
         // 有些 TD 版本的 <bus name> 不带 `[msb:lsb]`，位宽只能从这些 net 名还原。
         {
@@ -440,6 +519,9 @@ CwcSnapshot ParseCwc(std::string_view text) {
                  i != std::string_view::npos && i < end; i = text.find("<net ", i + 5)) {
                 const std::string net_name = Attr(TagBody(text, i), "name");
                 if (!net_name.empty()) bus.nets.push_back(net_name);
+                if (Attr(TagBody(text, i), "data") == "disable" && !net_name.empty()) {
+                    disabled_nets.insert(net_name);
+                }
             }
         }
         if (!bus.name.empty()) {
@@ -499,6 +581,8 @@ CwcSnapshot ParseCwc(std::string_view text) {
         if (!name.empty()) nets.insert(name);
     }
     out.net_count = static_cast<int>(nets.size());
+    out.disabled_bus_count = static_cast<int>(disabled_buses.size());
+    out.disabled_net_count = static_cast<int>(disabled_nets.size());
     out.ok = !out.buses.empty();
     if (!out.ok) out.error = "no <bus> entries in ChipWatcher file";
     return out;
@@ -1021,36 +1105,76 @@ std::string BuildCwcFromWatcher(const project::Project& project, const MdnConfig
 
     int total = 0;
     for (const auto& bus : buses) total += bus.second;
-    if (static_cast<int>(buses.size()) != inst.bus_num || total != inst.din_num ||
-        inst.widths.size() != buses.size()) {
-        return fail("mdn/watcher mismatch: mdn has " + std::to_string(buses.size()) + " buses / " +
-                    std::to_string(total) + " bits, watcher has " +
-                    std::to_string(inst.bus_num) + " buses / " + std::to_string(inst.din_num) +
-                    " bits - rerun stages:[\"all\"] so the watcher matches user.mdn");
-    }
-    // 顺序不一致 = bit 里的 watcher 是从**另一份** probe 清单建出来的（典型：改完 mdn 只
-    // 重跑过 phy，或 mdn 在 flow 之后又被写了一次）。这种情况只能重跑 syn 让它重建，
-    // 不能"猜"哪个 16 位总线对哪个 slot —— 猜错就是错的采样数据。
-    {
-        std::vector<int> mdn_widths;
-        for (const auto& bus : buses) mdn_widths.push_back(bus.second);
-        std::vector<int> watcher_widths = inst.widths;
-        std::sort(mdn_widths.begin(), mdn_widths.end());
-        std::sort(watcher_widths.begin(), watcher_widths.end());
-        const bool same_set = mdn_widths == watcher_widths;
-        for (std::size_t i = 0; i < buses.size(); ++i) {
-            if (buses[i].second != inst.widths[i]) {
-                return fail(
-                    same_set
-                        ? "the watcher in the bitstream was built from a DIFFERENT probe list "
-                          "(same widths, different order): rerun stages:[\"all\"] so user.mdn and "
-                          "the ChipWatcher agree - do not guess the bus order, wrong order means "
-                          "wrong capture data"
-                        : "bus " + buses[i].first + " width " + std::to_string(buses[i].second) +
-                              " != watcher width " + std::to_string(inst.widths[i]) +
-                              " - rerun stages:[\"all\"]");
-            }
+
+    // disabled：被 disable 的条目不占 debug 资源（用户实测 TD GUI）。但 TD 在
+    // `insert_debugger -cwc` 里到底怎么折算 CWC_BUS_* 没有公开文档，所以这里接受
+    // 三种自洽的布局（都按**我们的总线顺序**逐位置比对位宽，顺序错依然拒绝）：
+    //   full  : TD 忽略 disable，仍按 cwc 的 bus 列表建 watcher（全量计数）
+    //   on    : TD 把 disable 的位彻底摘掉 —— 整条 disabled 的 bus 消失，
+    //           部分 disabled 的 bus 位宽变成"只剩 enable 的位数"
+    //   mixed : 整条 disabled 的 bus 消失，但部分 disabled 的 bus 保留全宽，
+    //           DIN 计数落在 enabled_total..total 之间
+    // 位序（哪个 16 位 bus 对哪个 slot）才是会毁掉采样数据的东西：三种布局都必须
+    // 逐位置位宽相等才接受；放宽的只有"disabled 折算"这一个维度。
+    const ProbeBuildConfig config = ReadProbeBuildConfig(project);
+    const DisabledPlan disabled = ResolveDisabled(mdn.signals, config.disabled);
+    const auto bit_disabled = [&disabled](const std::string& base, int bit) {
+        return disabled.IsBitDisabled(base + "[" + std::to_string(bit) + "]");
+    };
+    std::vector<int> full_projection;     // 全量 bus 位宽
+    std::vector<int> enabled_projection;  // 只剩 enable 的 bus，位宽 = enable 位数
+    std::vector<int> kept_full;           // 只剩 enable 的 bus，位宽 = 原全宽
+    int enabled_total = 0;
+    for (const auto& bus : buses) {
+        int enabled_bits = 0;
+        for (int bit = 0; bit < bus.second; ++bit) {
+            if (!bit_disabled(bus.first, bit)) ++enabled_bits;
         }
+        full_projection.push_back(bus.second);
+        if (enabled_bits > 0) {
+            enabled_projection.push_back(enabled_bits);
+            kept_full.push_back(bus.second);
+        }
+        enabled_total += enabled_bits;
+    }
+    const auto widths_match = [&inst](const std::vector<int>& expected) {
+        if (inst.widths.size() != expected.size()) return false;
+        for (std::size_t i = 0; i < expected.size(); ++i) {
+            if (inst.widths[i] != expected[i]) return false;
+        }
+        return true;
+    };
+    const bool layout_ok =
+        !disabled.Any()
+            ? (static_cast<int>(buses.size()) == inst.bus_num && total == inst.din_num &&
+               widths_match(full_projection))
+            : ((static_cast<int>(buses.size()) == inst.bus_num && total == inst.din_num &&
+                widths_match(full_projection)) ||
+               (static_cast<int>(enabled_projection.size()) == inst.bus_num &&
+                inst.din_num >= enabled_total && inst.din_num <= total &&
+                (widths_match(enabled_projection) || widths_match(kept_full))));
+    if (!layout_ok) {
+        // 位宽集合相同但顺序不同 = bit 里的 watcher 是从**另一份** probe 清单建出来的
+        //（典型：改完 mdn 只重跑过 phy，或 mdn 在 flow 之后又被写了一次）。这种情况
+        // 只能重跑 syn 让它重建，不能"猜"哪个 16 位总线对哪个 slot —— 猜错就是错的采样数据。
+        std::vector<int> wanted = full_projection;
+        std::vector<int> got = inst.widths;
+        std::sort(wanted.begin(), wanted.end());
+        std::sort(got.begin(), got.end());
+        if (wanted == got) {
+            return fail(
+                "the watcher in the bitstream was built from a DIFFERENT probe list "
+                "(same widths, different order): rerun stages:[\"all\"] so user.mdn and "
+                "the ChipWatcher agree - do not guess the bus order, wrong order means "
+                "wrong capture data");
+        }
+        return fail("mdn/watcher mismatch: mdn has " + std::to_string(buses.size()) + " buses / " +
+                    std::to_string(total) + " bits (" +
+                    std::to_string(enabled_projection.size()) + " buses / " +
+                    std::to_string(enabled_total) + " bits once disabled entries are excluded), "
+                    "watcher has " + std::to_string(inst.bus_num) + " buses / " +
+                    std::to_string(inst.din_num) +
+                    " bits - rerun stages:[\"all\"] so the watcher matches user.mdn");
     }
 
     // 3) 采集 RAM 的 ERAM 映射（rid/wid/offset）
@@ -1086,11 +1210,17 @@ std::string BuildCwcFromWatcher(const project::Project& project, const MdnConfig
            project.device + "\">\n";
     out += "\t<watcher_nodes>\n";
     for (const auto& bus : buses) {
+        int enabled_bits = 0;
+        for (int bit = 0; bit < bus.second; ++bit) {
+            if (!bit_disabled(bus.first, bit)) ++enabled_bits;
+        }
         out += "\t\t<bus name=\"" + rel_name(bus.first) + "[" + std::to_string(bus.second - 1) + ":0]\" clock=\"" +
-               clock + "\" inst=\"" + cwc1_name + "\" type=\"MARK_DEBUG_PROBE\" is_enabled=\"yes\">\n";
+               clock + "\" inst=\"" + cwc1_name + "\" type=\"MARK_DEBUG_PROBE\" is_enabled=\"" +
+               (enabled_bits == 0 ? "no" : "yes") + "\">\n";
         for (int bit = bus.second - 1; bit >= 0; --bit) {
+            const std::string state = bit_disabled(bus.first, bit) ? "disable" : "enable";
             out += "\t\t\t<net name=\"" + rel_name(bus.first) + "[" + std::to_string(bit) +
-                   "]\" const=\"false\" data=\"enable\" trig=\"enable\"/>\n";
+                   "]\" const=\"false\" data=\"" + state + "\" trig=\"" + state + "\"/>\n";
         }
         out += "\t\t</bus>\n";
     }
@@ -1107,8 +1237,10 @@ std::string BuildCwcFromWatcher(const project::Project& project, const MdnConfig
         out += "\t\t\t\t<bus name=\"" + rel_name(bus.first) + "[" + std::to_string(bus.second - 1) +
                ":0]\" compatator_num=\"1\" op=\"dont_care\" capture_op=\"dont_care\">\n";
         for (int bit = bus.second - 1; bit >= 0; --bit) {
+            // disabled 的位不参与触发/采集比较（与 GUI 写出的 cwc 一致）。
+            const std::string cond = bit_disabled(bus.first, bit) ? "dont_care" : "low";
             out += "\t\t\t\t\t<net name=\"" + rel_name(bus.first) + "[" + std::to_string(bit) +
-                   "]\" cond=\"low\" capture_cond=\"low\"/>\n";
+                   "]\" cond=\"" + cond + "\" capture_cond=\"" + cond + "\"/>\n";
         }
         out += "\t\t\t\t</bus>\n";
     }
@@ -1147,6 +1279,9 @@ std::string BuildCwcFromWatcher(const project::Project& project, const MdnConfig
         (*info)["depth"] = inst.depth;
         (*info)["buses"] = static_cast<int>(buses.size());
         (*info)["bits"] = total;
+        (*info)["enabled_bits"] = enabled_total;
+        (*info)["disabled_bits"] = static_cast<int>(disabled.bits.size());
+        (*info)["enabled_widths"] = enabled_projection;
         (*info)["eram"] = static_cast<int>(erams.size());
     }
     return out;
@@ -1159,6 +1294,30 @@ namespace {
 
 std::string StateProbeDir(const project::Project& project) {
     return fpgalsp::platform::state_dir(project.dir) + "/probe";
+}
+
+// config.txt 里的列表项用逗号分隔（RTL 层次名/位号里不会有逗号）
+std::vector<std::string> SplitCsv(std::string_view value) {
+    std::vector<std::string> out;
+    std::size_t pos = 0;
+    while (pos <= value.size()) {
+        const std::size_t comma = value.find(',', pos);
+        const std::string one = Trim(
+            value.substr(pos, comma == std::string_view::npos ? std::string_view::npos : comma - pos));
+        if (!one.empty()) out.push_back(one);
+        if (comma == std::string_view::npos) break;
+        pos = comma + 1;
+    }
+    return out;
+}
+
+std::string JoinCsv(const std::vector<std::string>& items) {
+    std::string joined;
+    for (const std::string& item : items) {
+        if (!joined.empty()) joined += ",";
+        joined += item;
+    }
+    return joined;
 }
 
 // 极简 key=value 落盘（避免为一个 3 字段配置引入 JSON 依赖）
@@ -1200,16 +1359,10 @@ ProbeBuildConfig ReadProbeBuildConfig(const project::Project& project) {
         } else if (key == "write_sidecar") {
             config.write_sidecar_cwc = value != "0";
         } else if (key == "bus_order" && !value.empty()) {
-            std::size_t pos = 0;
-            while (pos <= value.size()) {
-                const std::size_t comma = value.find(',', pos);
-                const std::string one =
-                    value.substr(pos, comma == std::string::npos ? std::string::npos
-                                                                : comma - pos);
-                if (!one.empty()) config.cwc_bus_order.push_back(one);
-                if (comma == std::string::npos) break;
-                pos = comma + 1;
-            }
+            config.cwc_bus_order = SplitCsv(value);
+        } else if (key == "disabled" && !value.empty()) {
+            // 与 bus_order 同样的逗号分隔；条目里不会含逗号（RTL 层次名/位号）
+            config.disabled = SplitCsv(value);
         }
     }
     return config;
@@ -1232,6 +1385,8 @@ bool WriteProbeBuildConfig(const project::Project& project, const ProbeBuildConf
         }
         text += "bus_order=" + joined + "\n";
     }
+    // 空 vector = 删除这一行（WriteProbeBuildConfig 总是整份重写，天然清掉旧的 disable）
+    if (!config.disabled.empty()) text += "disabled=" + JoinCsv(config.disabled) + "\n";
     return fpgalsp::platform::write_file_utf8(ProbeConfigPath(project), text);
 }
 
@@ -1254,6 +1409,19 @@ std::string BuildCwcFromConfig(const project::Project& project, const MdnConfig&
     }
     int total = 0;
     for (const auto& bus : buses) total += bus.second;
+
+    // disabled：不占 debug 资源，但**仍**写进 XML（GUI/回读都要看到它们）。
+    // 位序/位宽/DIN 与 <logic_eram width> 只算 enable 的位（见 DisabledPlan 的注释）。
+    const DisabledPlan disabled = ResolveDisabled(mdn.signals, config.disabled);
+    const auto bit_disabled = [&disabled](const std::string& base, int bit) {
+        return disabled.IsBitDisabled(base + "[" + std::to_string(bit) + "]");
+    };
+    int enabled_total = 0;
+    for (const auto& bus : buses) {
+        for (int bit = 0; bit < bus.second; ++bit) {
+            if (!bit_disabled(bus.first, bit)) ++enabled_total;
+        }
+    }
 
     const std::string clock =
         config.has_clock ? config.clock : ResolveSampleClock(project);
@@ -1298,12 +1466,18 @@ std::string BuildCwcFromConfig(const project::Project& project, const MdnConfig&
     out += "<chipwatcher version=\"3.070000\" project_name=\"" + project.name + "\" chip_name=\"" +
            project.device + "\">\n\t<watcher_nodes>\n";
     for (const auto& bus : buses) {
+        int enabled_bits = 0;
+        for (int bit = 0; bit < bus.second; ++bit) {
+            if (!bit_disabled(bus.first, bit)) ++enabled_bits;
+        }
         out += "\t\t<bus name=\"" + rel(bus.first) + "[" + std::to_string(bus.second - 1) +
                ":0]\" clock=\"" + clock + "\" inst=\"" + inst +
-               "\" type=\"MARK_DEBUG_PROBE\" is_enabled=\"yes\">\n";
+               "\" type=\"MARK_DEBUG_PROBE\" is_enabled=\"" +
+               (enabled_bits == 0 ? "no" : "yes") + "\">\n";
         for (int bit = bus.second - 1; bit >= 0; --bit) {
+            const std::string state = bit_disabled(bus.first, bit) ? "disable" : "enable";
             out += "\t\t\t<net name=\"" + rel(bus.first) + "[" + std::to_string(bit) +
-                   "]\" const=\"false\" data=\"enable\" trig=\"enable\"/>\n";
+                   "]\" const=\"false\" data=\"" + state + "\" trig=\"" + state + "\"/>\n";
         }
         out += "\t\t</bus>\n";
     }
@@ -1318,8 +1492,11 @@ std::string BuildCwcFromConfig(const project::Project& project, const MdnConfig&
         out += "\t\t\t\t<bus name=\"" + rel(bus.first) + "[" + std::to_string(bus.second - 1) +
                ":0]\" compatator_num=\"1\" op=\"dont_care\" capture_op=\"dont_care\">\n";
         for (int bit = bus.second - 1; bit >= 0; --bit) {
+            // disabled 的位在触发/采集条件里必须是 dont_care，否则 TD 会认为
+            // 它仍要参与比较（GUI 里 disable 的条目就是这个写法）。
+            const std::string cond = bit_disabled(bus.first, bit) ? "dont_care" : "low";
             out += "\t\t\t\t\t<net name=\"" + rel(bus.first) + "[" + std::to_string(bit) +
-                   "]\" cond=\"low\" capture_cond=\"low\"/>\n";
+                   "]\" cond=\"" + cond + "\" capture_cond=\"" + cond + "\"/>\n";
         }
         out += "\t\t\t\t</bus>\n";
     }
@@ -1332,7 +1509,7 @@ std::string BuildCwcFromConfig(const project::Project& project, const MdnConfig&
     out += "\t\t</trigger>\n";
     if (include_eram) {
     out += "\t\t<logic_eram name=\"" + inst + "/wrapper_cwc_top/U_cwc_ram\" width=\"" +
-           std::to_string(total) + "\" depth=\"" + std::to_string(depth) + "\">\n";
+           std::to_string(enabled_total) + "\" depth=\"" + std::to_string(depth) + "\">\n";
     for (const BidEram& eram : erams) {
         out += "\t\t\t<phy_eram name=\"" + eram.name + "\" wid=\"" + eram.wid + "\" rid=\"" +
                eram.rid + "\" model_type=\"" + eram.model_type + "\" width_a=\"" + eram.width_a +
@@ -1359,6 +1536,8 @@ std::string BuildCwcFromConfig(const project::Project& project, const MdnConfig&
         (*info)["depth"] = depth;
         (*info)["buses"] = static_cast<int>(buses.size());
         (*info)["bits"] = total;
+        (*info)["enabled_bits"] = enabled_total;
+        (*info)["disabled_bits"] = static_cast<int>(disabled.bits.size());
         (*info)["eram"] = static_cast<int>(erams.size());
     }
     return out;
@@ -1377,7 +1556,18 @@ jsonrpc::Json WriteCompiledCwcAfterPhy(const project::Project& project) {
     //   wait_on_hw_cw/write_hw_cw_data 阶段挂掉）。有就不要动。
     if (IsFile(CompiledCwc(project))) {
         const CwcSnapshot existing = ReadCwc(CompiledCwc(project));
-        if (existing.ok && existing.net_count > 0) {
+        // 与当前 mdn/disabled 计划一致才复用；否则必须重建 —— disable 生效后
+        // 位流里的 watcher 位宽会变小（实测 53 -> 48），留着旧 cwc 会让
+        // `config_chipwatcher` 报出不同的 Chipwatcher code，抓取随即挂死。
+        const ProbeBuildConfig existing_config = ReadProbeBuildConfig(project);
+        const DisabledPlan existing_plan =
+            ResolveDisabled(mdn.signals, existing_config.disabled);
+        const int existing_disabled = static_cast<int>(existing_plan.bits.size());
+        const int expected_enabled =
+            static_cast<int>(mdn.signals.size()) - existing_disabled;
+        const bool same_shape = existing.ok && existing.net_count == expected_enabled &&
+                                existing.disabled_net_count == existing_disabled;
+        if (same_shape) {
             out["ok"] = true;
             out["existed"] = true;
             out["written"] = false;
@@ -1452,6 +1642,7 @@ jsonrpc::Json EnsureCompiledCwc(const project::Project& project,
     jsonrpc::Json out = jsonrpc::Json::object();
     out["ok"] = false;
     out["path"] = CompiledCwc(project);
+    const MdnConfig shape_mdn = ReadMdn(MdnPath(project));
 
     // sidecar 的另一半：批量 phy 也不写 `cw/compiled.bit`（只有 GUI 会拷）。
     // 抓到数据只需要 bit + cwc 都在，所以这里顺手把 `<run>/<prj>.bit` 同步过去。
@@ -1469,7 +1660,18 @@ jsonrpc::Json EnsureCompiledCwc(const project::Project& project,
     }
     if (IsFile(CompiledCwc(project))) {
         const CwcSnapshot existing = ReadCwc(CompiledCwc(project));
-        if (existing.ok && existing.net_count > 0) {
+        // 与当前 mdn/disabled 计划一致才复用；否则必须重建 —— disable 生效后
+        // 位流里的 watcher 位宽会变小（实测 53 -> 48），留着旧 cwc 会让
+        // `config_chipwatcher` 报出不同的 Chipwatcher code，抓取随即挂死。
+        const ProbeBuildConfig existing_config = ReadProbeBuildConfig(project);
+        const DisabledPlan existing_plan =
+            ResolveDisabled(shape_mdn.signals, existing_config.disabled);
+        const int existing_disabled = static_cast<int>(existing_plan.bits.size());
+        const int expected_enabled =
+            static_cast<int>(shape_mdn.signals.size()) - existing_disabled;
+        const bool same_shape = existing.ok && existing.net_count == expected_enabled &&
+                                existing.disabled_net_count == existing_disabled;
+        if (same_shape) {
             out["ok"] = true;
             out["existed"] = true;
             out["written"] = false;
@@ -1528,6 +1730,23 @@ jsonrpc::Json Status(const project::Project& project) {
     }
 
     const CwcSnapshot cwc = ReadCwc(CompiledCwc(project));
+
+    // disabled（不占 debug 资源）：请求侧来自 .fpgalsp/probe/config.txt 的 `disabled=`，
+    // 实际侧看 compiled.cwc 里的 `is_enabled="no"` / `data="disable"`。
+    const ProbeBuildConfig build = ReadProbeBuildConfig(project);
+    const DisabledPlan disabled = ResolveDisabled(mdn.signals, build.disabled);
+    {
+        jsonrpc::Json list = jsonrpc::Json::array();
+        for (const std::string& entry : disabled.entries) list.push_back(entry);
+        out["disabled"] = std::move(list);
+        out["disabled_count"] = static_cast<int>(disabled.bits.size());
+        if (!disabled.unresolved.empty()) {
+            jsonrpc::Json unresolved = jsonrpc::Json::array();
+            for (const std::string& entry : disabled.unresolved) unresolved.push_back(entry);
+            out["disabled_unresolved"] = std::move(unresolved);
+        }
+    }
+
     jsonrpc::Json watcher = jsonrpc::Json::object();
     watcher["present"] = cwc.ok;
     watcher["compiled_cwc"] = CompiledCwc(project);
@@ -1540,6 +1759,12 @@ jsonrpc::Json Status(const project::Project& project) {
     watcher["trigger_position"] = cwc.trigger_position;
     watcher["trigger_type"] = cwc.trigger_type;
     watcher["net_count"] = cwc.net_count;
+    // disabled 数量：disabled_count = 配置里要求的位数（不占 debug 资源）；
+    // disabled_bus_count / disabled_net_count = compiled.cwc 里实际标成 disable 的条目。
+    watcher["disabled_count"] = static_cast<int>(disabled.bits.size());
+    watcher["disabled_bus_count"] = cwc.disabled_bus_count;
+    watcher["disabled_net_count"] = cwc.disabled_net_count;
+    watcher["enabled_net_count"] = cwc.net_count - cwc.disabled_net_count;
     jsonrpc::Json buses = jsonrpc::Json::array();
     for (const CwcBus& bus : cwc.buses) {
         jsonrpc::Json item = jsonrpc::Json::object();
@@ -1632,7 +1857,8 @@ jsonrpc::Json Status(const project::Project& project) {
 }
 
 jsonrpc::Json Configure(const project::Project& project, const std::vector<std::string>& signals,
-                        bool write, bool has_clock, const std::string& clock, int depth) {
+                        bool write, bool has_clock, const std::string& clock, int depth,
+                        const std::vector<std::string>& disabled, bool has_disabled) {
     jsonrpc::Json out = jsonrpc::Json::object();
     out["ok"] = false;
     out["path"] = MdnPath(project);
@@ -1642,6 +1868,12 @@ jsonrpc::Json Configure(const project::Project& project, const std::vector<std::
         signals.empty() ? before.signals : NormaliseSignals(signals);
     const std::set<std::string> old_set(before.signals.begin(), before.signals.end());
     const std::set<std::string> new_set(after.begin(), after.end());
+
+    // disabled：显式给了就整体替换，没给就沿用落盘的那份（按新清单重新解析）。
+    // 解析不到的条目只告警、不判失败 —— 清单可能刚被替换过。
+    ProbeBuildConfig build = ReadProbeBuildConfig(project);
+    const std::vector<std::string> disabled_input = has_disabled ? disabled : build.disabled;
+    const DisabledPlan disabled_plan = ResolveDisabled(after, disabled_input);
 
     jsonrpc::Json added = jsonrpc::Json::array();
     jsonrpc::Json removed = jsonrpc::Json::array();
@@ -1687,12 +1919,56 @@ jsonrpc::Json Configure(const project::Project& project, const std::vector<std::
     out["buses"] = std::move(buses_json);
     out["bus_count"] = static_cast<int>(bus_widths.size());
     out["bit_count"] = static_cast<int>(after.size());
+    // ---- disabled / enabled 计数 ----
+    // disabled 的条目不占 debug 资源，所以 enabled_* 才是 TD 真正要分配资源的量；
+    // bus_count/bit_count 保持"清单全量"的旧语义，别让现有调用方跟着变。
+    const int disabled_bit_count = static_cast<int>(disabled_plan.bits.size());
+    const int enabled_bit_count = static_cast<int>(after.size()) - disabled_bit_count;
+    int enabled_bus_count = 0;
+    for (const auto& [name, width] : bus_widths) {
+        int off = 0;
+        for (int bit = 0; bit < width; ++bit) {
+            if (disabled_plan.IsBitDisabled(name + "[" + std::to_string(bit) + "]")) ++off;
+        }
+        if (off < width) ++enabled_bus_count;
+    }
+    {
+        jsonrpc::Json disabled_json = jsonrpc::Json::array();
+        for (const std::string& entry : disabled_plan.entries) disabled_json.push_back(entry);
+        out["disabled"] = std::move(disabled_json);
+        out["disabled_count"] = disabled_bit_count;
+        out["enabled_bus_count"] = enabled_bus_count;
+        out["enabled_bit_count"] = enabled_bit_count;
+        // disabled 只能通过我们自写的 cwc（insert_debugger -cwc）表达，而那条路
+        // 默认是关的 —— 明确告诉调用方要开 apply_build_config，别让它以为写进
+        // mdn 就生效了（mdn 没有 disable 语法）。
+        out["requires_apply_build_config"] = disabled_plan.Any();
+    }
+    if (!disabled_plan.unresolved.empty()) {
+        jsonrpc::Json unresolved = jsonrpc::Json::array();
+        for (const std::string& entry : disabled_plan.unresolved) unresolved.push_back(entry);
+        out["unresolved_disabled"] = std::move(unresolved);
+        out["warning"] =
+            "some disabled entries are not part of the probe list (they will be ignored): " +
+            [&disabled_plan]() {
+                std::string names;
+                for (const std::string& entry : disabled_plan.unresolved) {
+                    if (!names.empty()) names += ", ";
+                    names += entry;
+                }
+                return names;
+            }() +
+            ". Disabled entries are matched against the current signal list; a bus base "
+            "(WHG/x) disables all of its bits, WHG/x[2] disables a single bit.";
+    }
     // ⚠ 故意**不**设上限：每颗芯片的 ChipWatcher 预算不同（TD 在 phy 阶段自己会报错），
     //   而且 GUI 里可以对任意信号 mark_debug、也可以 disable 掉列表里的条目
     //   （disable 的条目不占 debug 资源）。后端只报数量，超了让 TD 自己报错。
     jsonrpc::Json budget = jsonrpc::Json::object();
     budget["buses"] = static_cast<int>(bus_widths.size());
     budget["bits"] = static_cast<int>(after.size());
+    budget["enabled_bus_count"] = enabled_bus_count;
+    budget["enabled_bit_count"] = enabled_bit_count;
     budget["capped"] = false;
     budget["note"] =
         "no cap is applied here: every device has its own ChipWatcher budget and TD reports "
@@ -1700,16 +1976,22 @@ jsonrpc::Json Configure(const project::Project& project, const std::vector<std::
         "disable signals there if TD complains.";
     out["budget"] = std::move(budget);
     if (static_cast<int>(bus_widths.size()) > 4 || static_cast<int>(after.size()) > 64) {
-        out["warning"] =
+        const std::string large =
             "this is a large probe list (4 buses / 64 bits is what worked on PH1A100SFG676); "
             "TD enforces the real per-device limit at the phy stage - if it errors, mark fewer "
             "signals (a bus counts once, e.g. WHG/x[15:0]) and rerun stages:[\"all\"].";
+        out["warning"] = out.contains("warning") && out["warning"].is_string()
+                             ? out["warning"].get<std::string>() + " " + large
+                             : large;
     }
 
     if (!write) {
         out["ok"] = true;
         out["written"] = false;
-        out["reason"] = "dry run (pass write:true to update chip_debugger/user.mdn)";
+        out["reason"] = "dry run (pass write:true to update chip_debugger/user.mdn" +
+                        std::string(disabled_plan.Any()
+                                        ? " and .fpgalsp/probe/config.txt's disabled= line)"
+                                        : ")");
         return out;
     }
     if (after.empty()) {
@@ -1723,23 +2005,29 @@ jsonrpc::Json Configure(const project::Project& project, const std::vector<std::
     }
     out["ok"] = true;
     out["written"] = true;
-    // 采样时钟/深度：TD 只在 "Optimize Gate 之后" 那次 insert_debugger 里采纳，
+    // 采样时钟/深度 + disabled：TD 只在 "Optimize Gate 之后" 那次 insert_debugger 里采纳，
     // 而且必须通过 `-cwc <配置>` 传进去才会被采用（实测 depth 2048 生效）。
     // 这里只落盘参数；真正生成配置并挂钩子是 flow_runner 的事。
-    if (has_clock || depth > 0) {
-        ProbeBuildConfig config = ReadProbeBuildConfig(project);
+    const bool disabled_changed = disabled_plan.entries != build.disabled;
+    if (has_clock || depth > 0 || has_disabled || disabled_changed) {
         if (has_clock) {
-            config.has_clock = true;
-            config.clock = clock;
+            build.has_clock = true;
+            build.clock = clock;
         }
         if (depth > 0) {
-            config.has_depth = true;
-            config.depth = depth;
+            build.has_depth = true;
+            build.depth = depth;
         }
-        out["build_config_saved"] = WriteProbeBuildConfig(project, config);
+        // 只落能落到清单上的条目：清单一换，旧的 disabled 条目就自动被剪掉
+        //（未解析的已经在 unresolved_disabled 里告警过）。
+        build.disabled = disabled_plan.entries;
+        out["build_config_saved"] = WriteProbeBuildConfig(project, build);
         jsonrpc::Json saved = jsonrpc::Json::object();
-        saved["clock"] = config.has_clock ? config.clock : std::string();
-        saved["depth"] = config.has_depth ? config.depth : 0;
+        saved["clock"] = build.has_clock ? build.clock : std::string();
+        saved["depth"] = build.has_depth ? build.depth : 0;
+        jsonrpc::Json disabled_json = jsonrpc::Json::array();
+        for (const std::string& entry : build.disabled) disabled_json.push_back(entry);
+        saved["disabled"] = std::move(disabled_json);
         saved["path"] = ProbeConfigPath(project);
         out["build_config"] = std::move(saved);
     }
@@ -1747,6 +2035,13 @@ jsonrpc::Json Configure(const project::Project& project, const std::vector<std::
         "user.mdn updated - now run stages [\"all\"] (NOT [\"phy\"]): TD creates the "
         "ChipWatcher instance right after Optimize Gate, which belongs to the syn run. "
         "The backend adds syn automatically when user.mdn is newer than the gate database.";
+    if (disabled_plan.Any()) {
+        // ⚠ user.mdn 没有 disable 语法：disable 只能靠我们自写的 cwc（insert_debugger -cwc），
+        //   而 flow_runner 只在 apply_build_config:true 时才把那份 cwc 交给 TD。
+        out["reason"] = out["reason"].get<std::string>() +
+                        " Disabled entries only reach TD through the authored cwc: set "
+                        "apply_build_config:true (otherwise they stay enabled in the bitstream).";
+    }
     return out;
 }
 

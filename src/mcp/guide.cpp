@@ -165,8 +165,10 @@ On-chip logic capture (Anlogic ChipWatcher).
 
 ## Sequence
 1. `fpga_probe_status {}` - what `chip_debugger/user.mdn` marks versus what the
-   compiled watcher contains: `present`, `clock`, `sample_depth`, `net_count`,
-   `stale`, `missing_in_bit`, `extra_in_bit`, `ready`, `reason`.
+   compiled watcher contains: `ok`, `ready`, `disabled`, and everything about the
+   compiled cwc under `watcher` (`watcher.present`, `watcher.clock`,
+   `watcher.sample_depth`, `watcher.net_count`, `watcher.stale`,
+   `watcher.missing_in_bit`, `watcher.extra_in_bit`).
 2. `fpga_probe_config {"signals":["WHG/pwm_reg0_i[15:0]"],"write":false}` - dry
    run listing `added`/`removed`, plus `bus_count`/`bit_count`/`budget`. Then
    `"write":true` to rewrite user.mdn. Ranges are expanded to per-bit nets.
@@ -186,12 +188,36 @@ On-chip logic capture (Anlogic ChipWatcher).
    `buses[].{status,reason}`, `missing_nets`, `hints`. Use it to prove the
    probes really landed (`no-bitstream` = run the flow first;
    `dropped-by-td` = cross-domain or optimized away).
-5. `fpga_probe_status {}` again - require `present:true`, `ready:true`,
-   `stale:false`, `missing_in_bit:[]`, `net_count` > 0.
+5. `fpga_probe_status {}` again - require `ready:true`, `watcher.present:true`,
+   `watcher.stale:false`, `watcher.missing_in_bit:[]`, `watcher.net_count` > 0.
 6. `fpga_probe_capture {"download":"auto","confirm":true,"trigger_now":true}` -
    captures over JTAG; returns per-sample values, `trigger_index`, CSV path.
    Measured: 17.4 s when the bitstream is already loaded, plus the SRAM load
    when `download` reloads it.
+
+## Disabling entries (keeps them listed, no debug resources)
+TD's ChipWatcher list can enable/disable an entry; a disabled entry is kept in the
+list and in the `cwc` but consumes no debug resource (TD's own `cwc` carries
+`is_enabled="no"` on the bus and `data="disable" trig="disable"` on its nets).
+`chip_debugger/user.mdn` has only `mark_debug {...}` - no disable syntax - so the
+backend can only express it through the `cwc` it hands to `insert_debugger -cwc`:
+1. `fpga_probe_config {"signals":[...],"disabled":["WHG/e2e_hstat"],"write":true,
+   "apply_build_config":true}` - `disabled` takes a bus base (`WHG/e2e_hstat`, all
+   of its bits) or a single bit (`WHG/e2e_hstat[2]`); ranges are expanded. It is
+   persisted as `disabled=...` in `.fpgalsp/probe/config.txt`. Check
+   `enabled_bus_count` / `enabled_bit_count` (disabled bits excluded) and
+   `unresolved_disabled` / `warning` for entries that are not in `signals`
+   (a warning, not a failure).
+2. `fpga_flow_run {"stages":["all"]}` + `fpga_flow_wait {}` - the watcher is
+   rebuilt from the authored `cwc`; without `apply_build_config:true` the entries
+   stay enabled in the bitstream.
+3. `fpga_probe_status {}` - `disabled` / `disabled_count` show the request and
+   `watcher.disabled_bus_count` / `disabled_net_count` what the compiled `cwc`
+   actually marks; disabled nets do not take part in the bit order, the DIN count
+   or `<logic_eram width>`.
+Disabled entries are still written into the XML (the GUI and read-back expect
+them), so `fpga_probe_verify` still counts them as embedded - use
+`fpga_probe_status.disabled` for the enable/disable split.
 
 ## Preconditions
 * `phy_1/cw/compiled.cwc` **and** `phy_1/cw/compiled.bit` exist (a probe build
@@ -214,9 +240,9 @@ On-chip logic capture (Anlogic ChipWatcher).
   `trigger_enabled`, `bus_op`. The bit still matches, so no rebuild is needed.
 
 ## Failure modes
-* `stale:true` or non-empty `missing_in_bit`: user.mdn changed but phy was not
-  rerun (an incremental route does not re-insert the debugger). Capture refuses
-  unless `allow_stale:true` - and then you read the OLD probes.
+* `watcher.stale:true` or non-empty `watcher.missing_in_bit`: user.mdn changed
+  but phy was not rerun (an incremental route does not re-insert the debugger).
+  Capture refuses unless `allow_stale:true` - and then you read the OLD probes.
 * A successful flow is not evidence the probes reached the bit. Only
   `fpga_probe_status` is.
 * Values are binary bit strings per bus, not integers; widths come from the
@@ -292,11 +318,17 @@ incremental, `phy_1/cw/` has no `compiled.cwc` / `compiled.bit`. Confirm with
 `fpga_probe_status`, then rerun phy (not route).
 
 ## `probe_status` fields
-* `present:false` - no readable `compiled.cwc`: probes were never compiled in.
-* `stale:true` - user.mdn differs from the watcher in the bit; the bit predates
-  the list, so a capture would read the old probes.
-* `missing_in_bit:[...]` - signals you marked that the bit does not watch;
-  `extra_in_bit:[...]` - signals in the bit that user.mdn no longer lists.
+Top level is `ok`, `ready`, `reason`, `chip_debugger`, `disabled`, `sampling`;
+everything about the compiled watcher is under `watcher`:
+* `watcher.present:false` - no readable `compiled.cwc`: probes were never
+  compiled in.
+* `watcher.stale:true` - user.mdn differs from the watcher in the bit; the bit
+  predates the list, so a capture would read the old probes.
+* `watcher.missing_in_bit:[...]` - signals you marked that the bit does not
+  watch; `watcher.extra_in_bit:[...]` - signals in the bit that user.mdn no
+  longer lists.
+* `watcher.net_count` / `watcher.disabled_bus_count` / `disabled_net_count` -
+  what the compiled cwc actually carries.
 * `ready:false` plus `reason` - read it; it names the exact fix.
 
 ## Warnings that are NOT failures

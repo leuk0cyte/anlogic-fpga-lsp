@@ -39,6 +39,7 @@ const { renderTrendHtml } = require('./src/trendHtml');
 const { registerLmTools } = require('./src/lmTools');
 const { renderConstraintHtml } = require('./src/constraintHtml');
 const { ProbePanel } = require('./src/probePanel');
+const { ProbeTreeProvider } = require('./src/probeTree');
 const {
     buildMcpServerOptions,
     buildPortableConfig,
@@ -1351,38 +1352,70 @@ function activate(context) {
             const doc = await vscode.workspace.openTextDocument({ content: content.join('\n'), language: 'text' });
             await vscode.window.showTextDocument(doc, { preview: true });
         });
+        // 抓取后 watcher/stale 可能变化（下载了新 bit），把树和状态栏一起刷新。
+        probeTree.refresh().catch(() => undefined);
     };
 
-    const probeConfig = async () => {
-        // 0.17.1：直接开面板。之前是个**空白**输入框 —— 看不到当前清单、不能逐个移除，
-        // 和面板功能重复而且容易误操作（一进去就是空的，很容易把清单整个覆盖掉）。
-        await showProbePanel();
-    };
-
-    // ---- 0.17.2：ChipWatcher 探针面板（**底栏** webview view）----
-    //   注册到 panel 容器（和 Terminal / Problems 同级），不是浮在编辑区的 webviewPanel。
-    //   数据全部来自后端的 probeStatus / probeConfig / probeCapture。
+    // ---- 0.19.3：ChipWatcher 探针 —— **原生 TreeView**（不再是底栏 webview view）----
+    //  0.16~0.19.2 把它注册成 panel 容器的 WebviewViewProvider，部分环境里一直停在
+    //  “没有可提供视图数据的已注册数据提供程序”。现在改成和 flow/reports 完全相同的
+    //  机制：contributes.views 里的 fpgaLsp.probeView + registerTreeDataProvider，
+    //  不依赖 webview provider；编辑区的富面板（ProbePanel）保留给 showProbePanel。
+    //  数据全部来自后端的 probeStatus / probeConfig / probeCapture。
     const probeService = {
         getStatus: async () => (await runWithProgress('FPGA: reading ChipWatcher state...',
             COMMANDS.probeStatus, [])) || {},
-        applySignals: async (signals) => (await runWithProgress('FPGA: updating chip_debugger/user.mdn...',
-            COMMANDS.probeConfig, [{ signals, write: true }])) || {},
+        applySignals: async (signals) => {
+            const result = (await runWithProgress('FPGA: updating chip_debugger/user.mdn...',
+                COMMANDS.probeConfig, [{ signals, write: true }])) || {};
+            // 编辑区面板改完清单后，树也要跟着刷新（两者看同一份 user.mdn）。
+            probeTree.refresh().catch(() => undefined);
+            return result;
+        },
+        // 0.19.3：disabled[] 由后端并行实现（fpgalsp.probe_config{disabled}）。
+        // apply_build_config:false = 只落盘清单/disable 配置，不把自写 cwc 塞进下次 gate。
+        applyConfig: async (options) => (await runWithProgress('FPGA: updating ChipWatcher probe list...',
+            COMMANDS.probeConfig, [{
+                signals: Array.isArray(options && options.signals) ? options.signals : [],
+                disabled: Array.isArray(options && options.disabled) ? options.disabled : [],
+                write: true,
+                apply_build_config: false,
+            }])) || {},
         capture: async (trigger) => (await runWithProgress('FPGA: capturing on-chip probe data...',
             COMMANDS.probeCapture, [{ confirm: true, trigger: trigger || {} }])) || {},
     };
-    const probePanel = new ProbePanel(vscode, probeService, VIEWS.probe);
-    const probeView = { registeredAt: new Date().toLocaleTimeString(), resolved: false };
-    probePanel.onResolve = () => { probeView.resolved = true; };
-    vscode.window.registerWebviewViewProvider(VIEWS.probe, probePanel, {
-        webviewOptions: { retainContextWhenHidden: true },
+
+    // disabled 列表持久化在插件侧 globalState：后端 probe_config 只是执行者，用户
+    // 重开窗口后树里还得看到哪几条是 disabled 的。旧后端不认识 disabled 参数时
+    // 只保留本地状态（见 src/probeTree.js 的 _applyConfig），并提示需要 0.19.3+ 后端。
+    const PROBE_DISABLED_KEY = 'fpgaLsp.probe.disabled';
+    const probeGlobalState = (context.globalState && typeof context.globalState.get === 'function')
+        ? context.globalState
+        : { get: () => undefined, update: () => Promise.resolve() };
+    const readProbeDisabled = () => {
+        const stored = probeGlobalState.get(PROBE_DISABLED_KEY);
+        return Array.isArray(stored) ? stored.map((item) => String(item)) : [];
+    };
+    const writeProbeDisabled = async (list) => {
+        const next = Array.from(new Set((list || []).map((item) => String(item)).filter(Boolean)));
+        await probeGlobalState.update(PROBE_DISABLED_KEY, next);
+        return next;
+    };
+    const probeTree = new ProbeTreeProvider({
+        getStatus: probeService.getStatus,
+        applyConfig: probeService.applyConfig,
+        capture: probeService.capture,
+        getDisabled: readProbeDisabled,
+        setDisabled: writeProbeDisabled,
     });
-    // 0.19.2：底栏视图在某些机器上一直停在 "没有可提供视图数据的已注册数据提供程序"
-    // （扩展宿主没把 provider 和视图关联起来）。所以命令/状态栏**直接开编辑区面板**，
-    // 底栏视图保留给能正常工作的环境。
-    console.log(`[fpgalsp] probe view provider registered for '${VIEWS.probe}' at ${probeView.registeredAt}`);
+    context.subscriptions.push(probeTree);
+    context.subscriptions.push(vscode.window.registerTreeDataProvider(VIEWS.probe, probeTree));
+    // 编辑区里的富面板：showProbePanel 命令打开它（唯一保留的“面板”入口）。
+    const probePanel = new ProbePanel(vscode, probeService, VIEWS.probe);
 
     // 0.19.1：状态栏入口 —— 用户明确要求"chipwatcher 放到状态栏"。
-    // 点了就开面板（编辑区，保证可用）；文字顺便显示探针规模。
+    // 点了就开编辑区面板；文字顺便显示探针规模（字段全在 watcher 里，旧代码读的是
+    // 顶层的 present/clock/sample_depth，后端的 Status() 根本不会给这几个键）。
     const probeItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 89);
     probeItem.command = VSCodeCommands.showProbePanel;
     probeItem.text = '$(pulse) ChipWatcher';
@@ -1392,16 +1425,22 @@ function activate(context) {
     const renderProbeItem = (state) => {
         const watcher = (state && state.watcher) || {};
         const nets = Number(watcher.net_count || 0);
-        const diag = `\nview provider: registered ${probeView.registeredAt}; bottom view resolved: ` +
-            (probeView.resolved ? 'yes' : 'no (status bar opens the editor panel)');
-        if (state && state.present && nets > 0) {
+        const clock = watcher.clock || (state && state.clock) || '';
+        const depth = watcher.sample_depth || (state && state.sample_depth) || '';
+        const diag = probeTree.unsupportedDisable
+            ? '\nenable/disable: local state only — needs the 0.19.3+ native backend (probe_config disabled[])'
+            : '';
+        if (state && watcher.present && nets > 0) {
             probeItem.text = `$(pulse) ChipWatcher: ${nets}`;
             probeItem.tooltip =
-                `ChipWatcher embedded: ${nets} net(s), clock ${state.clock || '?'}, depth ` +
-                `${state.sample_depth || '?'}` + (watcher.stale ? ' — STALE vs user.mdn' : '') + diag;
+                `ChipWatcher embedded: ${nets} net(s), clock ${clock || '?'}, depth ${depth || '?'}` +
+                (watcher.stale ? ' — STALE vs user.mdn' : '') +
+                '\nThe ChipWatcher view lists the probe buses; click a bus to enable/disable it.' + diag;
         } else {
             probeItem.text = '$(pulse) ChipWatcher';
-            probeItem.tooltip = 'ChipWatcher — click to open the probe panel (no probes embedded yet)' + diag;
+            probeItem.tooltip =
+                'ChipWatcher — click to open the probe panel (no probes embedded yet). ' +
+                'The chipwatcher view in the FPGA activity bar lists signals and captures.' + diag;
         }
     };
     renderProbeItem(undefined);
@@ -1410,6 +1449,77 @@ function activate(context) {
     const showProbePanel = async () => {
         const state = await probePanel.openInEditor();
         renderProbeItem(state);
+    };
+
+    // 树里点一条总线 = 翻转它的 disabled 状态（不弹输入框）。
+    // 从命令面板/FPGA Actions 进来（没有参数）时先让用户选一条总线。
+    const probeToggleSignal = async (argument) => {
+        let name = typeof argument === 'string'
+            ? argument
+            : (argument && (argument.name || argument.signal)) || '';
+        if (!name) {
+            const buses = probeTree.listBuses();
+            if (!buses.length) {
+                vscode.window.showInformationMessage(
+                    'FPGA: no ChipWatcher signals to toggle yet - use "Add signals…" first.');
+                return undefined;
+            }
+            const picked = await vscode.window.showQuickPick(buses.map((bus) => ({
+                label: bus.label,
+                description: bus.disabled ? 'disabled' : 'enabled',
+                detail: `width ${bus.width}`,
+                bus,
+            })), { title: 'Toggle a ChipWatcher signal (enable / disable)' });
+            if (!picked) return undefined;
+            name = picked.bus.base;
+        }
+        const outcome = await probeTree.toggleSignal(name);
+        renderProbeItem(probeTree.state);
+        if (!outcome) return outcome;
+        if (probeTree.unsupportedDisable) return outcome;
+        const count = probeTree.listBuses().filter((bus) => bus.disabled).length;
+        const verb = outcome.disabled ? 'disabled' : 'enabled';
+        const result = outcome.result || {};
+        if (result.ok !== true) {
+            vscode.window.showWarningMessage(
+                `FPGA: ChipWatcher signal ${outcome.name} was not ${verb} - `
+                + `${result.reason || result.error || 'the backend rejected the probe update'}`);
+            return outcome;
+        }
+        // 后端 disabled 只能通过“自写 cwc”真正进 bit；我们按约定传 apply_build_config:false，
+        // 所以这里必须诚实说明“配置已存，位流要等一次应用自写 cwc 的重建”。
+        const needsApply = result.requires_apply_build_config === true;
+        const suffix = needsApply
+            ? ' Saved to the probe config; the bitstream keeps the previous enable/disable state '
+              + 'until a rebuild applies the authored ChipWatcher config.'
+            : ' Run Place & Route so the probes are rebuilt into the bitstream.';
+        vscode.window.showInformationMessage(
+            `FPGA: ChipWatcher signal ${outcome.name} ${verb} (${count} disabled in total).${suffix}`);
+        return outcome;
+    };
+
+    // 树里的 "Add signals…"：逗号/空白分隔，接受 `WHG/x[15:0]` 这种范围写法。
+    const probeAddSignals = async () => {
+        const value = await vscode.window.showInputBox({
+            title: 'Add ChipWatcher signals',
+            prompt: 'Signal buses to add, comma separated (e.g. WHG/x[15:0], WHG/flag)',
+            placeHolder: 'WHG/x[15:0], WHG/flag',
+            ignoreFocusOut: true,
+        });
+        if (!value || !value.trim()) return undefined;
+        const result = await probeTree.addSignals(value);
+        renderProbeItem(probeTree.state);
+        if (result && result.ok === true) {
+            const count = (result.count !== undefined)
+                ? result.count
+                : ((result.after && result.after.length) || 0);
+            vscode.window.showInformationMessage(
+                `FPGA: ChipWatcher signal list updated (${count} bit(s)).`
+                + (result.reason ? ` ${result.reason}` : ' Run a full flow so the probes are rebuilt into the bitstream.'));
+        } else if (result && (result.reason || result.error)) {
+            vscode.window.showWarningMessage(`FPGA: probe list update failed - ${result.reason || result.error}`);
+        }
+        return result;
     };
 
     register(VSCodeCommands.doctor, async () => {
@@ -1514,8 +1624,9 @@ function activate(context) {
             { label: '$(file-binary) Generate SVF (for third-party JTAG tools)', command: VSCodeCommands.generateSvf },
             { label: '$(pulse) ChipWatcher probe status', command: VSCodeCommands.probeStatus },
             { label: '$(circuit-board) Capture on-chip probe data', command: VSCodeCommands.probeCapture },
-            { label: '$(list-tree) Edit probe signal list', command: VSCodeCommands.probeConfig },
-            { label: '$(circuit-board) ChipWatcher probe panel…', command: VSCodeCommands.showProbePanel },
+            { label: '$(check) Toggle ChipWatcher signal…', command: VSCodeCommands.probeToggleSignal },
+            { label: '$(add) Add ChipWatcher signals…', command: VSCodeCommands.probeAddSignals },
+            { label: '$(circuit-board) ChipWatcher panel…', command: VSCodeCommands.showProbePanel },
             { label: '$(stethoscope) Doctor: extension / LSP / Verible / TD / MCP status', command: VSCodeCommands.doctor },
             { label: '$(output) Show logs', command: VSCodeCommands.showLogs },
         ];
@@ -1591,10 +1702,12 @@ function activate(context) {
     register(VSCodeCommands.programSram, () => programFlow('sram'));
     register(VSCodeCommands.programFlash, () => programFlow('flash'));
 
-    // 0.16.0：片上探针
+    // 0.16.0：片上探针（0.19.3：ChipWatcher 走原生树，编辑区面板是唯一“面板”入口）
     register(VSCodeCommands.probeStatus, () => probeStatus(false));
     register(VSCodeCommands.probeCapture, () => probeCapture());
-    register(VSCodeCommands.probeConfig, () => probeConfig());
+    register(VSCodeCommands.probeToggleSignal, (argument) => probeToggleSignal(argument));
+    register(VSCodeCommands.probeAddSignals, () => probeAddSignals());
+    register(VSCodeCommands.refreshProbe, () => probeTree.refresh());
     register(VSCodeCommands.showProbePanel, () => showProbePanel());
 
     register(VSCodeCommands.generateSvf, async () => {
@@ -1816,6 +1929,8 @@ function activate(context) {
             moduleProvider.refresh(activeDocumentUri()),
             flowProvider.refresh(),
             reportsTreeProvider.refresh(),
+            // 0.19.3：窗口加载后 ChipWatcher 树也要先拉一次 probeStatus（否则空树）。
+            probeTree.refresh().then((state) => { renderProbeItem(state); return state; }),
         ]);
         const activeDocument = vscode.window.activeTextEditor && vscode.window.activeTextEditor.document;
         if (activeDocument) writeHighlightReport(activeDocument).catch(() => undefined);

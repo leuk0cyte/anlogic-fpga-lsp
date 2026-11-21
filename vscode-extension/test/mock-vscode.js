@@ -11,6 +11,7 @@ const state = {
     commands: new Map(),
     builtinCommands: new Map(),
     treeViews: [],
+    treeDataProviders: {},
     webviewPanels: [],
     webviewViewProviders: {},
     outputChannels: [],
@@ -250,6 +251,7 @@ function reset() {
     state.commands.clear();
     state.builtinCommands.clear();
     state.treeViews.length = 0;
+    state.treeDataProviders = {};
     state.webviewPanels.length = 0;
     state.webviewViewProviders = {};
     state.outputChannels.length = 0;
@@ -375,6 +377,19 @@ const window = {
         };
         state.statusBarItems.push(item);
         return item;
+    },
+
+    // 0.19.3：原生 TreeView（contributes.views 里的视图 + registerTreeDataProvider）。
+    //   provider 记在 state.treeDataProviders[viewId]，测试可以像 VS Code 一样驱动它。
+    registerTreeDataProvider(viewId, treeDataProvider) {
+        state.treeDataProviders[viewId] = treeDataProvider;
+        return {
+            dispose() {
+                if (state.treeDataProviders[viewId] === treeDataProvider) {
+                    delete state.treeDataProviders[viewId];
+                }
+            },
+        };
     },
 
     // 0.17.2：底栏 webview view（ChipWatcher 探针面板）
