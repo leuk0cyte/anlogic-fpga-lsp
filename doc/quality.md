@@ -6,7 +6,7 @@
 | --- | --- |
 | `run_audit.ps1` | 全流程：vcvars 自举 → 编译数据库新鲜度校验 → clang-tidy → MSVC `/analyze` → 汇总 |
 | `make_clang_db.py` | cl.exe 命令行 → clang 可消费的编译数据库；`--verify <TU>` 做单 TU 语法检查 |
-| `run_clang_tidy.py` | 逐 TU 跑 clang-tidy；`FPGA_LSP_AUDIT_DIR` 可指定输出目录 |
+| `run_clang_tidy.py` | 逐 TU 跑 clang-tidy；`FPGA_LSP_AUDIT_DIR` 可指定输出目录；`--checks=-*,performance-*` 只跑某一维度（注意 `-*,` 前缀，否则会叠加默认集） |
 | `run_msvc_analyze.ps1` | MSVC `/analyze`（含 analyzer control 自检段，证明分析器真的生效） |
 | `summarize.py` | 去重口径聚合、模块密度、字面量感知的函数长度分布 |
 | `check_tcl_invariant.py` | **Tcl 拼装不变量守卫**：禁止把不可信值裸拼进 `Run(...)` |
@@ -27,8 +27,8 @@ python tools\audit\check_tcl_invariant.py            # 只跑不变量守卫（�
 
 | 项 | 值 |
 | --- | --- |
-| clang-tidy | 62/62 TU 解析成功，8 616 原始 → 6 092 唯一位置 |
-| MSVC `/analyze` | 62 TU **0 条**（control 证明生效，但 `CppCoreCheck.dll` 未安装，C26xxx 未覆盖） |
+| clang-tidy | **67/67 TU 解析成功，11,154 原始 → 8,234 唯一位置**（2026-11-22，LLVM 23.1.5，0.26.0） |
+| MSVC `/analyze` | 62 TU **0 条**（2026-11-19 口径；control 证明生效，但 `CppCoreCheck.dll` 未安装，C26xxx 未覆盖） |
 
 ## 审计证据归档（按日期）
 
@@ -38,6 +38,7 @@ python tools\audit\check_tcl_invariant.py            # 只跑不变量守卫（�
 | [`audit/2026-11-19/perf/`](audit/2026-11-19/perf/) | 运行时性能剖析（CPU-PROFILE / INDEX / MCP / TD / VSCODE / REPORTS …） |
 | [`audit/2026-11-19/fix/`](audit/2026-11-19/fix/) | 修复波次（F1–F6、W1–W4）的过程记录与协议门禁结果 |
 | [`audit/2026-11-19/static/`](audit/2026-11-19/static/) | 静态分析总报告与三份维度报告（见下） |
+| [`audit/2026-11-22/static/`](audit/2026-11-22/static/README.md) | **0.26.0 静态分析复审**：性能 / 安全 / 现代化三份独立报告 + 67 TU clang-tidy 全量证据 |
 
 `audit/2026-11-19/static/` 的四份主报告：
 

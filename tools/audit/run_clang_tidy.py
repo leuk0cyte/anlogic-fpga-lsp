@@ -108,14 +108,16 @@ def log_name(tu: str) -> str:
     return f"{base}.{digest}.log"
 
 
-def run_one(job: tuple[str, str, int]) -> dict:
-    tu, exe, timeout = job
+def run_one(job: tuple[str, str, int, str]) -> dict:
+    # ⚠ Windows 的 multiprocessing 是 spawn：子进程重新 import 模块，父进程对 CHECKS 的
+    #    修改不会带过去（--checks 曾因此被静默忽略）。所以 check 集必须随 job 一起传。
+    tu, exe, timeout, checks = job
     rel = os.path.relpath(tu, PROJECT_ROOT).replace("\\", "/")
     logfile = os.path.join(LOGS_DIR, log_name(tu))
     args = [
         exe,
         "-p=" + os.path.dirname(DB),
-        "--checks=" + CHECKS,
+        "--checks=" + checks,
         "--header-filter=" + HEADER_FILTER,
         "--use-color=0",
         "--extra-arg=-fno-color-diagnostics",
@@ -349,8 +351,17 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--timeout", type=int, default=300)
     ap.add_argument("--clang-tidy", default=None)
     ap.add_argument("--only", default=None, help="substring filter on TU path (debugging)")
+    ap.add_argument(
+        "--checks",
+        default=None,
+        help="override the check set (comma separated; default = the audit CHECKS)",
+    )
     ap.add_argument("--aggregate-only", action="store_true")
     args = ap.parse_args(argv)
+    if args.checks:
+        # 维度审计（性能/安全/现代化）各跑各的子集，避免每次都全量扫。
+        global CHECKS
+        CHECKS = args.checks
 
     os.makedirs(LOGS_DIR, exist_ok=True)
     os.makedirs(AUDIT_DIR, exist_ok=True)
@@ -381,7 +392,7 @@ def main(argv: list[str] | None = None) -> int:
         meta["generated"] = "re-aggregated " + time.strftime("%Y-%m-%dT%H:%M:%S%z")
     else:
         print(f"[tidy] {len(tus)} TUs, jobs={args.jobs}, timeout={args.timeout}s, tool={meta['tool_version']}")
-        jobs = [(t, exe, args.timeout) for t in tus]
+        jobs = [(t, exe, args.timeout, CHECKS) for t in tus]
         with mp.Pool(processes=max(1, min(args.jobs, len(jobs) or 1))) as pool:
             for i, row in enumerate(pool.imap_unordered(run_one, jobs), 1):
                 rows.append(row)
