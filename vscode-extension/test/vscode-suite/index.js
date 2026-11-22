@@ -426,9 +426,10 @@ exports.run = async function () {
         // formatting availability: inside the workspace vs outside any workspace folder
         try {
             const ugly = 'module fmt_check;\nwire a;\nalways @(*) begin\nif (a) a = 1;\nend\nendmodule\n';
-            const insidePath = path.join(folder.uri.fsPath, '.fpgalsp', 'fmt_check_inside.v');
+            // 工程目录里的 `.fpgalsp` 已废弃（0.23 起状态目录在 %TEMP%）；这里用根级临时
+            // 文件验证"工作区内可格式化"，测试结束删除。**不要**再往 .fpgalsp 里写。
+            const insidePath = path.join(folder.uri.fsPath, 'fmt_check_inside.v');
             const outsidePath = path.join(os.tmpdir(), 'fpga_fmt_outside.v');
-            fs.mkdirSync(path.dirname(insidePath), { recursive: true });
             fs.writeFileSync(insidePath, ugly);
             fs.writeFileSync(outsidePath, ugly);
             const insideDoc = await vscode.workspace.openTextDocument(insidePath);
