@@ -1216,6 +1216,10 @@ std::shared_ptr<CacheEntry> TryIncremental(const CacheEntry& old, const hdl::Hdl
     //   等价且命中增量；但插入行 / 跨行删除 / `\` 后回车仍与全量不等价（多一个 token），
     //   根因是"某行在编辑后才变成宏体"这类宏体边界，`\` 字符串中间回车则全部回退。
     //   正确性优先：先保持全量，等宏体状态位做完再放开。
+    // ⚠ 行号平移仍**未放开**：7 类行数变化用例中 4 类（删除行/粘贴多行/块注释回车/
+    //   字符串回车）已证明与全量逐 token 等价且能命中增量；但插入行 / 跨行删除 /
+    //   `\` 续行后回车仍有 1 个 token 的差异，卡在"复用行的宏体性质在旧/新两侧不同"
+    //   （详见 task-49 报告）。正确性优先：先全量，等该门禁补完再按类别放开。
     if (delta != 0) return nullptr;
     // 3) 索引内容必须等于"旧索引 + 行号整体平移"：
     //    * 前缀里的声明：行号不变；后缀里的声明：行号 +delta；变化区里的不约束；
@@ -1227,28 +1231,64 @@ std::shared_ptr<CacheEntry> TryIncremental(const CacheEntry& old, const hdl::Hdl
         return nullptr;
     }
 
-    // 4) 规模上限：改动太大就直接全量，避免"增量"比重算还贵
-    const std::size_t region_lines = new_end - anchor;
-    if (region_lines > std::max<std::size_t>(64, new_line_count / 2)) { return nullptr; }
+    // 3b) 宏体（上一行以 '\' 结尾）在"锚点"和"后缀首行"两侧必须一致：
+    //     * 锚点：anchor == 0 或 旧上一行不以 '\' 结尾（锚点扩展循环已保证）；
+    //     * 后缀首行：新/旧两侧的 in_macro 必须相等 —— 否则新后缀会用旧文本的
+    //       词法状态（Verilog 宏体里 `//`/标识符的 token 化与代码不同）。
+    if (new_end < new_line_count) {
+        const auto new_prev_begin = new_lines.starts[new_end - 1];
+        const auto new_prev_end =
+            new_end < new_line_count ? new_lines.starts[new_end] : new_size;
+        const bool new_in_macro = RowEndsWithBackslash(
+            std::string_view(new_text).substr(new_prev_begin, new_prev_end - new_prev_begin));
+        bool old_in_macro = false;
+        if (old_end > 0) {
+            const auto old_prev_begin = old.line_starts[old_end - 1];
+            const auto old_prev_end = old.line_starts[old_end];
+            old_in_macro = RowEndsWithBackslash(
+                std::string_view(old_text).substr(old_prev_begin, old_prev_end - old_prev_begin));
+        }
+        if (new_in_macro != old_in_macro) return nullptr;
+    }
 
-    // 4) 区域重算：只有区域两端都在代码状态时才允许复用后缀
+    // 4) 规模上限：改动太大就直接全量，避免"增量"比重算还贵
+    {
+        const std::size_t region_lines_now = new_end - anchor;
+        if (region_lines_now > std::max<std::size_t>(64, new_line_count / 2)) return nullptr;
+    }
+
+    // 5) 区域重算：区域终点必须回到"代码状态"，否则后缀的行入口状态不可复用。
+    //    终点落在块注释/字符串里时，**沿该跨行构造把区域扩到闭合**（最多到 EOF），
+    //    而不是直接回退 —— "字符串/块注释中间回车"就是这一类。
     const std::size_t region_begin = new_lines.starts[anchor];
-    const std::size_t region_stop =
+    std::size_t region_stop =
         new_end < new_line_count ? new_lines.starts[new_end] : new_size;
     if (region_stop < region_begin) return nullptr;
     std::vector<char> mask(region_stop - region_begin, 0);
-    std::vector<int> states(region_lines, kMaskCode);
-    int state = old.line_states[anchor];  // == kMaskCode（锚点条件）
-    for (std::size_t line = anchor; line < new_end; ++line) {
-        states[line - anchor] = state;
-        const std::size_t begin = new_lines.starts[line];
-        const std::size_t end =
-            line + 1 < new_line_count ? new_lines.starts[line + 1] : new_size;
-        state = ScanMask(new_text, begin, end, state, mask.data() + (begin - region_begin));
+    std::vector<int> states;
+    int state = kMaskCode;  // 每次循环开头都会从锚点重新取；这里只是给个确定的初值
+    for (;;) {
+        std::fill(mask.begin(), mask.end(), 0);
+        states.clear();
+        states.reserve(new_end - anchor);
+        state = old.line_states[anchor];
+        for (std::size_t line = anchor; line < new_end; ++line) {
+            states.push_back(state);
+            const std::size_t begin = new_lines.starts[line];
+            const std::size_t end =
+                line + 1 < new_line_count ? new_lines.starts[line + 1] : new_size;
+            state = ScanMask(new_text, begin, end, state, mask.data() + (begin - region_begin));
+        }
+        if (new_end >= new_line_count || state == kMaskCode) break;
+        // 未闭合：把下一行纳入区域后重扫（后缀两侧同步外扩；它们内容逐字节相同）
+        ++new_end;
+        ++old_end;
+        if (old_end > old_line_count) return nullptr;
+        region_stop = new_end < new_line_count ? new_lines.starts[new_end] : new_size;
+        mask.assign(region_stop - region_begin, 0);
     }
     if (new_end < new_line_count) {
-        if (state != kMaskCode) { return nullptr; }                  // 区域里开了注释/字符串
-        if (old.line_states[old_end] != kMaskCode) { return nullptr; }  // 旧后缀不是干净行首
+        if (old.line_states[old_end] != kMaskCode) return nullptr;  // 旧后缀不是干净行首
     }
 
     std::vector<SemToken> primary =
@@ -1268,6 +1308,38 @@ std::shared_ptr<CacheEntry> TryIncremental(const CacheEntry& old, const hdl::Hdl
         if (new_end < new_line_count && old.verible_inside[old_end] != 0) { return nullptr; }
     }
     const std::vector<SemToken> merged = Merge(primary, extra);
+
+    // 5a) 行对齐安全网：被复用的行必须**逐字节相同**。前后缀的字节 diff 在"插入内容
+    //     与相邻行重复"时会产生歧义（同一段字节既可能算前缀也可能算后缀），导致行映射
+    //     错位（实测：把上一行 `// inserted line` 的 token 复用到了新的 `define` 行）。
+    //     这里按行逐字节核对映射，代价 O(文件字节)，只有几 µs。
+    {
+        auto row_of = [](std::string_view text, const std::vector<std::size_t>& starts,
+                         std::size_t line, std::size_t line_count) -> std::string_view {
+            const std::size_t begin = starts[line];
+            const std::size_t end = line + 1 < line_count ? starts[line + 1] : text.size();
+            return text.substr(begin, end - begin);
+        };
+        for (std::size_t line = 0; line < anchor; ++line) {
+            if (row_of(old_text, old.line_starts, line, old_line_count) !=
+                row_of(new_text, new_lines.starts, line, new_line_count)) {
+                return nullptr;
+            }
+        }
+        for (std::size_t line = new_end; line < new_line_count; ++line) {
+            const std::ptrdiff_t old_line =
+                static_cast<std::ptrdiff_t>(line) - static_cast<std::ptrdiff_t>(new_end) +
+                static_cast<std::ptrdiff_t>(old_end);
+            if (old_line < 0 || static_cast<std::size_t>(old_line) >= old_line_count) {
+                return nullptr;
+            }
+            if (row_of(old_text, old.line_starts, static_cast<std::size_t>(old_line),
+                       old_line_count) !=
+                row_of(new_text, new_lines.starts, line, new_line_count)) {
+                return nullptr;
+            }
+        }
+    }
 
     // 5) 组装：前缀复用 + 区域重算 + 后缀复用（行号整体平移）
     auto entry = std::make_shared<CacheEntry>();

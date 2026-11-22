@@ -1956,8 +1956,21 @@ function activate(context) {
         return moduleProvider.ownsFile(file);
     };
 
+    // 服务端最近一次推 `fpgaLsp/indexChanged` 的时刻（见 scheduleModuleRefresh 的跳过逻辑）。
+    let lastIndexPushAt = 0;
+
     const scheduleModuleRefresh = (reason, uri) => {
         if (!serverReady()) return;
+        // P2-A/P2-C：服务端在每次保存后都会推 `fpgaLsp/indexChanged`（它重新索引完之后），
+        // 那条通知由 `applyIndexChanged` 就地打补丁 —— 不需要再整树重取一次。
+        // 以前这两条路是**并行**的：保存 → 150 ms 后一个 `fpgaLsp/moduleTree`（12.9 KB / 10 ms），
+        // 紧接着 indexChanged 又补一次补丁。这里在"刚收到服务端主动推送"时跳过保存触发的
+        // 兜底刷新（只影响 saved 这一路；切文件/换工作区仍然照旧）。
+        // 500 ms 覆盖 provider 的 150 ms 合并窗口 + 服务端一次索引的余量。
+        if (reason === 'saved' && Date.now() - lastIndexPushAt < 500) {
+            diag('module refresh skipped (server pushed indexChanged just now)');
+            return;
+        }
         const target = uri || activeDocumentUri();
         // Only refresh when the document belongs to the project the tree is showing; a file from
         // another project must not trigger a tree rebuild.
@@ -2100,6 +2113,7 @@ function activate(context) {
                     diag('indexChanged failed: ' + ((err && err.message) || err));
                     return;
                 }
+                if (outcome !== 'ignored') lastIndexPushAt = Date.now();
                 if (outcome !== 'ignored' && (indexEventCount <= 5 || indexEventCount % 50 === 0)) {
                     diag(`indexChanged -> ${outcome} (#${indexEventCount})`);
                 }
