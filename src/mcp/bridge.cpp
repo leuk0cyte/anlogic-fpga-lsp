@@ -2474,9 +2474,22 @@ Json Bridge::ProjectReports(const Json& arguments) {
     // P-D1：走 ReportStore（附着模式 = 与 LSP 同一份缓存）。
     // 以前每次调用都 `reports::BuildReports`：冷构建审计实测 768–784 ms，
     // 而第二次调用本该是亚毫秒的命中。
-    // 这里仍然用 kAll 掩码（SummarizeReports 需要哪段由 section 决定，掩码收窄留给 P-C3），
-    // 变化只在于"构建一次、之后命中"。
-    const auto snapshot = Reports().Get(proj, reports::sections::kAll);
+    //
+    // 第七轮（P3-A 实测）：这里原来硬编码 kAll —— `section=artifacts` 只要 747 B 输出，
+    // 却要付 **19.89 ms / 240 KB 读 / 69 ops**（8 个 section 的读操作完全一样）；
+    // CorpusBeta 上 `all` 冷 73.95 ms / 1.01 MB。现在把**明确的分节**映射成 mask：
+    //   * 结果头部总会带 files / runs（SummarizeReports 无条件读），所以这两段一起取；
+    //   * "summary"/"all"/未知名字保持 kAll —— summary 需要 qor/timing/area/flow 四段
+    //     的摘要，收窄会改变输出形状（宁可慢也不能少字段）。
+    std::uint32_t mask = reports::sections::kAll;
+    if (!section.empty() && section != "all" && section != "summary") {
+        bool ok = false;
+        const std::uint32_t bit = reports::sections::Parse(section, &ok);
+        if (ok && bit != reports::sections::kNone) {
+            mask = bit | reports::sections::kFiles | reports::sections::kArtifacts;
+        }
+    }
+    const auto snapshot = Reports().Get(proj, mask);
     if (snapshot == nullptr) {
         const Json empty = Json::object();
         return SummarizeReports(empty, proj.name, stage, section, limit, include_raw);

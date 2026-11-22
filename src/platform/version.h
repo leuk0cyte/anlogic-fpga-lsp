@@ -14,6 +14,6 @@
 
 namespace fpgalsp::platform {
 
-inline constexpr const char* kServerVersion = "0.34.0";
+inline constexpr const char* kServerVersion = "0.35.0";
 
 }  // namespace fpgalsp::platform

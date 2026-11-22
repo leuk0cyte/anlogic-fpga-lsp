@@ -1,6 +1,6 @@
 {
  "schema": 1,
- "generated": "2026-11-23T02:25:53+0800",
+ "generated": "2026-11-23T03:38:03+0800",
  "tool": "LLVM 23.1.5",
  "config": ".clang-tidy",
  "config_sha1": "d86d7a7e8828850aa915ed1dde75ffc07892a838",
@@ -710,7 +710,7 @@
   },
   {
    "file": "src/mcp/bridge.cpp",
-   "line": 3120,
+   "line": 3133,
    "col": 23,
    "check": "modernize-avoid-c-arrays",
    "sev": "warning",
@@ -718,7 +718,7 @@
   },
   {
    "file": "src/mcp/bridge.cpp",
-   "line": 4144,
+   "line": 4157,
    "col": 11,
    "check": "bugprone-empty-catch",
    "sev": "warning",
@@ -726,7 +726,7 @@
   },
   {
    "file": "src/mcp/bridge.cpp",
-   "line": 4729,
+   "line": 4742,
    "col": 19,
    "check": "modernize-avoid-c-arrays",
    "sev": "warning",
@@ -734,7 +734,7 @@
   },
   {
    "file": "src/mcp/bridge.cpp",
-   "line": 4766,
+   "line": 4779,
    "col": 19,
    "check": "modernize-avoid-c-arrays",
    "sev": "warning",

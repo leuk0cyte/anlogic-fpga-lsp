@@ -1,4 +1,4 @@
-# 交付状态（当前：2026-11-23，扩展 0.34.0）
+# 交付状态（当前：2026-11-23，扩展 0.35.0）
 
 ## 构建与测试
 
@@ -1924,3 +1924,23 @@ completion 候选缓存、TD 设备表落盘（冷调用 574 → ~170 ms）、�
 行内容逐字节核对）全部保留，未放松断言。
 
 **验证**：dev/release ctest 71/71 + `docs_clang_tidy`；插件 64/64；四个 python 门禁 PASS。
+
+---
+
+## 第四十八轮（2026-11-23，0.35.0）：第三轮独立审计（未覆盖面）+ 报告分节 + MCP 崩溃修复
+
+第三轮审计（`doc/audit/2026-11-22/perf3/`：TD流程/报告/探针 + 插件 UI/webview）只看前六轮未覆盖的面。
+
+| 项 | 改前（实测） | 改后（实测） |
+| --- | --- | --- |
+| `fpga_project_reports` 的 `section` 真正参与构建（原来硬编码 kAll） | `artifacts` 冷 **19.89 ms / 240 KB 读 / 69 ops** | **6.09 ms / 10.4 KB / 5 ops**（summary 1.06 ms） |
+| `--mcp --project` 不带 `--root` 时 fail-fast（0xC0000409） | 直接崩溃、stderr 空 | 用 `.al` 目录当 root + 异常转可读退出码 2；实测正常 initialize |
+
+**审计确认"已经很好"的部分**（避免重复优化）：flow_status idle 1.1–1.2 ms、真跑 flow 期间轮询只占墙钟 1.4%；
+ReportStore stamp 校验热 5.14 ms / 失效 10–12 ms；TD 会话第二次 `diagnostics` 1.5 ms（无重复工作）。
+
+**未采信并记录**：PLUGIN-UI 报告称"Reports 面板永远空态 + 每次 2 次整页重载"，用其自带
+`panel-bench.js` + 同一 payload 复现得到 `emptyState:false / tabs:8 / sections:7 / html:1 / patch:4`（正常），
+真机 summary 也是 `ok:true, syn.ok:true` —— 需要更精确复现步骤，暂不改代码。
+
+**验证**：dev/release ctest 71/71 + docs_clang_tidy 通过；插件 64/64；四个 python 门禁 PASS。

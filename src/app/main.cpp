@@ -348,8 +348,20 @@ int main(int argc, char** argv) {
         }
     } else {
         // MCP 模式：Bridge（feature 层）+ McpServer（协议层）
+        // 第七轮（审计 P3-A 附带发现）：`--mcp --project <al>` 不带 `--root` 时进程
+        // **直接 fail-fast（0xC0000409）**且 stderr 空 —— 因为 root 退化成 "."，
+        // Bridge 在 `ResolveAl` 里判定"工程不在 root 下"抛 ToolError，而这里没有
+        // try/catch，异常逃出 main → std::terminate。
+        // 两处一起修：
+        //   1) 只给 --project 时用 `.al` 所在目录当 root（用户意图显然是这个工程）；
+        //   2) 任何初始化异常都转成可读 stderr + 退出码 2，绝不 fail-fast。
         fpgalsp::mcp::BridgeOptions bridge_options;
-        bridge_options.root = options.root.empty() ? std::string(".") : options.root;
+        bridge_options.root = options.root;
+        if (bridge_options.root.empty()) {
+            bridge_options.root = options.project.empty()
+                                      ? std::string(".")
+                                      : fpgalsp::platform::path_dirname(options.project);
+        }
         bridge_options.project = options.project;
         bridge_options.td_path = options.td_path;
 
@@ -358,7 +370,12 @@ int main(int argc, char** argv) {
         server_options.allow_write = options.allow_write;
         server_options.server_version = kServerVersion;
 
-        mcp_bridge = std::make_unique<fpgalsp::mcp::Bridge>(bridge_options);
+        try {
+            mcp_bridge = std::make_unique<fpgalsp::mcp::Bridge>(bridge_options);
+        } catch (const std::exception& exc) {
+            std::println(stderr, "fpgalsp-native --mcp: {}", exc.what());
+            return 2;
+        }
         mcp_server = std::make_unique<fpgalsp::mcp::McpServer>(*mcp_bridge, server_options);
         mcp_server->SetNotificationWriter([&transport](const Json& note) {
             // 进度通知走同一条 newline-delimited 通道；绝不写 stdout 之外的东西
