@@ -105,6 +105,15 @@ std::string ReadTextFile(const std::string& path) {
     return result.content;
 }
 
+// dry-run（0.25.0）：可选参数 `dry_run`，默认 false。true 时**只读预览**：
+// 读取/计算要在哪里改、改成什么，然后原样返回；不落盘、不启动 TD 进程。
+// 四个写工程工具（project_add_source / project_rename / project_update /
+// probe_config）共用这一个判定，避免各自手写 `arguments.value(...)`。
+bool DryRunRequested(const Json& arguments) {
+    const auto it = arguments.find("dry_run");
+    return it != arguments.end() && it->is_boolean() && it->get<bool>();
+}
+
 // Python project.rel(path)：相对工程目录、正斜杠
 std::string RelativeTo(const std::string& path, const std::string& base) {
     std::error_code ec;
@@ -3824,10 +3833,13 @@ Json Bridge::ProbeConfigTool(const Json& arguments) {
             if (item.is_string()) signals.push_back(item.get<std::string>());
         }
     }
+    // dry_run 与 write:false 同义（0.25.0）：任一为 true 即只预览，不落盘。
+    const bool dry_run = DryRunRequested(arguments);
     bool write = false;
     if (const auto it = arguments.find("write"); it != arguments.end() && it->is_boolean()) {
         write = it->get<bool>();
     }
+    if (dry_run) write = false;
     // 采样时钟/深度：TD 只在 "Optimize Gate 之后" 的 insert_debugger 里采纳，且必须通过
     // `-cwc <配置>` 传入（实测 depth 2048 生效）。这里只收参数，flow 负责生成配置。
     bool has_clock = false;
@@ -3859,8 +3871,12 @@ Json Bridge::ProbeConfigTool(const Json& arguments) {
     }
     Json out = probe::Configure(proj, signals, write, has_clock, clock, depth, disabled,
                                 has_disabled);
-    if (apply_build_config || arguments.contains("apply_build_config") ||
-        arguments.contains("cwc_bus_order") || arguments.contains("write_sidecar_cwc")) {
+    // 预览标记：只有显式 dry_run 才加，保持 write:false 的既有返回逐字段不变。
+    if (dry_run) out["dryRun"] = true;
+    // dry_run 时连 state dir 的 probe/config.txt 也不写（它同样是落盘）。
+    if (!dry_run &&
+        (apply_build_config || arguments.contains("apply_build_config") ||
+         arguments.contains("cwc_bus_order") || arguments.contains("write_sidecar_cwc"))) {
         probe::ProbeBuildConfig config = probe::ReadProbeBuildConfig(proj);
         // 显式传了 apply_build_config 就**双向**生效：传 false 必须把旧的 apply=1 清掉，
         // 否则上一轮的 opt-in 会一直残留（实测：正常 flow 被残留的 apply=1 带成自写 cwc，
@@ -4339,6 +4355,36 @@ bool WriteFileAtomic(const std::string& project_dir, const std::string& path,
         .ok;
 }
 
+// dry-run 预览：插入文本的前 max_lines 行（超出则截断并以 "..." 结尾）。
+std::string PreviewLines(std::string_view text, int max_lines) {
+    std::string preview(text);
+    std::string::size_type end = 0;
+    int lines = 0;
+    while (end < preview.size() && lines < max_lines) {
+        const std::string::size_type newline = preview.find('\n', end);
+        if (newline == std::string::npos) {
+            end = preview.size();
+            break;
+        }
+        end = newline + 1;
+        ++lines;
+    }
+    if (end < preview.size()) {
+        preview = preview.substr(0, end);
+        preview += "...";
+    }
+    return preview;
+}
+
+// 1-based 行号：offset 之前（不含）的换行数 + 1。
+int LineNumberAt(std::string_view text, std::string::size_type offset) {
+    int line = 1;
+    for (std::string::size_type index = 0; index < offset && index < text.size(); ++index) {
+        if (text[index] == '\n') ++line;
+    }
+    return line;
+}
+
 std::string NormaliseSlashes(std::string text) {
     for (char& c : text) {
         if (c == '\\') c = '/';
@@ -4392,6 +4438,18 @@ Json Bridge::ProjectRenameTool(const Json& arguments) {
         }
     }
     (void)name_tag;
+
+    // dry_run：只算出"会改成什么"，不做 open_project -update、不写 .al。
+    if (DryRunRequested(arguments)) {
+        Json out = Json::object();
+        out["ok"] = true;
+        out["dryRun"] = true;
+        out["al"] = proj.al_path;
+        out["from"] = proj.name;
+        out["to"] = name;
+        out["wouldChange"] = updated != original;
+        return out;
+    }
 
     if (updated == original) {
         Json out = Json::object();
@@ -4461,6 +4519,19 @@ Json Bridge::ProjectAddSourceTool(const Json& arguments) {
             if (rest.size() >= before) break;
             const std::string existing(captured.data(), captured.size());
             if (LowerText(NormaliseSlashes(existing)) == rel_lower) {
+                // dry_run：文件已经在 .al 里 -> 预览"不会改"，形状与非 dry-run 的
+                // added:false 一致，但带上 dry-run 标记字段，方便调用方统一处理。
+                if (DryRunRequested(arguments)) {
+                    Json out = Json::object();
+                    out["ok"] = true;
+                    out["dryRun"] = true;
+                    out["al"] = proj.al_path;
+                    out["source"] = rel;
+                    out["insertAtLine"] = Json(nullptr);
+                    out["wouldChange"] = false;
+                    out["preview"] = "";
+                    return out;
+                }
                 Json out = Json::object();
                 out["ok"] = true;
                 out["added"] = false;
@@ -4526,6 +4597,21 @@ Json Bridge::ProjectAddSourceTool(const Json& arguments) {
         original.rfind('\n', insert_at == 0 ? 0 : insert_at - 1);
     const std::string::size_type begin = (line_start == std::string::npos) ? 0 : line_start + 1;
     if (Trim(original.substr(begin, insert_at - begin)).empty()) insert_at = begin;
+
+    // dry_run（0.25.0）：插入位置与要插入的文本都已经算好，但**不写文件**，
+    // 也不做"算-写-验-回滚"—— 只把预览返回给调用方。
+    if (DryRunRequested(arguments)) {
+        Json out = Json::object();
+        out["ok"] = true;
+        out["dryRun"] = true;
+        out["al"] = proj.al_path;
+        out["source"] = rel;
+        out["insertAtLine"] = LineNumberAt(original, insert_at);
+        out["wouldChange"] = true;  // 能走到这里 = .al 里还没有这个文件
+        out["preview"] = PreviewLines(block, 12);
+        return out;
+    }
+
     const std::string updated =
         original.substr(0, insert_at) + block + original.substr(insert_at);
 
@@ -4738,6 +4824,17 @@ Json Bridge::AnalysisRunTool(const Json& arguments) {
 Json Bridge::ProjectUpdateTool(const Json& arguments) {
     const project::Project& proj = ProjectFor(arguments);
     const std::string al = proj.al_path;
+    // dry_run（0.25.0）：**不启动 TD**、不跑 check_project_version / open_project -update。
+    // 真实实现会开 TD 会话并让 TD 改写 .al，这里只把"将会执行什么"说清楚。
+    if (DryRunRequested(arguments)) {
+        Json out = Json::object();
+        out["ok"] = true;
+        out["dryRun"] = true;
+        // 与真实路径的 al 同形（analysis::UpdateProject 用 ReplaceBackslashes）。
+        out["al"] = NormaliseSlashes(proj.al_path);
+        out["note"] = "would run check_project_version + open_project -update";
+        return out;
+    }
     Json result = analysis::UpdateProject(proj, options_.td_path, [](std::string_view message) {
         platform::default_logger().info(std::string(message));
     });

@@ -1,4 +1,4 @@
-# 交付状态（当前：2026-11-22，扩展 0.24.0）
+# 交付状态（当前：2026-11-22，扩展 0.25.0）
 
 ## 构建与测试
 
@@ -6,7 +6,7 @@
 | --- | --- |
 | **全新目录干净构建** | configure 29 s → build 3.3 min → **844 个目标全部成功**（Release + 全量 LTO）；无 LTO 的 `windows-msvc-dev` 全新目录 **56 s**（2026-11-20 实测；增量构建见 build.md） |
 | **`ctest` 全量** | **71/71 通过**（其中 `unit` 46、`e2e` 5、`td` 5，其余为 `formatgate`/`lintgate`/`gate`/`generator`/`mcp`/`docs`/`parity` 门禁）；preset 默认 **8 路并行**，实测约 **75 s**（串行 92–104 s） |
-| **原生产物** | `build/bin/fpgalsp-native.exe`（0.24.0，**7,009,792 B**，全量 LTCG；SHA256 `4DC18604…221C06`） |
+| **原生产物** | `build/bin/fpgalsp-native.exe`（0.25.0，**7,035,392 B**，全量 LTCG；SHA256 `2425CDE2…475417`） |
 | **单元测试规模** | 46 个 gtest target |
 
 > 构建/测试的并行度分析（为什么 192 线程帮不上忙、时间精确花在哪、日常该用哪个 preset）见
@@ -1624,3 +1624,37 @@ semanticTokens/range}`、`completionItem/resolve`、`willSaveWaitUntil`、`$/set
 `<state>/logs/writes.jsonl` 可见 `td.install_cache`（temp）、`flow.file`（state）等真实条目。
 
 **未做（可选项）**：Phase 4 —— 测试用内存 FS、写指标进 `fpgalsp.metrics`、MCP 写工具的 dry-run UI。
+
+---
+
+## 第三十七轮（2026-11-22，0.25.0）：写服务 Phase 4 + 目录/删除/改名全收口
+
+第三十六轮的写服务只统一了"写文件"；本轮把 **目录创建 / 删除 / 改名**也收进去，并完成
+Phase 4（内存 FS、写指标、MCP dry-run）。
+
+**1) IO 全部收口**：新增 `writes::EnsureDir / Remove / Rename`（与 Write 同一套 root 策略、指标、
+审计）。后端 **39 处**调用迁移：`flow_runner`（MakeDirs、步骤标记、cw、bit、user.cfg）、
+`probe`（state/run 目录、capture cwd/csv）、`td_session`（scratch/work_dir）、`mcp_tcp`（端点目录/清理）、
+`strategy`（复制/清理工作目录）、`analysis`（缓存目录/过期报告）、`main`（日志目录）、
+`td_install`（清缓存）。策略边界：
+* `kProject`：只允许在已存在的目录里写登记文件；`chip_debugger/` 允许创建、其 `*.mdn|*.cfg` 允许删除；
+  用户 `.al/.adc/.sdc` 拒绝删除/改名；工程目录本身允许 EnsureDir（已存在语义）。
+* TD 会话日志归位（`<al>/td_*.log → <al>/log/`）是平台维护动作，3 处保留裸调用并用
+  `// fpgalsp-write-exempt: <理由>` 行内豁免；门禁识别该标记（必须带理由）。
+
+**2) 门禁扩展**：`docs_no_raw_writes` 现在同时禁止 `write_file_utf8` / `std::ofstream` /
+`create_directories` / `remove` / `remove_all` / `rename` / `platform::ensure_directory`；
+白名单仅平台实现（write_service / encoding / log）+ 行内豁免。`test/run.js` 的插件门禁不变。
+
+**3) Phase 4**：
+* **内存 FS 后端**：`writes::MakeMemoryBackend()` + `SetBackendForTest/ResetBackendForTest`，单测
+  `MemoryBackendKeepsDiskUntouched` 证明写走内存、磁盘无文件；
+* **写指标进 `fpgalsp.metrics`**：`writes{ok,failed,denied,bytes,dirsCreated,removals,renames,backups,
+  byRoot{state,project,run,temp}}`（真机 LSP 实测字段存在）；
+* **MCP 写工具 dry-run**：`fpga_project_add_source` / `fpga_project_rename` / `fpga_project_update` /
+  `fpga_probe_config` 的 `dry_run:true`（schema + description 已更新）。真机 CorpusAlpha 实测：
+  四个调用都返回预览，`.al` 的 mtime 不变。
+
+**验证**：`ctest --preset windows-msvc-release` **71/71**（75 s）、插件 **58/58**；
+真机 CorpusAlpha 单步 `read_design` 正常（3 s、下游 pending）、`didSave` 后工程目录仍无 `.fpgalsp`、
+`fpgalsp.metrics.writes` 可用；`unit_write_service` 13 条全绿（新增目录/删除/改名/指标/内存后端）。

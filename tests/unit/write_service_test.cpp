@@ -166,4 +166,94 @@ TEST_F(WriteServiceTest, AppendLineOnlyForNonProjectFiles) {
     EXPECT_FALSE(rejected.ok);
 }
 
+// -----------------------------------------------------------------------------
+// 0.25.0：目录 / 删除 / 改名，以及内存后端 + 指标
+// -----------------------------------------------------------------------------
+
+TEST_F(WriteServiceTest, EnsureDirRespectsRoots) {
+    const auto state_dir_ok =
+        fpgalsp::platform::writes::EnsureDir(project_, state_ + "/cache/aa", {.caller = "t.dir"});
+    EXPECT_TRUE(state_dir_ok.ok) << state_dir_ok.error;
+    EXPECT_TRUE(fs::is_directory(state_ + "/cache/aa"));
+
+    // 工程目录本身（已存在）允许
+    EXPECT_TRUE(fpgalsp::platform::writes::EnsureDir(project_, project_, {.caller = "t.dir"}).ok);
+    // 工程内已存在的普通目录允许
+    fs::create_directories(project_ + "/existing_dir");
+    EXPECT_TRUE(fpgalsp::platform::writes::EnsureDir(project_, project_ + "/existing_dir",
+                                                     {.caller = "t.dir"})
+                    .ok);
+    // 未登记的工程目录拒绝新建
+    EXPECT_FALSE(fpgalsp::platform::writes::EnsureDir(project_, project_ + "/new_dir",
+                                                      {.caller = "t.dir"})
+                     .ok);
+    EXPECT_FALSE(fs::exists(project_ + "/new_dir"));
+    // chip_debugger/ 是登记过的生成目录：允许创建（首次写 user.mdn 需要）
+    fs::remove_all(project_ + "/chip_debugger");
+    EXPECT_TRUE(fpgalsp::platform::writes::EnsureDir(project_, project_ + "/chip_debugger",
+                                                     {.caller = "t.dir"})
+                    .ok);
+    EXPECT_TRUE(fs::is_directory(project_ + "/chip_debugger"));
+}
+
+TEST_F(WriteServiceTest, RemoveOnlyOutsideProject) {
+    const std::string state_file = state_ + "/cache/x.json";
+    ASSERT_TRUE(Write(project_, state_file, "x", {.caller = "t"}).ok);
+    EXPECT_TRUE(fpgalsp::platform::writes::Remove(project_, state_file, false).ok);
+    EXPECT_FALSE(fs::exists(state_file));
+
+    // 用户工程文件（.al）拒绝删除
+    fpgalsp::platform::write_file_utf8(project_ + "/top.al", "<Project/>");
+    EXPECT_FALSE(fpgalsp::platform::writes::Remove(project_, project_ + "/top.al", false).ok);
+    EXPECT_TRUE(fs::exists(project_ + "/top.al"));
+    // chip_debugger/*.cfg（我们/TD 生成的配置）允许删除
+    fs::create_directories(project_ + "/chip_debugger");
+    fpgalsp::platform::write_file_utf8(project_ + "/chip_debugger/user.cfg", "cfg");
+    EXPECT_TRUE(fpgalsp::platform::writes::Remove(project_, project_ + "/chip_debugger/user.cfg",
+                                                  false)
+                    .ok);
+    EXPECT_FALSE(fs::exists(project_ + "/chip_debugger/user.cfg"));
+}
+
+TEST_F(WriteServiceTest, RenameWithinRootAndForce) {
+    const std::string from = state_ + "/cache/a.json";
+    const std::string to = state_ + "/cache/b.json";
+    ASSERT_TRUE(Write(project_, from, "a", {.caller = "t"}).ok);
+    ASSERT_TRUE(Write(project_, to, "b", {.caller = "t"}).ok);
+
+    EXPECT_FALSE(fpgalsp::platform::writes::Rename(project_, from, to, {}).ok)
+        << "目标已存在时必须 force=true";
+    EXPECT_TRUE(fpgalsp::platform::writes::Rename(project_, from, to, {.force = true}).ok);
+    EXPECT_EQ(Read(to), "a");
+
+    // 跨 root 拒绝
+    EXPECT_FALSE(fpgalsp::platform::writes::Rename(project_, to, project_ + "/prj_Runs/syn_1/x",
+                                                   {.force = true})
+                     .ok);
+}
+
+TEST_F(WriteServiceTest, MetricsCountWritesAndDenials) {
+    fpgalsp::platform::writes::ResetMetricsForTest();
+    ASSERT_TRUE(Write(project_, state_ + "/cache/m.json", "abc", {.caller = "t"}).ok);
+    (void)Write(project_, project_ + "/unregistered.v", "x", {.caller = "t"});
+    const fpgalsp::platform::writes::Metrics metrics =
+        fpgalsp::platform::writes::SnapshotMetrics();
+    EXPECT_GE(metrics.writes_ok, 1u);
+    EXPECT_GE(metrics.bytes_written, 3u);
+    EXPECT_GE(metrics.denied, 1u);
+}
+
+TEST_F(WriteServiceTest, MemoryBackendKeepsDiskUntouched) {
+    const std::string target = state_ + "/cache/mem.json";
+    fpgalsp::platform::writes::SetBackendForTest(fpgalsp::platform::writes::MakeMemoryBackend());
+    const auto written = Write(project_, target, "in-memory", {.caller = "t.memory"});
+    fpgalsp::platform::writes::ResetBackendForTest();
+    EXPECT_TRUE(written.ok) << written.error;
+    EXPECT_FALSE(fs::exists(target)) << "内存后端不应落盘";
+    // 恢复磁盘后端后仍然可写
+    const auto again = Write(project_, target, "on-disk", {.caller = "t.disk"});
+    EXPECT_TRUE(again.ok) << again.error;
+    EXPECT_EQ(Read(target), "on-disk");
+}
+
 }  // namespace

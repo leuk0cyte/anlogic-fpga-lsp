@@ -3,7 +3,7 @@ workspaceFolders: ["y:\\CorpusAlpha"]
   [PASS] a workspace folder is open  y:\CorpusAlpha
   [PASS] extension found
 extensionPath: Y:\fpga-lsp-cpp\vscode-extension
-version: 0.23.0
+version: 0.25.0
   [PASS] extension activates
   [PASS] commands registered  78 commands
   [PASS] v3 commands registered  all present
@@ -55,12 +55,12 @@ version: 0.23.0
   [PASS] flow controller exposed for tests
   [PASS] syn run directory found  y:\CorpusAlpha\demo_project_Runs\syn_1
   [PASS] Reset and Run resolves after the flow finished  {"ok":true}
-  [PASS] reset and run re-ran ONLY the selected step  2.9s  read_design 1795331761073.5674 -> 1795331801374.8533
+  [PASS] reset and run re-ran ONLY the selected step  2.9s  read_design 1795334787332.6719 -> 1795334826462.609
   [PASS] downstream steps are cleared to "not run" (no re-run)  opt_rtl=0 opt_gate=0
-  [PASS] FPGA Flow output shows the step run header  [15:16:39] ▶ reset run Read Design (read_design, force, jobs=6) · fpga-lsp 0.23.0 | [15:16:39] Read Design: only this step runs - syn_1 step marks from read_design on are cleared first (earlier steps keep their products).
-  [PASS] FPGA Flow output names the running extension version  [15:16:39] ▶ reset run Read Design (read_design, force, jobs=6) · fpga-lsp 0.23.0
-  [PASS] FPGA Flow output shows the step run progress  [15:16:42] Collecting reports | [done] ✓ done | [15:16:42] ✓ Read Design finished after 2.8s
+  [PASS] FPGA Flow output shows the step run header  [16:07:04] ▶ reset run Read Design (read_design, force, jobs=6) · fpga-lsp 0.25.0 | [16:07:04] Read Design: only this step runs - syn_1 step marks from read_design on are cleared first (earlier steps keep their products).
+  [PASS] FPGA Flow output names the running extension version  [16:07:04] ▶ reset run Read Design (read_design, force, jobs=6) · fpga-lsp 0.25.0
+  [PASS] FPGA Flow output shows the step run progress  [16:07:07] Collecting reports | [done] ✓ done | [16:07:07] ✓ Read Design finished after 2.9s
   [PASS] flow controller returns to idle after the run
   [PASS] status bar reports done/idle  $(check) FPGA: Read Design done
-elapsed ms: 9562
+elapsed ms: 9817
 SUITE: PASS

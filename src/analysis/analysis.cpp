@@ -461,12 +461,17 @@ Json Run(const project::Project& project, std::string_view td_explicit, const Lo
 
     const std::string cache = CacheDir(project);
     const std::string out_dir = platform::normalize_path(cache + "/analysis");
-    platform::ensure_directory(out_dir);
+    // 统一写服务：analysis 缓存目录在状态目录下（kState）；失败随后由报告写入报错。
+    (void)platform::writes::EnsureDir(
+        project.dir, out_dir, platform::writes::Options{.caller = "analysis.cache_dir"});
     const std::string drc_path = platform::normalize_path(out_dir + "/drc.rpt");
     const std::string cdc_path = platform::normalize_path(out_dir + "/cdc.rpt");
     for (const std::string& stale : {drc_path, cdc_path}) {
-        std::error_code ec;
-        fs::remove(AsPath(stale), ec);
+        // 统一写服务：analysis 缓存目录在状态目录下（kState）；失败照旧忽略
+        //（旧的裸 fs::remove 也是忽略错误码）。
+        (void)platform::writes::Remove(
+            project.dir, stale, false,
+            platform::writes::Options{.caller = "analysis.stale_report"});
     }
 
     // Python：run_dir = <project>/.fpgalsp/analysis（P-4 行为保持）

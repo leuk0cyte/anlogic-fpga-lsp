@@ -26,6 +26,8 @@
 
 #pragma once
 
+#include <cstdint>
+#include <memory>
 #include <string>
 #include <string_view>
 
@@ -43,6 +45,7 @@ enum class Root {
 struct Options {
     bool dry_run = false;      // true = 只校验，不落盘
     bool backup = false;       // true = 覆盖前把旧内容备份到 <state>/backup/
+    bool force = false;        // Remove/Rename：允许递归/覆盖（默认严格）
     const char* caller = nullptr;  // 审计标签，例如 "probe.config"
 };
 
@@ -78,5 +81,56 @@ std::string StatePath(std::string_view project_dir, std::string_view rel);
 
 // 便捷：把绝对路径转成"相对工程目录"的审计显示名（越界时返回原路径）。
 std::string DisplayPath(std::string_view project_dir, std::string_view path);
+
+// -----------------------------------------------------------------------------
+// 目录 / 删除 / 改名（与 Write 同一套 root 策略；0.25.0 起业务代码只能用这些）
+// -----------------------------------------------------------------------------
+// EnsureDir：kState/kTemp/kRun 可建；kProject 只允许「已存在」。
+Result EnsureDir(std::string_view project_dir, std::string_view path,
+                 const Options& options = {});
+
+// Remove：只允许 kState/kTemp/kRun；kProject 一律拒绝（不替用户删工程文件）。
+// recursive=true 等价 remove_all。
+Result Remove(std::string_view project_dir, std::string_view path, bool recursive = false,
+              const Options& options = {});
+
+// Rename：from/to 必须在同一 root，且都不能是 kProject；目标已存在时需 force=true。
+Result Rename(std::string_view project_dir, std::string_view from, std::string_view to,
+              const Options& options = {});
+
+// -----------------------------------------------------------------------------
+// 写指标（fpgalsp.metrics 用；进程内累计，永不抛）
+// -----------------------------------------------------------------------------
+struct Metrics {
+    std::uint64_t writes_ok = 0;
+    std::uint64_t writes_failed = 0;
+    std::uint64_t denied = 0;       // 被 root 策略拒绝的次数
+    std::uint64_t bytes_written = 0;
+    std::uint64_t dirs_created = 0;
+    std::uint64_t removals = 0;
+    std::uint64_t renames = 0;
+    std::uint64_t backups = 0;
+    std::uint64_t by_root[4] = {0, 0, 0, 0};  // state/project/run/temp
+};
+Metrics SnapshotMetrics();
+void ResetMetricsForTest();
+
+// -----------------------------------------------------------------------------
+// 测试用后端（内存 FS）：SetBackendForTest 之后所有 Write/EnsureDir/Remove/Rename
+// 都走内存，不落盘；ResetBackendForTest 恢复真实磁盘。用于单测（避免污染临时目录）。
+// -----------------------------------------------------------------------------
+class Backend {
+  public:
+    virtual ~Backend() = default;
+    virtual bool WriteFile(const std::string& path, std::string_view bytes) = 0;
+    virtual bool AppendFile(const std::string& path, std::string_view bytes) = 0;
+    virtual bool EnsureDir(const std::string& path) = 0;
+    virtual bool Remove(const std::string& path, bool recursive) = 0;
+    virtual bool Rename(const std::string& from, const std::string& to) = 0;
+    virtual bool Exists(const std::string& path) = 0;
+};
+std::unique_ptr<Backend> MakeMemoryBackend();
+void SetBackendForTest(std::unique_ptr<Backend> backend);
+void ResetBackendForTest();
 
 }  // namespace fpgalsp::platform::writes

@@ -39,6 +39,7 @@
 #include "platform/command_line.h"
 #include "platform/encoding.h"
 #include "platform/path.h"
+#include "platform/write_service.h"
 
 namespace fpgalsp::td {
 namespace {
@@ -73,13 +74,18 @@ std::string MakeScratchWorkDir() {
 #endif
     const std::string name = "fpgalsp-td-" + std::to_string(pid);
     std::filesystem::path dir = base / name;
-    std::filesystem::create_directories(dir, ec);
-    // 目录建不出来就退回"当前目录"，绝不因为 scratch 目录失败而让 TD 起不来
-    if (ec) return std::string();
     // 全项目内部路径都是 UTF-8（Windows 用户名可能是非 ASCII，不能走 ACP 的
     // path::string()），所以这里显式按 UTF-8 取出。
     const std::u8string utf8 = dir.u8string();
-    return std::string(reinterpret_cast<const char*>(utf8.data()), utf8.size());
+    const std::string dir_utf8(reinterpret_cast<const char*>(utf8.data()), utf8.size());
+    // 统一写服务：系统 temp 下的 fpgalsp scratch（kTemp）。平台层拿不到工程目录，
+    // project_dir 传空串（绝对路径仍能按 state/temp 分类）。
+    // 目录建不出来就退回"当前目录"，绝不因为 scratch 目录失败而让 TD 起不来。
+    if (!plat::writes::EnsureDir(std::string(), dir_utf8, {.caller = "td.scratch_work_dir"})
+             .ok) {
+        return std::string();
+    }
+    return dir_utf8;
 }
 
 }  // namespace
@@ -144,6 +150,10 @@ struct TdSession::Impl {
             }
         }
         if (names.empty()) return;
+        // 会话日志外移：from/to 都在**工程目录**内（work_dir=<.al 目录>、log_dir=<.al>/log），
+        // write_service 的 RewritePolicy 默认不允许在工程内建目录/改名/删除用户文件；这条链路是
+        // TD 自己的会话日志归位（P-4），属于"平台维护动作"，在门禁里用 inline 豁免标记。
+        // fpgalsp-write-exempt: TD 会话日志归位（<al>/td_*.log -> <al>/log/），平台维护动作
         std::error_code ec;
         std::filesystem::create_directories(std::filesystem::path(log_dir), ec);
         for (const std::string& name : names) {
@@ -153,6 +163,7 @@ struct TdSession::Impl {
             for (int attempt = 0; attempt < 3 && !moved; ++attempt) {
                 if (attempt > 0) std::this_thread::sleep_for(std::chrono::milliseconds(100));
                 std::error_code move_ec;
+                // fpgalsp-write-exempt: TD 会话日志归位（rename <al>/td_*.log -> <al>/log/）
                 std::filesystem::rename(from, to, move_ec);
                 if (!move_ec) {
                     moved = true;
@@ -164,6 +175,7 @@ struct TdSession::Impl {
                                            std::filesystem::copy_options::overwrite_existing,
                                            move_ec);
                 if (!move_ec) {
+                    // fpgalsp-write-exempt: 跨卷退路，删除已复制成功的工程内会话日志
                     std::filesystem::remove(from, move_ec);
                     moved = true;
                 }
@@ -306,7 +318,10 @@ TdSession::TdSession(const TdChoice& td, const TdSessionOptions& options) : td_(
 
     // 对应 Python: os.makedirs(cwd, exist_ok=True)
     if (!work_dir.empty()) {
-        plat::ensure_directory(work_dir);
+        // 统一写服务：work_dir 通常是工程目录（kProject，只允许"已存在"）或 temp scratch
+        // （kTemp）；平台层拿不到工程目录，project_dir 传空串（临时目录仍能按 kTemp 分类）。
+        (void)plat::writes::EnsureDir(std::string(), work_dir,
+                                      {.caller = "td.session_workdir"});
     }
 
     // 会话日志外移（见 TdSessionOptions::log_dir 的注释）：先记下 cwd 里**已经存在**的

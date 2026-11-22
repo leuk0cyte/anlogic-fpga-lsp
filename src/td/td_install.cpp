@@ -446,8 +446,9 @@ void WriteCache(const TdEnv& env, const TdChoice& choice) {
 void ClearCache() {
     const std::string path = CachePath();
     if (path.empty()) return;
-    std::error_code ec;
-    std::filesystem::remove(path, ec);
+    // 统一写服务：安装缓存是 %TEMP%/fpgalsp 下的 scratch（kTemp）；失败照旧忽略。
+    (void)platform::writes::Remove(std::string(), path, false,
+                                   platform::writes::Options{.caller = "td.install_cache_clear"});
 }
 
 }  // namespace

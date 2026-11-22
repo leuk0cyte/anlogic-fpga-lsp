@@ -109,7 +109,14 @@ GUI 的 Flow 视图是**恰好 6 步**：`read_design` / `opt_rtl` / `opt_gate`�
    ⚠ 客户端务必在 `exit` 之后**关闭 stdin**（或直接 kill）。phy 仍要 5–15 分钟，
    长跑任务必须留在同一个会话里。
 
-## 五、和后端实现的关系
+## 五、写工具的 dry-run（预览）
+
+四个会**改工程**的工具有 `dry_run:true`：`fpga_project_add_source`、`fpga_project_rename`、
+`fpga_project_update`、`fpga_probe_config`。dry_run 时只读、返回将要发生的变化
+（`insertAtLine` / `from`,`to` / `note` / `before,after,added,removed`），**不写任何文件、不启动 TD**；
+`.al` 的 mtime 不变可用来验证。需要 `--allow-write`（工具可见性与真实写一致）。
+
+## 六、和后端实现的关系
 
 | 帮助内容 | 对应实现 |
 | --- | --- |

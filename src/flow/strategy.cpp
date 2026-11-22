@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -20,6 +21,7 @@
 #include "flow/flow_logic.h"
 #include "platform/encoding.h"
 #include "platform/path.h"
+#include "platform/write_service.h"
 #include "reports/qor.h"
 #include "reports/report_text.h"
 #include "td/td_device.h"
@@ -83,9 +85,16 @@ bool ShouldSkip(const std::string& name, bool is_directory) {
     return ends_with(".log") || ends_with(".dmp");
 }
 
-void CopyProjectTree(const std::string& from, const std::string& to, std::error_code& ec) {
-    fs::create_directories(fs::path(to), ec);
-    if (ec) return;
+void CopyProjectTree(const std::string& project_dir, const std::string& from,
+                     const std::string& to, std::error_code& ec) {
+    // 统一写服务：compare 工作目录默认在 <state_dir>/compare 下（kState）；失败时保留
+    // 旧语义（ec 非空 -> 调用方报 "Failed to copy the project"）。
+    if (!platform::writes::EnsureDir(project_dir, to,
+                                     platform::writes::Options{.caller = "strategy.work_dir"})
+             .ok) {
+        ec = std::make_error_code(std::errc::io_error);
+        return;
+    }
     fs::directory_iterator it(fs::path(from), ec);
     if (ec) return;
     const fs::directory_iterator end;
@@ -96,7 +105,7 @@ void CopyProjectTree(const std::string& from, const std::string& to, std::error_
         if (!ShouldSkip(name, is_dir)) {
             const std::string target = Join(to, name);
             if (is_dir) {
-                CopyProjectTree(it->path().string(), target, ec);
+                CopyProjectTree(project_dir, it->path().string(), target, ec);
                 if (ec) return;
             } else {
                 std::error_code copy_ec;
@@ -156,7 +165,7 @@ jsonrpc::Json MetricsObject(const jsonrpc::Json& qor) {
     return clean;
 }
 
-void PruneWorkDirs(std::string_view root, int keep) {
+void PruneWorkDirs(const std::string& project_dir, std::string_view root, int keep) {
     if (keep <= 0) return;
     std::vector<std::string> names;
     std::error_code ec;
@@ -173,8 +182,10 @@ void PruneWorkDirs(std::string_view root, int keep) {
     }
     std::sort(names.begin(), names.end());  // 目录名是时间戳，字典序即时间序
     while (static_cast<int>(names.size()) > keep) {
-        std::error_code remove_ec;
-        fs::remove_all(fs::path(Join(root, names.front())), remove_ec);
+        // 统一写服务：compare 工作目录（kState）递归删除；失败照旧忽略（旧 remove_ec 也未使用）。
+        (void)platform::writes::Remove(
+            project_dir, Join(root, names.front()), true,
+            platform::writes::Options{.caller = "strategy.prune_work_dir"});
         names.erase(names.begin());
     }
 }
@@ -334,7 +345,7 @@ jsonrpc::Json CompareStrategies(const project::Project& project, const td::TdCho
 
     // ---- 复制工程到临时目录（不污染用户的 .al）----
     std::error_code ec;
-    CopyProjectTree(project.dir, work, ec);
+    CopyProjectTree(project.dir, project.dir, work, ec);
     if (ec) {
         result["error"] = "Failed to copy the project: " + ec.message();
         return result;
@@ -575,7 +586,7 @@ jsonrpc::Json CompareStrategies(const project::Project& project, const td::TdCho
     result["ok"] = any_ok;
     result["elapsed"] = std::round((Now() - started) * 10.0) / 10.0;
 
-    PruneWorkDirs(work_root, options.keep_work_dirs);
+    PruneWorkDirs(project.dir, work_root, options.keep_work_dirs);
     return result;
 }
 

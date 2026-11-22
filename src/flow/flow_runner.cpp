@@ -80,11 +80,13 @@ bool IsDirectory(std::string_view path) {
     return fs::is_directory(fs::path(std::string(path)), ec) && !ec;
 }
 
-bool MakeDirs(std::string_view path) {
+bool MakeDirs(std::string_view project_dir, std::string_view path) {
     if (path.empty()) return false;
-    std::error_code ec;
-    fs::create_directories(fs::path(std::string(path)), ec);
-    return !ec || fs::is_directory(fs::path(std::string(path)), ec);
+    // 统一写服务：目录创建走 root 策略（默认 flow_root/cache_root 都在 <state> 下）。
+    const platform::writes::Result made = platform::writes::EnsureDir(
+        project_dir, path, platform::writes::Options{.caller = "flow.make_dirs"});
+    // 与旧逻辑等价：建成功或"已经是目录"都算成功（旧实现忽略 create_directories 的错误码）。
+    return made.ok || IsDirectory(path);
 }
 
 std::vector<std::string> ListDir(std::string_view dir) {
@@ -634,8 +636,10 @@ struct FlowRunner::Impl {
         for (const std::string& name : ListSubdirs(RunsRoot())) {
             const std::string stop = Join(RunDirOf(name), ".stop.f");
             if (IsFile(stop)) {
-                std::error_code ec;
-                fs::remove(fs::path(stop), ec);
+                // 统一写服务：stop 标记在 <prj>_Runs/<run>/ 下（kRun）；失败照旧忽略。
+                (void)platform::writes::Remove(
+                    owner->project_.dir, stop, false,
+                    platform::writes::Options{.caller = "flow.stop_flag"});
             }
         }
     }
@@ -839,12 +843,18 @@ struct FlowRunner::Impl {
                     std::error_code ec;
                     const std::string backup = fpgalsp::platform::state_dir(owner->project_.dir) +
                                                "/probe/user.cfg.stale.bak";
-                    std::filesystem::create_directories(
-                        std::filesystem::path(backup).parent_path(), ec);
+                    // 统一写服务：备份目录在状态目录下（kState）；随后 copy_file 的 ec 语义不变。
+                    (void)platform::writes::EnsureDir(
+                        owner->project_.dir, fpgalsp::platform::path_dirname(backup),
+                        platform::writes::Options{.caller = "flow.user_cfg_stale_backup"});
                     std::filesystem::copy_file(user_cfg, backup,
                                                std::filesystem::copy_options::overwrite_existing,
                                                ec);
-                    std::filesystem::remove(std::filesystem::path(user_cfg), ec);
+                    // 统一删除：chip_debugger/*.cfg 是登记过的生成文件，writes::Remove 允许；
+                    // 用户 .al/.adc/.sdc 仍一律拒绝。
+                    (void)platform::writes::Remove(
+                        owner->project_.dir, user_cfg, false,
+                        platform::writes::Options{.caller = "flow.user_cfg_remove"});
                     Emit("log", run_name + ": 生成 user.cfg 失败（" + user_cfg_error +
                                     "），已把旧文件移到 " + backup +
                                     "；本次由 TD 按 user.mdn 自动建 watcher");
@@ -983,14 +993,21 @@ struct FlowRunner::Impl {
     // 只删除**步骤标记与会被重新生成的产物**，不碰用户的 _Runs 之外的东西。
     void ResetDownstreamPhy() {
         const std::string phy = RunDirOf("phy_1");
-        std::error_code ec;
+        const std::string project_dir = owner->project_.dir;
         for (const char* step : {"opt_place", "opt_route", "bitgen"}) {
             for (const char* suffix : {".begin.f", ".end.f", ".error.f"}) {
-                std::filesystem::remove(std::filesystem::path(phy + "/." + step + suffix), ec);
+                // 统一写服务：步骤标记在 <prj>_Runs/phy_1/（kRun）；失败照旧忽略。
+                (void)platform::writes::Remove(
+                    project_dir, phy + "/." + step + suffix, false,
+                    platform::writes::Options{.caller = "flow.reset_step_marker"});
             }
         }
-        std::filesystem::remove_all(std::filesystem::path(phy + "/cw"), ec);
-        std::filesystem::remove(std::filesystem::path(phy + "/" + project_name() + ".bit"), ec);
+        // 统一写服务：watcher 旁路目录（递归=旧 remove_all）与旧 bit（kRun）。
+        (void)platform::writes::Remove(project_dir, phy + "/cw", true,
+                                       platform::writes::Options{.caller = "flow.reset_cw"});
+        (void)platform::writes::Remove(
+            project_dir, phy + "/" + project_name() + ".bit", false,
+            platform::writes::Options{.caller = "flow.reset_bit"});
     }
 
     std::string project_name() const { return owner->project_.name; }
@@ -1003,10 +1020,12 @@ struct FlowRunner::Impl {
         if (run_name == "syn_1") {
             ResetDownstreamPhy();
             const std::string syn = RunDirOf("syn_1");
-            std::error_code ec;
             for (const char* step : {"read_design", "opt_rtl", "opt_gate"}) {
                 for (const char* suffix : {".begin.f", ".end.f", ".error.f"}) {
-                    std::filesystem::remove(std::filesystem::path(syn + "/." + step + suffix), ec);
+                    // 统一写服务：syn 步骤标记（kRun）；失败照旧忽略。
+                    (void)platform::writes::Remove(
+                        owner->project_.dir, syn + "/." + step + suffix, false,
+                        platform::writes::Options{.caller = "flow.reset_step_marker"});
                 }
             }
         }
@@ -1027,11 +1046,13 @@ struct FlowRunner::Impl {
         }
         const auto first = std::find(steps.begin(), steps.end(), step);
         if (first == steps.end()) return;
-        std::error_code ec;
         const std::string dir = RunDirOf(run_name);
         for (auto it = first; it != steps.end(); ++it) {
             for (const char* suffix : {".begin.f", ".end.f", ".error.f"}) {
-                std::filesystem::remove(std::filesystem::path(dir + "/." + *it + suffix), ec);
+                // 统一写服务：run 的步骤标记（kRun）；失败照旧忽略。
+                (void)platform::writes::Remove(
+                    owner->project_.dir, dir + "/." + *it + suffix, false,
+                    platform::writes::Options{.caller = "flow.reset_step_marker"});
             }
         }
         if (run_name == "syn_1") {
@@ -1039,8 +1060,12 @@ struct FlowRunner::Impl {
             ResetDownstreamPhy();
         } else {
             // phy 任一步重跑都会让 watcher 旁路/位流作废（bitgen 会重新生成）
-            std::filesystem::remove_all(std::filesystem::path(dir + "/cw"), ec);
-            std::filesystem::remove(std::filesystem::path(dir + "/" + project_name() + ".bit"), ec);
+            (void)platform::writes::Remove(
+                owner->project_.dir, dir + "/cw", true,
+                platform::writes::Options{.caller = "flow.reset_cw"});
+            (void)platform::writes::Remove(
+                owner->project_.dir, dir + "/" + project_name() + ".bit", false,
+                platform::writes::Options{.caller = "flow.reset_bit"});
         }
         // 统计表里"这一步及下游"的耗时行也要清掉：CollectFlowSteps 会用"表里有耗时"
         // 把 pending 升级成 done，只删标记不动表的话，右键 Reset and Run 跑完 Read Design
@@ -1344,7 +1369,7 @@ struct FlowRunner::Impl {
         payload["area"] = pick("area");
 
         const std::string cache = owner->options_.cache_root;
-        if (MakeDirs(cache)) {
+        if (MakeDirs(owner->project_.dir, cache)) {
             (void)WriteTextFile(owner->project_.dir, Join(cache, "last_flow.json"),
                                 jsonrpc::Serialize(payload, /*compact=*/false));
         }
@@ -1506,7 +1531,7 @@ struct FlowRunner::Impl {
                               single_step == "bitgen";
         const std::string dir = Join(owner->options_.flow_root, run_id);
         SetRunDir(dir);
-        if (owner->options_.write_run_logs) (void)MakeDirs(dir);
+        if (owner->options_.write_run_logs) (void)MakeDirs(owner->project_.dir, dir);
 
         // 同一个 FlowRunner 可以被反复 Start，而每次 Worker 都会新建一个 TD 会话 ——
         // 上一次 flow 里的 set_param 不继承到新会话，所以钩子状态必须清空重设。

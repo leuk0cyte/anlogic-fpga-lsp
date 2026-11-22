@@ -1,6 +1,6 @@
 # 统一写服务（Write Service）：把"直接写文件"收敛到一个可审计、可策略化的入口
 
-> 状态：**已实现（0.24.0）**：后端 `platform/write_service` + 全量迁移 + CTest 门禁；插件 `src/writeService.js` + 迁移 + JS 门禁。Phase 4 增强项未做（见 §3）。目标读者：后端/插件维护者。
+> 状态：**已全部实现（0.25.0）**：后端 `platform/write_service`（写文件 + 目录/删除/改名 + 内存 FS 后端 + 指标）+ 全量迁移 + CTest 门禁；插件 `src/writeService.js` + 迁移 + JS 门禁；MCP 写工具 dry-run。目标读者：后端/插件维护者。
 > 触发问题：工程根反复出现 `.fpgalsp`（已修，见 `doc/status.md` 第三十五轮）——症状是
 > "某处拼了路径就写"，根因是**写入没有统一入口、没有路径策略、没有机械门禁**。
 > 本提案回答：能不能抽象一层"写缓存/日志/工程文件"的服务，所有写入都必须经过它。
@@ -162,10 +162,11 @@ const { ok } = writeService.writeProjectFile(root, '.vscode/mcp.json', json, { b
 - 新增 `src/writeService.js`；迁移 3 处裸写；加 JS 门禁测试；`node test/run.js` 全绿；
   真实 VS Code 套件重跑（MCP 配置安装、highlight 报告两条链路）。
 
-### Phase 4：可选增强（按需）
-- 测试用 `InMemoryFs`（服务注入），让 flow/probe 单测不再碰真实磁盘；
-- MCP `fpga_read_file` 之外的写工具统一带 `dry_run` 预览；
-- 写审计汇总进 `fpgalsp.metrics`（成功/拒绝/失败）。
+### Phase 4：增强（0.25.0 已落地）
+- **内存 FS 后端**：`writes::MakeMemoryBackend()` + `SetBackendForTest/ResetBackendForTest`，单测可完全不落盘（见 `unit_write_service` 的 `MemoryBackendKeepsDiskUntouched`）；
+- **写指标进 `fpgalsp.metrics`**：`result.writes = {ok,failed,denied,bytes,dirsCreated,removals,renames,backups,byRoot{state,project,run,temp}}`；
+- **MCP 写工具 dry-run**：`fpga_project_add_source` / `fpga_project_rename` / `fpga_project_update` / `fpga_probe_config` 的 `dry_run:true` 预览，返回将发生的变化，不写盘、不启动 TD；
+- **目录/删除/改名统一**：`writes::EnsureDir/Remove/Rename`，业务代码里的 `create_directories/remove/remove_all/rename/ensure_directory` 全部迁移（平台维护类动作如 TD 会话日志归位用 `// fpgalsp-write-exempt: <理由>` 行内豁免，门禁识别）。
 
 **成本估算**：Phase 1 ≈ 1–1.5 人日，Phase 2 ≈ 1 人日，Phase 3 ≈ 0.5 人日；
 门禁与测试已含在内。收益：路径策略、原子性、审计、dry-run 各只实现一次，
@@ -228,3 +229,18 @@ const { ok } = writeService.writeProjectFile(root, '.vscode/mcp.json', json, { b
 2. `kTemp` 判定放在 `kProject` 之后：工程目录即使位于 `%TEMP%` 下也优先按工程处理。
 3. 插件的 `.mcp.json`（Portable 安装选项）额外放行，避免既有功能回归。
 4. Phase 4（内存 FS、写指标、agent dry-run UI）未做。
+
+---
+
+## 8. 0.25.0 收尾记录
+
+* **IO 全部收口**：后端 39 处目录/删除/改名调用迁移到 `writes::EnsureDir/Remove/Rename`；
+  仅 3 处行内豁免（`td_session.cpp` 的 TD 会话日志归位 `<al>/td_*.log → <al>/log/`，理由写在
+  `// fpgalsp-write-exempt:` 行内，门禁会跳过）。`chip_debugger/` 目录允许创建、其 `*.mdn|*.cfg`
+  允许删除；用户 `.al/.adc/.sdc` 仍拒绝删除/改名。
+* **门禁扩展**：`docs_no_raw_writes` 现在同时禁止 `write_file_utf8`/`std::ofstream`/
+  `create_directories`/`remove`/`remove_all`/`rename`/`ensure_directory`；白名单仅平台实现
+  （write_service / encoding / log）+ 行内豁免（必须带理由）。
+* **内存 FS + 指标**：见 §3 Phase 4；`unit_write_service` 13 条；`fpgalsp.metrics.writes` 实测返回。
+* **MCP dry-run**：4 个写工具实测 `dry_run:true` 返回预览且 `.al` mtime 不变（CorpusAlpha 真机）。
+* 验证：`ctest` 71/71（release）、插件 58/58、真机 CorpusAlpha 单步 flow 正常、工程目录仍无 `.fpgalsp`。

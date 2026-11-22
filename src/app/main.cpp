@@ -38,6 +38,7 @@
 #include "platform/log.h"
 #include "platform/path.h"  // state_dir()（Wave 3 / W1：状态目录可外移）
 #include "platform/version.h"
+#include "platform/write_service.h"
 #include "mcp/bridge.h"
 #include "mcp/mcp_server.h"
 #include "server/async_dispatcher.h"
@@ -274,8 +275,11 @@ int main(int argc, char** argv) {
                    : std::filesystem::path(options.root.empty() ? "." : options.root);
         const std::filesystem::path logs =
             std::filesystem::path(fpgalsp::platform::state_dir(base.string())) / "logs";
-        std::filesystem::create_directories(logs, ec);
-        if (!ec) {
+        // 统一写服务：日志目录在状态目录下（kState；base = cwd 或工程根，均按 state_dir 分类）。
+        if (fpgalsp::platform::writes::EnsureDir(
+                base.string(), logs.string(),
+                fpgalsp::platform::writes::Options{.caller = "app.logs_dir"})
+                .ok) {
             options.log_path = (logs / (is_lsp ? "server.log" : "mcp.log")).string();
         }
     }

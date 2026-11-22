@@ -8,8 +8,10 @@ analysis / server / mcp / td，每处自己拼路径、自己决定是否原子�
 
 规则：
   * 扫 `src/**/*.{cpp,h}`，先剥掉注释（注释里可以随便提）；
-  * 代码里出现 `write_file_utf8(` 或 `std::ofstream` 一律判违规；
-  * 白名单只有三个文件（列表本身即理由）：统一写服务实现、编码实现、日志实现。
+  * 代码里出现以下任一即判违规（写文件 + 目录/删除/改名，0.25.0 起全部统一）：
+    `write_file_utf8(`、`std::ofstream`、`create_directories(`、`std::filesystem::remove(`、
+    `remove_all(`、`std::filesystem::rename(`、`platform::ensure_directory(`；
+  * 白名单只有平台层三个实现文件（列表本身即理由）：统一写服务、编码实现、日志实现。
 
 修法：调用 `platform::writes::Write(project_dir, path, bytes, {.caller="..."})` 或
 `AppendLine(...)`，详见 doc/design/write-service.md。
@@ -36,6 +38,11 @@ ALLOWLIST = {
 PATTERNS = (
     re.compile(r"write_file_utf8\s*\("),
     re.compile(r"std::ofstream"),
+    re.compile(r"create_directories\s*\("),
+    re.compile(r"std::filesystem::remove\s*\("),
+    re.compile(r"\bremove_all\s*\("),
+    re.compile(r"std::filesystem::rename\s*\("),
+    re.compile(r"platform::ensure_directory\s*\("),
 )
 
 
@@ -106,8 +113,19 @@ def scan(root: pathlib.Path) -> list[tuple[str, int, str]]:
         rel = path.relative_to(root).as_posix()
         if rel in ALLOWLIST:
             continue
-        code = strip_comments(path.read_text(encoding="utf-8", errors="replace"))
+        raw = path.read_text(encoding="utf-8", errors="replace")
+        # 行内豁免：`// fpgalsp-write-exempt: <理由>`。只允许平台维护类动作（如 TD 会话日志
+        # 归位到 <al>/log/），必须写理由；整文件白名单只留给平台实现本身。
+        exempt_lines = set()
+        for number, line in enumerate(raw.splitlines(), start=1):
+            if "fpgalsp-write-exempt:" not in line:
+                continue
+            # 标记通常写在被豁免语句的上一行：豁免标记行与紧随其后的 1 行。
+            exempt_lines.update({number, number + 1, number + 2})
+        code = strip_comments(raw)
         for number, line in enumerate(code.splitlines(), start=1):
+            if number in exempt_lines:
+                continue
             for pattern in PATTERNS:
                 if pattern.search(line):
                     violations.append((rel, number, line.strip()))

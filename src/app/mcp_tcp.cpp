@@ -66,8 +66,9 @@ std::string StateDir() {
 std::string EndpointPath(unsigned short port) {
     const std::string dir = StateDir();
     if (dir.empty()) return {};
-    std::error_code ec;
-    std::filesystem::create_directories(dir, ec);
+    // 统一写服务：端点文件目录 = FPGALSP_STATE_DIR（Classify 按 state_dir 命中 kState）。
+    // 失败照旧忽略（随后 Write 返回错误、调用方拿到空路径）。
+    (void)platform::writes::EnsureDir(std::string(), dir, {.caller = "mcp.endpoint_dir"});
     return platform::path_join(dir, "mcp-endpoint-" + std::to_string(port) + ".json");
 }
 
@@ -108,9 +109,12 @@ std::string WriteMcpEndpoint(unsigned short port, const std::string& root,
 
 void RemoveMcpEndpoint(const std::string& path) {
     if (path.empty()) return;
-    std::error_code ec;
-    std::filesystem::remove(path, ec);
-    std::filesystem::remove(path + ".tmp", ec);
+    // 统一写服务：端点文件在 FPGALSP_STATE_DIR 下（kState；空 project_dir 时 Classify 仍
+    // 按 state_dir/ temp 分类）。失败照旧忽略（与旧的 fs::remove(error_code) 一致）。
+    (void)platform::writes::Remove(std::string(), path, false,
+                                   platform::writes::Options{.caller = "mcp.endpoint_cleanup"});
+    (void)platform::writes::Remove(std::string(), path + ".tmp", false,
+                                   platform::writes::Options{.caller = "mcp.endpoint_cleanup"});
 }
 
 // 读端点文件里的 token（给 attach 代理用）。

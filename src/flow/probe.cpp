@@ -456,9 +456,13 @@ std::string RenderMdn(std::string_view original, const std::vector<std::string>&
 bool WriteMdn(const std::string& project_dir, const std::string& path,
               const std::vector<std::string>& signals, std::string* error) {
     const std::string original = IsFile(path) ? ReadText(path) : std::string();
-    // 首次配置时 <project>/chip_debugger 可能还不存在：目录创建沿用旧行为（写文件仍走服务）。
+    // 首次配置时 <project>/chip_debugger 可能还不存在：chip_debugger/ 是登记过的生成目录，
+    // write_service 的 EnsureDir 允许创建它（其它工程目录仍拒绝）。
     const std::string mdn_dir = fpgalsp::platform::path_dirname(path);
-    if (!mdn_dir.empty()) (void)fpgalsp::platform::ensure_directory(mdn_dir);
+    if (!mdn_dir.empty()) {
+        (void)fpgalsp::platform::writes::EnsureDir(
+            project_dir, mdn_dir, fpgalsp::platform::writes::Options{.caller = "probe.mdn_dir"});
+    }
     // 统一写服务：chip_debugger/*.mdn 属于登记的工程用户文件（策略 + 原子写 + 审计）。
     const fpgalsp::platform::writes::Result written = fpgalsp::platform::writes::Write(
         project_dir, path, RenderMdn(original, signals),
@@ -1403,8 +1407,10 @@ ProbeBuildConfig ReadProbeBuildConfig(const project::Project& project) {
 }
 
 bool WriteProbeBuildConfig(const project::Project& project, const ProbeBuildConfig& config) {
-    std::error_code ec;
-    std::filesystem::create_directories(std::filesystem::path(StateProbeDir(project)), ec);
+    // 统一写服务：probe 状态目录（kState）；失败按原逻辑忽略（随后的 Write 会报具体错误）。
+    (void)fpgalsp::platform::writes::EnsureDir(
+        project.dir, StateProbeDir(project),
+        fpgalsp::platform::writes::Options{.caller = "probe.state_dir"});
     std::string text;
     if (config.has_clock) text += "clock=" + config.clock + "\n";
     if (config.has_depth) text += "depth=" + std::to_string(config.depth) + "\n";
@@ -1919,9 +1925,10 @@ jsonrpc::Json WriteCompiledCwcFromGate(const project::Project& project,
             text = std::move(out);
         }
     }
-    std::error_code ec;
-    std::filesystem::create_directories(
-        std::filesystem::path(CompiledCwc(project)).parent_path(), ec);
+    // 统一写服务：compiled.cwc 的父目录是 <prj>_Runs/phy_1/cw（kRun），失败随后由 Write 报错。
+    (void)fpgalsp::platform::writes::EnsureDir(
+        project.dir, fpgalsp::platform::path_dirname(CompiledCwc(project)),
+        fpgalsp::platform::writes::Options{.caller = "probe.cwc_dir"});
     if (!fpgalsp::platform::writes::Write(
                 project.dir, CompiledCwc(project), text,
                 fpgalsp::platform::writes::Options{.caller = "probe.cwc"})
@@ -2092,7 +2099,10 @@ bool WriteUserCfgFromMdn(const project::Project& project, std::string* error) {
         std::error_code ec;
         const std::string backup =
             fpgalsp::platform::state_dir(project.dir) + "/probe/user.cfg.bak";
-        std::filesystem::create_directories(std::filesystem::path(backup).parent_path(), ec);
+        // 统一写服务：备份目录在状态目录下（kState）；随后 copy_file 的 ec 语义保持不变。
+        (void)fpgalsp::platform::writes::EnsureDir(
+            project.dir, fpgalsp::platform::path_dirname(backup),
+            fpgalsp::platform::writes::Options{.caller = "probe.user_cfg_backup"});
         std::filesystem::copy_file(user_cfg, backup,
                                    std::filesystem::copy_options::overwrite_existing, ec);
     }
@@ -2145,8 +2155,10 @@ jsonrpc::Json WriteCompiledCwcAfterPhy(const project::Project& project) {
             project.dir + "/" + project.name + "_Runs/phy_1/" + project.name + ".bit";
         if (!IsFile(run_bit)) return;
         std::error_code copy_ec;
-        std::filesystem::create_directories(
-            std::filesystem::path(CompiledBit(project)).parent_path(), copy_ec);
+        // 统一写服务：<prj>_Runs/phy_1/cw（kRun）；copy_ec 仍用于下面的 copy_file 结果。
+        (void)fpgalsp::platform::writes::EnsureDir(
+            project.dir, fpgalsp::platform::path_dirname(CompiledBit(project)),
+            fpgalsp::platform::writes::Options{.caller = "probe.bit_dir"});
         std::filesystem::copy_file(run_bit, CompiledBit(project),
                                    std::filesystem::copy_options::overwrite_existing, copy_ec);
         out["bit_copied"] = !copy_ec;
@@ -2187,9 +2199,10 @@ jsonrpc::Json WriteCompiledCwcAfterPhy(const project::Project& project) {
         out["reason"] = error;
         return out;
     }
-    std::error_code ec;
-    std::filesystem::create_directories(
-        std::filesystem::path(CompiledCwc(project)).parent_path(), ec);
+    // 统一写服务：compiled.cwc 的父目录（kRun）；失败随后由 Write 报错。
+    (void)fpgalsp::platform::writes::EnsureDir(
+        project.dir, fpgalsp::platform::path_dirname(CompiledCwc(project)),
+        fpgalsp::platform::writes::Options{.caller = "probe.cwc_dir"});
     if (!fpgalsp::platform::writes::Write(
                 project.dir, CompiledCwc(project), text,
                 fpgalsp::platform::writes::Options{.caller = "probe.cwc"})
@@ -2354,7 +2367,10 @@ bool QueryWatcherMap(const td::TdChoice& td, const project::Project& project, Wa
     // 短会话的 td_*.log/.logw（以及崩溃时的 minidump）挪到 <al>/log/，
     // 别散落在工程根目录 —— 那里是 TD GUI 放自己日志的地方。
     options.log_dir = project.dir + "/log";
-    (void)fpgalsp::platform::ensure_directory(options.work_dir);
+    // 统一写服务：work_dir = 工程目录（kProject，只允许"已存在"；正常流程工程目录必然存在）。
+    (void)fpgalsp::platform::writes::EnsureDir(
+        project.dir, options.work_dir,
+        fpgalsp::platform::writes::Options{.caller = "probe.probe_session_cwd"});
     const std::string al = Slashes(project.al_path);
     std::string out_text;
     for (const std::string& db : dbs) {
@@ -2507,7 +2523,10 @@ std::string QuerySampleClockFromGateDb(const td::TdChoice& td, const project::Pr
     // cwd = .al 所在目录（与 TD GUI 一致）：TD 的会话日志与相对路径解析都依赖它。
     options.work_dir = project.dir;
     options.log_dir = project.dir + "/log";  // 会话日志统一进 <al>/log/（同 GUI）
-    (void)fpgalsp::platform::ensure_directory(options.work_dir);
+    // 统一写服务：work_dir = 工程目录（kProject，只允许"已存在"；正常流程工程目录必然存在）。
+    (void)fpgalsp::platform::writes::EnsureDir(
+        project.dir, options.work_dir,
+        fpgalsp::platform::writes::Options{.caller = "probe.capture_session_cwd"});
     std::unique_ptr<td::TdSession> session;
     const std::string al = Slashes(project.al_path);
     // ⚠ 必须用**工程自己的**器件数据库：写死 ph1_100.db 在 EF2 系列（CorpusAlpha = EF2L45LG144B）
@@ -2652,7 +2671,10 @@ std::string EnsureCwcForInstance(const td::TdChoice& td, const project::Project&
                                                      dir, clock);
     if (text.empty()) return fail(impl_error.empty() ? "cannot build cwc for " + instance : impl_error);
     const std::string path = StateProbeDir(project) + "/cwc_" + instance + ".cwc";
-    (void)fpgalsp::platform::ensure_directory(StateProbeDir(project));
+    // 统一写服务：probe 状态目录（kState）；失败随后由 Write 报错。
+    (void)fpgalsp::platform::writes::EnsureDir(
+        project.dir, StateProbeDir(project),
+        fpgalsp::platform::writes::Options{.caller = "probe.instance_cwc_dir"});
     if (!fpgalsp::platform::writes::Write(
                 project.dir, path, text,
                 fpgalsp::platform::writes::Options{.caller = "probe.instance_cwc"})
@@ -2677,8 +2699,10 @@ jsonrpc::Json EnsureCompiledCwc(const project::Project& project,
             project.dir + "/" + project.name + "_Runs/phy_1/" + project.name + ".bit";
         if (IsFile(run_bit)) {
             std::error_code copy_ec;
-            std::filesystem::create_directories(
-                std::filesystem::path(CompiledBit(project)).parent_path(), copy_ec);
+            // 统一写服务：<prj>_Runs/phy_1/cw（kRun）；copy_ec 仍用于下面的 copy_file 结果。
+            (void)fpgalsp::platform::writes::EnsureDir(
+                project.dir, fpgalsp::platform::path_dirname(CompiledBit(project)),
+                fpgalsp::platform::writes::Options{.caller = "probe.bit_dir"});
             std::filesystem::copy_file(run_bit, CompiledBit(project),
                                        std::filesystem::copy_options::overwrite_existing, copy_ec);
             out["bit_copied"] = !copy_ec;
@@ -2715,9 +2739,10 @@ jsonrpc::Json EnsureCompiledCwc(const project::Project& project,
         out["reason"] = error.empty() ? "cannot rebuild compiled.cwc" : error;
         return out;
     }
-    std::error_code ec;
-    std::filesystem::create_directories(
-        std::filesystem::path(CompiledCwc(project)).parent_path(), ec);
+    // 统一写服务：compiled.cwc 的父目录（kRun）；失败随后由 Write 报错。
+    (void)fpgalsp::platform::writes::EnsureDir(
+        project.dir, fpgalsp::platform::path_dirname(CompiledCwc(project)),
+        fpgalsp::platform::writes::Options{.caller = "probe.cwc_dir"});
     if (!fpgalsp::platform::writes::Write(
                 project.dir, CompiledCwc(project), text,
                 fpgalsp::platform::writes::Options{.caller = "probe.cwc"})
@@ -3725,7 +3750,10 @@ jsonrpc::Json Capture(const td::TdChoice& td, const project::Project& project,
         // cwd = .al 所在目录，与 TD GUI 一致（TD 自己会往 `<prj>_Runs`/`log` 写东西）。
         effective.cwd = Slashes(project.dir);
     }
-    (void)fpgalsp::platform::ensure_directory(effective.cwd);
+    // 统一写服务：cwd 默认工程目录（kProject，只允许"已存在"）；用户显式传 temp 下的 cwd 时为 kTemp。
+    (void)fpgalsp::platform::writes::EnsureDir(
+        project.dir, effective.cwd,
+        fpgalsp::platform::writes::Options{.caller = "probe.capture_cwd"});
     const std::string instance =
         effective.instance.empty() ? (cwc.instance.empty() ? "auto_created_cwc1" : cwc.instance)
                                    : effective.instance;
@@ -3737,7 +3765,10 @@ jsonrpc::Json Capture(const td::TdChoice& td, const project::Project& project,
     {
         const std::size_t slash = csv.find_last_of('/');
         if (slash != std::string::npos) {
-            (void)fpgalsp::platform::ensure_directory(csv.substr(0, slash));
+            // 统一写服务：默认是 <prj>_Runs/phy_1/cw（kRun）；用户自定义 CSV 路径按同一策略校验。
+            (void)fpgalsp::platform::writes::EnsureDir(
+                project.dir, csv.substr(0, slash),
+                fpgalsp::platform::writes::Options{.caller = "probe.capture_csv_dir"});
         }
     }
 
@@ -3823,7 +3854,10 @@ jsonrpc::Json Capture(const td::TdChoice& td, const project::Project& project,
             // 一样能用；工程里只保留 capture 的 CSV（那是采集产物本身，用户要看）。
             const std::string trigger_dir =
                 fpgalsp::platform::state_dir(project.dir) + "/probe";
-            (void)fpgalsp::platform::ensure_directory(trigger_dir);
+            // 统一写服务：触发条件临时 cwc 放状态目录（kState）。
+            (void)fpgalsp::platform::writes::EnsureDir(
+                project.dir, trigger_dir,
+                fpgalsp::platform::writes::Options{.caller = "probe.trigger_dir"});
             const std::string target = trigger_dir + "/trigger_" + Timestamp() + ".cwc";
             if (fpgalsp::platform::writes::Write(
                     project.dir, target, patched,

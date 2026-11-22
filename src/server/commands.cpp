@@ -39,6 +39,7 @@
 #include "jsonrpc/json_util.h"
 #include "platform/log.h"
 #include "platform/path.h"
+#include "platform/write_service.h"
 #include "constraints/adc.h"
 #include "constraints/port.h"
 #include "server/constraints_features.h"
@@ -1687,6 +1688,26 @@ HandlerResult LspServer::HandleExecuteCommand(const Json& params) {
         result["inflight"] = metrics.inflight;
         result["maxQueueWaitMs"] = metrics.max_queue_wait_ms;
         result["maxRunMs"] = metrics.max_run_ms;
+        {
+            // 统一写入服务的累计指标（0.25.0）：写/失败/拒绝、字节数、目录/删除/改名/备份。
+            const platform::writes::Metrics writes = platform::writes::SnapshotMetrics();
+            Json w = Json::object();
+            w["ok"] = writes.writes_ok;
+            w["failed"] = writes.writes_failed;
+            w["denied"] = writes.denied;
+            w["bytes"] = writes.bytes_written;
+            w["dirsCreated"] = writes.dirs_created;
+            w["removals"] = writes.removals;
+            w["renames"] = writes.renames;
+            w["backups"] = writes.backups;
+            Json by_root = Json::object();
+            by_root["state"] = writes.by_root[0];
+            by_root["project"] = writes.by_root[1];
+            by_root["run"] = writes.by_root[2];
+            by_root["temp"] = writes.by_root[3];
+            w["byRoot"] = std::move(by_root);
+            result["writes"] = std::move(w);
+        }
         if (index_service_) {
             const IndexService::Stats stats = index_service_->stats();
             Json index = Json::object();

@@ -3,7 +3,8 @@
 // =============================================================================
 //  设计说明见 include 头与 doc/design/write-service.md。
 //  这里刻意保持"零业务依赖"：只依赖 platform 层（path / encoding）。
-//  写入路径分类 -> 策略校验 -> 备份 -> 原子写 -> 审计。
+//  写入路径分类 -> 策略校验 -> 备份 -> 原子写 -> 审计 -> 指标。
+//  0.25.0：目录/删除/改名也走同一服务；新增测试用内存后端与指标快照。
 // =============================================================================
 
 #include "platform/write_service.h"
@@ -15,7 +16,9 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <mutex>
+#include <set>
 #include <string>
 #include <system_error>
 
@@ -29,13 +32,21 @@
 
 namespace fpgalsp::platform::writes {
 
-// 由本文件末尾实现；匿名 namespace 里的备份逻辑要先用到它。
-std::string DisplayPathImpl(std::string_view project_dir, std::string_view path);
-
 namespace {
 
 std::atomic<unsigned long long> g_temp_sequence{0};
 std::mutex g_audit_mutex;
+
+// 指标：进程内累计（fpgalsp.metrics 读取快照）。
+std::atomic<std::uint64_t> g_writes_ok{0};
+std::atomic<std::uint64_t> g_writes_failed{0};
+std::atomic<std::uint64_t> g_denied{0};
+std::atomic<std::uint64_t> g_bytes_written{0};
+std::atomic<std::uint64_t> g_dirs_created{0};
+std::atomic<std::uint64_t> g_removals{0};
+std::atomic<std::uint64_t> g_renames{0};
+std::atomic<std::uint64_t> g_backups{0};
+std::atomic<std::uint64_t> g_by_root[4] = {};
 
 std::string LowerCopy(std::string_view text) {
     std::string out(text);
@@ -122,59 +133,6 @@ std::string TempRoot() {
     return ec ? std::string() : normalize_path(tmp.string());
 }
 
-// 原子写：同目录临时文件 -> 重命名。失败清理临时文件，返回可诊断 error。
-bool AtomicWrite(const std::string& target, std::string_view bytes, std::string* error) {
-    const std::string dir = DirOf(target);
-    const std::string name = FileNameOf(target);
-    if (dir.empty() || name.empty()) {
-        if (error != nullptr) *error = "invalid target path: " + target;
-        return false;
-    }
-    std::error_code ec;
-    std::filesystem::create_directories(std::filesystem::path(dir), ec);
-    if (ec) {
-        if (error != nullptr) *error = "cannot create directory: " + dir;
-        return false;
-    }
-
-#ifdef _WIN32
-    const unsigned long long pid = static_cast<unsigned long long>(_getpid());
-#else
-    const unsigned long long pid = 0;
-#endif
-    const unsigned long long seq = g_temp_sequence.fetch_add(1) + 1;
-    const std::string temp = path_join(dir, ".tmp-" + name + "-" + std::to_string(pid) + "-" +
-                                                 std::to_string(seq));
-    (void)std::filesystem::remove(std::filesystem::path(temp), ec);
-    if (!write_file_utf8(temp, bytes)) {
-        if (error != nullptr) *error = "cannot write temp file: " + temp;
-        return false;
-    }
-
-    for (int attempt = 0; attempt < 3; ++attempt) {
-        std::error_code rename_ec;
-        std::filesystem::rename(std::filesystem::path(temp), std::filesystem::path(target),
-                                rename_ec);
-        if (!rename_ec) return true;
-
-#ifdef _WIN32
-        // std::filesystem::rename 在目标已存在/被杀软占用时会失败；用 MoveFileEx 兜底。
-        if (MoveFileExW(std::filesystem::path(temp).wstring().c_str(),
-                        std::filesystem::path(target).wstring().c_str(),
-                        MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0) {
-            return true;
-        }
-#endif
-        if (error != nullptr) {
-            *error = "cannot replace target (" + std::to_string(attempt + 1) + "/3): " +
-                     target + " (" + rename_ec.message() + ")";
-        }
-    }
-    std::error_code cleanup_ec;
-    (void)std::filesystem::remove(std::filesystem::path(temp), cleanup_ec);
-    return false;
-}
-
 std::string JsonEscape(std::string_view text) {
     std::string out;
     out.reserve(text.size() + 8);
@@ -199,17 +157,157 @@ std::string JsonEscape(std::string_view text) {
     return out;
 }
 
+void BumpRoot(Root root) { g_by_root[static_cast<int>(root)].fetch_add(1); }
+
+}  // namespace
+
+// -----------------------------------------------------------------------------
+// 后端（真实磁盘 / 测试用内存）
+// -----------------------------------------------------------------------------
+
+class DiskBackend final : public Backend {
+  public:
+    bool WriteFile(const std::string& path, std::string_view bytes) override {
+        return write_file_utf8(path, bytes);
+    }
+    bool AppendFile(const std::string& path, std::string_view bytes) override {
+        std::error_code ec;
+        std::filesystem::create_directories(std::filesystem::path(DirOf(path)), ec);
+        std::ofstream out(path, std::ios::binary | std::ios::app);
+        if (!out) return false;
+        out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+        out.flush();
+        return static_cast<bool>(out);
+    }
+    bool EnsureDir(const std::string& path) override {
+        std::error_code ec;
+        std::filesystem::create_directories(std::filesystem::path(path), ec);
+        return !ec || std::filesystem::is_directory(std::filesystem::path(path), ec);
+    }
+    bool Remove(const std::string& path, bool recursive) override {
+        std::error_code ec;
+        if (recursive) {
+            std::filesystem::remove_all(std::filesystem::path(path), ec);
+        } else {
+            std::filesystem::remove(std::filesystem::path(path), ec);
+        }
+        return !ec;
+    }
+    bool Rename(const std::string& from, const std::string& to) override {
+        std::error_code ec;
+        std::filesystem::create_directories(std::filesystem::path(DirOf(to)), ec);
+        std::filesystem::rename(std::filesystem::path(from), std::filesystem::path(to), ec);
+        if (!ec) return true;
+#ifdef _WIN32
+        return MoveFileExW(std::filesystem::path(from).wstring().c_str(),
+                           std::filesystem::path(to).wstring().c_str(),
+                           MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+#else
+        return false;
+#endif
+    }
+    bool Exists(const std::string& path) override {
+        std::error_code ec;
+        return std::filesystem::exists(std::filesystem::path(path), ec);
+    }
+};
+
+class MemoryBackend final : public Backend {
+  public:
+    bool WriteFile(const std::string& path, std::string_view bytes) override {
+        files_[path] = std::string(bytes);
+        return true;
+    }
+    bool AppendFile(const std::string& path, std::string_view bytes) override {
+        files_[path] += std::string(bytes);
+        return true;
+    }
+    bool EnsureDir(const std::string& path) override {
+        dirs_.insert(path);
+        return true;
+    }
+    bool Remove(const std::string& path, bool recursive) override {
+        bool removed = files_.erase(path) != 0;
+        if (dirs_.erase(path) != 0) removed = true;
+        if (recursive) {
+            const std::string prefix = path + "/";
+            for (auto it = files_.begin(); it != files_.end();) {
+                if (it->first.rfind(prefix, 0) == 0) {
+                    it = files_.erase(it);
+                    removed = true;
+                } else {
+                    ++it;
+                }
+            }
+            for (auto it = dirs_.begin(); it != dirs_.end();) {
+                if (it->rfind(prefix, 0) == 0) {
+                    it = dirs_.erase(it);
+                    removed = true;
+                } else {
+                    ++it;
+                }
+            }
+        }
+        return removed || true;  // 删除不存在的东西也算成功（与 fs::remove 一致）
+    }
+    bool Rename(const std::string& from, const std::string& to) override {
+        bool moved = false;
+        if (const auto it = files_.find(from); it != files_.end()) {
+            files_[to] = it->second;
+            files_.erase(it);
+            moved = true;
+        }
+        if (dirs_.erase(from) != 0) moved = true;
+        dirs_.insert(to);
+        const std::string prefix = from + "/";
+        for (auto it = files_.begin(); it != files_.end();) {
+            if (it->first.rfind(prefix, 0) == 0) {
+                files_[to + "/" + it->first.substr(prefix.size())] = it->second;
+                it = files_.erase(it);
+                moved = true;
+            } else {
+                ++it;
+            }
+        }
+        return moved || true;
+    }
+    bool Exists(const std::string& path) override {
+        return files_.count(path) != 0 || dirs_.count(path) != 0;
+    }
+
+  private:
+    std::map<std::string, std::string> files_;
+    std::set<std::string> dirs_;
+};
+
+namespace {
+
+std::mutex g_backend_mutex;
+std::unique_ptr<Backend> g_custom_backend;
+DiskBackend g_disk_backend;
+
+Backend& BackendRef() {
+    std::lock_guard<std::mutex> lock(g_backend_mutex);
+    return g_custom_backend != nullptr ? *g_custom_backend : g_disk_backend;
+}
+
+bool UsingMemoryBackend() {
+    std::lock_guard<std::mutex> lock(g_backend_mutex);
+    return g_custom_backend != nullptr;
+}
+
 void Audit(Root root, std::string_view project_dir, std::string_view display_path,
            std::size_t bytes, bool ok, std::string_view error, const char* caller) {
+    if (UsingMemoryBackend()) return;  // 单测不写审计文件
     const char* disabled = std::getenv("FPGALSP_WRITE_AUDIT");
     if (disabled != nullptr && std::strcmp(disabled, "0") == 0) return;
     static const char* kRootNames[] = {"state", "project", "run", "temp"};
     const std::string audit_dir = state_dir(project_dir);
     const std::string audit_path = path_join(audit_dir, "logs/writes.jsonl");
+
     const auto now = std::chrono::system_clock::now();
-    const auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(
-                            now.time_since_epoch())
-                            .count();
+    const auto millis =
+        std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
     std::string line = "{";
     line += "\"ts\":" + std::to_string(millis);
     line += ",\"root\":\"";
@@ -223,18 +321,51 @@ void Audit(Root root, std::string_view project_dir, std::string_view display_pat
     line += "}\n";
 
     std::lock_guard<std::mutex> lock(g_audit_mutex);
-    std::error_code ec;
-    std::filesystem::create_directories(std::filesystem::path(path_join(audit_dir, "logs")), ec);
-    std::ofstream out(audit_path, std::ios::binary | std::ios::app);
-    if (!out) return;
-    out << line;
-    out.flush();
+    Backend& backend = BackendRef();
+    (void)backend.EnsureDir(path_join(audit_dir, "logs"));
+    (void)backend.AppendFile(audit_path, line);
+}
+
+bool AtomicWrite(const std::string& target, std::string_view bytes, std::string* error) {
+    const std::string dir = DirOf(target);
+    const std::string name = FileNameOf(target);
+    if (dir.empty() || name.empty()) {
+        if (error != nullptr) *error = "invalid target path: " + target;
+        return false;
+    }
+    Backend& backend = BackendRef();
+    if (!backend.EnsureDir(dir)) {
+        if (error != nullptr) *error = "cannot create directory: " + dir;
+        return false;
+    }
+
+#ifdef _WIN32
+    const unsigned long long pid = static_cast<unsigned long long>(_getpid());
+#else
+    const unsigned long long pid = 0;
+#endif
+    const unsigned long long seq = g_temp_sequence.fetch_add(1) + 1;
+    const std::string temp = path_join(dir, ".tmp-" + name + "-" + std::to_string(pid) + "-" +
+                                                 std::to_string(seq));
+    (void)backend.Remove(temp, false);
+    if (!backend.WriteFile(temp, bytes)) {
+        if (error != nullptr) *error = "cannot write temp file: " + temp;
+        return false;
+    }
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        if (backend.Rename(temp, target)) return true;
+        if (error != nullptr) {
+            *error = "cannot replace target (" + std::to_string(attempt + 1) + "/3): " + target;
+        }
+    }
+    (void)backend.Remove(temp, false);
+    return false;
 }
 
 void BackupIfRequested(const std::string& project_dir, const std::string& target,
                        bool backup) {
     if (!backup || !IsRegularFile(target)) return;
-    const std::string rel = LowerCopy(DisplayPathImpl(project_dir, target));
+    const std::string rel = LowerCopy(DisplayPath(project_dir, target));
     if (rel.empty()) return;
     std::string safe;
     for (const char c : rel) {
@@ -245,12 +376,12 @@ void BackupIfRequested(const std::string& project_dir, const std::string& target
     const ReadFileResult previous = read_file_utf8(target);
     if (!previous.ok) return;
     std::string ignored;
-    (void)AtomicWrite(backup_path, previous.content, &ignored);
+    if (AtomicWrite(backup_path, previous.content, &ignored)) g_backups.fetch_add(1);
 }
 
 }  // namespace
 
-// DisplayPath 先实现（BackupIfRequested 用到），再对外暴露。
+// DisplayPathImpl 先实现（BackupIfRequested 用到），再对外暴露。
 std::string DisplayPathImpl(std::string_view project_dir, std::string_view path) {
     const std::string normalized = normalize_path(path);
     if (!project_dir.empty()) {
@@ -260,6 +391,10 @@ std::string DisplayPathImpl(std::string_view project_dir, std::string_view path)
     const std::string state_rel = RelativeWithin(normalized, state_dir(project_dir));
     if (!state_rel.empty()) return "<state>/" + state_rel;
     return normalized;
+}
+
+std::string DisplayPath(std::string_view project_dir, std::string_view path) {
+    return DisplayPathImpl(project_dir, path);
 }
 
 bool Classify(std::string_view project_dir, std::string_view path, Root* out,
@@ -299,15 +434,16 @@ bool Classify(std::string_view project_dir, std::string_view path, Root* out,
         return true;
     }
 
-
-    // 3) 工程目录：run 目录（TD 产物）与登记过的用户文件
+    // 2) 工程目录：run 目录（TD 产物）与登记过的用户文件
     if (!project_dir.empty() && path_is_within_canonical(normalized, project_dir)) {
         const std::string rel = RelativeWithin(normalized, std::string(project_dir));
+        if (rel.empty()) {  // 工程根目录本身
+            *out = Root::kProject;
+            return true;
+        }
         const std::size_t slash = rel.find('/');
         const std::string first = slash == std::string::npos ? rel : rel.substr(0, slash);
         if (first.size() > 5 && LowerCopy(first).substr(first.size() - 5) == "_runs") {
-            // TD 的 run 目录：允许创建（取消用的 .stop.f 可能在 run 目录刚建时写入），
-            // 但仍限定在 <prj>_Runs/** 之下。
             *out = Root::kRun;
             return true;
         }
@@ -317,12 +453,12 @@ bool Classify(std::string_view project_dir, std::string_view path, Root* out,
         }
         if (error != nullptr) {
             *error = "refusing to write unregistered project file: " + rel +
-                     " (allowed: *.al/*.adc/*.sdc, chip_debugger/*.mdn, <prj>_Runs/**)";
+                     " (allowed: *.al/*.adc/*.sdc, chip_debugger/*.mdn|*.cfg, <prj>_Runs/**)";
         }
         return false;
     }
 
-    // 4) 系统临时目录下的 fpgalsp scratch（放最后：工程目录即使位于 temp 下也应优先识别）
+    // 3) 系统临时目录下的 fpgalsp scratch（放最后：工程目录即使位于 temp 下也应优先识别）
     const std::string temp_root = TempRoot();
     if (!temp_root.empty() && path_is_within_canonical(normalized, temp_root) &&
         LowerCopy(normalized).find("/fpgalsp") != std::string::npos) {
@@ -338,10 +474,6 @@ std::string StatePath(std::string_view project_dir, std::string_view rel) {
     return path_join(state_dir(project_dir), rel);
 }
 
-std::string DisplayPath(std::string_view project_dir, std::string_view path) {
-    return DisplayPathImpl(project_dir, path);
-}
-
 Result Write(std::string_view project_dir, std::string_view path, std::string_view bytes,
              const Options& options) {
     Result result;
@@ -349,6 +481,7 @@ Result Write(std::string_view project_dir, std::string_view path, std::string_vi
         std::string error;
         Root root = Root::kState;
         if (!Classify(project_dir, path, &root, &error)) {
+            g_denied.fetch_add(1);
             result.ok = false;
             result.error = error;
             return result;
@@ -362,20 +495,17 @@ Result Write(std::string_view project_dir, std::string_view path, std::string_vi
         const std::string display = DisplayPathImpl(project_dir, normalized);
 
         if (options.dry_run) {
-            // dry-run：只校验路径策略，不落盘、不审计。
             result.ok = true;
             return result;
         }
 
-        // kProject 只允许写到已存在的目录（不替用户在工程里新建目录树）；
-        // kState/kTemp/kRun 允许自动建目录（缓存/日志/run 产物）。
+        // kProject 只允许写到已存在的目录（不替用户在工程里新建目录树）。
         if (root == Root::kProject) {
-            std::error_code dir_ec;
             const std::string parent = DirOf(normalized);
-            if (parent.empty() ||
-                !std::filesystem::is_directory(std::filesystem::path(parent), dir_ec)) {
+            if (parent.empty() || !BackendRef().Exists(parent)) {
                 result.ok = false;
                 result.error = "parent directory does not exist for project file: " + normalized;
+                g_writes_failed.fetch_add(1);
                 Audit(root, project_dir, display, bytes.size(), false, result.error,
                       options.caller);
                 return result;
@@ -387,17 +517,23 @@ Result Write(std::string_view project_dir, std::string_view path, std::string_vi
         if (!AtomicWrite(normalized, bytes, &write_error)) {
             result.ok = false;
             result.error = write_error;
+            g_writes_failed.fetch_add(1);
             Audit(root, project_dir, display, bytes.size(), false, write_error, options.caller);
             return result;
         }
         result.ok = true;
+        g_writes_ok.fetch_add(1);
+        g_bytes_written.fetch_add(bytes.size());
+        BumpRoot(root);
         Audit(root, project_dir, display, bytes.size(), true, {}, options.caller);
         return result;
     } catch (const std::exception& exc) {
+        g_writes_failed.fetch_add(1);
         result.ok = false;
         result.error = std::string("write failed: ") + exc.what();
         return result;
     } catch (...) {
+        g_writes_failed.fetch_add(1);
         result.ok = false;
         result.error = "write failed: unknown exception";
         return result;
@@ -411,6 +547,7 @@ Result AppendLine(std::string_view project_dir, std::string_view path, std::stri
         Root root = Root::kState;
         std::string error;
         if (!Classify(project_dir, path, &root, &error)) {
+            g_denied.fetch_add(1);
             result.ok = false;
             result.error = error;
             return result;
@@ -430,24 +567,20 @@ Result AppendLine(std::string_view project_dir, std::string_view path, std::stri
             result.ok = true;
             return result;
         }
-        std::error_code ec;
-        std::filesystem::create_directories(std::filesystem::path(DirOf(normalized)), ec);
-        if (ec) {
+        Backend& backend = BackendRef();
+        if (!backend.EnsureDir(DirOf(normalized))) {
             result.ok = false;
             result.error = "cannot create directory for log: " + DirOf(normalized);
             return result;
         }
-        std::ofstream out(normalized, std::ios::binary | std::ios::app);
-        if (!out) {
+        std::string payload(line);
+        if (payload.empty() || payload.back() != '\n') payload.push_back('\n');
+        if (!backend.AppendFile(normalized, payload)) {
             result.ok = false;
-            result.error = "cannot append to: " + normalized;
+            result.error = "append failed: " + normalized;
             return result;
         }
-        out.write(line.data(), static_cast<std::streamsize>(line.size()));
-        if (line.empty() || line.back() != '\n') out.put('\n');
-        out.flush();
-        result.ok = static_cast<bool>(out);
-        if (!result.ok) result.error = "append failed: " + normalized;
+        result.ok = true;
         return result;
     } catch (const std::exception& exc) {
         result.ok = false;
@@ -458,6 +591,253 @@ Result AppendLine(std::string_view project_dir, std::string_view path, std::stri
         result.error = "append failed: unknown exception";
         return result;
     }
+}
+
+Result EnsureDir(std::string_view project_dir, std::string_view path,
+                 const Options& options) {
+    Result result;
+    try {
+        std::string normalized = normalize_path(path);
+        if (normalized.empty() || normalized.find('\0') != std::string::npos) {
+            result.ok = false;
+            result.error = "invalid path";
+            return result;
+        }
+        if (!is_absolute_path(normalized)) {
+            if (project_dir.empty()) {
+                result.ok = false;
+                result.error = "relative path without project dir: " + std::string(path);
+                return result;
+            }
+            normalized = path_join(normalize_path(project_dir), normalized);
+        }
+        Root root = Root::kState;
+        std::string error;
+        if (!Classify(project_dir, normalized, &root, &error)) {
+            // Classify 只认"登记过的工程文件"；目录（如工程内已存在的 chip_debugger/）另判：
+            // 工程内**已存在**的目录允许 EnsureDir（不新建），其它情况仍拒绝。
+            if (!project_dir.empty() &&
+                path_is_within_canonical(normalized, normalize_path(project_dir))) {
+                const std::string rel = RelativeWithin(normalized, normalize_path(project_dir));
+                const bool registered_dir =
+                    rel == "chip_debugger" || rel.rfind("chip_debugger/", 0) == 0;
+                if (!BackendRef().Exists(normalized) && !registered_dir) {
+                    g_denied.fetch_add(1);
+                    result.ok = false;
+                    result.error = error;
+                    return result;
+                }
+                if (!BackendRef().EnsureDir(normalized)) {
+                    result.ok = false;
+                    result.error = "cannot create directory: " + normalized;
+                    return result;
+                }
+                g_dirs_created.fetch_add(1);
+                result.root = Root::kProject;
+                result.path = normalized;
+                result.ok = true;
+                return result;
+            }
+            g_denied.fetch_add(1);
+            result.ok = false;
+            result.error = error;
+            return result;
+        }
+        result.root = root;
+        result.path = normalized;
+        if (options.dry_run) {
+            result.ok = true;
+            return result;
+        }
+        Backend& backend = BackendRef();
+        if (root == Root::kProject) {
+            // 工程目录只允许"已经存在"，不替用户新建目录。
+            if (!backend.Exists(normalized)) {
+                result.ok = false;
+                result.error = "refusing to create a directory inside the project: " + normalized;
+                g_denied.fetch_add(1);
+                return result;
+            }
+            result.ok = true;
+            return result;
+        }
+        if (!backend.EnsureDir(normalized)) {
+            result.ok = false;
+            result.error = "cannot create directory: " + normalized;
+            return result;
+        }
+        g_dirs_created.fetch_add(1);
+        result.ok = true;
+        return result;
+    } catch (const std::exception& exc) {
+        result.ok = false;
+        result.error = std::string("ensure_dir failed: ") + exc.what();
+        return result;
+    } catch (...) {
+        result.ok = false;
+        result.error = "ensure_dir failed: unknown exception";
+        return result;
+    }
+}
+
+Result Remove(std::string_view project_dir, std::string_view path, bool recursive,
+              const Options& options) {
+    Result result;
+    try {
+        Root root = Root::kState;
+        std::string error;
+        if (!Classify(project_dir, path, &root, &error)) {
+            g_denied.fetch_add(1);
+            result.ok = false;
+            result.error = error;
+            return result;
+        }
+        if (root == Root::kProject) {
+            // 只允许删除我们/TD 生成的 chip_debugger 配置文件（user.mdn / user.cfg）；
+            // 用户的 .al/.adc/.sdc 一律拒绝。
+            const std::string rel = RelativeWithin(normalize_path(path),
+                                                   normalize_path(project_dir));
+            const std::string lower = LowerCopy(rel);
+            const bool generated = lower.rfind("chip_debugger/", 0) == 0 &&
+                                   (EndsWithNoCase(rel, ".mdn") || EndsWithNoCase(rel, ".cfg"));
+            if (!generated) {
+                g_denied.fetch_add(1);
+                result.ok = false;
+                result.error = "removing project files is not allowed: " + std::string(path);
+                return result;
+            }
+        }
+        std::string normalized = normalize_path(path);
+        if (!is_absolute_path(normalized)) {
+            normalized = path_join(normalize_path(project_dir), normalized);
+        }
+        result.root = root;
+        result.path = normalized;
+        if (options.dry_run) {
+            result.ok = true;
+            return result;
+        }
+        if (!BackendRef().Remove(normalized, recursive)) {
+            result.ok = false;
+            result.error = "remove failed: " + normalized;
+            return result;
+        }
+        g_removals.fetch_add(1);
+        result.ok = true;
+        return result;
+    } catch (const std::exception& exc) {
+        result.ok = false;
+        result.error = std::string("remove failed: ") + exc.what();
+        return result;
+    } catch (...) {
+        result.ok = false;
+        result.error = "remove failed: unknown exception";
+        return result;
+    }
+}
+
+Result Rename(std::string_view project_dir, std::string_view from, std::string_view to,
+              const Options& options) {
+    Result result;
+    try {
+        Root from_root = Root::kState;
+        Root to_root = Root::kState;
+        std::string error;
+        if (!Classify(project_dir, from, &from_root, &error)) {
+            g_denied.fetch_add(1);
+            result.ok = false;
+            result.error = error;
+            return result;
+        }
+        if (!Classify(project_dir, to, &to_root, &error)) {
+            g_denied.fetch_add(1);
+            result.ok = false;
+            result.error = error;
+            return result;
+        }
+        if (from_root == Root::kProject || to_root == Root::kProject) {
+            g_denied.fetch_add(1);
+            result.ok = false;
+            result.error = "renaming project files is not allowed";
+            return result;
+        }
+        if (from_root != to_root) {
+            g_denied.fetch_add(1);
+            result.ok = false;
+            result.error = "rename across roots is not allowed (cannot cross state/run/temp)";
+            return result;
+        }
+        std::string from_norm = normalize_path(from);
+        std::string to_norm = normalize_path(to);
+        if (!is_absolute_path(from_norm)) {
+            from_norm = path_join(normalize_path(project_dir), from_norm);
+        }
+        if (!is_absolute_path(to_norm)) {
+            to_norm = path_join(normalize_path(project_dir), to_norm);
+        }
+        result.root = from_root;
+        result.path = to_norm;
+        if (options.dry_run) {
+            result.ok = true;
+            return result;
+        }
+        if (!options.force && BackendRef().Exists(to_norm)) {
+            result.ok = false;
+            result.error = "rename target already exists (pass force=true): " + to_norm;
+            return result;
+        }
+        if (!BackendRef().Rename(from_norm, to_norm)) {
+            result.ok = false;
+            result.error = "rename failed: " + from_norm + " -> " + to_norm;
+            return result;
+        }
+        g_renames.fetch_add(1);
+        result.ok = true;
+        return result;
+    } catch (const std::exception& exc) {
+        result.ok = false;
+        result.error = std::string("rename failed: ") + exc.what();
+        return result;
+    } catch (...) {
+        result.ok = false;
+        result.error = "rename failed: unknown exception";
+        return result;
+    }
+}
+
+Metrics SnapshotMetrics() {
+    Metrics metrics;
+    metrics.writes_ok = g_writes_ok.load();
+    metrics.writes_failed = g_writes_failed.load();
+    metrics.denied = g_denied.load();
+    metrics.bytes_written = g_bytes_written.load();
+    metrics.dirs_created = g_dirs_created.load();
+    metrics.removals = g_removals.load();
+    metrics.renames = g_renames.load();
+    metrics.backups = g_backups.load();
+    for (int i = 0; i < 4; ++i) metrics.by_root[i] = g_by_root[i].load();
+    return metrics;
+}
+
+void ResetMetricsForTest() {
+    for (std::atomic<std::uint64_t>* counter :
+         {&g_writes_ok, &g_writes_failed, &g_denied, &g_bytes_written, &g_dirs_created,
+          &g_removals, &g_renames, &g_backups}) {
+        counter->store(0);
+    }
+    for (std::atomic<std::uint64_t>& counter : g_by_root) counter.store(0);
+}
+
+std::unique_ptr<Backend> MakeMemoryBackend() { return std::make_unique<MemoryBackend>(); }
+
+void SetBackendForTest(std::unique_ptr<Backend> backend) {
+    std::lock_guard<std::mutex> lock(g_backend_mutex);
+    g_custom_backend = std::move(backend);
+}
+
+void ResetBackendForTest() {
+    std::lock_guard<std::mutex> lock(g_backend_mutex);
+    g_custom_backend.reset();
 }
 
 }  // namespace fpgalsp::platform::writes
