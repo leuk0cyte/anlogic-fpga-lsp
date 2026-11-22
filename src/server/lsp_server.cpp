@@ -32,6 +32,7 @@
 #include "platform/log.h"
 #include "platform/path.h"
 #include "platform/utf16.h"
+#include "platform/version.h"
 #include "flow/flow_runner.h"
 #include "hdl/hdl_index.h"
 #include "td/td_diagnostics.h"
@@ -147,6 +148,8 @@ void Settings::Update(const Json& options) {
     }
     verible_format = jsonrpc::GetBool(*section, "veribleFormat", verible_format);
     format_fallback = jsonrpc::GetBool(*section, "formatFallback", format_fallback);
+    verible_autofix = jsonrpc::GetBool(*section, "veribleAutofix", verible_autofix);
+    verible_highlight = jsonrpc::GetBool(*section, "veribleHighlight", verible_highlight);
     lint_on_change = jsonrpc::GetBool(*section, "lintOnChange", lint_on_change);
 }
 
@@ -267,6 +270,10 @@ void LspServer::RegisterAll(jsonrpc::Dispatcher& dispatcher) {
     dispatcher.Register("workspace/didChangeWatchedFiles", [this](const Json& params) {
         return HandleDidChangeWatchedFiles(params);
     });
+    // A1：声明了 changeNotifications 就必须有 handler（否则 dispatcher 静默丢弃）。
+    dispatcher.Register("workspace/didChangeWorkspaceFolders", [this](const Json& params) {
+        return HandleDidChangeWorkspaceFolders(params);
+    });
 
     // ---- 标准 LSP：符号类能力（hdl_handlers.cpp）----
     dispatcher.Register("textDocument/completion",
@@ -351,6 +358,20 @@ Json LspServer::FeatureInitialize(const Json& params) {
     }
     // ⚠ 空 root 不覆盖已有值：MCP 侧只是想拿能力声明，不该把 LSP 的工作区根清掉
     if (!root.empty()) root_uri_ = root;
+
+    // A1：记住完整的工作区文件夹列表（didChangeWorkspaceFolders 用它判断"当前根是否已被移除"）。
+    // 只在本条参数真的带列表时才覆盖 —— MCP 侧会用空 params 调本函数取能力声明。
+    const Json folder_array = jsonrpc::GetArray(params, "workspaceFolders");
+    if (!folder_array.empty()) {
+        workspace_folders_.clear();
+        for (const Json& folder : folder_array) {
+            if (!folder.is_object()) continue;
+            const std::string uri = jsonrpc::GetString(folder, "uri");
+            if (!uri.empty()) workspace_folders_.push_back(uri);
+        }
+    } else if (!root.empty() && workspace_folders_.empty()) {
+        workspace_folders_.push_back(root);
+    }
 
     if (const auto it = params.find("initializationOptions"); it != params.end()) {
         settings_.Update(*it);
@@ -446,7 +467,7 @@ Json LspServer::FeatureInitialize(const Json& params) {
     result["capabilities"] = std::move(capabilities);
     Json info = Json::object();
     info["name"] = "fpga-lsp";
-    info["version"] = "0.1.0";
+    info["version"] = platform::kServerVersion;
     result["serverInfo"] = std::move(info);
 
     platform::default_logger().info("initialize root=" + root_uri_);
@@ -505,6 +526,60 @@ HandlerResult LspServer::HandleDidChangeWatchedFiles(const Json& params) {
     platform::default_logger().debug("didChangeWatchedFiles: " +
                                      std::to_string(changed.size()) + " changed, " +
                                      std::to_string(deleted.size()) + " deleted");
+    return HandlerResult::Ok(Json());
+}
+
+// A1：`workspace/didChangeWorkspaceFolders`。
+// 我们声明了 `workspace.workspaceFolders.changeNotifications:true`，客户端（VS Code 多根工作区）
+// 增删文件夹时就会发这个通知；以前没有 handler，dispatcher 静默丢弃 → 服务端仍按旧根解析工程，
+// 新加的文件夹看不到、删掉的还留着（审计 2026-11-22 的 A1）。
+HandlerResult LspServer::HandleDidChangeWorkspaceFolders(const Json& params) {
+    const auto event_it = params.find("event");
+    if (event_it == params.end() || !event_it->is_object()) return HandlerResult::Ok(Json());
+    const Json& event = *event_it;
+
+    std::size_t removed_count = 0;
+    if (const auto removed = event.find("removed");
+        removed != event.end() && removed->is_array()) {
+        for (const Json& folder : *removed) {
+            if (!folder.is_object()) continue;
+            const std::string uri = jsonrpc::GetString(folder, "uri");
+            if (uri.empty()) continue;
+            const auto it = std::find(workspace_folders_.begin(), workspace_folders_.end(), uri);
+            if (it != workspace_folders_.end()) {
+                workspace_folders_.erase(it);
+                ++removed_count;
+            }
+        }
+    }
+    std::size_t added_count = 0;
+    if (const auto added = event.find("added"); added != event.end() && added->is_array()) {
+        for (const Json& folder : *added) {
+            if (!folder.is_object()) continue;
+            const std::string uri = jsonrpc::GetString(folder, "uri");
+            if (uri.empty()) continue;
+            if (std::find(workspace_folders_.begin(), workspace_folders_.end(), uri) ==
+                workspace_folders_.end()) {
+                workspace_folders_.push_back(uri);
+                ++added_count;
+            }
+        }
+    }
+    // 当前主根被移除 -> 换成列表里的第一个；列表空了就回到"无工作区"。
+    // （root 也可能是 initialize 用 rootUri 给的、不在 folders 列表里：那种情况不动它。）
+    if (workspace_folders_.empty()) {
+        if (removed_count > 0) root_uri_.clear();
+    } else if (root_uri_.empty() ||
+               std::find(workspace_folders_.begin(), workspace_folders_.end(), root_uri_) ==
+                   workspace_folders_.end()) {
+        root_uri_ = workspace_folders_.front();
+    }
+    // 根变了：工程/发现/报告缓存全部按路径缓存，必须失效（下一次请求会重新解析）。
+    InvalidateProjectCaches();
+    if (report_store_) report_store_->InvalidateAll();
+    platform::default_logger().info("didChangeWorkspaceFolders: +" +
+                                    std::to_string(added_count) + "/-" +
+                                    std::to_string(removed_count) + " root=" + root_uri_);
     return HandlerResult::Ok(Json());
 }
 
@@ -1770,6 +1845,12 @@ std::shared_ptr<td::TdSession> LspServer::CreateSession(const project::Project& 
 
     td::TdSessionOptions options;
     options.work_dir = RunDir(project);
+    // 会话 cwd 必须是 `.al` 所在目录（相对路径才解析得对），而 TD 会把
+    // `td_<时间戳>.log/.logw`、`minidump-*.dmp` 写进 cwd —— 于是短会话日志落在
+    // **工程根目录**（2026-11-22 运行期审计实测：LSP 的 `fpgalsp.device` 每次都在
+    // `%WORKSPACE%\CorpusAlpha` 留 30 KB 日志）。GUI 自己把它们放在 `<al>/log/`，flow / probe /
+    // MCP bridge 三条路径也都已经传了 log_dir，这里补齐 LSP 这条。
+    if (!project.dir.empty()) options.log_dir = platform::path_join(project.dir, "log");
 
     try {
         auto session = std::make_shared<td::TdSession>(*choice, options);

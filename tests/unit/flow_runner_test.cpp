@@ -8,6 +8,8 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -533,4 +535,46 @@ TEST(FlowRunner, CancelWithHeartbeatDoesNotAbort) {
     EXPECT_TRUE(runner->Cancel().value("ok", false));
     ASSERT_TRUE(runner->WaitUntilIdle(5.0));
     EXPECT_EQ(runner->Status().stage, "cancelled");
+}
+
+// -----------------------------------------------------------------------------
+//  曾经的 bug（2026-11-22，真机 MCP 复现）：同一个 FlowRunner 上第二次 Start
+//  永久挂起 —— StartInternal 在 join 上一个 worker **之前**就把 state.running 置回
+//  true、stage 置成 "starting"，旧 run 的心跳线程因此被"复活"（它只看 running），
+//  永远不会退出；于是 join 等心跳、心跳等状态，第二次 Start 的调用方永久阻塞
+//  （MCP 侧表现为 tools/call 无响应，且后续 flow_status 也排在单 worker 队列里）。
+//
+//  修法：心跳带 generation 代号，Start 递增代号让旧心跳立即作废。
+//  这个用例必须有心跳线程才会复现，所以 heartbeat_seconds 设成 0.05。
+// -----------------------------------------------------------------------------
+TEST(FlowRunner, SecondStartAfterCompletionDoesNotHang) {
+    Harness harness("restart_after_done");
+    FlowOptions options = harness.Options();
+    options.heartbeat_seconds = 0.05;  // 必须起心跳线程，否则测不出该 bug
+
+    auto runner = std::make_unique<FlowRunner>(
+        harness.project, fpgalsp::td::TdChoice{},
+        [](const Json&) {}, [](int, std::string_view) {}, options);
+    ASSERT_TRUE(runner->Start({"syn"}, 1).value("ok", false));
+    // WaitUntilIdle 只等 running=false；此时上一个 worker 可能还卡在 heartbeat join 上，
+    // 正好是复现窗口。
+    ASSERT_TRUE(runner->WaitUntilIdle(5.0));
+
+    std::atomic<bool> returned{false};
+    std::thread starter([&runner, &returned]() {
+        (void)runner->Start({"syn"}, 1);
+        returned.store(true);
+    });
+    for (int i = 0; i < 300 && !returned.load(); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    if (!returned.load()) {
+        // 不能 ASSERT_TRUE 后直接返回：starter 仍是 joinable，析构会 terminate。
+        std::fprintf(stderr, "second Start blocked (stale heartbeat deadlock)\n");
+        std::abort();
+    }
+    starter.join();
+    ASSERT_TRUE(runner->WaitUntilIdle(5.0));
+    EXPECT_EQ(runner->Status().stage, "done");
+    EXPECT_TRUE(runner->Status().ok.value_or(false));
 }

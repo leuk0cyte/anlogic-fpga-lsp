@@ -346,25 +346,30 @@ Json LspServer::FeatureCodeActions(std::string_view path, const Json& range,
 
     // 2) Verible lint autofix quickfix（整篇替换，内嵌规则集）
 #if defined(FPGA_LSP_HAVE_VERIBLE_BRIDGE)
-    // F1：先查缓存（键 = 文件名 + 规范化文本的内容哈希）。命中时**不**跑 Verible；
-    // 未命中才在 LintExecutionMutex 保护下跑一次并回填。下面的分支逻辑与缓存前
-    // 完全一致 —— 缓存只影响"算多久"，不影响"算什么"。
-    const std::uint64_t text_hash = hdl::ContentHash(text);
-    verible_bridge::LintAutofixResult fixed;
-    const bool cache_hit = SharedLintCache().TryGet(path_string, text_hash, &fixed);
-    if (!cache_hit) {
-        {
-            std::lock_guard<std::mutex> lock(LintExecutionMutex());
-            fixed = verible_bridge::AutofixText(text, path_string, settings_.verible_lint_args);
+    // `fpgaLsp.verible.autofix=false`：不生成 autofix quickfix。插件一直在传这个开关，
+    // 但服务端以前无条件生成（审计 2026-11-22 的 A-1）。
+    if (settings_.verible_autofix) {
+        // F1：先查缓存（键 = 文件名 + 规范化文本的内容哈希）。命中时**不**跑 Verible；
+        // 未命中才在 LintExecutionMutex 保护下跑一次并回填。下面的分支逻辑与缓存前
+        // 完全一致 —— 缓存只影响"算多久"，不影响"算什么"。
+        const std::uint64_t text_hash = hdl::ContentHash(text);
+        verible_bridge::LintAutofixResult fixed;
+        const bool cache_hit = SharedLintCache().TryGet(path_string, text_hash, &fixed);
+        if (!cache_hit) {
+            {
+                std::lock_guard<std::mutex> lock(LintExecutionMutex());
+                fixed =
+                    verible_bridge::AutofixText(text, path_string, settings_.verible_lint_args);
+            }
+            SharedLintCache().Put(path_string, text_hash, fixed);
         }
-        SharedLintCache().Put(path_string, text_hash, fixed);
-    }
-    if (fixed.ok) {
-        // Python: fixed = expand_comment_tabs(fixed); changed = fixed != doc.text
-        std::string new_text = edit::ExpandCommentTabs(edit::NormalizeNewlines(fixed.text));
-        if (new_text != text && !new_text.empty()) {
-            actions.push_back(MakeEditAction("Verible: apply lint autofixes", "quickfix", uri,
-                                             WholeDocumentRange(text), std::move(new_text)));
+        if (fixed.ok) {
+            // Python: fixed = expand_comment_tabs(fixed); changed = fixed != doc.text
+            std::string new_text = edit::ExpandCommentTabs(edit::NormalizeNewlines(fixed.text));
+            if (new_text != text && !new_text.empty()) {
+                actions.push_back(MakeEditAction("Verible: apply lint autofixes", "quickfix", uri,
+                                                 WholeDocumentRange(text), std::move(new_text)));
+            }
         }
     }
 #endif

@@ -1,13 +1,13 @@
-# 交付状态（当前：2026-11-20）
+# 交付状态（当前：2026-11-22，扩展 0.22.0）
 
 ## 构建与测试
 
 | 项目 | 数据 |
 | --- | --- |
-| **全新目录干净构建** | configure 29 s → build 3.3 min → **844 个目标全部成功**（Release + 全量 LTO）；无 LTO 的 `windows-msvc-dev` 全新目录 **56 s** |
-| **`ctest` 全量** | **63/63 通过**（`unit` 43 · `td` 4 · `e2e` 5 · `formatgate` 4 · `lintgate` 3 · `gate` 2 · `generator` 1 · `mcp` 1）；preset 默认 **8 路并行**，实测 **62 s**（串行 92–104 s） |
-| **原生产物** | `build/bin/fpgalsp-native.exe`（**6,714,368 B**，全量 LTCG；SHA256 `E71C1984…F79E9`） |
-| **单元测试规模** | 43 个 gtest target |
+| **全新目录干净构建** | configure 29 s → build 3.3 min → **844 个目标全部成功**（Release + 全量 LTO）；无 LTO 的 `windows-msvc-dev` 全新目录 **56 s**（2026-11-20 实测；增量构建见 build.md） |
+| **`ctest` 全量** | **65/65 通过**（其中 `unit` 44、`e2e` 5、`td` 5，其余为 `formatgate`/`lintgate`/`gate`/`generator`/`mcp`/`docs` 门禁）；preset 默认 **8 路并行**，实测 **61–75 s**（串行 92–104 s） |
+| **原生产物** | `build/bin/fpgalsp-native.exe`（0.22.0，**6,909,952 B**，全量 LTCG；SHA256 `7F8C5F25…DDA16B`） |
+| **单元测试规模** | 44 个 gtest target |
 
 > 构建/测试的并行度分析（为什么 192 线程帮不上忙、时间精确花在哪、日常该用哪个 preset）见
 > [doc/build.md](build.md) 的「并行度：192 线程用在了哪里」。
@@ -16,9 +16,10 @@
 
 | 项目 | 数据 |
 | --- | --- |
-| LSP | 25 个方法（补全 / 悬停 / 定义 / 引用 / 文档与工作区符号 / 代码动作 / 格式化 ×2 / 重命名 / 调用层次 / 语义高亮 / 折叠 / inlayHint / reports …） |
-| MCP | **43 个工具全部真实实现（0 占位）**（Python 对齐 39 + `job_status`/`job_cancel`/`run_diff`/`testbench`）；默认只读，flow / 写操作需显式开启；4 个只读 resources |
-| TD 集成 | 会话与诊断、Flow + BitWizard、报告解析、ADC + SDC 符号、HDL 索引 |
+| LSP | **33 个注册 handler**（标准 LSP + `fpgaLsp/*` 自定义 + `workspace/executeCommand`；后者实现 **34 条**命令、广播 **31 条**） |
+| MCP | **50 个工具全部真实实现（0 占位）**（Python 对齐 39 + 11 个扩展；`--allow-flow` 可见 46、只读 38、`--allow-write` 再加 3）；服务端默认只读，flow / 写操作需显式开启；4 个只读 resources + `fpga_guide` 7 topic + 4 个 prompt |
+| VS Code 扩展 | **58 条命令**（声明 = 注册 = 实现）、4 个视图、5 个 `vscode.lm` 工具、17 个设置项 |
+| TD 集成 | 会话与诊断、Flow（含 6 步单步 Run / Reset and Run）+ BitWizard、报告解析、ADC + SDC 符号、HDL 索引、ChipWatcher 采样 |
 
 ## M1 协议层减法（已落地，2026-11-19）
 
@@ -1459,3 +1460,69 @@ CPU 核数决定（run.log 里的 `TMR-1041 : Net delay calculation accelerates 
 
 实测：CorpusAlpha `step=read_design,jobs=8` → 日志里 `launch_runs  syn_1  -step read_design -jobs 1`
 → ok / 2.9 s；`ctest` 64/64、插件 45/45。
+
+---
+
+## 第三十四轮（2026-11-22）：团队模式独立审计 —— 功能齐全度 + 文档同步度
+
+**做法**：5 个子 agent 各自独立只读审计（互不共享上下文），lead 汇总、定级、修复、跑回归。
+报告归档在 [audit/2026-11-22/](audit/2026-11-22/SUMMARY.md)（5 份 + 汇总）。基线是 0.21.9
+（HEAD `36f5123`）；本轮交付 **0.22.0**。
+
+**审计结论**：
+
+| 维度 | 结论 | 关键数字 |
+| --- | --- | --- |
+| C++ 后端 vs Python 参考 | 契约层 100% 对等，C++ 是严格超集 | 39 工具 schema 逐字段一致；C++：50 MCP 工具 / 33 LSP handler / 34 executeCommand |
+| 后端实现健康度 | 50 工具 × 17 组 LSP 能力**全部有真实实现**（0 空转） | `ctest` 64/64 |
+| 插件 | 58 命令「声明 = 注册 = 实现」，0 死命令、0 空壳；4 视图 12 面板全绑真实数据 | `node test/run.js` 45/45 |
+| 文档 | **不同步**：过时 25 / 缺失 13 / 多余 3 / 矛盾 5；4 blocker、11 major | 用户文档整体落后 2~3 个版本 |
+| 真机运行期 | 能跑（LSP 18/20 方法、MCP 13 只读工具返回真实数据），但 2 个 major 缺陷 | 单步 3.2 s；退出码 0、无残留进程 |
+
+**本轮修掉的代码缺陷**（每条都有复现脚本或单测钉住）：
+
+1. **major：同一 MCP 会话第二次 `fpga_flow_run_step` 永久挂起**（后续 `flow_status` 一起卡死）。
+   根因：心跳线程只看 `state.running`，而 `StartInternal` 在 join 上一个 worker **之前**就把状态
+   重置成 `running=true / stage=starting` → 旧心跳被"复活"→ join 等心跳、心跳等状态，死锁。
+   修法：心跳带 generation 代号（`heartbeat_generation` 每次 Start 递增）；新增单测
+   `FlowRunner.SecondStartAfterCompletionDoesNotHang`。真机复现：修前第 2 次调用 40 s+ 无响应；
+   修后 3 次调用全 ok、`exit: 0`。
+2. **major：LSP 路径的 TD 短会话日志仍落工程根**（`fpgalsp.device` 每次 30 KB）。
+   根因：`LspServer::CreateSession` 只传 `work_dir` 没传 `log_dir`（flow/probe/bridge 三条路径都传了）。
+   修法：`log_dir = <al>/log`。真机 A/B：工程根 0 新增、`<al>\log` 新增 `td_*.log/.logw`。
+3. **minor：单步 Reset and Run 后下游步骤仍显示 done**。根因：`CollectFlowSteps` 会用
+   "统计表里有耗时"把 pending 升级成 done，而单步只删标记文件没清表。
+   修法：`StripFlowStatusFromMarker()` + `ClearStepMarkersFrom` 同步过滤 `flow.status`/`*_flow.status`；
+   真机：Read Design=done、其余 5 步 pending。
+4. **minor：`fpgaLsp.verible.autofix` / `verible.highlight` 是空开关** → 服务端新增
+   `Settings::verible_autofix/verible_highlight` 并在 code action / semanticTokens 处消费。
+5. **nit：版本叙事分裂**（exe 自报 0.1.0 / 扩展 0.21.9）→ `src/platform/version.h` 单一来源，
+   CMake、header、`package.json` 三处 0.22.0，新增 CTest `docs_version_consistency`（label `docs`）。
+6. **jobs 钳位统一**：bridge 侧从 `clamp(1,64)`（死代码）改为与 `FlowRunner` 一致
+   （>0 钳 1~6、0/负数 = 默认 6）；单步仍强制 1。
+7. **插件**：`onDidChangeConfiguration` 首行 `if (!mcpEmitter) return;` 短路（默认配置下
+   `dynamicProvider=false` → 改 `allowFlow/allowWrite` 后状态栏徽标永不更新）已去掉；
+   `FPGA: Re-run Place && Route` 标题与实际（只跑 route）不符 → 改 `Re-run Routing`。
+
+**文档同步**：`README.md`、`doc/README.md`、`doc/commands.md`、`doc/mcp-usage.md`、
+`doc/protocol.md`、`doc/build.md`、`doc/design/README.md`、`doc/extension-development.md`、
+`vscode-extension/README.md` 按代码事实重写：MCP 50 工具（`--allow-flow` 46 / 只读 38 /
+`--allow-write` +3）、LSP 33 handler / 34 命令 / 广播 31、58 个 VS Code 命令、5 个 lm 工具、
+`-jobs` 语义表、单步 Flow 语义、日志与状态目录表、`--mcp --mcp-port` 现在真的开端口
+（`--mcp` 分支也起 loopback，每连接自建 Bridge）、插件 README 删掉两条不存在的命令。
+
+**验证**：`ctest --preset windows-msvc-dev` 65/65（`e2e.mcp_concurrency` 首跑失败、重跑通过 ——
+仍是已知的时序 flake，`-R` 重跑稳定通过）；插件 45/45；`tests/check_versions.py` 通过；
+真机 CorpusAlpha：单步 3.2 s + 三次连续调用无挂起 + 日志落点正确 + 下游状态正确复位。
+
+**本轮还修掉**（审计 A1）：`workspace/didChangeWorkspaceFolders` 之前只有声明、没有 handler
+（dispatcher 静默丢弃，多根工作区增删文件夹后仍按旧根解析）→ 新增 handler 维护
+`workspace_folders_`、切根、失效工程与报告缓存；真机探针：initialize 给两个文件夹
+（CorpusAlpha + corpus_delta）→ `fpgalsp.info` 报 `demo_project` → 移除 CorpusAlpha 的文件夹 → 再 `info` 报
+`corpus_delta`（PASS，`exit: 0`）。
+
+**仍未做**（见 `doc/audit/2026-11-22/SUMMARY.md` §四）：LSP 合规项 A4–A12
+（`signatureHelp`/`documentLink`/`codeLens`/`documentHighlight`/`selectionRange`/pull
+diagnostics/`willSave`/`$/setTrace`/`completionItem/resolve`/`semanticTokens/range` —— 均未声明，
+客户端按 capability 跳过）；`compare_reports.py` / `compare_constraints.py` 未进 CTest；插件 flow
+无绝对超时；7 个 MCP 工具无人工 UI 入口；`fpgaLsp.mcp.allowFlow` 默认值是否改 `false` 待产品决定。

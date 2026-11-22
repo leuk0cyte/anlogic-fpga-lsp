@@ -88,6 +88,12 @@ struct Settings {
     std::vector<std::string> verible_lint_args;
     bool verible_format = true;
     bool format_fallback = true;
+    // 对应 `fpgaLsp.verible.autofix` / `fpgaLsp.verible.highlight`。
+    // 这两个开关插件一直在传（initializationOptions.veribleAutofix / veribleHighlight），
+    // 但 0.21.x 之前服务端**没有消费**：autofix quickfix 无条件生成、语义高亮恒开。
+    // 2026-11-22 审计发现后接上（"声明了但不生效"是最容易误导用户的缺陷）。
+    bool verible_autofix = true;
+    bool verible_highlight = true;
     // T1：didChange 之后在服务端跑内嵌 Verible lint（默认开）。
     // 关掉后行为退回"只有 TD 诊断"（排查 lint 相关问题时用）。
     bool lint_on_change = true;
@@ -222,6 +228,9 @@ private:
     HandlerResult HandleDidClose(const Json& params);
     HandlerResult HandleDidChangeConfiguration(const Json& params);
     HandlerResult HandleDidChangeWatchedFiles(const Json& params);
+    // A1：声明了 `workspaceFolders.changeNotifications:true` 就必须处理它（否则 dispatcher
+    // 静默丢弃，多根工作区增删文件夹后服务端仍按旧根解析工程）。
+    HandlerResult HandleDidChangeWorkspaceFolders(const Json& params);
     HandlerResult HandleNoop(const Json& params);
 
     // 已声明能力对应的方法：本阶段一律返回**合法的空结果**（不返回 -32601，
@@ -406,6 +415,9 @@ private:
 
     lsp::DocumentStore docs_;
     std::string root_uri_;
+    // 工作区文件夹 URI 列表（initialize 的 workspaceFolders + didChangeWorkspaceFolders 维护）。
+    // A1：root_uri_ 只是"当前主根"；多根语义要靠这份列表才能判断当前根是否已被移除。
+    std::vector<std::string> workspace_folders_;
     std::string project_override_;
 
     // TD 会话：同一时刻最多一个（TD 检查 / device 查询共用）

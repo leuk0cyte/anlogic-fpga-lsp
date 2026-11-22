@@ -335,3 +335,23 @@ if(BUILD_TESTING AND _format_dump AND _official_format
             "阶段1门禁: 已注册 formatgate_range / formatgate_range_selftest")
     endif()
 endif()
+
+# =============================================================================
+#  版本一致性门禁（ctest -L docs）
+# =============================================================================
+#  CMake project VERSION / src/platform/version.h / 扩展 package.json 必须一致。
+#  以前原生 exe 自报 0.1.0 而扩展是 0.2x，用户报 bug 时对不上号（审计 2026-11-22）。
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/check_versions.py")
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(Python3_Interpreter_FOUND)
+        add_test(
+            NAME docs_version_consistency
+            COMMAND "${Python3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/check_versions.py"
+                    --root "${CMAKE_CURRENT_SOURCE_DIR}/.."
+        )
+        set_tests_properties(docs_version_consistency PROPERTIES
+            LABELS "docs" TIMEOUT 60)
+        message(STATUS "文档门禁: 已注册 docs_version_consistency")
+    endif()
+endif()

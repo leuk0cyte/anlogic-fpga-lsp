@@ -2,7 +2,8 @@
 
 > 作者：**leuk0cyte** · 图标：带 “TD” 的蓝色芯片（`resources/icon.svg`、`resources/icon.png`）
 
-这是 Anlogic TangDynasty（TD）FPGA 工程的 VS Code 扩展，配合内置的 `fpga-lsp` Python 语言服务器使用。
+这是 Anlogic TangDynasty（TD）FPGA 工程的 VS Code 扩展，配合内置的**原生语言服务器**
+`fpgalsp-native.exe` 使用（不需要 Python，也不需要单独安装 Verible）。
 
 扩展分两层：
 
@@ -18,12 +19,13 @@
 - **模块层次树**：自动生成 `top` 的实例层次，点击模块跳定义，点击黑盒/IP 跳例化处；VHDL entity 和 IP 生成的同名 Verilog 模块会显示为已定义模块，而不是 blackbox。
 - **导航与编辑**：定义、引用、补全、悬停、重命名、调用层次、workspace symbol、信号级符号、generate 作用域重命名。
 - **TD 诊断**：保存时运行 TD 权威检查（`read_hdl` + `read_adc`），Problems 中显示 `HDL-xxxx` / `USR-xxxx` 等诊断；TD 的黑盒/ignored 警告也会显示。
-- **一键 Flow**：Synthesis、Place & Route、Full Flow、取消、增量布线，默认 `jobs=6`，行为与 TD GUI 一致。
+- **一键 Flow**：Synthesis、Place & Route、Full Flow、取消、增量布线（只重跑 route）。`jobs` 默认 6（TD GUI 交互式默认），范围 **1~6**，单步强制 1。
+- **单步 Flow**：Flow 树里六步右键 `Run This Flow Step` / `Reset and Run This Flow Step` —— Run 对已完成步骤直接跳过；Reset and Run **只跑这一步**（先清该步及下游标记），不会再把整个综合重跑一遍。
 - **Flow 日志**：`Output → FPGA Flow` 实时显示 TD 输出；`run.log` 中的新 ERROR/WARNING 会加 `[run.log]` 前缀转发；Flow 的错误/警告同时进入 Problems（source `fpga-flow`）。
 - **独立报告页**：**Reports** 是独立的活动栏视图，与 Project & Flow 平级；`Synthesis Reports` 和 `Place & Route Reports` 两个页面，各自包含 Dashboard、QoR、Timing、Area、Flow、DRC-CDC、Compare，并支持搜索。
 - **资源利用率**：Area 页显示器件利用率，并计算每个模块的 LUT / SEQ / BRAM / DSP 使用率；兼容 EF2 以及 PH1 的 `#slice reg` / `#slice*` / `logic lut` / `eram` 格式。
-- **Verible 集成**：格式化、lint/autofix、细粒度语法高亮；检测到 Verible 时自动使用，找不到时自动回退内置实现。
-- **MCP server**：内置 MCP stdio server，把工程、符号、诊断、报告、flow 等能力暴露给 Copilot / Cline / 其他 agent；默认只读，可显式开启 flow/写操作。
+- **Verible 集成**：格式化、lint/autofix、细粒度语法高亮全部由 exe 内嵌的 Verible 提供，无需外部二进制。
+- **MCP server**：LSP 进程内挂 **loopback TCP** MCP（stdio 客户端经 `--attach-port` 薄代理接入），把工程、符号、诊断、报告、flow、探针等 **50 个工具**暴露给 Copilot / Cline / 其他 agent；服务端默认只读，扩展默认放行 flow（`allowWrite` 仍关闭）。
 - **器件与约束**：TD 安装探测、器件引脚表缓存、ADC 引脚约束补全/校验、SDC 支持、多 TD 安装选择。
 - **工程管理**：子目录 `.al` 自动发现、重命名工程、`open_project -update`、添加源文件、查重名 module、层次搜索。
 - **代码片段**：Verilog / SystemVerilog / VHDL / ADC / SDC snippets；输入 `module`、`always_ff`、`entity`、`process`、`pin`、`clock` 等前缀即可展开。
@@ -45,7 +47,7 @@
 ### 2. 安装扩展并重载
 
 ```powershell
-code --install-extension Y:\fpga-lsp-cpp\vscode-extension\fpga-lsp-anlogic-0.15.3.vsix
+code --install-extension Y:\fpga-lsp-cpp\vscode-extension\fpga-lsp-anlogic-0.22.0.vsix
 ```
 
 安装后按提示 **Reload**，或执行 `Developer: Reload Window`。
@@ -129,7 +131,20 @@ code --install-extension Y:\fpga-lsp-cpp\vscode-extension\fpga-lsp-anlogic-0.15.
 - Flow 运行过程中会读取 TD 报告的实际 `run.log` 路径（来自 `PRJ-1404`）。
 - 失败时输出会包含失败步骤（例如 `.read_design.error.f`）和 run.log 路径/缺失状态；有 run.log 时会读取最后的 ERROR/WARNING。
 - 所有问题同时进入 **Problems**，source 为 `fpga-flow`；无法定位文件的消息挂到 `.al`。
-- 完整日志在 `.fpgalsp/flow/<runId>/td_*.log`，以及 `<project>_Runs/<run>/run.log`（TD 不一定生成）。
+- 完整日志：本次 flow 的运行目录在 `<状态目录>/flow/<runId>/`（`<状态目录>` = `%TEMP%\fpgalsp\<工程名>-<hash8>`，可用 `FPGALSP_STATE_DIR` 覆盖）；TD **会话**日志在 `<.al 目录>/log/td_*.log`（与 TD GUI 一致，不再落工程根目录）；TD 自己的 run 日志在 `<project>_Runs/<run>/run.log`（TD 不一定生成）。
+
+### 单步 Flow（Flow 树六步右键）
+
+Flow 树固定渲染 TD GUI 的六步：Read Design / Optimize RTL / Optimize Gate（syn_1）、
+Optimize Placement / Optimize Routing / Generate Bitstream（phy_1）。
+
+| 动作 | 行为 |
+| --- | --- |
+| `Run This Flow Step` | 该步已有完成标记就直接跳过（提示 "skipped"）；否则跑这一步 |
+| `Reset and Run This Flow Step` | **只跑这一步**：先清掉该步及下游的标记与 `flow.status` 统计行，再 `launch_runs <run> -step <step> -jobs 1`；上游产物保留 |
+
+副作用（与 TD GUI 一致）：任何 syn 步骤重跑都会作废整个 phy run（标记 + `phy_1/cw` + 旧 `.bit`）；
+任何 phy 步骤重跑都会删 `phy_1/cw` 与旧 bit。单步 phy 不做 `save_best_bits`。
 
 ### Reports
 
@@ -156,7 +171,8 @@ code --install-extension Y:\fpga-lsp-cpp\vscode-extension\fpga-lsp-anlogic-0.15.
 
 ### MCP（Copilot / Cline / 其他 agent）
 
-内置 MCP stdio server，默认暴露只读工具；扩展默认允许 flow，`allowWrite` 仍关闭。
+内置 MCP 服务端：LSP 进程在 127.0.0.1 上开 loopback MCP（共享同一个 Engine，agent 看到的工程状态
+= 编辑器看到的状态）；默认暴露只读工具，扩展默认允许 flow，`allowWrite` 仍关闭。
 
 - 默认不注册动态 provider（`fpgaLsp.mcp.dynamicProvider=false`），避免 Copilot 无法关联 workspace。
 - 安装工作区配置：
@@ -168,9 +184,10 @@ FPGA: Install MCP Configuration
 选择 **VS Code workspace**（推荐第一个选项）或 portable `.mcp.json`。
 
 - `fpgaLsp.mcp.allowFlow` 默认 `true`；`allowWrite` 默认 `false`。
-- 常用新工具：`fpga_flow_log`、`fpga_flow_issues`、`fpga_flow_wait`（带 progress 通知）、`fpga_read_file`、`fpga_search_text`、`fpga_constraint_audit`。
-- 全部 43 个工具与安全限制见仓库的 `src/mcp/tools.cpp` 与
-  `doc/audit/2026-11-18/parity-mcp/tools-diff.md`（工具清单与 Python 侧差异对照）。
+- 常用新工具：`fpga_flow_run_step`（单步）、`fpga_flow_log`、`fpga_flow_issues`、`fpga_flow_wait`（带 progress 通知）、`fpga_read_file`、`fpga_search_text`、`fpga_constraint_audit`。
+- 全部 **50 个工具**（`--allow-flow` 可见 46、只读 38、`--allow-write` 再加 3）与安全限制见仓库的
+  `src/mcp/tools.cpp`；工具清单文档见 `doc/mcp-usage.md`。
+  （`doc/audit/2026-11-18/parity-mcp/tools-diff.md` 是 2026-11-18 的归档快照，不含后来新增的 9 个工具。）
 
 ### ADC / SDC
 
@@ -188,8 +205,8 @@ FPGA: Install MCP Configuration
 | `fpgaLsp.tdPath` | `""` | TD 安装根目录，空 = 自动探测 |
 | `fpgaLsp.tdCheckOnSave` | `true` | 保存时运行 TD 权威检查（`read_hdl` + `read_adc`，约 1–2 s） |
 | `fpgaLsp.projectFile` | `""` | 显式指定 `.al`；空 = 用最近的上级工程 |
-| `fpgaLsp.flowJobs` | `6` | 传给 `launch_runs` 的并行 jobs（与 TD GUI 默认一致） |
-| `fpgaLsp.logFile` | `""` | 服务器日志，空 = `<workspace>/.fpgalsp/logs/server.log` |
+| `fpgaLsp.flowJobs` | `6` | TD multirun 的并发 run 数（**1~6**，不是线程数；单步始终用 1）。超出范围会被钳到 6 |
+| `fpgaLsp.logFile` | `""` | 服务器日志，空 = `<状态目录>/logs/server.log`（`<状态目录>` = `%TEMP%\fpgalsp\<工程名>-<hash8>`；工程目录下不再有 `.fpgalsp`） |
 | `fpgaLsp.verible.format` | `true` | 用内嵌 Verible 格式化（Format Document） |
 | `fpgaLsp.verible.args` | 160 列 + 4 空格缩进 + 一组对齐参数 | 内嵌 `verible-verilog-format` 的 style 参数；与服务端内置默认逐条一致，非空即**整体替换**，见下 |
 | `fpgaLsp.verible.lintArgs` | `["--rules=+line-length=length:160"]` | 传给内嵌 lint 的参数：`--rules=` / `--ruleset=` / `--rules_config=` / `--rules_config_search` / `--waiver_files=` |
@@ -261,15 +278,16 @@ FPGA: Install MCP Configuration
 | `FPGA: Run Synthesis` | 只综合 |
 | `FPGA: Run Place & Route` | 只布局布线 |
 | `FPGA: Run Full Flow` | 综合 + 布局布线 + bit |
-| `FPGA: Re-run Place && Route` | 增量布线 |
+| `FPGA: Re-run Routing` | 增量布线（复用综合 + 布局结果，只重跑 route + bitgen） |
 | `FPGA: Cancel Flow` | 取消 flow |
 | `FPGA: Show Reports` | 打开报告 |
 | `FPGA: Show Flow Log` | 打开 FPGA Flow 输出 |
 | `FPGA: Run TD Check` | 立即运行 TD 检查 |
 | `FPGA: Select Project…` | 选择 `.al` |
 | `FPGA: TD Installations` | 查看/选择 TD 版本 |
-| `FPGA: Verible Status` | 查看 Verible 探测结果 |
 | `FPGA: Check Read Design` | 单独跑 TD read_design 检查，错误进入 Problems |
+| `FPGA: Run This Flow Step` | 右键 Flow 六步之一：跑这一步（已完成则跳过） |
+| `FPGA: Reset and Run This Flow Step` | 右键 Flow 六步之一：清该步及下游后只跑这一步 |
 | `FPGA: Doctor` | 汇总扩展/LSP/Verible/TD/MCP 状态 |
 | `FPGA: Show Logs` | 打开扩展/服务器日志 |
 | `FPGA: Install MCP Configuration` | 安装 MCP 用户/工作区配置 |
@@ -280,9 +298,11 @@ FPGA: Install MCP Configuration
 | `FPGA: Generate SVF…` | 生成 SVF |
 | `FPGA: ChipWatcher Probe Status` | 看探针清单 / 采样深度 / 时钟 / 编译产物是否就绪（只读） |
 | `FPGA: Capture On-Chip Probe Data` | 通过 JTAG 读回片上探针的 1024 个采样点（默认先直接用器件里现有的 bit 抓，抓不动才下载） |
-| `FPGA: Edit Probe Signals (opens ChipWatcher panel)` | 打开探针面板（信号增删 / watcher 现状 / 一键采集） |
-| `FPGA: ChipWatcher Probe Panel (signals, clock, capture)` | 同上，面板入口 |
+| `FPGA: ChipWatcher (signals, trigger, capture)` | 打开探针面板（信号增删 / watcher 现状 / 采样时钟与深度 / 一键采集） |
 
+> 上表只是常用项；扩展共 **58 条命令**（命令面板搜 `FPGA:` 可看全部），完整 id/标题以
+> `package.json` 的 `contributes.commands` 为准。
+>
 > 插件界面（命令标题、提示、面板、设置说明）一律英文；只有 `doc/` 与本 README 是中文。
 
 ### 片上探针（ChipWatcher）

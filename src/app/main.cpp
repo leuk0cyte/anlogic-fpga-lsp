@@ -37,6 +37,7 @@
 #include "jsonrpc/transport.h"
 #include "platform/log.h"
 #include "platform/path.h"  // state_dir()（Wave 3 / W1：状态目录可外移）
+#include "platform/version.h"
 #include "mcp/bridge.h"
 #include "mcp/mcp_server.h"
 #include "server/async_dispatcher.h"
@@ -50,7 +51,7 @@ using fpgalsp::jsonrpc::Json;
 using fpgalsp::jsonrpc::TransportBaseCommon;
 using fpgalsp::jsonrpc::TransportMode;
 
-constexpr const char* kServerVersion = "0.1.0";
+constexpr const char* kServerVersion = fpgalsp::platform::kServerVersion;
 
 struct Options {
     TransportMode mode = TransportMode::Lsp;
@@ -75,8 +76,9 @@ void PrintUsage() {
                  "fpgalsp-native %s\n"
                  "用法:\n"
                  "  fpgalsp-native.exe --stdio [--td <TD安装根>] [--project <AL>] [--mcp-port <n>] [--log <path>] [--verbose]\n"
-                 "  fpgalsp-native.exe --mcp   [--root <dir>] [--project <AL>] [--allow-flow] [--allow-write]\n"
-                 "                            [--verible <path>] [--log <path>] [--verbose]\n"
+                 "  fpgalsp-native.exe --mcp   [--root <dir>] [--project <AL>] [--mcp-port <n>]\n"
+                 "                            [--allow-flow] [--allow-write] [--verible <path>]\n"
+                 "                            [--log <path>] [--verbose]\n"
                  "  fpgalsp-native.exe --mcp --attach-port <n>   （薄代理：接入 LSP 进程的 loopback MCP）\n"
                  "  -h/--help 显示本帮助并以 0 退出\n",
                  kServerVersion);
@@ -251,8 +253,6 @@ int main(int argc, char** argv) {
         return fpgalsp::app::RunTcpAttachProxy(options.attach_port);
     }
 
-    // Phase 2 / B1（WIP）：attach 代理尚未启用。
-
     const bool is_lsp = (options.mode == TransportMode::Lsp);
 
     // LSP 的 --project 对应 Python 的 os.environ["FPGALSP_PROJECT"]（lsp_server.cpp 读它）。
@@ -314,9 +314,9 @@ int main(int argc, char** argv) {
             const std::string root = std::filesystem::current_path(ec).string();
             std::string mcp_error;
             mcp_tcp_host = std::make_unique<fpgalsp::app::McpTcpHost>();
-            if (mcp_tcp_host->Start(static_cast<unsigned short>(options.mcp_port), *lsp_server,
-                                    root, options.allow_flow, options.allow_write,
-                                    &mcp_error)) {
+            if (mcp_tcp_host->Start(static_cast<unsigned short>(options.mcp_port),
+                                    lsp_server.get(), root, options.allow_flow,
+                                    options.allow_write, &mcp_error)) {
                 fpgalsp::platform::default_logger().info(
                     "mcp-tcp listening on 127.0.0.1:" +
                     std::to_string(mcp_tcp_host->actual_port()));
@@ -343,6 +343,25 @@ int main(int argc, char** argv) {
             // 进度通知走同一条 newline-delimited 通道；绝不写 stdout 之外的东西
             transport->WriteMessage(note);
         });
+
+        // `--mcp --mcp-port <n>`：独立 MCP 服务端在 loopback 上再开一个 TCP 入口。
+        // 与 `--stdio --mcp-port`（共享 LSP Engine）不同，这里每个 TCP 连接自建 Bridge，
+        // 不依赖任何 LSP 客户端；stdio 通道照常工作，进程在 stdin 关闭时退出。
+        if (options.mcp_port > 0) {
+            std::string mcp_error;
+            mcp_tcp_host = std::make_unique<fpgalsp::app::McpTcpHost>();
+            // shared_server = nullptr：独立进程，没有可复用的 LSP Engine
+            if (mcp_tcp_host->Start(static_cast<unsigned short>(options.mcp_port), nullptr,
+                                    bridge_options.root, options.allow_flow,
+                                    options.allow_write, &mcp_error)) {
+                fpgalsp::platform::default_logger().info(
+                    "mcp-tcp listening on 127.0.0.1:" +
+                    std::to_string(mcp_tcp_host->actual_port()));
+            } else {
+                fpgalsp::platform::default_logger().warn("mcp-tcp disabled: " + mcp_error);
+                mcp_tcp_host.reset();
+            }
+        }
     }
 
     int exit_code = 0;

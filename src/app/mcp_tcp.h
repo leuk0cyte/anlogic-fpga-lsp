@@ -26,7 +26,9 @@ public:
     McpTcpHost& operator=(const McpTcpHost&) = delete;
 
     // port=0 时由系统分配；成功后 actual_port() 返回真实端口。
-    bool Start(unsigned short port, server::LspServer& shared_server, const std::string& root,
+    //   shared_server != nullptr：复用该 LSP 进程的 Engine（`--stdio --mcp-port`，单 Engine 多 transport）
+    //   shared_server == nullptr：每个连接自建 Bridge（`--mcp --mcp-port`，独立 MCP-over-TCP 服务端）
+    bool Start(unsigned short port, server::LspServer* shared_server, const std::string& root,
                bool allow_flow, bool allow_write, std::string* error);
     unsigned short actual_port() const;
     void Shutdown();

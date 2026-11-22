@@ -7,10 +7,13 @@
 :: LSP 模式（Content-Length framing）
 build\bin\fpgalsp-native.exe --stdio
 
-:: MCP 模式（newline-delimited JSON）
+:: MCP 模式（newline-delimited JSON, stdio）
 build\bin\fpgalsp-native.exe --mcp
 
-:: MCP over loopback TCP（供扩展/agent 以 client 身份附着）
+:: MCP over loopback TCP —— 两种模式都支持 --mcp-port：
+::   * --stdio --mcp-port <n>：LSP 进程内挂 MCP，共享同一个 Engine（扩展用这条）
+::   * --mcp   --mcp-port <n>：独立进程再开一个 TCP 入口，每连接自建 Bridge
+build\bin\fpgalsp-native.exe --stdio --mcp-port <n>
 build\bin\fpgalsp-native.exe --mcp --mcp-port <n> --root <dir>
 
 :: 薄代理：接入已运行的 LSP 进程的 loopback MCP
@@ -22,6 +25,11 @@ build\bin\fpgalsp-native.exe --stdio --log build\server.log --verbose
 
 完整开关见 `-h`：`--stdio` / `--mcp` / `--mcp-port` / `--attach-port` / `--root` /
 `--project` / `--td` / `--verible` / `--allow-flow` / `--allow-write` / `--log` / `--verbose`。
+
+> **自报版本**：`--help` 首行、LSP `initialize.serverInfo.version`、MCP
+> `initialize.serverInfo.version` 三处都取 `src/platform/version.h` 的
+> `kServerVersion`，发布时与 `vscode-extension/package.json` 的 `version` 一起改；
+> `ctest -R docs_version_consistency` 会核对 CMake / header / package.json 三处一致。
 
 ## 单条消息上限
 

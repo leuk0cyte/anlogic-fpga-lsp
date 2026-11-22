@@ -40,6 +40,10 @@ Json LspServer::FeatureSemanticTokens(std::string_view path) {
     Json result = Json::object();
     result["data"] = Json::array();
 
+    // `fpgaLsp.verible.highlight=false`：不生成任何语义 token（客户端就不会上色）。
+    // 以前这个开关只被插件发过来、服务端从不读取（审计 2026-11-22 的 A-2）。
+    if (!settings_.verible_highlight) return result;
+
     const std::string path_string(path);
     if (path_string.empty()) return result;
 
@@ -127,10 +131,11 @@ Json LspServer::FeatureDebugHighlight(const Json& params) {
     Json counts = Json::object();
     for (const auto& [name, count] : stats.counts) counts[name] = count;
     result["counts"] = std::move(counts);
-    // C++ 侧语义高亮**始终**走内嵌 Verible 词法流（见 src/semantics/semantics.cpp），
-    // 因此这两个标志恒为 true；Python 是"外部 verible 可用时"才 true。
-    result["verible"] = true;
-    result["veribleHighlight"] = true;
+    // 这两个标志报告"当前是否真的在出语义高亮"：内嵌 Verible 词法流始终可用，
+    // 但 `fpgaLsp.verible.highlight=false` 时 FeatureSemanticTokens 会返回空 token，
+    // 所以这里必须跟随设置，而不是恒 true。
+    result["verible"] = settings_.verible_highlight;
+    result["veribleHighlight"] = settings_.verible_highlight;
     return result;
 }
 

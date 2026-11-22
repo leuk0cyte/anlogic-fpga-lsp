@@ -78,8 +78,15 @@ double ParseFlowStatusSeconds(std::string_view text);
 //   * status 一律留空（表只能证明"这一步跑过、耗时多少"，完成/失败要看标记文件）。
 std::vector<FlowStep> ParseFlowStatus(std::string_view text);
 
-// 一个 run 目录 -> 该 run 的那几步（syn_* 3 步 / phy_* 3 步 / route_* 2 步）。
-//   * status：.<step>.error.f -> failed；.<step>.end.f -> done；
+// 单步重跑（GUI 的 Reset and Run）前清理统计表：把 `marker` 这一步**及其下游**的
+// 耗时行删掉，表头/分隔线/total 等其它行原样保留。为什么需要：CollectFlowSteps 会把
+// "表里有耗时"的 pending 步骤升级成 done（表能证明跑过），如果只删标记文件不动表，
+// 右键 Read Design 之后 Optimize RTL/Gate 仍会显示 done（2026-11-22 运行期审计实测）。
+// marker 取 GUI 步骤标记名：read_design / opt_rtl / opt_gate / opt_place / opt_route / bitgen。
+// 不认识的 marker 或空文本原样返回。
+std::string StripFlowStatusFromMarker(std::string_view text, std::string_view marker);
+
+// 一个 run 目录 -> 该 run 的那几步（syn_* 3 步 / phy_* 3 步 / route_* 2 步）。//   * status：.<step>.error.f -> failed；.<step>.end.f -> done；
 //             .<step>.begin.f -> running；都没有 -> pending；
 //   * 耗时：先读 flow.status，再合并 *_flow.status（place_flow.status /
 //     route_flow.status）。同一命令在多个文件里出现时**取较大值**：这些文件是

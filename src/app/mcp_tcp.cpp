@@ -22,6 +22,7 @@
 #include "mcp/mcp_server.h"
 #include "platform/log.h"
 #include "platform/path.h"
+#include "platform/version.h"
 #include "server/lsp_server.h"
 
 #include <filesystem>
@@ -139,10 +140,10 @@ std::string EndpointTokenForPort(unsigned short port) {
 
 class McpTcpHost::Impl {
   public:
-    bool Start(unsigned short port, server::LspServer& shared_server, const std::string& root,
+    bool Start(unsigned short port, server::LspServer* shared_server, const std::string& root,
                bool allow_flow, bool allow_write, std::string* error) {
 #ifdef _WIN32
-        shared_ = &shared_server;
+        shared_ = shared_server;
         root_ = root;
         allow_flow_ = allow_flow;
         allow_write_ = allow_write;
@@ -384,7 +385,7 @@ class McpTcpHost::Impl {
         mcp::McpServerOptions server_options;
         server_options.allow_flow = allow_flow_;
         server_options.allow_write = allow_write_;
-        server_options.server_version = "0.1.0";
+        server_options.server_version = platform::kServerVersion;
         try {
             mcp::Bridge bridge(options);
             mcp::McpServer server(bridge, server_options);
@@ -513,7 +514,7 @@ class McpTcpHost::Impl {
 McpTcpHost::McpTcpHost() : impl_(std::make_unique<Impl>()) {}
 McpTcpHost::~McpTcpHost() = default;
 
-bool McpTcpHost::Start(unsigned short port, server::LspServer& shared_server,
+bool McpTcpHost::Start(unsigned short port, server::LspServer* shared_server,
                        const std::string& root, bool allow_flow, bool allow_write,
                        std::string* error) {
     return impl_->Start(port, shared_server, root, allow_flow, allow_write, error);

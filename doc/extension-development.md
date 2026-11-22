@@ -5,7 +5,7 @@
 ## 目录与定位逻辑
 
 扩展只对接**原生可执行文件** `fpgalsp-native.exe`（Verible 已内嵌其中），不再有 Python 后端。
-服务端定位在 `src/locateServer.js`，依次尝试：
+服务端定位在 `vscode-extension/src/locateServer.js`（相对本仓库根目录），依次尝试：
 
 1. 设置项 `fpgaLsp.serverPath`（显式路径）
 2. 打包内置的 `server/bin/fpgalsp-native.exe`

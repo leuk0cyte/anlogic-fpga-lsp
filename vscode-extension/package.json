@@ -2,7 +2,7 @@
     "name": "fpga-lsp-anlogic",
     "displayName": "Anlogic FPGA LSP (TangDynasty)",
     "description": "Language support and IDE views for Anlogic TD FPGA projects: ADC pin constraints, SDC, project .al, Verilog index, TD-backed diagnostics, module hierarchy, syn/phy flow control and QoR/timing/area reports.",
-    "version": "0.21.9",
+    "version": "0.22.0",
     "publisher": "fpga-lsp",
     "license": "AGPL-3.0-or-later",
     "engines": {
@@ -358,7 +358,7 @@
             },
             {
                 "command": "fpgaLsp.runIncrementalRoute",
-                "title": "FPGA: Re-run Place && Route (reuse synthesis, ~8 s)",
+                "title": "FPGA: Re-run Routing (reuse synthesis + placement, ~8 s)",
                 "icon": "$(run)"
             },
             {

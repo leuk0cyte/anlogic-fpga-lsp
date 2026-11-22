@@ -11,16 +11,18 @@
 | [verible-cmake.md](verible-cmake.md) | Verible CMake 化的风险画像：哪些缺陷是静默的、为什么、如何自检 |
 | [verible-generator-upgrade.md](verible-generator-upgrade.md) | 升级 bison / flex 后的正确性验证流程（锚点核对、补丁生效、官方错误消息对拍） |
 | [protocol.md](protocol.md) | 可执行入口、LSP/MCP 两种传输模式、framing 与单条消息上限 |
-| [commands.md](commands.md) | LSP 命令清单：已实现 vs 占位的两栏对照 |
+| [commands.md](commands.md) | `workspace/executeCommand` 34 条命令 + `fpgaLsp/*` 7 个方法的落点索引，及 initialize 能力声明对照 |
+| [mcp-usage.md](mcp-usage.md) | MCP 工具怎么串：三条路线（读工程 / 跑 flow / 上板探针）、jobs 语义、常见坑 —— agent 的主要入口文档 |
 | [quality.md](quality.md) | 静态分析流水线、两个计数陷阱、诊断基线、审计报告索引 |
-| [status.md](status.md) | 当前交付状态：构建/测试数据、6 项修复、VSIX、已知差异、仍未验证项 |
+| [status.md](status.md) | **按轮记录的工程日志**（当前 34 轮）：每轮改了什么、实测证据、仍未验证项；最新的交付数字以本文件末尾几轮为准 |
 | [extension-development.md](extension-development.md) | VS Code 扩展的开发、测试与打包 |
-| [design/](design/README.md) | **设计提案（未实现）**：端到端协议优化 32 条、后端功能缺口 25 条、插件功能 28 条，含优先级与验收标准 |
+| [design/](design/README.md) | **设计提案 + 落地状态**：端到端协议优化 32 条、后端功能缺口 25 条、插件功能 28 条；大部分已落地，剩余 backlog 见其 §3.5 |
 
 ## 审计证据归档（按日期，只增不改）
 
 | 目录 | 内容 |
 | --- | --- |
+| [doc/audit/2026-11-22/](audit/2026-11-22/SUMMARY.md) | **独立审计（团队模式，2026-11-22）**：5 份子审计（后端对等性 / 后端健康度 / 插件 / 文档 / 真机运行期）+ 汇总与 0.22.0 修复记录 |
 | [doc/audit/2026-11-18/](audit/2026-11-18/) | Phase B 前基线、B1–B10 阶段报告、Python↔C++ 对拍、性能基准 |
 | [doc/audit/2026-11-19/perf/](audit/2026-11-19/perf/) | 运行时性能剖析（CPU-PROFILE / INDEX / MCP / TD / VSCODE / REPORTS …） |
 | [doc/audit/2026-11-19/fix/](audit/2026-11-19/fix/) | 修复波次（F1–F6、W1–W4）过程记录与协议门禁结果 |

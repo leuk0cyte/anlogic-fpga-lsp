@@ -158,11 +158,13 @@ flow 写新报告 / 用户覆盖 .rpt
 | P1 | 约束表格化编辑（ADC 引脚表 / SDC） | 复用 `constraint_audit`；现在是纯文本编辑 | 5 |
 | P2 | `vscode.lm.registerTool` 把 39 个工具变成 Copilot 工具 | 全仓无 `registerTool`；MCP provider 已注册但默认关闭 | 3 |
 
-另有三处**配置层面的不一致**要顺手修：① 代码读取了 4 个 `package.json` 未声明的设置（`serverRoot`/`verible.path`/`verible.lintArgs`/`verible.highlight`），而错误弹窗恰好让用户去设不存在的 `fpgaLsp.serverRoot`；② `flowJobs` 的兜底值不一致（`package.json` 声明默认 6，而 `flowController.js:41` 的 `get(..., 2)` 兜底是 2）；③ **`fpgaLsp.mcp.allowFlow` 默认 `true`** —— 与 `status.md` 的"默认只读"和服务器 CLI 的默认相反，用户装上 MCP 配置后 agent 即可启动 TD flow，而界面上没有任何"agent 现在能动我的工程/能跑 flow"的提示（`extension-features.md` E12/S7）。（另：`doc/commands.md:70` 曾把 `flowEvent` 写成"预留、无调用点"，与代码不符，已在本轮修正。）
+另有三处**配置层面的不一致**要顺手修（**2026-11-22 复核：①② 已修，③ 仍成立**）：
+① 代码读取了 4 个 `package.json` 未声明的设置（`serverRoot`/`verible.path`/`verible.lintArgs`/`verible.highlight`）—— 这 4 个键现已在 `contributes.configuration` 里声明，`fpgaLsp.verible.autofix`/`verible.highlight` 也已经在服务端被真正消费（0.22.0）；② `flowJobs` 兜底值现在是 6，与 `package.json` 一致；
+③ **`fpgaLsp.mcp.allowFlow` 默认 `true`** —— 与服务器 CLI 的"默认只读"相反，用户装上 MCP 配置后 agent 即可启动 TD flow；界面上已有 `agent: flow` 状态栏徽标（S7），但默认值是否该改成 `false` 仍待产品决定（见 [../audit/2026-11-22/SUMMARY.md](../audit/2026-11-22/SUMMARY.md) §四）。
 
 ---
 
-## 3.5 落地状态（2026-11-20）
+## 3.5 落地状态（2026-11-20，backlog 于 2026-11-22 复核）
 
 | 批次 | 状态 |
 | --- | --- |
@@ -173,8 +175,10 @@ flow 写新报告 / 用户覆盖 .rpt
 | M3c 后端 | ✅ B-B4（诊断，无 codeAction）、B-B5 覆盖率概览、B-B6 run 差异、B-B7 面积热点、B-B10 testbench |
 | M3c 插件 | ✅ S1/S2/S3/S5/S6/S7/S8、X-B1、X-B2、X-B3（只读表）、X-B7（5 个只读 lm 工具） |
 
-**仍留在 backlog**：B-B4 的 codeAction、X-B3 的表格内编辑、B-B5 的 bank 电压域/交叉表、
-B-B9/B11/B12/B13、X-B4/B5/B6/B8，以及 §9 里"明确不做"的那些。
+**仍留在 backlog（2026-11-22 独立审计复核后的准确版）**：B-B4 的 codeAction、X-B3 的表格内编辑、
+B-B5 的 bank 电压域/交叉表、B-B9/B11/B12/B13、X-B4/B5/B6/B8，以及 §9 里"明确不做"的那些；
+另有审计新发现的 LSP 合规缺口（本文件 §3.2 的 A1/A4–A12）与插件 UX 项（flow 无绝对超时、
+7 个 MCP 工具无人工入口）。完整清单与证据见 [../audit/2026-11-22/SUMMARY.md](../audit/2026-11-22/SUMMARY.md) §四。
 判断标准没变：**先把已经算出来的数据接进协议与 UI，再考虑新领域功能。**
 
 ## 4. 建议的排期

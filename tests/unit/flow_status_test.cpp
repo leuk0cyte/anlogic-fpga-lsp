@@ -268,8 +268,33 @@ TEST(FlowStatus, MarkersDecideStatusAndTableSuppliesTimes) {
     EXPECT_DOUBLE_EQ(steps[2].wall, 71.0);
 }
 
-TEST(FlowStatus, BeginMarkerWithoutEndMeansRunning) {
-    TempRuns runs("running");
+// 单步 Reset and Run 的配套清理：标记文件删了还不够，统计表里"该步及下游"的行
+// 也必须删 —— 否则 CollectFlowSteps 的"表里有耗时 -> done"会把下游重新标成已完成。
+TEST(FlowStatus, StripFromMarkerClearsThisStepAndDownstreamRows) {
+    const std::string stripped = StripFlowStatusFromMarker(kSynFlowStatus, "opt_rtl");
+    ASSERT_FALSE(stripped.empty());
+    EXPECT_NE(stripped, std::string(kSynFlowStatus));
+
+    TempRuns runs("strip_marker");
+    const std::string syn = runs.MakeRun("syn_1");
+    TempRuns::Write(syn + "/flow.status", stripped);
+
+    const std::vector<FlowStep> steps = CollectFlowSteps(syn, "syn_1");
+    ASSERT_EQ(steps.size(), 3u) << NamesOf(steps);
+    EXPECT_DOUBLE_EQ(steps[0].wall, 2.0);  // Read Design（上游）保留
+    EXPECT_EQ(steps[0].status, "done");    // 表里有耗时 -> 视为跑过（上游产物仍在）
+    EXPECT_DOUBLE_EQ(steps[1].wall, 0.0);  // Optimize RTL 的行已删
+    EXPECT_EQ(steps[1].status, "pending");
+    EXPECT_DOUBLE_EQ(steps[2].wall, 0.0);  // Optimize Gate 的行已删
+    EXPECT_EQ(steps[2].status, "pending");
+
+    // 不认识的 marker：原样返回（不要静默清表）
+    EXPECT_EQ(StripFlowStatusFromMarker(kSynFlowStatus, "nope"), std::string(kSynFlowStatus));
+    // 空文本：原样返回
+    EXPECT_TRUE(StripFlowStatusFromMarker("", "opt_rtl").empty());
+}
+
+TEST(FlowStatus, BeginMarkerWithoutEndMeansRunning) {    TempRuns runs("running");
     const std::string phy = runs.MakeRun("phy_1");
     TempRuns::Touch(phy + "/.opt_place.end.f");
     TempRuns::Touch(phy + "/.opt_route.begin.f");

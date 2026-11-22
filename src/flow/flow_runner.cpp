@@ -412,6 +412,11 @@ struct FlowRunner::Impl {
     double stage_started = 0.0;
     std::string stall_reason;
     std::atomic<bool> heartbeat_stop{false};
+    // 每次 Start 递增。心跳线程只服务"它自己那一次 run"：Start 会在 join 上一个 worker
+    // **之前**重置 state（running=true / stage=starting），旧心跳若只看 state.running，
+    // 就会被新 run 的状态"复活"，永远不退出 —— 于是 join 等心跳、心跳等状态，死锁。
+    // 实测：同一 MCP 会话第二次 fpga_flow_run_step 永久挂起（2026-11-22）。
+    std::atomic<std::uint64_t> heartbeat_generation{0};
 
     // TD 报告过但可能不存在的 run.log（对应 Python _run_logs）
     std::mutex logs_mutex;
@@ -1034,6 +1039,17 @@ struct FlowRunner::Impl {
             std::filesystem::remove_all(std::filesystem::path(dir + "/cw"), ec);
             std::filesystem::remove(std::filesystem::path(dir + "/" + project_name() + ".bit"), ec);
         }
+        // 统计表里"这一步及下游"的耗时行也要清掉：CollectFlowSteps 会用"表里有耗时"
+        // 把 pending 升级成 done，只删标记不动表的话，右键 Reset and Run 跑完 Read Design
+        // 后 Optimize RTL/Gate 仍显示 done（2026-11-22 运行期审计实测）。
+        for (const char* table : {"flow.status", "place_flow.status", "route_flow.status"}) {
+            const std::string path = dir + "/" + table;
+            std::error_code table_ec;
+            if (!std::filesystem::is_regular_file(std::filesystem::path(path), table_ec)) continue;
+            const std::string text = ReadTextFile(path);
+            const std::string stripped = StripFlowStatusFromMarker(text, step);
+            if (stripped != text) (void)platform::write_file_utf8(path, stripped);
+        }
     }
 
     Failure RunStage(const std::string& run_name, int jobs, const std::string& step = {}) {
@@ -1339,7 +1355,7 @@ struct FlowRunner::Impl {
     // -------------------------------------------------------------------------
     // 心跳 / 看门狗
     // -------------------------------------------------------------------------
-    void Heartbeat(std::vector<std::string> stages) {
+    void Heartbeat(std::uint64_t generation, std::vector<std::string> stages) {
         (void)stages;
         std::string last_message;
         std::vector<std::pair<std::string, std::string>> seen_warnings;
@@ -1347,11 +1363,13 @@ struct FlowRunner::Impl {
             R"([A-Z][A-Z0-9]{1,5}-\d{3,5}\s+(?:ERROR|CRITICAL-WARNING|WARNING)|)"
             R"(\b(?:ERROR|CRITICAL-WARNING|WARNING)\b)");
 
-        while (!heartbeat_stop.load()) {
+        // 只服务自己那一次 run：generation 变了（新的一次 Start）就立刻退出，
+        // 否则新 run 把 state.running 重新置 true，旧心跳会被"复活"永不退出。
+        while (!heartbeat_stop.load() && generation == heartbeat_generation.load()) {
             std::string stage;
             {
                 std::lock_guard<std::mutex> lock(mutex);
-                if (!state.running) return;
+                if (!state.running || generation != heartbeat_generation.load()) return;
                 stage = state.stage;
             }
             if (stage != "syn" && stage != "phy") {
@@ -1535,10 +1553,11 @@ struct FlowRunner::Impl {
             SetSession(std::move(session));
 
             if (owner->options_.heartbeat_seconds > 0.0) {
-                heartbeat_thread = std::thread([this, stages]() {
+                const std::uint64_t generation = heartbeat_generation.load();
+                heartbeat_thread = std::thread([this, generation, stages]() {
                     // 看门狗线程同样不允许把异常带出去（它会在 Kill 会话后继续跑）
                     try {
-                        Heartbeat(stages);
+                        Heartbeat(generation, stages);
                     } catch (...) {
                     }
                 });
@@ -1782,6 +1801,9 @@ jsonrpc::Json FlowRunner::StartInternal(const std::vector<std::string>& stages, 
         impl_->cancel.store(false);
         impl_->cancel_at.store(0.0);
         impl_->heartbeat_stop.store(false);
+        // 递增代号：上一个 worker 的心跳线程（即使还没 join）立刻作废，否则它会看到
+        // 下面刚重置的 running=true 而永不退出，StartInternal 的 join 就会死锁。
+        impl_->heartbeat_generation.fetch_add(1);
         impl_->state.running = true;
         impl_->state.stage = "starting";
         impl_->state.stages = normalised;

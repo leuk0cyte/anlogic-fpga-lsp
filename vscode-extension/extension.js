@@ -572,12 +572,14 @@ function activate(context) {
         diag('MCP dynamic provider disabled; configure a workspace .vscode/mcp.json if needed');
     }
     context.subscriptions.push(vscode.workspace.onDidChangeConfiguration((event) => {
-        if (!mcpEmitter) return;
-        if (event.affectsConfiguration('fpgaLsp.projectFile')
+        // BUG（审计 2026-11-22）：这里原本第一行是 `if (!mcpEmitter) return;`，而
+        // mcpEmitter 只在 dynamicProvider=true 时才创建（默认 false），于是整段处理器
+        // 被短路 —— 改 fpgaLsp.mcp.allowFlow/allowWrite 后状态栏的 "agent: …" 徽标
+        // 永远不更新（要重载窗口）。现在 emitter 只是"可选刷新"，徽标永远更新。
+        const affectsMcp = event.affectsConfiguration('fpgaLsp.projectFile')
             || event.affectsConfiguration('fpgaLsp.mcp.allowFlow')
-            || event.affectsConfiguration('fpgaLsp.mcp.allowWrite')) {
-            mcpEmitter.fire();
-        }
+            || event.affectsConfiguration('fpgaLsp.mcp.allowWrite');
+        if (affectsMcp && mcpEmitter) mcpEmitter.fire();
         renderAgentBadge();
     }));
 

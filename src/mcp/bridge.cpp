@@ -3589,9 +3589,12 @@ Json Bridge::FlowRunTool(const Json& arguments) {
         }
     }
     if (stages.empty()) stages.push_back("all");  // 等价 GUI 的 Generate Bitstream
+    // PRJ-8802：`-jobs` 是 multirun 的并发 run 数，合法范围 1~6（不是线程数）。
+    // 0 / 负数按默认 6 处理（与 FlowRunner::StartInternal 的 `jobs > 0 ? jobs : 6` 一致）。
     int jobs = 6;
     if (const auto it = arguments.find("jobs"); it != arguments.end() && it->is_number_integer()) {
-        jobs = std::clamp(it->get<int>(), 1, 64);
+        const int requested = it->get<int>();
+        jobs = std::clamp(requested > 0 ? requested : 6, 1, 6);
     }
 
     flow::FlowRunner* runner = EnsureFlowRunner(proj);
@@ -3611,9 +3614,11 @@ Json Bridge::FlowRunStepTool(const Json& arguments) {
     const project::Project& proj = ProjectFor(arguments);
     std::string step = arguments.value("step", std::string());
     const bool force = arguments.value("force", false);
+    // 同 FlowRunTool：1~6，0/负数 = 默认 6；单步的 jobs 最终由 FlowRunner 强制成 1。
     int jobs = 6;
     if (const auto it = arguments.find("jobs"); it != arguments.end() && it->is_number_integer()) {
-        jobs = std::clamp(it->get<int>(), 1, 64);
+        const int requested = it->get<int>();
+        jobs = std::clamp(requested > 0 ? requested : 6, 1, 6);
     }
     flow::FlowRunner* runner = EnsureFlowRunner(proj);
     Json out = runner->StartFromStep(step, force, jobs);

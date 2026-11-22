@@ -405,8 +405,51 @@ std::vector<FlowStep> ParseFlowStatus(std::string_view text) {
     return steps;
 }
 
-std::vector<FlowStep> CollectFlowSteps(const std::string& run_dir, const std::string& run_name) {
-    const std::vector<std::string> dir_names = ListDir(run_dir);
+// 单步重跑前清理统计表：把"这一步及其下游"的耗时行删掉。
+std::string StripFlowStatusFromMarker(std::string_view text, std::string_view marker) {
+    std::size_t first = kStepCount;
+    for (std::size_t i = 0; i < kStepCount; ++i) {
+        if (kTemplates[i].marker == marker) {
+            first = i;
+            break;
+        }
+    }
+    if (first >= kStepCount || text.empty()) return std::string(text);
+
+    static const RE2 kRowRe{std::string(kRowPattern)};
+    std::string out;
+    out.reserve(text.size());
+    std::size_t start = 0;
+    while (start < text.size()) {
+        const std::size_t pos = text.find('\n', start);
+        const std::size_t end = pos == std::string_view::npos ? text.size() : pos;
+        const std::string_view raw = text.substr(start, end - start);
+        const std::string line = Trim(raw);
+        bool drop = false;
+        if (!line.empty()) {
+            std::string command;
+            std::string calls;
+            std::string wall;
+            std::string cpu;
+            std::string mem;
+            std::string peak;
+            const re2::StringPiece input(line.data(), line.size());
+            if (RE2::PartialMatch(input, kRowRe, &command, &calls, &wall, &cpu, &mem, &peak)) {
+                const int index = GuiIndexForCommand(command);
+                drop = index >= 0 && static_cast<std::size_t>(index) >= first;
+            }
+        }
+        if (!drop) {
+            out.append(raw);
+            if (pos != std::string_view::npos) out.push_back('\n');
+        }
+        if (pos == std::string_view::npos) break;
+        start = pos + 1;
+    }
+    return out;
+}
+
+std::vector<FlowStep> CollectFlowSteps(const std::string& run_dir, const std::string& run_name) {    const std::vector<std::string> dir_names = ListDir(run_dir);
 
     std::vector<FlowStep> steps;
     for (const StepTemplate& tpl : kTemplates) {

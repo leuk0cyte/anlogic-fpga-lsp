@@ -19,7 +19,7 @@
 
 ---
 
-## 一、`workspace/executeCommand` —— 已实现
+## 一、`workspace/executeCommand` —— 34 条，全部已实现（无占位）
 
 | command | 返回 | 说明 / 依赖 |
 | --- | --- | --- |
@@ -30,8 +30,11 @@
 | `fpgalsp.device` | `{ok, device, db, pins, package}` | import_device + `query_current_package -fio/-clock_io/-lvds/-cfg_io` 的真实解析 |
 | `fpgalsp.check` | `{ok, project, queued:true}` | 触发一次**异步**权威 TD 诊断；结果随后以 `textDocument/publishDiagnostics` 推送 |
 | `fpgalsp.restart` | `{ok:true}` | 杀掉当前 TD 会话（下一次检查会重建） |
-| `fpgalsp.runFlow` | `{ok:true, runId, stages}` / `{ok:false, error:"busy"}` | **阶段 4-δ 接入**：真实 flow 引擎（`src/flow`）。e2e 只断言"接受请求拿到 runId + 立刻 cancelFlow"，**不等综合跑完** |
+| `fpgalsp.runFlow` | `{ok:true, runId, stages, job}` / `{ok:false, error:"busy"}` | 真实 flow 引擎（`src/flow`），异步；`jobs` = TD multirun 并发 run 数（1~6，PRJ-8802），不是线程数 |
+| `fpgalsp.runFlowStep` | `{ok, runId, step, force, singleStep, job}` / `{ok:true, skipped:true, reason}` | **单步**（GUI 的 6 步：`read_design/opt_rtl/opt_gate/opt_place/opt_route/bitgen`）。`force:false` = Run（该步已完成则跳过）；`force:true` = Reset and Run（**先清该步及下游**的标记与 `flow.status` 行，再 `launch_runs <run> -step <step>`，只跑这一步）。单步的 `-jobs` 强制为 1（PRJ-8803） |
 | `fpgalsp.cancelFlow` | `{ok:true}` / `{ok:true, note:"not running"}` | 写 `.stop.f`，超过宽限期再杀 TD 进程树 |
+| `fpgalsp.metrics` | `{ok, index:{completed, maxRunMs, files, generation}}` | 索引服务统计（观察索引是否真的在增量重建） |
+| `fpgalsp.probeClocks` | `{ok, clocks[{name,...}], current?, source, reason?}` | ChipWatcher 采样时钟候选：来自 `phy_1/{route,place}_clock_utilization.txt`；还没跑过布局布线时 `ok:true` + 空列表 + `reason` |
 | `fpgalsp.compareStrategies` | `{ok, runs[], best, elapsed, work}` | `src/flow/strategy.cpp` |
 | `fpgalsp.cables` | `{ok, inspect{...}}` | 下载器探测 |
 | `fpgalsp.program` | `{ok, refused?, stage?, device_id, log}` | **三条硬规则在 `flow::Program()` 内部**：`confirm:true` 必须显式传 / 无下载器直接拒 / 器件不匹配即使 `allowMismatch:true` 也拒 |
@@ -40,7 +43,7 @@
 | `fpgalsp.probeConfig` | `{ok, written, count, before[], after[], added[], removed[]}` | 读写 `chip_debugger/user.mdn` 的 `mark_debug`；**只有 `write:true` 才落盘**，空清单拒绝写 |
 | `fpgalsp.probeCapture` | `{ok, samples, clock, signals{bus:[值…]}, summary, csv}` | 片上采集：起独立 TD 会话，`config_chipwatcher → download -mode jtag_burst → run_hw_cw → wait_on_hw_cw → write_hw_cw_data`。`download:true`（默认）必须带 `confirm:true` |
 
-## 一、`workspace/executeCommand` —— Phase B 已全部实现（无占位）
+### 其余命令的模块归属
 
 > 2026-11-18 Phase B 后：下表 11 条命令全部走 `LspServer::Feature*`（LSP 与 MCP 同一实现），
 > 不再有 `{"ok":false,"error":"not implemented"}`。逐条验收见 `doc/audit/2026-11-18/parity-matrix.md` 的 CMD-01..CMD-10。
@@ -63,20 +66,27 @@
 
 ---
 
-## 二、自定义方法 `fpgaLsp/*`
+## 二、`fpgalsp.*` 命令的形态补充（仍是 executeCommand，不是 `fpgaLsp/*`）
 
-| 方法 | 状态 | 说明 |
+| 命令 | 状态 | 说明 |
 | --- | --- | --- |
-| `workspace/willRenameFiles` | **已实现（B-A3）** | 改名 HDL 文件时返回 `.al` 的精确 `WorkspaceEdit`；`didRenameFiles` 重解析工程并重发诊断 |
 | `fpgalsp.compareRuns` | **已实现（B-B6）** | `{from?,to?}` → 两次 run 的 QoR/时序/面积差异（方向 + 汇总） |
 | `fpgalsp.runs` | **已实现（X-B2）** | run 列表 + 指标（趋势面板数据源） |
 | `fpgalsp.testbench` | **已实现（B-B10）** | `{module?,clock?,reset?}` → 可解析的 testbench 文本 + `parseOk` |
 | `fpgalsp.constraintTable` | **已实现（X-B3）** | `.adc` 逐行结构化 + 每行诊断数（只读） |
-| `fpgaLsp/moduleChildren` | **已实现（P-C2）** | `{uri?, module, offset, limit, includePrimitives}` → `{ok,parent,children[],total,nextOffset,hasMore}`；只回一层，子节点带 `hasChildren` 不带 `children`；未知模块 `ok:false` |
-| `fpgaLsp/moduleTree` | **已实现（真实索引）** | 基于 `src/hdl` 的 Verible 符号索引；`includePrimitives=false` 时按 745 条器件原语过滤黑盒 |
-| `fpgaLsp/reports` | **已实现** | `reports::BuildReports` + `routed_db` + `strategies.available` + `flow`；无 flow 时 `ok:false` + Python 同文案 |
-| `fpgaLsp/flowStatus` | **已实现** | `{ok, flow{...,log,ok}, artifacts{runs[]}}` |
-| `fpgaLsp/flowEvent`（通知，服务器→客户端） | **已实现** | `LspServer::SendFlowEvent(event)` → `SendNotification`；调用点是 `FlowRunner` 的事件回调（`lsp_server.cpp:1760-1768`），由后台 worker 线程推送 |
+
+## 三、自定义方法 `fpgaLsp/*` —— 4 个请求 + 3 个服务端推送
+
+| 方法 | 方向 | 说明 |
+| --- | --- | --- |
+| `workspace/willRenameFiles` | 客户端→服务端 | **已实现（B-A3）**：改名 HDL 文件时返回 `.al` 的精确 `WorkspaceEdit`；`workspace/didRenameFiles` 重解析工程并重发诊断（这两个是标准 LSP 方法，不是 `fpgaLsp/*`，放这里便于对照） |
+| `fpgaLsp/moduleChildren` | 请求 | **已实现（P-C2）**：`{uri?, module, offset, limit, includePrimitives}` → `{ok,parent,children[],total,nextOffset,hasMore}`；只回一层，子节点带 `hasChildren` 不带 `children`；未知模块 `ok:false` |
+| `fpgaLsp/moduleTree` | 请求 | **已实现（真实索引）**：基于 `src/hdl` 的 Verible 符号索引；`includePrimitives=false` 时按 745 条器件原语过滤黑盒 |
+| `fpgaLsp/reports` | 请求 | **已实现**：`reports::BuildReports` + `routed_db` + `strategies.available` + `flow`；无 flow 时 `ok:false` + Python 同文案 |
+| `fpgaLsp/flowStatus` | 请求 | **已实现**：`{ok, flow{stage,running,steps[6],jobs,log}, artifacts{runs[]}}`（GUI 的 6 步 + 暂停/失败状态） |
+| `fpgaLsp/flowEvent` | 通知（服务端→客户端） | **已实现**：`LspServer::SendFlowEvent(event)` → `SendNotification`；调用点是 `FlowRunner` 的事件回调，由后台 worker 线程推送 |
+| `fpgaLsp/indexChanged` | 通知（服务端→客户端） | **已实现**：索引重建后推送（带 `modules[]` 补丁，模块树原地更新，不再全量重取） |
+| `fpgaLsp/reportsChanged` | 通知（服务端→客户端） | **已实现**：报告失效后推送 `{stage, sections, revision}`（不阻塞 IO 线程；客户端按需重取或走 `ifRevision`） |
 
 ### `fpgaLsp/moduleTree`（阶段 3 起用真实 HDL 索引）
 
@@ -195,7 +205,8 @@ src/server/lsp_server.cpp     LSP 传输/线程/缓存；handler 只解包 param
 ## 三之二·原、`src/hdl`（HDL 索引层）
 
 `src/hdl/hdl_index.{h,cpp}` —— 用 Verible 的词法流 + `hdl.py` 的结构识别算法，
-给上面 5 个符号类 handler 提供数据。**独立可测**（`tests/unit/hdl_index_test.cpp`，64 例）。
+给上面 5 个符号类 handler 提供数据。**独立可测**（`tests/unit/hdl_index_test.cpp`；
+用例数随实现变化，以 `ctest -N` / `unit_hdl_index` 的输出为准）。
 
 | 能力 | 状态 |
 | --- | --- |
@@ -212,10 +223,16 @@ src/server/lsp_server.cpp     LSP 传输/线程/缓存；handler 只解包 param
 
 ## 三之三、`initialize` 能力声明与实现的对照
 
-声明了但**只有空结果**的能力（`references` / `codeAction` / `formatting` / `rename` /
-`callHierarchy` / `semanticTokens` / `foldingRange` / `inlayHint`）**仍然声明**：
-协议要求 + 编辑器据此决定是否显示入口。它们返回合法空值而不是 `-32601`，
-所以不会在客户端日志里刷错误。下一步优先级见 task-17 的清单 7~12。
+早期版本有一批能力"声明了但只返回空值"（`references` / `codeAction` / `formatting` / `rename` /
+`callHierarchy` / `semanticTokens` / `foldingRange` / `inlayHint`）。**Phase B 之后它们全部是
+真实现**（见 `doc/status.md` 与 `doc/audit/2026-11-22/02-backend-health.md` 的逐项核查），
+上面的对照表只描述"声明了什么"，不再有"空实现"这一档。
+
+仍未实现、**也未声明**的 LSP 3.17/3.18 可选能力（客户端会按 capability 跳过，不影响使用）：
+`textDocument/signatureHelp`、`documentLink`、`codeLens`、`documentHighlight`、
+`selectionRange`、pull diagnostics（`textDocument/diagnostic`、`workspace/diagnostic`）、
+`willSave`/`willSaveWaitUntil`、`$/setTrace`、`completionItem/resolve`、
+`semanticTokens/range`。清单与优先级见 `doc/design/backend-features.md` 的 A 部分。
 
 ---
 
@@ -225,7 +242,7 @@ src/server/lsp_server.cpp     LSP 传输/线程/缓存；handler 只解包 param
 | --- | --- | --- |
 | `textDocumentSync` | `{openClose:true, change:2, save:{includeText:true}}` | v7（Incremental）+ Phase B 与 Python 对齐 |
 | `completionProvider` | `{triggerCharacters:["{","="," ","[","\t","|"]}` | Phase B 与 Python 集合一致 |
-| `workspace.workspaceFolders` | `{supported:true, changeNotifications:true}` | Phase B |
+| `workspace.workspaceFolders` | `{supported:true, changeNotifications:true}` | Phase B；**A1 起同时注册 `workspace/didChangeWorkspaceFolders` handler**（切根 + 失效工程/报告缓存） |
 | `hoverProvider` | `true` | v1 |
 | `definitionProvider` | `true` | v1 |
 | `documentSymbolProvider` | `true` | v1 |
@@ -240,15 +257,16 @@ src/server/lsp_server.cpp     LSP 传输/线程/缓存；handler 只解包 param
 | `foldingRangeProvider` | `true` | v5 |
 | `inlayHintProvider` | `true` | v5 |
 | `positionEncoding` | `"utf-16"` | LSP 3.17（本项目位置换算口径） |
-| `executeCommandProvider` | `{commands:[…22 条…]}` | **B-A2 起声明**（见下） |
-| `serverInfo` | `{name:"fpga-lsp", version:"0.1.0"}` | — |
+| `executeCommandProvider` | `{commands:[…31 条…]}` | **B-A2 起声明**（见下） |
+| `workspace.fileOperations` | `{willRename,didRename}`（`**/*.{v,sv,vh,svh,vhd,vhdl}`） | **B-A3 起声明** |
+| `serverInfo` | `{name:"fpga-lsp", version:"0.22.0"}`（`src/platform/version.h`，与扩展一致） | — |
 
 **`executeCommandProvider` 为什么是"全表减 3 条"**：vscode-languageclient 会把
 `commands` 里的**每一条**都注册成 VS Code 命令；扩展的 `contributes.commands` 已经
 占了 `fpgalsp.check` / `fpgalsp.info` / `fpgalsp.restart`，重复注册会让 initialize 抛
 `command 'fpgalsp.check' already exists` 并断开连接。
-因此 `ExecuteCommandNames()`（25 条，分发表的唯一来源）减去这 3 条得到
-`AdvertisedCommandNames()`（22 条）用于广播；那 3 条仍可被 `workspace/executeCommand`
+因此 `ExecuteCommandNames()`（34 条，分发表的唯一来源）减去这 3 条得到
+`AdvertisedCommandNames()`（31 条）用于广播；那 3 条仍可被 `workspace/executeCommand`
 直接调用，只是不对外广告。`unit.commands` 会断言这个子集关系。
 
 ---
