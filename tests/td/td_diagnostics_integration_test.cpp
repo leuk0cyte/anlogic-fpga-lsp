@@ -276,10 +276,19 @@ TEST_F(TdDiagnosticsIntegrationTest, CheckResultCarriesTimingsAndPerFileSplit) {
     EXPECT_EQ(grouped, result.total());
 }
 
-TEST_F(TdDiagnosticsIntegrationTest, SessionRunnerUsesProjectWorkDirAndFillsStartup) {
-    // use_project_work_dir=true（默认）：cwd = 状态目录的 run 子目录（系统临时目录）。
-    // 2026-11-22 之前这里是 `<project>/.fpgalsp/run` —— 每次 LSP 保存都往工程根重建
-    // `.fpgalsp`（用户反复看到它）。所以本用例同时断言"不在工程目录里"。
+TEST_F(TdDiagnosticsIntegrationTest, SessionRunnerUsesProjectDirAsWorkDir) {
+    // use_project_work_dir=true（默认）：cwd = **`.al` 所在目录**，与 TD GUI 一致。
+    //
+    // 历史的两次纠偏（改之前先看这两条，别再退回去）：
+    //   1) 2026-11-22 之前是 `<project>/.fpgalsp/run` —— 每次 LSP 保存都往工程根重建
+    //      `.fpgalsp`，所以那条断言是"cwd 不能在工程目录里"。
+    //   2) 之后改成 `%TEMP%/fpgalsp/<prj>-<hash>/run`，`.fpgalsp` 没了，但 TD 解析 `.al`
+    //      里的相对源文件路径时用的是"工程根"（`.al` 的 `<Project Path>`，失效时退化成
+    //      **进程 cwd**）。工程被移动过（实测 %WORKSPACE%\CorpusBeta，Path 还指着 C:/work/...）就
+    //      变成 `cannot open Verilog file '/src/ADC.v'`（HDL-8007）—— Update Project 必失败。
+    //
+    // 现在的契约：cwd = 工程目录（相对路径才解析得对），但工程根目录**不留 TD 日志**：
+    // TdSession 在会话结束时把新产生的 td_*.log/.logw、minidump-*.dmp 归位到 `<al>/log/`。
     TdSessionRunner runner(td_, Options(), /*use_project_work_dir=*/true);
     const CancelToken no_cancel;
     const TdCheckResult result = runner.Run(project_, no_cancel);
@@ -288,12 +297,16 @@ TEST_F(TdDiagnosticsIntegrationTest, SessionRunnerUsesProjectWorkDirAndFillsStar
     EXPECT_GT(result.timings.startup_ms, 0.0) << "startup 必须由 runner 记下来";
     EXPECT_GT(result.timings.total_ms, result.timings.startup_ms);
     const std::string work_dir = runner.last_work_dir();
+    EXPECT_EQ(platform::normalize_path(work_dir), platform::normalize_path(project_.dir))
+        << "cwd 必须是 .al 所在目录（TD 用它解析相对源文件路径），实际: " << work_dir;
     EXPECT_EQ(work_dir.find("/.fpgalsp/"), std::string::npos)
         << "工程目录里的 .fpgalsp 已废弃，实际 cwd: " << work_dir;
-    const std::string expected_root = platform::state_dir(project_.dir);
-    EXPECT_NE(work_dir.find(expected_root), std::string::npos)
-        << "cwd 必须在状态目录 `" << expected_root << "` 之下，实际: " << work_dir;
-    EXPECT_NE(work_dir.find("/run"), std::string::npos) << work_dir;
+    // 工程根目录不能留 TD 会话日志（它们应被归位到 <al>/log/）。
+    for (const auto& entry : std::filesystem::directory_iterator(project_.dir)) {
+        const std::string name = entry.path().filename().string();
+        const bool transient = name.rfind("td_", 0) == 0 || name.rfind("minidump-", 0) == 0;
+        EXPECT_FALSE(transient) << "工程根目录残留 TD 会话文件: " << name;
+    }
 }
 
 TEST_F(TdDiagnosticsIntegrationTest, SessionRunnerCanUseScratchWorkDir) {

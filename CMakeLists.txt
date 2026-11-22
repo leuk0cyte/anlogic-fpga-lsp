@@ -38,7 +38,7 @@ endif()
 
 project(
     fpga-lsp-cpp
-    VERSION 0.28.0
+    VERSION 0.28.1
     DESCRIPTION "Anlogic TangDynasty FPGA language server (C++23 rewrite of Y:\\fpga-lsp)"
     LANGUAGES C CXX
 )
@@ -157,6 +157,20 @@ endif()
 option(FPGA_LSP_BUILD_THIRDPARTY_IN_ALL
        "把 vendored 第三方静态库纳入默认构建目标（使 cmake --build 编出所有依赖库）"
        ON)
+
+# -----------------------------------------------------------------------------
+# clang-tidy 棘轮门禁（CTest `docs_clang_tidy`）默认**关闭**：
+#   * 它要逐 TU 跑 clang-tidy（67 TU，约 145 s），放在默认 `ctest` 里会拖慢每一次
+#     日常回归；
+#   * 需要时显式打开（或直接跑脚本，脚本会自己经 with_vcvars 自举 MSVC 环境）：
+#       cmake --preset windows-msvc-dev -DFPGA_LSP_ENABLE_TIDY_GATE=ON
+#       ctest --preset windows-msvc-dev -L tidy
+#     或：cmd /c tools\audit\with_vcvars.cmd python tools\audit\clang_tidy_gate.py
+#   * 基线在 tools/audit/clang_tidy_baseline.json，只许减少（见 doc/quality.md）。
+# -----------------------------------------------------------------------------
+option(FPGA_LSP_ENABLE_TIDY_GATE
+       "注册 clang-tidy 棘轮门禁到 CTest（docs_clang_tidy；约 +145 s）"
+       OFF)
 
 set(FPGA_LSP_THIRDPARTY_TARGETS
     absl_core_headers absl_base absl_strings absl_synchronization

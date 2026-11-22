@@ -1559,10 +1559,17 @@ struct FlowRunner::Impl {
             // 建会话（真实 TD 启动失败 -> 这里接管成 error，不让异常逃出线程）
             std::unique_ptr<FlowSession> session;
             try {
+                // ⚠ 会话 cwd 必须是 **`.al` 所在目录**，不是本 run 的日志目录（`dir` 在
+                //   %TEMP% 的 flow_root 下）。TD 用 cwd 解析 `.al` 里的相对源文件路径：
+                //   工程被移动过（`.al` 的 `<Project Path>` 指向旧位置）时 cwd 就是唯一的
+                //   工程根线索，落在 %TEMP% 会直接报 HDL-8007 cannot open Verilog file。
+                //   run 日志仍写 `dir`（由 SetRunDir/RunDirOf 管理），两者互不影响。
+                const std::string session_dir =
+                    owner->project_.dir.empty() ? dir : owner->project_.dir;
                 if (owner->options_.session_factory) {
-                    session = owner->options_.session_factory(dir);
+                    session = owner->options_.session_factory(session_dir);
                 } else {
-                    session = std::make_unique<TdFlowSession>(owner->td_, dir);
+                    session = std::make_unique<TdFlowSession>(owner->td_, session_dir);
                 }
             } catch (const std::exception& exc) {
                 FinishError(std::string("cannot start TD: ") + exc.what());

@@ -1,11 +1,11 @@
-# 交付状态（当前：2026-11-22，扩展 0.28.0）
+# 交付状态（当前：2026-11-22，扩展 0.28.1）
 
 ## 构建与测试
 
 | 项目 | 数据 |
 | --- | --- |
 | **全新目录干净构建** | configure 29 s → build 3.3 min → **844 个目标全部成功**（Release + 全量 LTO）；无 LTO 的 `windows-msvc-dev` 全新目录 **56 s**（2026-11-20 实测；增量构建见 build.md） |
-| **`ctest` 全量** | **72/72 通过**（其中 `unit` 46、`e2e` 5、`td` 5，其余为 `formatgate`/`lintgate`/`gate`/`generator`/`mcp`/`docs`/`parity` 门禁）；preset 默认 **8 路并行**，实测约 **75 s**（串行 92–104 s） |
+| **`ctest` 全量** | **71/71 通过**（`docs_clang_tidy` 默认不注册，需 `-DFPGA_LSP_ENABLE_TIDY_GATE=ON`）（其中 `unit` 46、`e2e` 5、`td` 5，其余为 `formatgate`/`lintgate`/`gate`/`generator`/`mcp`/`docs`/`parity` 门禁）；preset 默认 **8 路并行**，实测约 **75 s**（串行 92–104 s） |
 | **原生产物** | `build/bin/fpgalsp-native.exe`（0.26.0，**7043584 B**，全量 LTCG；SHA256 `CB484B7D…891E86`） |
 | **单元测试规模** | 46 个 gtest target |
 
@@ -1753,3 +1753,41 @@ PASS（132 文件/45 调用点）。
 **验证**：`ctest` release **72/72**（含 `docs_clang_tidy`，基线 281→**142**）；插件 **63/63**；
 真实 VS Code 套件 **PASS**；e2e LSP 冒烟 **PASS**；真机 `didSave` 后 `.fpgalsp` 不出现；
 `check_tcl_invariant`/`check_raw_file_writes`/`check_project_state_paths` 全 PASS。
+
+---
+
+## 第四十一轮（2026-11-22，0.28.1）：Update Project 在"移动过的工程"上必失败（真机 %WORKSPACE%\CorpusBeta）
+
+**症状**：`FPGA: Update Project` 在 `%WORKSPACE%\CorpusBeta` 上必失败，`output` 里是一串
+`HDL-8007 ERROR: cannot open Verilog file '/src/ADC.v'`，末尾却是
+`PRJ-1401 : Successfully analyzed 52 source files.`。
+
+**根因**：TD 解析 `.al` 里的相对源文件路径（`<File Path="src/ADC.v">`）时用的"工程根"是
+`.al` 根节点的 `<Project Path="...">` 属性；该属性失效（工程被移动/拷贝过）时**退化成进程 cwd**。
+我们的 TD 会话 cwd 是 `%TEMP%/fpgalsp/<prj>-<hash>/run`，于是所有相对路径都落到临时目录 →
+`'/src/ADC.v'` 找不到。实测矩阵（`build/_audit/rt/mb210_update_probe.py`）：
+cwd=%TEMP% 10 条 HDL-8007；cwd=工程目录 **0 条**；cwd=%TEMP% + 改写 Path 属性 **0 条**。
+
+**修法**（3 处 TD 会话 cwd 统一成 `.al` 所在目录，与 TD GUI 一致）：
+- `analysis::UpdateProject`（用户报的命令）：cwd = `project.dir`，`log_dir` = `<al>/log`；
+- `td_service::TdSessionRunner`（LSP 保存触发的 TD 检查）：同上；
+- `flow_runner` 的 TD 会话：cwd = `project.dir`（run 日志目录不变，仍在状态目录）。
+  这同时修掉"移动过的工程跑 flow 会整片 HDL-8007"的同类问题（实测 CorpusBeta 副本单步
+  `read_design`：run.log 0 条 HDL-8007、36 个源文件、marker 3 s 内出现）。
+TD 自己的 `td_*.log/.logw`、`minidump-*.dmp` 仍由 `TdSession` 归位到 `<al>/log/`，工程根目录不留痕。
+
+**新增可操作 warning**：`.al` 记录的 `Path` 与实际目录不一致时，`updateProject` 在 `ok:true` 的
+同时返回 `warning`（插件弹 "Update Project completed with a warning: …" 并提供 Show Logs），
+提示"在 TD GUI 里打开并保存一次即可重新记录该路径"。
+
+**顺带修**：clang-tidy 棘轮门禁的"行号漂移"匹配现在会归一化**消息里内嵌的** `:line:col`
+（`bugprone-exception-escape` 把 lambda 位置写进消息，纯漂移会一直被当成新问题）。
+
+**验证**：真机 `%WORKSPACE%\CorpusBeta`：`fpga_project_update` **ok:true**、HDL-8007 **0**、
+收到 warning；`ctest` **72/72**（含门禁，基线 142）；插件 **64/64**（新增 warning 用例）；
+`td.diagnostics` 集成用例改为断言"cwd = 工程目录 + 工程根无 TD 日志"；`%WORKSPACE%\CorpusBeta` 根目录无
+残留（`log/` 收 TD 日志、无 `.fpgalsp`）。
+
+> 2026-11-22 调整：clang-tidy 棘轮门禁（`docs_clang_tidy`，约 +145 s）**默认不再进 CTest**，
+> 由 `-DFPGA_LSP_ENABLE_TIDY_GATE=ON` 显式注册（或直接跑 `tools/audit/clang_tidy_gate.py`）。
+> 因此默认 `ctest` 回到 **71/71**；需要静态分析回归时按 `doc/quality.md` 的命令打开。

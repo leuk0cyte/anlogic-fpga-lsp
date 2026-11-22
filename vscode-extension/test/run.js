@@ -2253,16 +2253,18 @@ function fakeUpdateProjectDeps(result) {
     const lines = [];
     const errors = [];
     const info = [];
+    const warnings = [];
     const deps = {
         execute: async () => result,
         project: 'demo',
         appendLine: (line) => lines.push(line),
         showErrorMessage: async (message, ...items) => { errors.push({ message, items }); return undefined; },
         showInformationMessage: async (message) => { info.push(message); },
+        showWarningMessage: async (message, ...items) => { warnings.push({ message, items }); return undefined; },
         refresh: async () => { deps.refreshed += 1; },
         refreshed: 0,
     };
-    return { deps, lines, errors, info };
+    return { deps, lines, errors, info, warnings };
 }
 
 test('update project: failure logs command/project/result and shows the backend reason', async () => {
@@ -2325,6 +2327,33 @@ test('update project: success logs the project and .al', async () => {
     includes(lines[0], 'al=Y:/p/demo.al');
     includes(info[0], 'open_project -update completed');
     eq(deps.refreshed, 1, 'trees refresh after success');
+});
+
+// A moved/copied project keeps a stale `<Project Path="...">` inside the .al. Update Project now
+// succeeds anyway (the TD session cwd is the .al folder) but must tell the user, because the
+// recorded path is what the TD GUI would otherwise use.
+test('update project: success with a project Path warning logs and warns', async () => {
+    const warning = 'the .al records project Path="C:/old/CorpusBeta" but the project now lives at ' +
+        '"%WORKSPACE%/CorpusBeta"; relative source paths were resolved against the project folder';
+    const { deps, lines, errors, info, warnings } = fakeUpdateProjectDeps({
+        ok: true,
+        al: '%WORKSPACE%/CorpusBeta/CorpusBeta_Anlogic.al',
+        warning,
+    });
+    const outcome = await runUpdateProject(deps);
+    eq(outcome.ok, true, 'a warning is still a success');
+    eq(outcome.warning, warning, 'warning is returned to the caller');
+    eq(errors.length, 0, 'no error message');
+    eq(info.length, 0, 'no "completed" info message when there is a warning');
+    eq(warnings.length, 1, 'exactly one warning message');
+    includes(warnings[0].message, 'Update Project completed with a warning:');
+    includes(warnings[0].message, 'Path="C:/old/CorpusBeta"');
+    includes(warnings[0].items.join(','), 'Show Logs');
+    eq(lines.length, 2, 'ok line + warning line');
+    includes(lines[0], '[updateProject] ok');
+    includes(lines[1], '[updateProject] WARNING');
+    includes(lines[1], 'command=fpgalsp.updateProject');
+    includes(lines[1], 'warning=');
 });
 
 test('update project: command wiring writes the failure to the FPGA LSP output channel', async () => {

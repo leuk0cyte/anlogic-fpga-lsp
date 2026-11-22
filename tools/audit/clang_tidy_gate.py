@@ -74,6 +74,14 @@ DIAG_RE = re.compile(
 COMPILE_ERROR_RE = re.compile(
     r"^(?P<file>.+?):(?P<line>\d+):(?P<col>\d+): error: (?P<msg>.*)$"
 )
+# "行号漂移"匹配用：消息里内嵌的位置（有的 check 把 lambda 位置写进消息，
+# 例如 bugprone-exception-escape 的 "in function '(lambda at X.cpp:1859:33)'"）
+# 一挪行号消息就变；归一化后再比，避免纯漂移被当成新问题。
+LOCATION_IN_MSG_RE = re.compile(r":\d+:\d+")
+
+
+def msg_signature(message: str) -> str:
+    return LOCATION_IN_MSG_RE.sub(":L:C", message)
 # 只认 "N errors generated"；"N warnings generated" 是 clang 前端在**有编译告警**时的
 # 正常收尾行，把它当分析失败会误判（run_clang_tidy.py 也只用 errors 版本）。
 ERRORS_GENERATED_RE = re.compile(r"^\d+ errors? generated\.?$", re.M)
@@ -488,11 +496,14 @@ def main(argv: list[str] | None = None) -> int:
     baseline = load_baseline(baseline_path)
     baseline_entries = baseline.get("entries", [])
     baseline_keys = {entry_key(entry) for entry in baseline_entries}
-    # (file, check, msg) → 基线行号，用于"行号漂移"提示
+    # (file, check, msg) → 基线行号，用于"行号漂移"提示。
+    # ⚠ 有些 check 把位置写进**消息**里（例如 bugprone-exception-escape 的
+    #   "in function '(lambda at X.cpp:1859:33)'"）：行一挪消息就变，若按原文比对，
+    #   "纯行号漂移"会一直显示成新问题。这里把消息里内嵌的 `:line:col` 归一化后再比。
     baseline_msg_lines: dict[tuple[str, str, str], int] = {}
     for entry in baseline_entries:
         baseline_msg_lines.setdefault(
-            (entry_key(entry)[0], entry_key(entry)[2], str(entry.get("msg", ""))),
+            (entry_key(entry)[0], entry_key(entry)[2], msg_signature(str(entry.get("msg", "")))),
             int(entry["line"]),
         )
     baseline_missing = not baseline_path.is_file()
@@ -505,7 +516,9 @@ def main(argv: list[str] | None = None) -> int:
         remaining = []
         for key in new_keys:
             diag = current[key]
-            old_line = baseline_msg_lines.get((diag["file"], diag["check"], diag["msg"]))
+            old_line = baseline_msg_lines.get(
+                (diag["file"], diag["check"], msg_signature(diag["msg"]))
+            )
             if old_line is not None and old_line != diag["line"]:
                 moved.append((key, old_line))
             else:
@@ -563,7 +576,9 @@ def main(argv: list[str] | None = None) -> int:
             diag = current[key]
             print(f"  {diag['file']}:{diag['line']}:{diag['col']}  [{diag['check']}]")
             print(f"      {diag['msg']}")
-            old_line = baseline_msg_lines.get((diag["file"], diag["check"], diag["msg"]))
+            old_line = baseline_msg_lines.get(
+                (diag["file"], diag["check"], msg_signature(diag["msg"]))
+            )
             if old_line is not None and old_line != diag["line"]:
                 print(f"      （注：基线与该条同 check 同消息在 L{old_line}，疑似行号漂移）")
         print("")

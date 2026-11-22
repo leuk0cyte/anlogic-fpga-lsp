@@ -1,6 +1,6 @@
 {
  "schema": 1,
- "generated": "2026-11-22T21:42:42+0800",
+ "generated": "2026-11-22T22:35:59+0800",
  "tool": "LLVM 23.1.5",
  "config": ".clang-tidy",
  "config_sha1": "d86d7a7e8828850aa915ed1dde75ffc07892a838",
@@ -350,7 +350,7 @@
   },
   {
    "file": "src/flow/flow_runner.cpp",
-   "line": 1583,
+   "line": 1590,
    "col": 23,
    "check": "bugprone-empty-catch",
    "sev": "warning",
@@ -358,7 +358,7 @@
   },
   {
    "file": "src/flow/flow_runner.cpp",
-   "line": 1685,
+   "line": 1692,
    "col": 10,
    "check": "bugprone-exception-escape",
    "sev": "warning",
@@ -366,7 +366,7 @@
   },
   {
    "file": "src/flow/flow_runner.cpp",
-   "line": 1706,
+   "line": 1713,
    "col": 15,
    "check": "bugprone-empty-catch",
    "sev": "warning",
@@ -374,7 +374,7 @@
   },
   {
    "file": "src/flow/flow_runner.cpp",
-   "line": 1717,
+   "line": 1724,
    "col": 11,
    "check": "bugprone-empty-catch",
    "sev": "warning",
@@ -382,15 +382,15 @@
   },
   {
    "file": "src/flow/flow_runner.cpp",
-   "line": 1852,
+   "line": 1859,
    "col": 33,
    "check": "bugprone-exception-escape",
    "sev": "warning",
-   "msg": "an exception may be thrown in function '(lambda at Y:\\fpga-lsp-cpp\\src\\flow\\flow_runner.cpp:1852:33)' which should not throw exceptions"
+   "msg": "an exception may be thrown in function '(lambda at Y:\\fpga-lsp-cpp\\src\\flow\\flow_runner.cpp:1859:33)' which should not throw exceptions"
   },
   {
    "file": "src/flow/flow_runner.cpp",
-   "line": 1866,
+   "line": 1873,
    "col": 15,
    "check": "bugprone-empty-catch",
    "sev": "warning",
@@ -398,7 +398,7 @@
   },
   {
    "file": "src/flow/flow_runner.cpp",
-   "line": 1871,
+   "line": 1878,
    "col": 15,
    "check": "bugprone-empty-catch",
    "sev": "warning",

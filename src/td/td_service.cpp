@@ -20,13 +20,20 @@ TdSessionRunner::TdSessionRunner(TdChoice td, TdSessionOptions options, bool use
 TdCheckResult TdSessionRunner::Run(const project::Project& project, const CancelToken& cancel) {
     TdCheckResult result;
 
-    // 会话 cwd 用**状态目录**（`%TEMP%\fpgalsp\<工程名>-<hash8>\run`）。
-    // ⚠ 这里曾经硬编码 `<project>/.fpgalsp/run`：每次 LSP 保存触发 TD 检查都会在工程根
-    //   重新长出 `.fpgalsp`（2026-11-22 实测复现：删掉后一次 didSave 立刻重建 `run/`）。
-    //   工程目录里的 `.fpgalsp` 已废弃（Wave 3），状态一律走 platform::state_dir()。
+    // 会话 cwd = **`.al` 所在目录**（与 TD GUI 一致）。
+    // ⚠ 这里是两次踩坑的交汇点，改之前先看完：
+    //   1) 不能是 `<project>/.fpgalsp/run`：那样每次 LSP 保存触发 TD 检查都会在工程根
+    //      重新长出 `.fpgalsp`（2026-11-22 实测复现；工程内 `.fpgalsp` 已废弃，Wave 3）。
+    //   2) 也不能是 %TEMP% 状态目录：TD 解析 `.al` 里的**相对路径**（`<File Path="src/x.v">`）
+    //      用的是"工程根" = `.al` 的 `<Project Path="...">`（存在时）或**进程 cwd**（Path
+    //      失效时）。工程被移动过（实测 %WORKSPACE%\CorpusBeta 的 Path 还指着 C:/work/...）就退化到
+    //      cwd，cwd 在 %TEMP% 下会变成 `cannot open Verilog file '/src/ADC.v'`（HDL-8007）。
+    //      GUI 的会话 cwd 就是工程目录，这里对齐。
+    // TD 自己的 `td_*.log` 会被 RelocateSessionFiles 归位到 `<al>/log/`，工程根目录不留痕。
     TdSessionOptions options = options_;
     if (use_project_work_dir_ && !project.dir.empty()) {
-        options.work_dir = platform::path_join(platform::state_dir(project.dir), "run");
+        options.work_dir = project.dir;
+        if (options.log_dir.empty()) options.log_dir = platform::path_join(project.dir, "log");
     }
 
     // 会话启动（CreateProcessW + 读横幅）单独计时：它是"预热"唯一能省掉的一段。

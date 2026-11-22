@@ -51,6 +51,7 @@ async function runUpdateProject(deps) {
     const appendLine = deps.appendLine || (() => undefined);
     const showInformationMessage = deps.showInformationMessage || (() => Promise.resolve(undefined));
     const showErrorMessage = deps.showErrorMessage || (() => Promise.resolve(undefined));
+    const showWarningMessage = deps.showWarningMessage || (() => Promise.resolve(undefined));
     const onShowLogs = deps.onShowLogs;
     const project = deps.project || 'unknown project';
 
@@ -75,6 +76,18 @@ async function runUpdateProject(deps) {
 
     appendLine(`${OUTPUT_PREFIX} ok command=${COMMAND_ID} project=${project} ` +
         `al=${result.al || '(not reported)'}`);
+    // The backend can succeed while the `.al` still records a stale `<Project Path="...">`
+    // (the project folder was moved or copied). Update Project is fine because the TD session
+    // cwd is the .al folder, but the user should know: opening the project once in the TD GUI
+    // re-records that path. Measured on %WORKSPACE%\CorpusBeta (Path="C:/work/CorpusBeta/...").
+    if (typeof result.warning === 'string' && result.warning.trim()) {
+        const warning = result.warning.trim();
+        appendLine(`${OUTPUT_PREFIX} WARNING command=${COMMAND_ID} project=${project} warning=${warning}`);
+        const choice = await showWarningMessage(`Update Project completed with a warning: ${warning}`, 'Show Logs');
+        if (choice === 'Show Logs' && onShowLogs) await onShowLogs();
+        if (deps.refresh) await deps.refresh();
+        return { ok: true, warning };
+    }
     await showInformationMessage('FPGA: open_project -update completed (.al is in sync with disk)');
     if (deps.refresh) await deps.refresh();
     return { ok: true };

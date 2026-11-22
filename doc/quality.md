@@ -7,7 +7,7 @@
 | `run_audit.ps1` | 全流程：vcvars 自举 → 编译数据库新鲜度校验 → clang-tidy → MSVC `/analyze` → 汇总 |
 | `make_clang_db.py` | cl.exe 命令行 → clang 可消费的编译数据库；`--verify <TU>` 做单 TU 语法检查 |
 | `run_clang_tidy.py` | 逐 TU 跑 clang-tidy；`FPGA_LSP_AUDIT_DIR` 可指定输出目录；`--checks=-*,performance-*` 只跑某一维度（注意 `-*,` 前缀，否则会叠加默认集） |
-| `clang_tidy_gate.py` | **clang-tidy 棘轮门禁**（CTest `docs_clang_tidy` / `ctest -L tidy`，退出码 0/1）：根 `.clang-tidy` 的缺陷优先 check 集 + `clang_tidy_baseline.json` 基线比对——**基线外新诊断即失败**，基线项消失只提示收紧；`--only/--jobs/--timeout` 可调。`--update-baseline` 重写基线，**只能人工确认后使用**（见下节纪律）。必须经 `with_vcvars.cmd` 运行 |
+| `clang_tidy_gate.py` | **clang-tidy 棘轮门禁**（CTest `docs_clang_tidy`，**默认不注册**：需 `-DFPGA_LSP_ENABLE_TIDY_GATE=ON`；退出码 0/1）：根 `.clang-tidy` 的缺陷优先 check 集 + `clang_tidy_baseline.json` 基线比对——**基线外新诊断即失败**，基线项消失只提示收紧；`--only/--jobs/--timeout` 可调。`--update-baseline` 重写基线，**只能人工确认后使用**（见下节纪律）。必须经 `with_vcvars.cmd` 运行 |
 | `run_msvc_analyze.ps1` | MSVC `/analyze`（含 analyzer control 自检段，证明分析器真的生效） |
 | `summarize.py` | 去重口径聚合、模块密度、字面量感知的函数长度分布 |
 | `check_tcl_invariant.py` | **Tcl 拼装不变量守卫**：禁止把不可信值裸拼进 `Run(...)` |
@@ -15,10 +15,23 @@
 ```powershell
 pwsh -File tools\audit\run_audit.ps1 -Jobs 16        # 全流程
 python tools\audit\check_tcl_invariant.py            # 只跑不变量守卫（适合 CI）
-ctest -L tidy                                        # clang-tidy 棘轮门禁
+cmake --preset windows-msvc-dev -DFPGA_LSP_ENABLE_TIDY_GATE=ON   # 先注册（默认关闭）
+ctest -L tidy                                        # clang-tidy 棘轮门禁（~145 s）
 ```
 
-### clang-tidy 棘轮门禁（`ctest -L tidy`）
+### clang-tidy 棘轮门禁（`ctest -L tidy`，**默认关闭**）
+
+> ⚠ **默认不进 `ctest`**：逐 TU 跑 clang-tidy 要 ~145 s，放在日常回归里太慢。
+> 需要时显式打开（默认全量 `ctest` 仍是 71 项、~90 s）：
+>
+> ```powershell
+> cmake --preset windows-msvc-dev -DFPGA_LSP_ENABLE_TIDY_GATE=ON   # 注册 docs_clang_tidy
+> ctest --preset windows-msvc-dev -L tidy
+> # 或者不碰 CTest，直接跑脚本（脚本会自己经 with_vcvars 自举 MSVC 环境）：
+> cmd /c tools\audit\with_vcvars.cmd python tools\audit\clang_tidy_gate.py
+> ```
+>
+> `FPGA_LSP_ENABLE_TIDY_GATE` 在顶层 `CMakeLists.txt` 里定义，默认 `OFF`。
 
 **为什么是棘轮而不是零告警**：审计口径的全量 check 集在本仓库是 1.1 万条诊断量级，
 那种规模只能出报告、不能当门禁（永远红 = 训练人去关掉它）。门禁要回答的是

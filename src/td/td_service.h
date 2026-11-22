@@ -64,10 +64,11 @@ public:
 class TdSessionRunner final : public TdCheckRunner {
 public:
     // use_project_work_dir:
-    //   true （默认）：cwd = platform::state_dir(project.dir)/run（系统临时目录，不写工程目录）；
-    //        TD 自己的日志留在工程里，排障时跟工程一起打包；
+    //   true （默认）：cwd = **`.al` 所在目录**（与 TD GUI 一致）。TD 用 cwd 解析 `.al` 里的
+    //        相对路径，cwd 落在 %TEMP% 会让被移动过的工程报 HDL-8007；会话日志由
+    //        TdSession 归位到 `<al>/log/`，工程根目录不留痕；
     //   false：cwd 用 TdSessionOptions 的值；留空则走 B7/D-3 的 %TEMP% scratch，
-    //        完全不碰用户工程（A5-REPORT 建议的默认值）。
+    //        完全不碰用户工程。
     TdSessionRunner(TdChoice td, TdSessionOptions options = {}, bool use_project_work_dir = true);
 
     TdCheckResult Run(const project::Project& project, const CancelToken& cancel) override;

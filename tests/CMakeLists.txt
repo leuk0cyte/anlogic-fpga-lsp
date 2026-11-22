@@ -456,7 +456,7 @@ endif()
 #    批处理的 %* 会原样转发参数；CMake 只在含空格时才给参数加引号，本机仓库路径
 #    无空格（Y:\fpga-lsp-cpp），所以最终命令行是不带引号的 `cmd /c Y:/.../with_vcvars.cmd ...`
 #    —— 已实测可用（`cmd /c "prog args"` 的引号剥除规则反而容易吃掉参数）。
-if(EXISTS "${CMAKE_SOURCE_DIR}/tools/audit/clang_tidy_gate.py")
+if(FPGA_LSP_ENABLE_TIDY_GATE AND EXISTS "${CMAKE_SOURCE_DIR}/tools/audit/clang_tidy_gate.py")
     find_package(Python3 COMPONENTS Interpreter QUIET)
     if(NOT Python3_Interpreter_FOUND)
         message(STATUS "clang-tidy 门禁: 未找到 Python3 解释器，跳过注册 docs_clang_tidy")

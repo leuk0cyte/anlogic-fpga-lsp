@@ -384,6 +384,28 @@ std::string CdcUnsupportedReason(std::string_view device) {
     return "Device (" + std::string(device) + ") does not support check_cdc reports";
 }
 
+// .al 根节点的 `Path` 属性 —— TD 拿它当**工程根**解析 `<File Path="src/x.v">` 这类相对路径。
+// 工程被移动/拷贝过之后它还指着旧位置（实测 %WORKSPACE%\CorpusBeta：Path="C:/work/..."），TD 于是退回
+// 进程 cwd（我们已经把 cwd 设成 `.al` 所在目录，所以能跑通），但用户排障需要知道这件事。
+// 读不到就返回空串（never-throw）。
+std::string ProjectPathAttribute(const std::string& al_path) {
+    const auto read = platform::read_file_utf8(al_path);
+    if (!read.ok) return {};
+    const std::string& text = read.content;
+    const auto open = text.find("<Project ");
+    if (open == std::string::npos) return {};
+    const auto close = text.find('>', open);
+    if (close == std::string::npos) return {};
+    const std::string_view head(text.data() + open, close - open);
+    constexpr std::string_view kKey = " Path=\"";
+    const auto pos = head.find(kKey);
+    if (pos == std::string_view::npos) return {};
+    const auto begin = pos + kKey.size();
+    const auto quote = head.find('"', begin);
+    if (quote == std::string_view::npos) return {};
+    return std::string(head.substr(begin, quote - begin));
+}
+
 bool CdcUnsupportedByDevice(std::string_view output) {
     return output.contains("does not support");
 }
@@ -572,9 +594,18 @@ Json UpdateProject(const project::Project& project, std::string_view td_explicit
             failed["error"] = "No TangDynasty installation found";
             return failed;
         }
-        // Python 用的是服务器常驻会话，其 cwd = <project>/.fpgalsp/run（server.py:_run_dir）
+        // ⚠ 会话 cwd 必须是 **`.al` 所在目录**，不能是 %TEMP%。
+        //   TD 解析 `<File Path="src/xxx.v">` 这类相对路径时用的是"工程根"，而工程根要么是
+        //   .al 根节点 `<Project Path="...">` 属性（存在时），要么退化成**进程 cwd**。
+        //   工程被移动/拷贝过之后 Path 属性还指着旧位置（实测 %WORKSPACE%\CorpusBeta：
+        //   Path="%WORKSPACE%/CorpusBeta"），TD 于是拿 cwd 当工程根 ——
+        //   cwd 在 %TEMP% 下就变成了 `cannot open Verilog file '/src/ADC.v'`（HDL-8007），
+        //   Update Project 每次都失败。GUI 的会话 cwd 就是工程目录，这里保持一致。
         td::TdSessionOptions options;
-        options.work_dir = platform::path_join(platform::state_dir(project.dir), "run");
+        options.work_dir = project.dir;
+        // TD 把 `td_<时间戳>.log/.logw`、`minidump-*.dmp` 写进 cwd；GUI 自己把它们放在
+        // `<al>/log/`，这里会话结束时做同样的归位，工程根目录保持干净。
+        if (!project.dir.empty()) options.log_dir = platform::path_join(project.dir, "log");
         td::TdSession session(*choice, options);
 
         std::string output = session.Run("check_project_version -file " + td::TclQuoteGrouped(al),
@@ -594,6 +625,22 @@ Json UpdateProject(const project::Project& project, std::string_view td_explicit
         result["ok"] = !td::HasFatal(output);
         result["al"] = al;
         result["output"] = TailLines(output, 30);
+        // 工程被移动过：`.al` 里记录的 Path 与实际目录不一致。Update Project 仍会成功
+        //（会话 cwd 就是 `.al` 所在目录，TD 的相对路径按它解析），但那条属性一旦被
+        // TD GUI 之外的路径使用就会踩同名坑 HDL-8007 —— 给用户一条可操作的 warning。
+        if (!project.dir.empty()) {
+            const std::string recorded = ProjectPathAttribute(project.al_path);
+            const std::string want = platform::normalize_path(project.dir);
+            const std::string have = platform::normalize_path(recorded);
+            if (!recorded.empty() && !have.empty() && have != want) {
+                result["warning"] =
+                    "the .al records project Path=\"" + recorded + "\" but the project now lives at \"" +
+                    want +
+                    "\"; relative source paths were resolved against the project folder. "
+                    "Open and save the project once in the TD GUI to re-record that path";
+                log_message("updateProject: project Path mismatch: " + recorded + " != " + want);
+            }
+        }
         if (!result["ok"].get<bool>()) {
             // 失败必须带可读原因（插件把它显示给用户、MCP 工具把它回给 agent）。
             const std::string reason = FirstError(output);
