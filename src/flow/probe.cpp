@@ -2814,7 +2814,12 @@ jsonrpc::Json Status(const project::Project& project) {
             bit_has_watcher = true;
         }
         out["bit_has_watcher"] = bit_has_watcher;
-        if (bit_has_watcher && out.value("present", false) == false) {
+        // ⚠ 判据必须看**这份 project 自己的** cwc（cwc.ok），不能看 out 里有没有 "present"：
+        //   `present` 只出现在 out["watcher"] 子对象里，`out.value("present")` 永远是 false，
+        //   于是 note 在每个"位流里有 watcher"的工程上都会报 —— 包括 GUI 已经正常写出
+        //   phy_1/cw/compiled.cwc、capture 就绪（ready:true）的情况（2026-11-22 实测
+        //   corpus_delta：ready:true 的同时还在说 "TD wrote no compiled.cwc"）。
+        if (bit_has_watcher && !cwc.ok) {
             out["note"] =
                 "the watcher IS embedded in the bitstream (phy_1/<prj>_inst.bid has U_cwc_ram), "
                 "but TD wrote no compiled.cwc for this build. Multi-clock designs get one watcher "
@@ -3765,7 +3770,13 @@ jsonrpc::Json Capture(const td::TdChoice& td, const project::Project& project,
         if (effective.trigger.Any()) {
             const std::string patched = PatchTrigger(ReadText(cwc_path),
                                                      effective.trigger);
-            const std::string target = effective.cwd + "/trigger_" + Timestamp() + ".cwc";
+            // 改过触发条件的临时 cwc **不放工程目录**（用户要求：插件不像 TD GUI 那样
+            // 往工程里留额外产物）。TD 的 config_chipwatcher 收绝对路径，放 state dir
+            // 一样能用；工程里只保留 capture 的 CSV（那是采集产物本身，用户要看）。
+            const std::string trigger_dir =
+                fpgalsp::platform::state_dir(project.dir) + "/probe";
+            (void)fpgalsp::platform::ensure_directory(trigger_dir);
+            const std::string target = trigger_dir + "/trigger_" + Timestamp() + ".cwc";
             if (fpgalsp::platform::write_file_utf8(target, patched)) {
                 cwc_path2 = target;
                 out["trigger_cwc"] = target;

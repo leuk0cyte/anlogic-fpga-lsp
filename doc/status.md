@@ -1099,3 +1099,70 @@ probe_capture{instance:cwc1}        -> cwc_path=<state>/probe/cwc_auto_created_c
 4. 位流回退：sidecar `cw/compiled.bit` 缺失时直接用 `phy_1/<prj>.bit`（批量流程常不写 sidecar）。
 
 `ctest` 64/64、插件 44/44。
+
+### 第二十七轮：真实板子上抓通（corpus_delta / PH1A100）
+
+用户在 TD GUI 里重跑 flow 并 ChipWatcher 抓取成功之后，用同一个工程的同一份产物
+验证**我们自己的** capture 链路（`%WORKSPACE%\CorpusDelta`，`corpus_delta.al`，
+PH1A100SFG676，48 根探针 = `pwm_reg0_i/pwm_reg1_i/pwm_reg6_i` 三个 16 位总线，
+单时钟域 `reg_init/clk`）。
+
+**1. GUI 抓取留下的产物（这是 capture 能否跑起来的关键）**
+
+GUI 会话 `log/td_2026-11-22_11-01-30.log` 末尾是 `connect_cable -allink`，
+随之 `phy_1/cw/compiled.cwc`（59076 B）与 `phy_1/cw/compiled.data`（6035 B）
+在 11:10:57 一起出现 —— 即 **sidecar 是 TD 在 ChipWatcher 上硬件时才写的**，
+批量 flow（`launch_runs`）从头到尾都不写它。同目录 `compiled.cwc` 头部带
+`<!-- HMAC is: ... -->`：TD 会给 cwc 签名，这正是"自己拼的 cwc 一定对不上"
+（KIT-8445 / Chipwatcher code 不一致）的根因。`compiled.data` 是 XML
+`<cwc_data>`，只有总线名/颜色/order 与空 `trigger_config`，不是采样数据。
+
+**2. 我们后端在真实硬件上抓通（3/3 次）**
+
+```
+probe_status{}      -> ready:true, present:true, instance auto_created_cwc1,
+                       clock reg_init/clk, depth 1024, 48 net / 3 bus, stale:false
+capture{confirm}    -> ok, 3.8 s, downloaded:false, samples:1024, trigger_index:127
+capture{trigger_position:512}
+                    -> ok, 3.7 s, trigger_index:512（运行期改触发位置生效）
+capture{trigger_now:false, bus_op:"equal", trigger_enabled:true,
+        buses:[{name:"WHG/pwm_reg0_i",op:"equal",value:"0000..."}]}
+                    -> ok, trigger_mode:"condition", trigger_index:127
+```
+
+三次都**没有重新下载**（器件里跑的就是 GUI 灌进去的那份带探针位流），CSV 落在
+`phy_1/cw/capture_20261122_1114xx.csv`（1025 行 = 表头 + 1024 采样）。
+之前那轮 `wait_on_hw_cw` 挂死/会话退出的现象在这台板子上没有复现 —— 当时是
+EF2L45 的位流 + PH1A100 的板子，硬件与位流本来就不是一对。
+
+采样值全是 0（`summary.distinct = 1`）：`pwm_reg0_i` 来自 `bus_reg reg_init`
+（`WHG.v:892`，时钟 `clk`、复位 `reset_n_i`），寄存器文件没被总线写过、复位没释放，
+数据就是 0 —— 这是"板子空转"，不是抓错位：触发行精确落在 position 指定的位置，
+说明 cwc 与位流里的 watcher 几何一致。
+
+**3. 批量流程能不能自己写 sidecar？实测不能（死路，记录免得再踩）**
+
+复刻 GUI 的顺序跑批处理：
+
+```
+import_device ph1_100.db -package PH1A100SFG676
+open_project {corpus_delta.al} -single_run
+import_db {.../phy_1/corpus_delta_pr.db}     -> Import ChipWatcher / Import design success
+config_chipwatcher                                -> TD 在 "start command" 之后就没了（静默退出，无 minidump）
+```
+
+`config_chipwatcher` 不带文件参数时，CLI 会话不是"静默空操作"而是**进程直接退出**，
+所以 sidecar 只能来自 GUI（或 `apply_build_config` 写完整 `chip_debugger/user.cfg`，
+让 TD 在 phy 阶段自己写）。这也解释了为什么在纯 CLI 跑完 flow 的工程上，
+`probe_capture` 要么靠 `<state>/probe` 里历史 cwc，要么得 `generate_cwc`（未验签）。
+
+**4. 本轮修掉的两个小问题**
+
+- `probe_status` 的 `note` 误报：判据写成了 `out.value("present", false)`，而 `present`
+  只在 `out["watcher"]` 子对象里 —— 于是"位流里有 watcher"的工程**永远**会收到
+  "TD wrote no compiled.cwc"，哪怕 `ready:true`、cwc 就在那儿。改成看本工程的 `cwc.ok`。
+- 运行期改触发条件用的临时 cwc 原来写在工程目录（`<al>/trigger_<ts>.cwc`），
+  现在写到 `<state>/probe/trigger_<ts>.cwc` —— 插件不再往工程里留额外产物
+  （工程里只留 capture 的 CSV，那是采集产物本身）。
+
+`ctest` 64/64、插件 44/44。
