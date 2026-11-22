@@ -57,6 +57,8 @@
 // ToolError 文案一致。
 #if defined(FPGA_LSP_HAVE_VERIBLE_BRIDGE)
 #include "verible_bridge/format_text.h"
+#include "platform/text.h"
+#include <format>
 #endif
 
 namespace fpgalsp::mcp {
@@ -82,22 +84,29 @@ const char* SeverityName(int severity) {
 // std::filesystem 的 u8string() 在 C++20 返回 std::u8string；项目内部统一用 UTF-8 字节串
 std::string ToUtf8(const fs::path& path) {
     const std::u8string text = path.u8string();
-    return std::string(reinterpret_cast<const char*>(text.data()), text.size());
+    return {reinterpret_cast<const char*>(text.data()), text.size()};
+}
+
+// UTF-8 字节串 -> fs::path。
+// 注：用 char8_t 构造 path（C++20 的 `fs::u8path` 已弃用，继续用会引入 C4996），
+// 这是本文件所有路径构造的唯一入口（原来 11 处直接调 fs::u8path）。
+fs::path AsPath(const std::string& utf8) {
+    return {std::u8string(utf8.begin(), utf8.end())};
 }
 
 bool IsFile(const std::string& path) {
     std::error_code ec;
-    return fs::is_regular_file(fs::u8path(path), ec);
+    return fs::is_regular_file(AsPath(path), ec);
 }
 
 bool IsDirectory(const std::string& path) {
     std::error_code ec;
-    return fs::is_directory(fs::u8path(path), ec);
+    return fs::is_directory(AsPath(path), ec);
 }
 
 bool PathExists(const std::string& path) {
     std::error_code ec;
-    return fs::exists(fs::u8path(path), ec);
+    return fs::exists(AsPath(path), ec);
 }
 
 std::string ReadTextFile(const std::string& path) {
@@ -117,10 +126,10 @@ bool DryRunRequested(const Json& arguments) {
 // Python project.rel(path)：相对工程目录、正斜杠
 std::string RelativeTo(const std::string& path, const std::string& base) {
     std::error_code ec;
-    const fs::path relative = fs::relative(fs::u8path(path), fs::u8path(base), ec);
-    if (ec || relative.empty()) return std::string();
+    const fs::path relative = fs::relative(AsPath(path), AsPath(base), ec);
+    if (ec || relative.empty()) return {};
     std::string text = relative.generic_string();
-    if (text == ".") return std::string();
+    if (text == ".") return {};
     // Python os.path.relpath 会给出 ../ 形式；fs::relative 同语义
     return text;
 }
@@ -131,26 +140,26 @@ std::string BaseName(const std::string& path) { return path_filename(path); }
 std::vector<std::string> ListSubdirectories(const std::string& dir) {
     std::vector<std::string> names;
     std::error_code ec;
-    fs::directory_iterator it(fs::u8path(dir), ec);
+    fs::directory_iterator it(AsPath(dir), ec);
     if (ec) return names;
     for (const fs::directory_entry& entry : it) {
         if (!entry.is_directory(ec) || ec) continue;
         names.push_back(ToUtf8(entry.path().filename()));
     }
-    std::sort(names.begin(), names.end());
+    std::ranges::sort(names);
     return names;
 }
 
 std::vector<std::string> ListFiles(const std::string& dir) {
     std::vector<std::string> names;
     std::error_code ec;
-    fs::directory_iterator it(fs::u8path(dir), ec);
+    fs::directory_iterator it(AsPath(dir), ec);
     if (ec) return names;
     for (const fs::directory_entry& entry : it) {
         if (!entry.is_regular_file(ec) || ec) continue;
         names.push_back(ToUtf8(entry.path().filename()));
     }
-    std::sort(names.begin(), names.end());
+    std::ranges::sort(names);
     return names;
 }
 
@@ -165,24 +174,9 @@ int CountOccurrences(std::string_view haystack, std::string_view needle) {
     return count;
 }
 
-std::string LowerAscii(std::string_view text) {
-    std::string out(text);
-    for (char& c : out) {
-        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
-    }
-    return out;
-}
+using platform::LowerAscii;
 
-std::string Trim(std::string_view text) {
-    size_t begin = 0;
-    size_t end = text.size();
-    const auto is_space = [](char c) {
-        return c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\f' || c == '\v';
-    };
-    while (begin < end && is_space(text[begin])) ++begin;
-    while (end > begin && is_space(text[end - 1])) --end;
-    return std::string(text.substr(begin, end - begin));
-}
+using platform::Trim;
 
 std::vector<std::string> SplitLines(std::string_view text) {
     std::vector<std::string> lines;
@@ -215,11 +209,6 @@ std::vector<std::string> SplitLines(std::string_view text) {
 //      另有 5 s TTL 兜底"在已有子目录里新增 .al"（目录枚举本身 8 ms，不能每请求做）。
 
 // 取一个路径的 (mtime, size)；失败返回 false。
-// 注：用 char8_t 构造 path（C++20 的 u8path 已弃用），避免引入新的 C4996 告警。
-fs::path AsPath(const std::string& utf8) {
-    return fs::path(std::u8string(utf8.begin(), utf8.end()));
-}
-
 bool StatStamp(const std::string& path, std::int64_t* mtime_ns, std::uintmax_t* size) {
     std::error_code ec;
     const fs::path native = AsPath(path);
@@ -272,7 +261,7 @@ std::vector<std::string_view> SplitLineViews(std::string_view text) {
 // 前缀不匹配（跨盘 / 大小写异常）时回落到原来的 RelativeTo，语义不变。
 std::string FastRelativeTo(const std::string& path, const std::string& base) {
     if (!base.empty() && path.size() > base.size()) {
-        if (path.compare(0, base.size(), base) == 0 && (path[base.size()] == '/' || path[base.size()] == '\\')) {
+        if (path.starts_with(base) && (path[base.size()] == '/' || path[base.size()] == '\\')) {
             return path.substr(base.size() + 1);
         }
     }
@@ -324,7 +313,7 @@ class TextCache {
     std::shared_ptr<const std::string> Get(const std::string& path, std::uintmax_t size,
                                            std::int64_t mtime_ns) {
         {
-            std::lock_guard<std::mutex> lock(mutex_);
+            std::scoped_lock lock(mutex_);
             const auto it = entries_.find(path);
             if (it != entries_.end() && it->second.size == size &&
                 it->second.mtime_ns == mtime_ns) {
@@ -335,7 +324,7 @@ class TextCache {
         const platform::ReadFileResult read = platform::read_file_utf8(path);
         if (!read.ok) return nullptr;
         auto text = std::make_shared<const std::string>(read.content);
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::scoped_lock lock(mutex_);
         auto& entry = entries_[path];
         if (entry.text) {
             bytes_ -= entry.text->size();
@@ -353,11 +342,11 @@ class TextCache {
 
     // 仅测试/诊断用（不进协议）。
     std::size_t bytes() const {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::scoped_lock lock(mutex_);
         return bytes_;
     }
     std::size_t count() const {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::scoped_lock lock(mutex_);
         return entries_.size();
     }
 
@@ -401,8 +390,8 @@ struct ProjectListEntry {
     // W4-A：Bridge 构造函数默认工程发现直接复用这里的结果（原来每个连接都要
     // 重新 DiscoverProjects + 重新建工程对象，TCP attach 冷启动 = 8–16 ms/连接）。
     std::string chosen_al;
-    std::chrono::steady_clock::time_point refresh_after{};
-    std::chrono::steady_clock::time_point last_used{};
+    std::chrono::steady_clock::time_point refresh_after;
+    std::chrono::steady_clock::time_point last_used;
 };
 
 std::mutex g_project_list_mutex;
@@ -420,7 +409,7 @@ Json CachedProjectListEntries(const std::string& base) {
     const auto now = std::chrono::steady_clock::now();
 
     {
-        std::lock_guard<std::mutex> lock(g_project_list_mutex);
+        std::scoped_lock lock(g_project_list_mutex);
         const auto it = g_project_list_cache.find(key);
         if (it != g_project_list_cache.end()) {
             bool valid = now < it->second.refresh_after;
@@ -480,7 +469,7 @@ Json CachedProjectListEntries(const std::string& base) {
     (void)StatDirMtime(base, &base_mtime);
 
     {
-        std::lock_guard<std::mutex> lock(g_project_list_mutex);
+        std::scoped_lock lock(g_project_list_mutex);
         auto& slot = g_project_list_cache[key];
         slot.base_mtime = base_mtime;
         slot.als = std::move(als);
@@ -521,7 +510,7 @@ std::string CachedDefaultAl(const std::string& root) {
     (void)CachedProjectListEntries(root);  // 确保工程列表缓存已建立/已校验
     const std::string key = LowerAscii(normalize_path(root));
     {
-        std::lock_guard<std::mutex> lock(g_project_list_mutex);
+        std::scoped_lock lock(g_project_list_mutex);
         const auto it = g_project_list_cache.find(key);
         if (it != g_project_list_cache.end() && !it->second.chosen_al.empty()) {
             return it->second.chosen_al;
@@ -537,7 +526,7 @@ struct GlobalProjectEntry {
     std::uintmax_t size = 0;
     std::int64_t mtime_ns = 0;
     std::shared_ptr<const project::Project> project;
-    std::chrono::steady_clock::time_point last_used{};
+    std::chrono::steady_clock::time_point last_used;
 };
 
 std::mutex g_project_cache_mutex;
@@ -554,7 +543,7 @@ constexpr std::size_t kProjectCacheMax = 8;
 //  消除"为比对名字先 ParseAl 一遍、随后项目又解析一遍"的双重解析。
 //  失效点：写工具改 .al 之后走 `DropCachedProject`（清空本缓存）+ 5 s TTL 兜底。
 struct AlNameEntry {
-    std::chrono::steady_clock::time_point at{};
+    std::chrono::steady_clock::time_point at;
     std::string al;  // 空 = 负缓存（这段时间内确实找不到）
 };
 
@@ -564,7 +553,7 @@ constexpr std::chrono::seconds kAlNameTtl{5};
 constexpr std::size_t kAlNameCacheMax = 128;
 
 void ClearAlNameCache() {
-    std::lock_guard<std::mutex> lock(g_al_name_mutex);
+    std::scoped_lock lock(g_al_name_mutex);
     g_al_name_cache.clear();
 }
 
@@ -577,7 +566,7 @@ std::string ResolveAlByNameCached(const std::string& root, const std::string& lo
     const std::string key = LowerAscii(normalize_path(root)) + "|" + lowered;
     const auto now = std::chrono::steady_clock::now();
     {
-        std::lock_guard<std::mutex> lock(g_al_name_mutex);
+        std::scoped_lock lock(g_al_name_mutex);
         if (const auto it = g_al_name_cache.find(key); it != g_al_name_cache.end()) {
             if (now - it->second.at < kAlNameTtl) return it->second.al;
         }
@@ -614,9 +603,9 @@ std::string ResolveAlByNameCached(const std::string& root, const std::string& lo
     }
 
     {
-        std::lock_guard<std::mutex> lock(g_al_name_mutex);
+        std::scoped_lock lock(g_al_name_mutex);
         if (g_al_name_cache.size() >= kAlNameCacheMax) g_al_name_cache.clear();
-        g_al_name_cache[key] = AlNameEntry{now, found};
+        g_al_name_cache[key] = AlNameEntry{.at=now, .al=found};
     }
     return found;
 }
@@ -628,7 +617,7 @@ std::shared_ptr<const project::Project> CachedParsedProject(const std::string& a
     const bool stat_ok = StatStamp(key, &mtime_ns, &size);
     const auto now = std::chrono::steady_clock::now();
     if (stat_ok) {
-        std::lock_guard<std::mutex> lock(g_project_cache_mutex);
+        std::scoped_lock lock(g_project_cache_mutex);
         const auto it = g_project_cache.find(key);
         if (it != g_project_cache.end() && it->second.size == size &&
             it->second.mtime_ns == mtime_ns && it->second.project) {
@@ -638,7 +627,7 @@ std::shared_ptr<const project::Project> CachedParsedProject(const std::string& a
     }
     auto parsed = std::make_shared<const project::Project>(project::ParseAl(key));
     {
-        std::lock_guard<std::mutex> lock(g_project_cache_mutex);
+        std::scoped_lock lock(g_project_cache_mutex);
         auto& slot = g_project_cache[key];
         slot.size = size;
         slot.mtime_ns = mtime_ns;
@@ -659,7 +648,7 @@ std::shared_ptr<const project::Project> CachedParsedProject(const std::string& a
 // .al 被写工具改过后必须丢掉进程级缓存，否则其它连接会继续看到旧名字/旧文件表。
 void DropCachedProject(const std::string& al_path) {
     {
-        std::lock_guard<std::mutex> lock(g_project_cache_mutex);
+        std::scoped_lock lock(g_project_cache_mutex);
         g_project_cache.erase(normalize_path(al_path));
     }
     // P1-3：工程改名/新增/删除后，"工程名 -> .al" 反查缓存必须一起失效，
@@ -749,7 +738,7 @@ std::string BlankComments(std::string_view text) {
             out[index] = ' ';
             out[index + 1] = ' ';
             index += 2;
-            while (index + 1 < out.size() && !(out[index] == '*' && out[index + 1] == '/')) {
+            while (index + 1 < out.size() && (out[index] != '*' || out[index + 1] != '/')) {
                 if (out[index] != '\n') out[index] = ' ';
                 ++index;
             }
@@ -764,15 +753,15 @@ std::string BlankComments(std::string_view text) {
     }
     return out;
 }
-Json SummarizeReports(const Json& data, const std::string& project_name, std::string stage,
-                      std::string section, int limit, bool include_raw);
+Json SummarizeReports(const Json& data, const std::string& project_name, const std::string& stage,
+                      const std::string& section, int limit, bool include_raw);
 
 // B6c：code_actions / rename_edits 需要一个"没有 transport 的 LspServer"上下文。
 // Feature* 只把 transport 用于发布诊断/日志（codeAction/rename 路径上不会发），
 // 所以一个 no-op transport 就够；ReadMessage 永远不会被调用（我们不跑 serve 循环）。
 class NullTransport final : public jsonrpc::TransportBaseCommon {
 public:
-    ReadResult ReadMessage() override { return ReadResult{ReadStatus::EndOfStream, Json()}; }
+    ReadResult ReadMessage() override { return ReadResult{.status=ReadStatus::EndOfStream, .message=Json()}; }
     bool WriteMessage(const Json& /*message*/) override { return true; }
     bool closed() const override { return false; }
     void Close() override {}
@@ -848,7 +837,7 @@ std::string Bridge::DiscoverDefaultAl() const {
 
 std::string Bridge::ResolveAl(const std::string& value) const {
     const std::string trimmed = Trim(value);
-    if (trimmed.empty()) return std::string();
+    if (trimmed.empty()) return {};
 
     const std::string candidate =
         normalize_path(platform::is_absolute_path(trimmed) ? trimmed : path_join(root_, trimmed));
@@ -946,7 +935,7 @@ bool Bridge::IsWithin(const std::string& path, const std::string& root) {
     if (base.empty()) return false;
     if (target == base) return true;
     if (target.size() <= base.size()) return false;
-    if (target.compare(0, base.size(), base) != 0) return false;
+    if (!target.starts_with(base)) return false;
     const char separator = target[base.size()];
     return separator == '/' || separator == '\\';
 }
@@ -1097,7 +1086,7 @@ bool FindModuleHeader(const std::string& text, const std::string& top, size_t* h
         re2::RE2::Arg arg_name(&name);
         const re2::RE2::Arg* args[2] = {&arg_statement, &arg_name};
         if (!re2::RE2::FindAndConsumeN(&rest, pattern, args, 2)) return false;
-        if (statement.size() == 0) return false;
+        if (statement.empty()) return false;
         const std::string found(name.data(), name.size());
         if (found != top) continue;
         const size_t match_end = text.size() - rest.size();
@@ -1112,7 +1101,7 @@ bool FindModuleHeader(const std::string& text, const std::string& top, size_t* h
 
 }  // namespace
 
-std::vector<ScannedPort> Bridge::ScanTopPorts(const project::Project& proj) const {
+std::vector<ScannedPort> Bridge::ScanTopPorts(const project::Project& proj) {
     std::vector<ScannedPort> ports;
     if (proj.top.empty()) return ports;
 
@@ -1256,9 +1245,9 @@ Json SymbolJson(const Json& symbol, const std::string& path, const project::Proj
 
 // 对应 Python _hover_text：把 LSP hover 的 contents 归一成一个 markdown 字符串
 std::string HoverText(const Json& hover) {
-    if (hover.is_null() || !hover.is_object()) return std::string();
+    if (hover.is_null() || !hover.is_object()) return {};
     const auto it = hover.find("contents");
-    if (it == hover.end()) return std::string();
+    if (it == hover.end()) return {};
     if (it->is_string()) return it->get<std::string>();
     if (it->is_object()) return it->value("value", std::string());
     if (it->is_array()) {
@@ -1276,7 +1265,7 @@ std::string HoverText(const Json& hover) {
         }
         return joined;
     }
-    return std::string();
+    return {};
 }
 
 // Python ide.module_parents：模块名 -> [(父模块, 实例名)]
@@ -1301,7 +1290,7 @@ std::vector<const hdl::Module*> ModulesSortedByName(const hdl::HdlIndex& index) 
         if (file == nullptr) continue;
         for (const hdl::ModuleInfo& info : file->modules) modules.push_back(&info.module);
     }
-    std::sort(modules.begin(), modules.end(),
+    std::ranges::sort(modules,
               [](const hdl::Module* a, const hdl::Module* b) { return a->name < b->name; });
     return modules;
 }
@@ -1465,7 +1454,7 @@ Json Bridge::ProjectStructure(const Json& arguments) {
     // 输出的字段与顺序、1-based 换算、空串回落规则全部与旧实现一致。
     std::map<std::string, std::string> relative_cache;
     const auto relative_of = [&](const std::string& path) -> std::string {
-        if (path.empty()) return std::string();
+        if (path.empty()) return {};
         const auto it = relative_cache.find(path);
         if (it != relative_cache.end()) return it->second;
         std::string value = RelativeTo(path, proj.dir);
@@ -1803,7 +1792,7 @@ Json Bridge::SearchHierarchyTool(const Json& arguments) {
 
     // 模块名命中
     for (const hdl::Module* module : ModulesSortedByName(index)) {
-        if (LowerAscii(module->name).find(needle) == std::string::npos) continue;
+        if (!LowerAscii(module->name).contains(needle)) continue;
         Json item = Json::object();
         item["kind"] = "module";
         item["name"] = module->name;
@@ -1815,8 +1804,8 @@ Json Bridge::SearchHierarchyTool(const Json& arguments) {
     }
     // 实例名 / 被例化模块名命中
     for (const hdl::Instance* instance : index.AllInstances()) {
-        if (LowerAscii(instance->name).find(needle) == std::string::npos &&
-            LowerAscii(instance->module).find(needle) == std::string::npos) {
+        if (!LowerAscii(instance->name).contains(needle) &&
+            !LowerAscii(instance->module).contains(needle)) {
             continue;
         }
         std::string parent;
@@ -1928,7 +1917,7 @@ Json Bridge::SymbolPathTool(const Json& arguments) {
 
     std::string instance_path;
     for (const std::string& segment : chain) {
-        if (!instance_path.empty()) instance_path += "/";
+        if (!instance_path.empty()) instance_path += '/';
         instance_path += segment;
     }
     std::string full_path = instance_path.empty() ? name : instance_path + "/" + name;
@@ -2415,7 +2404,7 @@ Json Bridge::DiagnosticsTool(const Json& arguments) {
     }
     if (!have_sources) {
         sources = {"hdl", "adc", "sdc"};
-        if (!file_value.empty()) sources.push_back("verible");
+        if (!file_value.empty()) sources.emplace_back("verible");
     }
     int limit = 500;
     if (const auto it = arguments.find("limit"); it != arguments.end() && it->is_number_integer()) {
@@ -2424,7 +2413,7 @@ Json Bridge::DiagnosticsTool(const Json& arguments) {
     limit = std::clamp(limit, 1, 2000);
 
     const auto want = [&sources](const char* name) {
-        return std::find(sources.begin(), sources.end(), name) != sources.end();
+        return std::ranges::find(sources, name) != sources.end();
     };
 
     std::string file_path;
@@ -2442,8 +2431,8 @@ Json Bridge::DiagnosticsTool(const Json& arguments) {
     for (const auto& [path, diagnostic] : raw) {
         if (!file_path.empty() && path != file_path) continue;
         const std::string source = diagnostic.source;
-        const bool is_adc = source.find("adc") != std::string::npos;
-        const bool is_sdc = source.find("sdc") != std::string::npos;
+        const bool is_adc = source.contains("adc");
+        const bool is_sdc = source.contains("sdc");
         if (is_adc && !want("adc")) continue;
         if (is_sdc && !want("sdc")) continue;
         const Json item = DiagnosticJson(diagnostic, path, proj);
@@ -2538,8 +2527,8 @@ Json Bridge::DeviceInfoTool(const Json& arguments) {
         for (const auto& [key, pin] : device.pins) {
             const std::string name = pin.pe.empty() ? pin.pe_raw : pin.pe;
             const std::string location = pin.location;
-            if (!needle.empty() && LowerAscii(name).find(needle) == std::string::npos &&
-                LowerAscii(location).find(needle) == std::string::npos) {
+            if (!needle.empty() && !LowerAscii(name).contains(needle) &&
+                !LowerAscii(location).contains(needle)) {
                 continue;
             }
             Json item = Json::object();
@@ -2560,7 +2549,7 @@ Json Bridge::DeviceInfoTool(const Json& arguments) {
 namespace {
 
 bool Contains(const std::vector<int>& bits, int bit) {
-    return std::find(bits.begin(), bits.end(), bit) != bits.end();
+    return std::ranges::find(bits, bit) != bits.end();
 }
 
 }  // namespace
@@ -2915,7 +2904,7 @@ Json Bridge::SearchTextTool(const Json& arguments) {
         const std::string target = SafeProjectPath(path_filter, proj);
         if (IsDirectory(target)) {
             std::error_code ec;
-            for (fs::recursive_directory_iterator it(fs::u8path(target), ec), end;
+            for (fs::recursive_directory_iterator it(AsPath(target), ec), end;
                  it != end && !ec; it.increment(ec)) {
                 const std::string name = ToUtf8(it->path().filename());
                 if (it->path().filename() == ".fpgalsp" || name == "__pycache__") {
@@ -2935,7 +2924,7 @@ Json Bridge::SearchTextTool(const Json& arguments) {
     }
 
     const std::vector<std::string> suffixes = {".v",  ".sv",  ".vh",  ".svh", ".vhd",
-                                               ".vhdl", ".adc", ".sdc", ".al",  ".tcl"};
+                                               ".vhdl", ".adc", ".sdc", ".al",  ".tcl",};
     // F4 / R7：先按目录做一次快照（一次 FindFirstFile 拿 size+mtime），
     // 避免每文件 2 次 open 的 stat（本机 200 文件 ≈14 ms，比读文件还贵）。
     std::set<std::string> directories;
@@ -2956,7 +2945,7 @@ Json Bridge::SearchTextTool(const Json& arguments) {
         bool suffix_ok = false;
         for (const std::string& suffix : suffixes) {
             if (lowered.size() >= suffix.size() &&
-                lowered.compare(lowered.size() - suffix.size(), suffix.size(), suffix) == 0) {
+                lowered.ends_with(suffix)) {
                 suffix_ok = true;
                 break;
             }
@@ -2985,7 +2974,7 @@ Json Bridge::SearchTextTool(const Json& arguments) {
         // F4 / R7：相对路径**每文件算一次**（原实现是每个匹配算一次，而 RelativeTo 内部
         // 会做两次 canonicalize，本机 ≈70 µs/次；200 个匹配就是 14 ms，占 search_text 大头）。
         const std::string relative_path = FastRelativeTo(file_path, proj.dir);
-        const bool has_cr = text.find('\r') != std::string::npos;
+        const bool has_cr = text.contains('\r');
         std::vector<std::string> owned_rows;
         std::vector<std::string_view> rows;
         if (has_cr) {
@@ -3002,7 +2991,7 @@ Json Bridge::SearchTextTool(const Json& arguments) {
                 re2::RE2::Arg arg_found(&found);
                 const re2::RE2::Arg* args[1] = {&arg_found};
                 if (!re2::RE2::FindAndConsumeN(&rest, compiled, args, 1)) break;
-                if (found.size() == 0 && rest.empty()) {
+                if (found.empty() && rest.empty()) {
                     // 零长匹配：避免死循环（Python 的 finditer 会自动前进一格）
                 }
                 const size_t match_end = rows[index].size() - rest.size();
@@ -3028,7 +3017,7 @@ Json Bridge::SearchTextTool(const Json& arguments) {
                     truncated = true;
                     break;
                 }
-                if (found.size() == 0) break;
+                if (found.empty()) break;
             }
             if (static_cast<int>(matches.size()) >= limit) break;
         }
@@ -3070,18 +3059,18 @@ std::vector<std::string> FlowDirs(const project::Project& proj) {
     std::vector<std::string> dirs;
     const std::string base = FlowBase(proj);
     std::error_code ec;
-    fs::directory_iterator it(fs::u8path(base), ec);
+    fs::directory_iterator it(AsPath(base), ec);
     if (ec) return dirs;
     std::vector<std::pair<std::string, long long>> found;
     for (const fs::directory_entry& entry : it) {
         const std::string name = ToUtf8(entry.path().filename());
-        if (name.rfind("flow_", 0) != 0) continue;
+        if (!name.starts_with("flow_")) continue;
         if (!entry.is_directory(ec)) continue;
         const auto mtime = fs::last_write_time(entry.path(), ec);
         found.emplace_back(ToUtf8(entry.path()),
                            ec ? 0 : static_cast<long long>(mtime.time_since_epoch().count()));
     }
-    std::sort(found.begin(), found.end(),
+    std::ranges::sort(found,
               [](const auto& a, const auto& b) { return a.second > b.second; });
     for (auto& [path, stamp] : found) dirs.push_back(path);
     return dirs;
@@ -3090,7 +3079,7 @@ std::vector<std::string> FlowDirs(const project::Project& proj) {
 std::string SelectFlowDir(const project::Project& proj, const std::string& run_id) {
     if (!run_id.empty()) {
         const std::string name = Trim(run_id);
-        if (name.rfind("flow_", 0) != 0 || BaseName(name) != name) {
+        if (!name.starts_with("flow_") || BaseName(name) != name) {
             throw ToolError("Invalid run_id: " + run_id);
         }
         const std::string path = path_join(FlowBase(proj), name);
@@ -3105,7 +3094,7 @@ std::vector<std::string> RunLogPaths(const project::Project& proj) {
     std::vector<std::string> paths;
     const std::string runs = path_join(proj.dir, proj.name + "_Runs");
     std::error_code ec;
-    fs::directory_iterator it(fs::u8path(runs), ec);
+    fs::directory_iterator it(AsPath(runs), ec);
     if (!ec) {
         for (const fs::directory_entry& entry : it) {
             if (!entry.is_directory(ec)) continue;
@@ -3120,7 +3109,7 @@ Json TailText(const std::string& path, int max_chars) {
     Json out = Json::object();
     out["path"] = path;
     std::error_code ec;
-    const auto size = fs::file_size(fs::u8path(path), ec);
+    const auto size = fs::file_size(AsPath(path), ec);
     if (ec) {
         out["error"] = "cannot stat file";
         out["text"] = "";
@@ -3160,7 +3149,7 @@ Json TailLines(const std::string& text, int lines) {
 //    · 可选 [msb:lsb] 位宽
 //    · 之后是逗号分隔的一个或多个名字（`input a, b` 与 `input a` 都支持）
 //    · 端口名不带位选择；非 ANSI 头里单独出现的名字视为 direction="inout" width=1
-std::vector<ScannedPort> ScanPortHeader(std::string_view header, size_t header_offset);
+
 
 
 std::vector<ScannedPort> ScanPortHeader(std::string_view raw_header, size_t header_offset) {
@@ -3347,8 +3336,8 @@ const Json& Member(const Json& object, const char* key) {
     return kNull;
 }
 
-Json SummarizeReports(const Json& data, const std::string& project_name, std::string stage,
-                      std::string section, int limit, bool include_raw) {
+Json SummarizeReports(const Json& data, const std::string& project_name, const std::string& stage,
+                      const std::string& section, int limit, bool include_raw) {
     const Json* source = &data;
     if ((stage == "syn" || stage == "phy") && data.contains(stage) && data[stage].is_object()) {
         source = &data[stage];
@@ -3482,16 +3471,16 @@ Json Bridge::FlowLog(const Json& arguments) {
         if (!std::filesystem::is_directory(std::filesystem::path(dir), ec)) return;
         std::vector<std::string> names;
         for (const std::string& name : ListFiles(dir)) {
-            if (name.rfind("td_", 0) != 0) continue;
-            if (!(name.size() >= 4 &&
-                  (name.compare(name.size() - 4, 4, ".log") == 0 ||
-                   name.compare(name.size() - 5, 5, ".logw") == 0))) {
+            if (!name.starts_with("td_")) continue;
+            if (name.size() < 4 ||
+                  (!name.ends_with(".log") &&
+                   !name.ends_with(".logw"))) {
                 continue;
             }
             names.push_back(name);
         }
         // 只回最近 12 个（工程的 log/ 目录里可能堆着几十份历史会话）
-        std::sort(names.begin(), names.end(), [&dir](const std::string& a, const std::string& b) {
+        std::ranges::sort(names, [&dir](const std::string& a, const std::string& b) {
             std::error_code a_ec;
             std::error_code b_ec;
             const auto a_time = std::filesystem::last_write_time(std::filesystem::path(dir) / a, a_ec);
@@ -3566,15 +3555,15 @@ Json Bridge::FlowIssues(const Json& arguments) {
     Json markers = Json::array();
     if (!run_dir.empty()) {
         for (const std::string& name : ListFiles(run_dir)) {
-            if (name.size() >= 8 && name.compare(name.size() - 8, 8, ".error.f") == 0) {
+            if (name.size() >= 8 && name.ends_with(".error.f")) {
                 markers.push_back(name);
             }
         }
         for (const std::string& name : ListFiles(run_dir)) {
-            if (name.rfind("td_", 0) != 0) continue;
+            if (!name.starts_with("td_")) continue;
             const bool is_log = name.size() >= 4 &&
-                                (name.compare(name.size() - 4, 4, ".log") == 0 ||
-                                 name.compare(name.size() - 5, 5, ".logw") == 0);
+                                (name.ends_with(".log") ||
+                                 name.ends_with(".logw"));
             if (!is_log) continue;
             const Json data = TailText(path_join(run_dir, name), 500000);
             logs.push_back(path_join(run_dir, name));
@@ -3676,7 +3665,7 @@ Json Bridge::FlowRunTool(const Json& arguments) {
             if (item.is_string()) stages.push_back(item.get<std::string>());
         }
     }
-    if (stages.empty()) stages.push_back("all");  // 等价 GUI 的 Generate Bitstream
+    if (stages.empty()) stages.emplace_back("all");  // 等价 GUI 的 Generate Bitstream
     // PRJ-8802：`-jobs` 是 multirun 的并发 run 数，合法范围 1~6（不是线程数）。
     // 0 / 负数按默认 6 处理（与 FlowRunner::StartInternal 的 `jobs > 0 ? jobs : 6` 一致）。
     int jobs = 6;
@@ -4012,7 +4001,7 @@ Json Bridge::ProbeConfigTool(const Json& arguments) {
             // 索引不可用就当没做预检，绝不因此挡住写 mdn
         }
         out["unresolved"] = std::move(unresolved);
-        if (out["unresolved"].size() > 0) {
+        if (!out["unresolved"].empty()) {
             const std::string warning =
                 "some probe names were not found by the HDL index - TD silently drops nets it "
                 "cannot resolve after a full syn+phy run. Check them with fpga_symbol_path "
@@ -4078,7 +4067,7 @@ Json Bridge::ProbeVerifyTool(const Json& arguments) {
     const auto known = [this, &proj, &index, &cache,
                         &top_prefix](std::string_view name) -> bool {
         std::string base(name);
-        if (!top_prefix.empty() && base.rfind(top_prefix, 0) == 0) {
+        if (!top_prefix.empty() && base.starts_with(top_prefix)) {
             base.erase(0, top_prefix.size());
         }
         const std::size_t open = base.find_last_of('[');
@@ -4213,7 +4202,7 @@ Json Bridge::ProbeCaptureTool(const Json& arguments) {
             if (const auto value = item.find("value"); value != item.end()) {
                 if (!value->is_string()) {
                     throw ToolError("buses entry \"" + name +
-                                    "\": value must be a binary bit string, e.g. \"0000000000000000\"");
+                                    R"(": value must be a binary bit string, e.g. "0000000000000000")");
                 }
                 const std::optional<std::uint64_t> bits =
                     probe::ParseBitString(value->get<std::string>());
@@ -4312,7 +4301,7 @@ Json Bridge::CompletionTool(const Json& arguments) {
             } else if (item.contains("label") && item["label"].is_object()) {
                 label = item["label"].value("label", std::string());
             }
-            if (!prefix.empty() && LowerAscii(label).rfind(prefix, 0) != 0) continue;
+            if (!prefix.empty() && !LowerAscii(label).starts_with(prefix)) continue;
             if (!include_snippets && item.value("insertTextFormat", 1) == 2) continue;
 
             Json out_item = Json::object();
@@ -4362,7 +4351,8 @@ Json Bridge::InstantiationTool(const Json& arguments) {
         for (size_t i = 0; i < definition->parameters.size(); ++i) {
             const std::string& parameter = definition->parameters[i];
             const bool last = (i + 1 == definition->parameters.size());
-            text += indent + "    ." + parameter + " (" + parameter + ")" + (last ? "" : ",") + "\n";
+            text +=
+                std::format("{}    .{} ({}){}\n", indent, parameter, parameter, last ? "" : ",");
         }
         text += indent + ") " + default_instance + " (\n";
     } else {
@@ -4371,7 +4361,8 @@ Json Bridge::InstantiationTool(const Json& arguments) {
     for (size_t i = 0; i < definition->ports.size(); ++i) {
         const std::string& port_name = definition->ports[i].name;
         const bool last = (i + 1 == definition->ports.size());
-        text += indent + "    ." + port_name + " (" + port_name + ")" + (last ? "" : ",") + "\n";
+        text += std::format("{}    .{} ({}){}\n", indent, port_name, port_name,
+                               last ? "" : ",");
     }
     text += indent + ");\n";
 
@@ -4663,7 +4654,7 @@ Json Bridge::ProjectAddSourceTool(const Json& arguments) {
     block += inner + "        <Attr Name=\"UsedInSyn\" Val=\"true\"/>\n";
     block += inner + "        <Attr Name=\"UsedInP&R\" Val=\"true\"/>\n";
     block += inner + "        <Attr Name=\"BelongTo\" Val=\"design_1\"/>\n";
-    block += inner + "        <Attr Name=\"CompileOrder\" Val=\"" + std::to_string(compile_order) +
+    block += inner + R"(        <Attr Name="CompileOrder" Val=")" + std::to_string(compile_order) +
              "\"/>\n";
     block += inner + "    </FileInfo>\n";
     block += inner + "</File>\n";
@@ -4769,7 +4760,7 @@ Json Bridge::FormatTool(const Json& arguments) {
         // Python 用文本模式读文件（universal newlines），doc.text 里 CRLF 已变成 LF；
         // 这里必须先做同样的归一化，否则 Verible 的 line_terminator=auto 会保留 CRLF，
         // 与 Python 的输出逐字节不同（实测 10883 B vs 11224 B）。
-        if (source.find('\r') != std::string::npos) {
+        if (source.contains('\r')) {
             std::string normalized_text;
             normalized_text.reserve(source.size());
             for (size_t index = 0; index < source.size(); ++index) {
@@ -4895,7 +4886,7 @@ Json Bridge::FormatTool(const Json& arguments) {
 Json Bridge::AnalysisRunTool(const Json& arguments) {
     const project::Project& proj = ProjectFor(arguments);
     return analysis::Run(proj, options_.td_path, [](std::string_view message) {
-        platform::default_logger().info(std::string(message));
+        platform::default_logger().info(message);
     });
 }
 
@@ -4914,7 +4905,7 @@ Json Bridge::ProjectUpdateTool(const Json& arguments) {
         return out;
     }
     Json result = analysis::UpdateProject(proj, options_.td_path, [](std::string_view message) {
-        platform::default_logger().info(std::string(message));
+        platform::default_logger().info(message);
     });
     // 对应 Python 的 invalidate_project_caches()：.al 可能被 TD 改写，缓存必须失效。
     projects_.erase(al);

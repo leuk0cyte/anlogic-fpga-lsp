@@ -115,10 +115,10 @@ struct DisabledPlan {
     // 不在 signals 里的条目：调用方只告警、**不**判失败（可能清单刚被替换）
     std::vector<std::string> unresolved;
 
-    bool IsBitDisabled(std::string_view name) const {
-        return bits.find(std::string(name)) != bits.end();
+    [[nodiscard]] bool IsBitDisabled(std::string_view name) const {
+        return bits.contains(std::string(name));
     }
-    bool Any() const { return !bits.empty(); }
+    [[nodiscard]] bool Any() const { return !bits.empty(); }
 };
 
 DisabledPlan ResolveDisabled(const std::vector<std::string>& signals,
@@ -407,7 +407,7 @@ struct CaptureOptions {
             bool has_value = false;
         };
         std::vector<BusTrigger> buses;
-        bool Any() const {
+        [[nodiscard]] bool Any() const {
             return position >= 0 || window_num > 0 || window_depth > 0 || !type.empty() ||
                    enabled.has_value() || !bus_op.empty() || !net_conds.empty() || !buses.empty();
         }

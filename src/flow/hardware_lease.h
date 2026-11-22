@@ -26,19 +26,19 @@ class HardwareLease {
 public:
     // 成功返回 true 并记下 owner；已被占用返回 false（owner 不变）。
     static bool TryAcquire(std::string_view owner) {
-        std::lock_guard<std::mutex> lock(Mutex());
+        std::scoped_lock lock(Mutex());
         if (!OwnerRef().empty()) return false;
         OwnerRef().assign(owner);
         return true;
     }
 
     static void Release() {
-        std::lock_guard<std::mutex> lock(Mutex());
+        std::scoped_lock lock(Mutex());
         OwnerRef().clear();
     }
 
     static std::string Owner() {
-        std::lock_guard<std::mutex> lock(Mutex());
+        std::scoped_lock lock(Mutex());
         return OwnerRef();
     }
 
@@ -71,7 +71,7 @@ public:
     HardwareLeaseGuard(HardwareLeaseGuard&&) = delete;
     HardwareLeaseGuard& operator=(HardwareLeaseGuard&&) = delete;
 
-    bool held() const { return held_; }
+    [[nodiscard]] bool held() const { return held_; }
 
 private:
     bool held_ = false;

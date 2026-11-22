@@ -40,6 +40,7 @@
 #include "platform/utf16.h"
 #include "td/tcl_quote.h"
 
+#include "platform/text.h"
 namespace fpgalsp::flow {
 namespace {
 
@@ -54,16 +55,7 @@ std::string Slashes(std::string text) {
     return text;
 }
 
-std::string Trim(std::string_view text) {
-    std::size_t begin = 0;
-    std::size_t end = text.size();
-    const auto is_space = [](char c) {
-        return c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\v' || c == '\f';
-    };
-    while (begin < end && is_space(text[begin])) ++begin;
-    while (end > begin && is_space(text[end - 1])) --end;
-    return std::string(text.substr(begin, end - begin));
-}
+using platform::Trim;
 
 std::vector<std::string> Lines(std::string_view text) {
     std::string normalised(text);
@@ -103,13 +95,7 @@ double Mtime(std::string_view path) {
     return std::chrono::duration<double>(sys.time_since_epoch()).count();
 }
 
-std::string Join(std::string_view dir, std::string_view name) {
-    if (dir.empty()) return std::string(name);
-    std::string out(dir);
-    if (out.back() != '/' && out.back() != '\\') out.push_back('/');
-    out += name;
-    return Slashes(std::move(out));
-}
+using platform::Join;
 
 std::vector<std::string> ListFiles(std::string_view dir) {
     std::vector<std::string> names;
@@ -127,7 +113,7 @@ std::vector<std::string> ListFiles(std::string_view dir) {
         it.increment(ec);
         if (ec) break;
     }
-    std::sort(names.begin(), names.end());
+    std::ranges::sort(names);
     return names;
 }
 
@@ -252,7 +238,7 @@ std::string BwProcess::ReadUntil(std::string_view marker, double timeout_seconds
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(
                                                                  static_cast<long long>(
                                                                      timeout_seconds * 1000.0));
-    while (buffer_.find(marker) == std::string::npos) {
+    while (!buffer_.contains(marker)) {
         DWORD available = 0;
         if (stdout_read_ == nullptr) break;
         if (!PeekNamedPipe(stdout_read_, nullptr, 0, nullptr, &available, nullptr)) {
@@ -459,8 +445,8 @@ std::vector<std::string> TailLines(std::string_view text, std::size_t limit) {
     for (const std::string& line : Lines(text)) {
         const std::string trimmed = Trim(line);
         if (trimmed.empty()) continue;
-        if (trimmed.rfind("RUN-100", 0) == 0) continue;
-        if (trimmed.rfind("bw >", 0) == 0) continue;
+        if (trimmed.starts_with("RUN-100")) continue;
+        if (trimmed.starts_with("bw >")) continue;
         out.push_back(trimmed);
     }
     if (out.size() > limit) out.erase(out.begin(), out.begin() + (out.size() - limit));
@@ -537,8 +523,8 @@ std::string ParseDeviceId(std::string_view text) {
     for (const std::string& line : Lines(text)) {
         const std::string token = Trim(line);
         if (token.empty()) continue;
-        if (token.find(':') != std::string::npos) continue;
-        if (token.find(' ') != std::string::npos) continue;
+        if (token.contains(':')) continue;
+        if (token.contains(' ')) continue;
         if (!RE2::FullMatch(token, kIdRe)) continue;
         if (RE2::PartialMatch(token, kCodeRe)) continue;
         return token;
@@ -626,13 +612,13 @@ BitCheck CheckBit(std::string_view path) {
         return out;
     }
     const std::string body(path);
-    if (body.size() < 4 || body.compare(body.size() - 4, 4, ".bit") != 0) {
+    if (body.size() < 4 || !body.ends_with(".bit")) {
         // Python 用 lower().endswith(".bit")
         std::string lower(body);
         for (char& c : lower) {
             if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
         }
-        if (lower.size() < 4 || lower.compare(lower.size() - 4, 4, ".bit") != 0) {
+        if (lower.size() < 4 || !lower.ends_with(".bit")) {
             out.reason = "Not a .bit file: " + body;
             return out;
         }
@@ -644,7 +630,7 @@ BitCheck CheckBit(std::string_view path) {
 
 bool HasBwError(std::string_view text) {
     static const RE2 kErrorRe(R"(\b[A-Z]{2,6}-\d{3,5}\s+(?:ERROR|CRITICAL-WARNING)\b)");
-    return RE2::PartialMatch(std::string(text), kErrorRe);
+    return RE2::PartialMatch(re2::StringPiece(text.data(), text.size()), kErrorRe);
 }
 
 std::string ParseChipValidation(std::string_view text) {
@@ -658,24 +644,24 @@ std::string ParseChipValidation(std::string_view text) {
 
 bool HasDownloadSuccess(std::string_view text) {
     static const RE2 kRe(R"(Downloading succeeded|Download success|download succeeded)");
-    return RE2::PartialMatch(std::string(text), kRe);
+    return RE2::PartialMatch(re2::StringPiece(text.data(), text.size()), kRe);
 }
 
 std::string DefaultBit(const project::Project& project) {
     const std::string runs = Join(project.dir, project.name + "_Runs");
     std::vector<std::string> candidates;
     for (const std::string& name : ListFiles(Join(runs, "best_result"))) {
-        if (name.size() >= 4 && name.compare(name.size() - 4, 4, ".bit") == 0) {
+        if (name.size() >= 4 && name.ends_with(".bit")) {
             candidates.push_back(Join(Join(runs, "best_result"), name));
         }
     }
     for (const std::string& name : ListFiles(Join(runs, "phy_1"))) {
-        if (name.size() >= 4 && name.compare(name.size() - 4, 4, ".bit") == 0) {
+        if (name.size() >= 4 && name.ends_with(".bit")) {
             candidates.push_back(Join(Join(runs, "phy_1"), name));
         }
     }
     if (candidates.empty()) return {};
-    std::sort(candidates.begin(), candidates.end(),
+    std::ranges::sort(candidates,
               [](const std::string& a, const std::string& b) { return Mtime(a) > Mtime(b); });
     return Slashes(candidates.front());
 }
@@ -885,7 +871,7 @@ jsonrpc::Json Program(const td::TdChoice& td, const project::Project& project,
     const std::string validation = ParseChipValidation(out_text);
     const bool success_marker = HasDownloadSuccess(out_text);
     const bool bw_error = HasBwError(out_text);
-    const bool flash_verified = out_text.find("Page program and verify") != std::string::npos;
+    const bool flash_verified = out_text.contains("Page program and verify");
     const bool ok = !bw_error && (!validation.empty() || success_marker);
 
     jsonrpc::Json out = jsonrpc::Json::object();

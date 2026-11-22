@@ -60,7 +60,7 @@ struct FlowStatusReport {
     std::vector<FlowStep> steps;
     std::vector<std::string> warnings;
 
-    jsonrpc::Json ToJson() const;
+    [[nodiscard]] jsonrpc::Json ToJson() const;
 };
 
 // 解析一个 *_flow.status。never-throw：找不到任何字段时返回空结构 + warnings。

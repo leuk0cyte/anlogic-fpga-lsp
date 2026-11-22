@@ -94,12 +94,12 @@ bool BuildConfiguration(const std::vector<std::string>& flags,
 
         if (name == "rules") {
             if (!flag.has_value) {
-                *error = "--rules 需要一个取值（形如 --rules=+line-length=length:160）";
+                *error = "--rules requires a value (e.g. --rules=+line-length=length:160)";
                 return false;
             }
             std::string parse_error;
             if (!verilog::AbslParseFlag(flag.value, &bundle, &parse_error)) {
-                *error = "--rules=" + flag.value + " 非法：" + parse_error;
+                *error = "--rules=" + flag.value + " is invalid: " + parse_error;
                 return false;
             }
             continue;
@@ -107,12 +107,12 @@ bool BuildConfiguration(const std::vector<std::string>& flags,
 
         if (name == "ruleset") {
             if (!flag.has_value) {
-                *error = "--ruleset 需要一个取值（default / all / none）";
+                *error = "--ruleset requires a value (default / all / none)";
                 return false;
             }
             std::string parse_error;
             if (!verilog::AbslParseFlag(flag.value, &ruleset, &parse_error)) {
-                *error = "--ruleset=" + flag.value + " 非法：" + parse_error;
+                *error = "--ruleset=" + flag.value + " is invalid: " + parse_error;
                 return false;
             }
             continue;
@@ -120,7 +120,7 @@ bool BuildConfiguration(const std::vector<std::string>& flags,
 
         if (name == "rules_config") {
             if (!flag.has_value) {
-                *error = "--rules_config 需要一个文件路径";
+                *error = "--rules_config requires a file path";
                 return false;
             }
             config_file = flag.value;
@@ -134,7 +134,7 @@ bool BuildConfiguration(const std::vector<std::string>& flags,
             }
             bool parsed = false;
             if (!ParseBoolValue(flag.value, &parsed)) {
-                *error = "--rules_config_search=" + flag.value + " 不是合法布尔值";
+                *error = "--rules_config_search=" + flag.value + " is not a valid boolean";
                 return false;
             }
             config_search = parsed;
@@ -143,7 +143,7 @@ bool BuildConfiguration(const std::vector<std::string>& flags,
 
         if (name == "waiver_files") {
             if (!flag.has_value) {
-                *error = "--waiver_files 需要一个文件路径（多为逗号分隔）";
+                *error = "--waiver_files requires a file path (usually comma-separated)";
                 return false;
             }
             waiver_files = flag.value;
@@ -173,7 +173,7 @@ bool BuildConfiguration(const std::vector<std::string>& flags,
 bool OffsetOf(std::string_view base, std::string_view fragment, std::size_t* begin,
               std::size_t* end) {
     if (fragment.data() < base.data()) return false;
-    const std::size_t start =
+    const auto start =
         static_cast<std::size_t>(fragment.data() - base.data());
     if (start > base.size() || fragment.size() > base.size() - start) return false;
     *begin = start;
@@ -238,7 +238,7 @@ LintAutofixResult AutofixText(std::string_view text, std::string_view filename,
         }
 
         // 按位置排序；**丢弃与已保留编辑重叠**的编辑（见文件头第 4 点）
-        std::sort(edits.begin(), edits.end(),
+        std::ranges::sort(edits,
                   [](const AppliedEdit& left, const AppliedEdit& right) {
                       if (left.begin != right.begin) return left.begin < right.begin;
                       return left.end < right.end;
@@ -342,7 +342,7 @@ LintResult LintText(std::string_view text, std::string_view filename,
         }
 
         // 稳定顺序（同一位置按规则名），便于上层做"内容相同就不重发"的比较。
-        std::stable_sort(result.diagnostics.begin(), result.diagnostics.end(),
+        std::ranges::stable_sort(result.diagnostics,
                          [](const LintDiagnostic& a, const LintDiagnostic& b) {
                              if (a.line != b.line) return a.line < b.line;
                              if (a.column != b.column) return a.column < b.column;
@@ -392,7 +392,7 @@ std::vector<std::vector<char>> BuildCommentMask(std::string_view text) {
 
     std::size_t i = 0;
     while (i < text.size()) {
-        const unsigned char c = static_cast<unsigned char>(text[i]);
+        const auto c = static_cast<unsigned char>(text[i]);
         const char next = (i + 1 < text.size()) ? text[i + 1] : '\0';
         if (c == '\n') {
             ++line;

@@ -62,8 +62,8 @@
 #include "constraints/port.h"
 #include "lsp/diagnostic.h"
 
-namespace fpgalsp::constraints {
-namespace adc {
+
+namespace fpgalsp::constraints::adc {
 
 // ADC 认识的命令（Python `KNOWN_COMMANDS`）。
 // ⚠ Python 的**补全**列表里还有 `set_ippin_assignment`，但白名单里没有它 ——
@@ -238,5 +238,4 @@ Json ToJson(const Entry& entry);
 Json ToJson(const std::vector<Entry>& entries);
 Json ToJson(const CoverageReport& coverage);
 
-}  // namespace adc
-}  // namespace fpgalsp::constraints
+} // namespace fpgalsp::constraints::adc

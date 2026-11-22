@@ -108,7 +108,7 @@ struct FlowState {
     // 老客户端忽略这个键；扩展的 FlowTree 有它时按 6 步渲染，没有时回落到 stage 行。
     jsonrpc::Json steps = jsonrpc::Json::array();
 
-    jsonrpc::Json ToJson() const;
+    [[nodiscard]] jsonrpc::Json ToJson() const;
 };
 
 class FlowRunner {
@@ -143,10 +143,10 @@ public:
     jsonrpc::Json Cancel();
 
     // 线程安全地取当前状态（elapsed 会按当前时刻重算）
-    FlowState Status() const;
+    [[nodiscard]] FlowState Status() const;
 
-    const project::Project& project() const { return project_; }
-    const FlowOptions& options() const { return options_; }
+    [[nodiscard]] const project::Project& project() const { return project_; }
+    [[nodiscard]] const FlowOptions& options() const { return options_; }
 
     // 等 flow 结束（测试 / 关停用）。返回 true 表示已空闲。
     bool WaitUntilIdle(double timeout_seconds);

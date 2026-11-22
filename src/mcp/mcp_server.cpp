@@ -108,10 +108,9 @@ const Json* GetMember(const Json& json, const char* key) {
 }
 
 bool VersionSupported(const std::string& version) {
-    for (const char* supported : McpServer::kSupportedVersions) {
-        if (version == supported) return true;
-    }
-    return false;
+    return std::ranges::any_of(McpServer::kSupportedVersions, [&version](const char* supported) {
+        return version == supported;
+    });
 }
 
 // P-B1：协商档下 text 只留一行摘要，数据在 structuredContent 里。
@@ -167,32 +166,32 @@ struct PromptDef {
 const std::vector<PromptDef>& PromptTable() {
     // 顺序即 prompts/list 的输出顺序：先入门，再构建，再上板，最后排错。
     static const std::vector<PromptDef> kPrompts = {
-        {"onboard-project",
-         "Bootstrap an unfamiliar project: discover it, read the real build file set, "
+        {.name="onboard-project",
+         .description="Bootstrap an unfamiliar project: discover it, read the real build file set, "
          "then report structure, constraints and risks.",
-         {{"project",
-           "Optional .al path, project directory, or project name. Default: active project.",
-           false}}},
-        {"run-flow-to-bit",
-         "Take the active project from RTL to a bitstream and report QoR, timing and any "
+         .args={{.name="project",
+           .description="Optional .al path, project directory, or project name. Default: active project.",
+           .required=false,},},},
+        {.name="run-flow-to-bit",
+         .description="Take the active project from RTL to a bitstream and report QoR, timing and any "
          "failure with its log evidence.",
-         {{"stages",
-           "Stages to run: all, syn, phy or a comma list such as syn,phy. Default: all.",
-           false}}},
-        {"probe-on-board",
-         "Mark signals for on-chip capture, rebuild phy so they enter the bitstream, verify "
+         .args={{.name="stages",
+           .description="Stages to run: all, syn, phy or a comma list such as syn,phy. Default: all.",
+           .required=false,},},},
+        {.name="probe-on-board",
+         .description="Mark signals for on-chip capture, rebuild phy so they enter the bitstream, verify "
          "with probe_status, then capture on the board.",
-         {{"signals",
-           "Signals to mark, e.g. WHG/pwm_reg0_i[15:0], comma separated.",
-           true},
-          {"trigger",
-           "Optional capture-time trigger arguments as a JSON fragment, e.g. "
+         .args={{.name="signals",
+           .description="Signals to mark, e.g. WHG/pwm_reg0_i[15:0], comma separated.",
+           .required=true,},
+          {.name="trigger",
+           .description="Optional capture-time trigger arguments as a JSON fragment, e.g. "
            "\"trigger_position\":512 or \"bus_op\":\"equal\". Default: trigger_now.",
-           false}}},
-        {"debug-failed-flow",
-         "Diagnose a failed or suspicious flow run from its issues, logs and artifacts before "
+           .required=false,},},},
+        {.name="debug-failed-flow",
+         .description="Diagnose a failed or suspicious flow run from its issues, logs and artifacts before "
          "rerunning anything.",
-         {{"run", "Flow run id (flow_xxxxxxxx). Default: the newest run.", false}}},
+         .args={{.name="run", .description="Flow run id (flow_xxxxxxxx). Default: the newest run.", .required=false}},},
     };
     return kPrompts;
 }
@@ -345,13 +344,13 @@ std::string PromptText(std::string_view name, const Json& arguments) {
             "{\"topic\":\"troubleshoot\"}.\n";
         ReplaceAllInPlace(&text, "{{run}}", has_run ? run : "the newest one");
         ReplaceAllInPlace(&text, "{{job_args}}",
-                          has_run ? "{\"job\":\"" + JsonEscaped(run) + "\"}" : "{}");
+                          has_run ? R"({"job":")" + JsonEscaped(run) + "\"}" : "{}");
         ReplaceAllInPlace(&text, "{{issue_args}}",
-                          has_run ? "{\"run_id\":\"" + JsonEscaped(run) + "\"}" : "{}");
+                          has_run ? R"({"run_id":")" + JsonEscaped(run) + "\"}" : "{}");
         ReplaceAllInPlace(&text, "{{log_args}}",
-                          has_run ? "{\"run_id\":\"" + JsonEscaped(run) +
-                                        "\",\"kind\":\"both\",\"tail\":400}"
-                                  : "{\"kind\":\"both\",\"tail\":400}");
+                          has_run ? R"({"run_id":")" + JsonEscaped(run) +
+                                        R"(","kind":"both","tail":400})"
+                                  : R"({"kind":"both","tail":400})");
         return text;
     }
     return {};
@@ -392,7 +391,7 @@ void McpServer::StartWorker() {
 
 void McpServer::StopWorker() {
     {
-        std::lock_guard<std::mutex> lock(queue_mutex_);
+        std::scoped_lock lock(queue_mutex_);
         stopping_ = true;
     }
     queue_cv_.notify_all();
@@ -423,7 +422,7 @@ void McpServer::WorkerLoop() {
 
 void McpServer::CancelRequest(const Json& request_id) {
     const std::string key = request_id.dump();
-    std::lock_guard<std::mutex> lock(inflight_mutex_);
+    std::scoped_lock lock(inflight_mutex_);
     const auto it = inflight_.find(key);
     if (it != inflight_.end() && it->second != nullptr) {
         it->second->store(true);
@@ -458,12 +457,12 @@ std::optional<Json> McpServer::HandleRouted(const Json& message,
     const std::string key = id.dump();
     const auto token = std::make_shared<std::atomic<bool>>(false);
     {
-        std::lock_guard<std::mutex> lock(inflight_mutex_);
+        std::scoped_lock lock(inflight_mutex_);
         inflight_[key] = token;
     }
     {
-        std::lock_guard<std::mutex> lock(queue_mutex_);
-        tasks_.push_back([this, message, writer, key, token, id]() {
+        std::scoped_lock lock(queue_mutex_);
+        tasks_.emplace_back([this, message, writer, key, token, id]() {
             dispatcher_.SetCancelToken(token);
             std::optional<Json> response;
             try {
@@ -473,7 +472,7 @@ std::optional<Json> McpServer::HandleRouted(const Json& message,
             }
             dispatcher_.SetCancelToken(nullptr);
             {
-                std::lock_guard<std::mutex> guard(inflight_mutex_);
+                std::scoped_lock guard(inflight_mutex_);
                 inflight_.erase(key);
             }
             if (response.has_value()) writer(*response);
@@ -533,7 +532,7 @@ Json McpServer::TruncatePayload(const Json& value, std::size_t limit,
     // 1) 根数组：无法附加元数据，包成 {ok, items, ...}（旧行为下这种情况直接失败，
     //    所以形状变化不会破坏任何能工作的客户端）。
     if (value.is_array()) {
-        if (value.empty()) return Json();
+        if (value.empty()) return {};
         std::size_t keep = value.size();
         while (keep > 1 && PrefixSize(value, keep) > budget) {
             keep = keep * 9 / 10;
@@ -548,7 +547,7 @@ Json McpServer::TruncatePayload(const Json& value, std::size_t limit,
         return out;
     }
 
-    if (!value.is_object()) return Json();
+    if (!value.is_object()) return {};
 
     // 2) 对象：挑元素最多的一级数组字段。
     const std::string* best_key = nullptr;
@@ -560,7 +559,7 @@ Json McpServer::TruncatePayload(const Json& value, std::size_t limit,
             best_key = &it.key();
         }
     }
-    if (best_key == nullptr || best_count == 0) return Json();
+    if (best_key == nullptr || best_count == 0) return {};
 
     const Json& source = value[*best_key];
     std::size_t keep = source.size();

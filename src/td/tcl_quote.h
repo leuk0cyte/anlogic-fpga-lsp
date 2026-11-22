@@ -71,12 +71,10 @@ inline bool IsTclIdentifier(std::string_view value) {
     const bool first_ok = (first >= 'A' && first <= 'Z') || (first >= 'a' && first <= 'z') ||
                           first == '_';
     if (!first_ok) return false;
-    for (const char c : value) {
-        const bool ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
-                        (c >= '0' && c <= '9') || c == '_' || c == '$';
-        if (!ok) return false;
-    }
-    return true;
+    return std::ranges::all_of(value, [](char c) {
+        return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+               c == '_' || c == '$';
+    });
 }
 
 // 保守的"单 token"校验（器件名 / 速度 / 扫描模式 / 约束集名 / run 名）：
@@ -87,12 +85,10 @@ inline bool IsTclToken(std::string_view value) {
     const bool first_ok = (first >= 'A' && first <= 'Z') || (first >= 'a' && first <= 'z') ||
                           (first >= '0' && first <= '9');
     if (!first_ok) return false;
-    for (const char c : value) {
-        const bool ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
-                        (c >= '0' && c <= '9') || c == '_' || c == '.' || c == '+' || c == '-';
-        if (!ok) return false;
-    }
-    return true;
+    return std::ranges::all_of(value, [](char c) {
+        return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+               c == '_' || c == '.' || c == '+' || c == '-';
+    });
 }
 
 // -----------------------------------------------------------------------------
@@ -111,8 +107,8 @@ inline std::string TclQuote(std::string_view value) {
     if (IsTclBareSafe(value)) return std::string(value);
 
     const bool brace_hostile = value.find_first_of("\\{}") != std::string_view::npos ||
-                               value.find('\n') != std::string_view::npos ||
-                               value.find('\r') != std::string_view::npos;
+                               value.contains('\n') ||
+                               value.contains('\r');
     if (!brace_hostile) return "{" + std::string(value) + "}";
 
     std::string out;
@@ -140,8 +136,8 @@ inline std::string TclQuote(std::string_view value) {
 // 与旧实现逐字节一致（既有单测/契约不漂移），而含 `}` `\` 换行的恶意值仍被转义。
 inline std::string TclQuoteGrouped(std::string_view value) {
     const bool brace_hostile = value.find_first_of("\\{}") != std::string_view::npos ||
-                               value.find('\n') != std::string_view::npos ||
-                               value.find('\r') != std::string_view::npos;
+                               value.contains('\n') ||
+                               value.contains('\r');
     if (!brace_hostile) return "{" + std::string(value) + "}";
     return TclQuote(value);
 }

@@ -145,11 +145,11 @@ class Bridge : public ToolDispatcher {
     // ---- 工程 ----
     const project::Project& ActiveProject();
     const project::Project& ProjectFor(const Json& arguments);
-    std::string ResolveAl(const std::string& value) const;
-    std::string DiscoverDefaultAl() const;
-    std::string ResolveFile(const std::string& value, const project::Project& proj) const;
-    std::string SafeProjectFile(const std::string& value, const project::Project& proj) const;
-    std::string SafeProjectPath(const std::string& value, const project::Project& proj) const;
+    [[nodiscard]] std::string ResolveAl(const std::string& value) const;
+    [[nodiscard]] std::string DiscoverDefaultAl() const;
+    [[nodiscard]] std::string ResolveFile(const std::string& value, const project::Project& proj) const;
+    [[nodiscard]] std::string SafeProjectFile(const std::string& value, const project::Project& proj) const;
+    [[nodiscard]] std::string SafeProjectPath(const std::string& value, const project::Project& proj) const;
     static bool IsWithin(const std::string& path, const std::string& root);
 
     // ---- 器件 ----
@@ -218,7 +218,7 @@ class Bridge : public ToolDispatcher {
     Json DuplicateModulesTool(const Json& arguments);
 
     // ---- 辅助 ----
-    Json TdSummary() const;
+    [[nodiscard]] Json TdSummary() const;
 
     // flow 引擎（与 LSP 的 runFlow 同一实现）。按工程重建：flow 跑在旧工程上比没跑更糟。
     flow::FlowRunner* EnsureFlowRunner(const project::Project& proj);
@@ -233,7 +233,7 @@ class Bridge : public ToolDispatcher {
     std::vector<constraints::Port> TopPorts(const project::Project& proj,
                                            std::string* source);
     // 文本扫描顶层端口（HDL 索引就绪前的降级实现）
-    std::vector<ScannedPort> ScanTopPorts(const project::Project& proj) const;
+    static std::vector<ScannedPort> ScanTopPorts(const project::Project& proj);
 
     BridgeOptions options_;
     std::string root_;

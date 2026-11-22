@@ -43,6 +43,7 @@
 #include "verible/verilog/analysis/verilog-analyzer.h"
 #include "verible/verilog/preprocessor/verilog-preprocess.h"
 
+#include "platform/text.h"
 namespace fpgalsp::hdl {
 namespace {
 
@@ -58,7 +59,7 @@ const std::set<std::string>& Directions() {
 const std::set<std::string>& NetTypes() {
     static const std::set<std::string> v = {
         "wire",  "reg",     "logic", "tri",     "tri0",    "tri1",   "triand",
-        "trior", "wand",    "wor",   "supply0", "supply1", "uwire",  "var"};
+        "trior", "wand",    "wor",   "supply0", "supply1", "uwire",  "var",};
     return v;
 }
 
@@ -66,13 +67,13 @@ const std::set<std::string>& DataTypeWords() {
     static const std::set<std::string> v = {
         "integer", "int",    "real", "realtime", "time",   "bit",     "byte",
         "shortint", "longint", "string", "event", "genvar", "logic",  "reg",
-        "wire"};
+        "wire",};
     return v;
 }
 
 const std::set<std::string>& TypeMods() {
     static const std::set<std::string> v = {"signed", "unsigned", "automatic", "static",
-                                            "const"};
+                                            "const",};
     return v;
 }
 
@@ -81,7 +82,7 @@ const std::set<std::string>& DeclKeywords() {
         std::set<std::string> out = NetTypes();
         for (const char* extra :
              {"integer", "int", "real", "realtime", "time", "bit", "byte", "shortint",
-              "longint", "string", "event", "genvar"}) {
+              "longint", "string", "event", "genvar",}) {
             out.insert(extra);
         }
         return out;
@@ -94,7 +95,7 @@ const std::set<std::string>& Primitives() {
         "and",    "nand",     "or",      "nor",     "xor",       "xnor",    "buf",
         "not",    "bufif0",   "bufif1",  "notif0",  "notif1",    "nmos",    "pmos",
         "cmos",   "rnmos",    "rpmos",   "rcmos",   "tran",      "tranif0", "tranif1",
-        "rtran",  "rtranif0", "rtranif1", "pulldown", "pullup"};
+        "rtran",  "rtranif0", "rtranif1", "pulldown", "pullup",};
     return v;
 }
 
@@ -102,7 +103,7 @@ const std::set<std::string>& StmtPrev() {
     static const std::set<std::string> v = {
         ";",  "begin", "end",      "endgenerate", "generate",  "endcase",
         "endmodule",  "endfunction", "endtask", "else",     ":",         ")",
-        "endcasex",   "endcasez"};
+        "endcasex",   "endcasez",};
     return v;
 }
 
@@ -146,7 +147,7 @@ const std::set<std::string>& NonModule() {
         "coverpoint",   "bins",        "illegal_bins", "ignore_bins",   "modport",
         "clocking",     "endclocking", "global",       "timeunit",      "timeprecision",
         "nettype",      "interconnect", "wait_order",  "critical",      "suspend",
-        "resume",       "assume_guarantee", "restrict", "endchecker",   "checker"};
+        "resume",       "assume_guarantee", "restrict", "endchecker",   "checker",};
     return v;
 }
 
@@ -154,11 +155,7 @@ const std::set<std::string>& NonModule() {
 // 小工具
 // -----------------------------------------------------------------------------
 
-std::string ToLower(std::string_view text) {
-    std::string out(text);
-    for (char& c : out) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    return out;
-}
+using platform::ToLower;
 
 // 对应 Python _key：escaped identifier 去掉开头的反斜杠并去掉尾部空白
 std::string IdentKey(std::string_view name) {
@@ -173,7 +170,7 @@ std::string IdentKey(std::string_view name) {
 }
 
 bool IsSingleCharIn(std::string_view token, std::string_view chars) {
-    return token.size() == 1 && chars.find(token[0]) != std::string_view::npos;
+    return token.size() == 1 && chars.contains(token[0]);
 }
 
 bool IsOpenBracket(std::string_view t) { return IsSingleCharIn(t, "([{"); }
@@ -193,7 +190,7 @@ public:
     std::size_t at(std::size_t line) const { return starts_[line]; }
 
     int LineOf(std::size_t offset) const {
-        const auto it = std::upper_bound(starts_.begin(), starts_.end(), offset);
+        const auto it = std::ranges::upper_bound(starts_, offset);
         if (it == starts_.begin()) return 0;
         return static_cast<int>(it - starts_.begin()) - 1;
     }
@@ -326,15 +323,15 @@ std::vector<Token> LexWithVerible(std::string_view path, std::string_view text,
                                                                   preprocess_config);
     } catch (const std::exception& exc) {
         if (errors != nullptr) {
-            errors->push_back({0, 0, std::string("Verible lexer threw: ") + exc.what()});
+            errors->push_back({.line=0, .character=0, .message=std::string("Verible lexer threw: ") + exc.what()});
         }
         return out;
     } catch (...) {
-        if (errors != nullptr) errors->push_back({0, 0, "Verible lexer threw: unknown"});
+        if (errors != nullptr) errors->push_back({.line=0, .character=0, .message="Verible lexer threw: unknown"});
         return out;
     }
     if (analyzer == nullptr) {
-        if (errors != nullptr) errors->push_back({0, 0, "Verible analyzer unavailable"});
+        if (errors != nullptr) errors->push_back({.line=0, .character=0, .message="Verible analyzer unavailable"});
         return out;
     }
 
@@ -393,7 +390,7 @@ std::vector<Token> LexWithVerible(std::string_view path, std::string_view text,
         token.text.assign(piece.data(), piece.size());
         token.offset = static_cast<std::size_t>(offset);
 
-        const unsigned char first = static_cast<unsigned char>(token.text.front());
+        const auto first = static_cast<unsigned char>(token.text.front());
         if (token.text.front() == '"') {
             token.kind = 's';
         } else if (token.text.front() == '\\') {
@@ -528,9 +525,9 @@ std::size_t SkipBlock(const TokenList& toks, std::size_t i, std::size_t hi,
     int depth = 0;
     while (i < hi) {
         const std::string& t = toks[i].text;
-        if (opens.count(t) != 0) {
+        if (opens.contains(t)) {
             ++depth;
-        } else if (closes.count(t) != 0) {
+        } else if (closes.contains(t)) {
             --depth;
         }
         ++i;
@@ -773,7 +770,7 @@ public:
 
 private:
     void Error(int line, int character, std::string message) {
-        file_.parse_errors.push_back({line, character, std::move(message)});
+        file_.parse_errors.push_back({.line=line, .character=character, .message=std::move(message)});
     }
 
     // ---- 参数表 -----------------------------------------------------------
@@ -799,11 +796,11 @@ private:
                 local = true;
             }
             while (j < b && toks_[j].kind == 'i' &&
-                   DataTypeWords().count(toks_[j].text) != 0) {
+                   DataTypeWords().contains(toks_[j].text)) {
                 ++j;
             }
             while (j < b && toks_[j].kind == 'i' &&
-                   TypeMods().count(toks_[j].text) != 0) {
+                   TypeMods().contains(toks_[j].text)) {
                 ++j;
             }
             while (j < b && toks_[j].text == "[") {
@@ -811,7 +808,7 @@ private:
                 if (!e.has_value()) break;
                 j = *e;
             }
-            if (j >= b || toks_[j].kind != 'i' || NonModule().count(toks_[j].text) != 0) {
+            if (j >= b || toks_[j].kind != 'i' || NonModule().contains(toks_[j].text)) {
                 continue;
             }
             ParamItem item;
@@ -839,10 +836,10 @@ private:
         while (j < hi) {
             j = SkipAttrs(toks_, j, hi);
             while (j < hi && toks_[j].kind == 'i' &&
-                   DataTypeWords().count(toks_[j].text) != 0) {
+                   DataTypeWords().contains(toks_[j].text)) {
                 ++j;
             }
-            while (j < hi && toks_[j].kind == 'i' && TypeMods().count(toks_[j].text) != 0) {
+            while (j < hi && toks_[j].kind == 'i' && TypeMods().contains(toks_[j].text)) {
                 ++j;
             }
             while (j < hi && toks_[j].text == "[") {
@@ -850,7 +847,7 @@ private:
                 if (!e.has_value()) break;
                 j = *e;
             }
-            if (j >= hi || toks_[j].kind != 'i' || NonModule().count(toks_[j].text) != 0) {
+            if (j >= hi || toks_[j].kind != 'i' || NonModule().contains(toks_[j].text)) {
                 break;
             }
             ParamItem item;
@@ -902,11 +899,11 @@ private:
         out.direction = toks_[i].text;
         std::size_t j = SkipAttrs(toks_, i + 1, hi);
         while (j < hi && toks_[j].kind == 'i' &&
-               (NetTypes().count(toks_[j].text) != 0 ||
-                TypeMods().count(toks_[j].text) != 0 || toks_[j].text == "integer" ||
+               (NetTypes().contains(toks_[j].text) ||
+                TypeMods().contains(toks_[j].text) || toks_[j].text == "integer" ||
                 toks_[j].text == "int" || toks_[j].text == "real" ||
                 toks_[j].text == "time" || toks_[j].text == "bit")) {
-            if (NetTypes().count(toks_[j].text) != 0) out.net = toks_[j].text;
+            if (NetTypes().contains(toks_[j].text)) out.net = toks_[j].text;
             ++j;
         }
         if (j < hi && toks_[j].text == "[") {
@@ -917,7 +914,7 @@ private:
             }
         }
         while (j < hi) {
-            if (toks_[j].kind != 'i' || NonModule().count(toks_[j].text) != 0) break;
+            if (toks_[j].kind != 'i' || NonModule().contains(toks_[j].text)) break;
             out.names.push_back(j);
             ++j;
             while (j < hi && toks_[j].text == "[") {
@@ -949,8 +946,8 @@ private:
         out.keyword = toks_[i].text;
         std::size_t j = SkipAttrs(toks_, i + 1, hi);
         while (j < hi && toks_[j].kind == 'i' &&
-               (NetTypes().count(toks_[j].text) != 0 ||
-                TypeMods().count(toks_[j].text) != 0 || toks_[j].text == "integer" ||
+               (NetTypes().contains(toks_[j].text) ||
+                TypeMods().contains(toks_[j].text) || toks_[j].text == "integer" ||
                 toks_[j].text == "int" || toks_[j].text == "real" ||
                 toks_[j].text == "realtime" || toks_[j].text == "time" ||
                 toks_[j].text == "bit")) {
@@ -964,7 +961,7 @@ private:
             }
         }
         while (j < hi) {
-            if (toks_[j].kind != 'i' || NonModule().count(toks_[j].text) != 0) break;
+            if (toks_[j].kind != 'i' || NonModule().contains(toks_[j].text)) break;
             out.names.push_back(j);
             ++j;
             while (j < hi && toks_[j].text == "[") {
@@ -1004,17 +1001,17 @@ private:
             std::optional<std::string> direction;
             std::string net;
             BusRange range;
-            if (toks_[k].kind == 'i' && Directions().count(toks_[k].text) != 0) {
+            if (toks_[k].kind == 'i' && Directions().contains(toks_[k].text)) {
                 direction = toks_[k].text;
                 ansi = true;
                 ++k;
             }
             while (k < b && toks_[k].kind == 'i' &&
-                   (NetTypes().count(toks_[k].text) != 0 ||
-                    TypeMods().count(toks_[k].text) != 0 || toks_[k].text == "integer" ||
+                   (NetTypes().contains(toks_[k].text) ||
+                    TypeMods().contains(toks_[k].text) || toks_[k].text == "integer" ||
                     toks_[k].text == "int" || toks_[k].text == "real" ||
                     toks_[k].text == "time" || toks_[k].text == "bit")) {
-                if (NetTypes().count(toks_[k].text) != 0) net = toks_[k].text;
+                if (NetTypes().contains(toks_[k].text)) net = toks_[k].text;
                 ++k;
             }
             if (k < b && toks_[k].text == "[") {
@@ -1033,7 +1030,7 @@ private:
                     if (e.has_value()) k = *e;
                 }
             } else if (k < b && toks_[k].kind == 'i' &&
-                       NonModule().count(toks_[k].text) == 0) {
+                       !NonModule().contains(toks_[k].text)) {
                 name_index = k;
                 ++k;
             }
@@ -1136,11 +1133,11 @@ private:
     std::optional<InstanceGroup> TryInstance(std::size_t i, std::size_t hi) {
         if (toks_[i].kind != 'i') return std::nullopt;
         const std::string mod = toks_[i].text;
-        if (NonModule().count(mod) != 0) return std::nullopt;
+        if (NonModule().contains(mod)) return std::nullopt;
         if (!mod.empty() && mod.front() == '$') return std::nullopt;
         if (i > 0) {
             const std::string& prev = toks_[i - 1].text;
-            if (StmtPrev().count(prev) == 0) {
+            if (!StmtPrev().contains(prev)) {
                 const bool label_ok =
                     toks_[i - 1].kind == 'i' && i >= 3 && toks_[i - 2].text == ":" &&
                     toks_[i - 3].text == "begin";
@@ -1164,7 +1161,7 @@ private:
         group.start_token = i;
 
         std::optional<std::size_t> name_index;
-        if (j < hi && toks_[j].kind == 'i' && NonModule().count(toks_[j].text) == 0) {
+        if (j < hi && toks_[j].kind == 'i' && !NonModule().contains(toks_[j].text)) {
             if (j + 1 < hi && toks_[j + 1].text == "(") {
                 name_index = j;
                 ++j;
@@ -1185,7 +1182,7 @@ private:
         while (j < hi && toks_[j].text == ",") {
             ++j;
             std::size_t next_name = 0;
-            if (j < hi && toks_[j].kind == 'i' && NonModule().count(toks_[j].text) == 0 &&
+            if (j < hi && toks_[j].kind == 'i' && !NonModule().contains(toks_[j].text) &&
                 j + 1 < hi && toks_[j + 1].text == "(") {
                 next_name = j;
                 ++j;
@@ -1201,7 +1198,7 @@ private:
         }
 
         if (j >= hi || toks_[j].text != ";") return std::nullopt;
-        if (!name_index.has_value() && Primitives().count(mod) == 0) return std::nullopt;
+        if (!name_index.has_value() && !Primitives().contains(mod)) return std::nullopt;
 
         group.next = j + 1;
         group.end_line = toks_[j].line;
@@ -1247,7 +1244,7 @@ private:
                (toks_[j].text == "automatic" || toks_[j].text == "static")) {
             ++j;
         }
-        if (j >= hi || toks_[j].kind != 'i' || NonModule().count(toks_[j].text) != 0) {
+        if (j >= hi || toks_[j].kind != 'i' || NonModule().contains(toks_[j].text)) {
             Error(toks_[module_kw].line, toks_[module_kw].character,
                   "expected module name after 'module'");
             return i + 1;
@@ -1397,13 +1394,13 @@ private:
     public:
         BodyScanner(StructureParser& parser, ModuleInfo& info,
                     std::map<std::string, std::size_t>& port_by_name,
-                    const std::string& module_name)
+                    std::string module_name)
             : parser_(parser),
               toks_(parser.toks_),
               file_(parser.file_),
               info_(info),
               port_by_name_(port_by_name),
-              module_name_(module_name) {}
+              module_name_(std::move(module_name)) {}
 
         void Run(std::size_t lo, std::size_t hi) {
             std::size_t i = lo;
@@ -1424,7 +1421,7 @@ private:
                         ++i;
                         continue;
                     }
-                    if (Directions().count(tt) != 0) {
+                    if (Directions().contains(tt)) {
                         auto decl = parser_.ParseDirectionDecl(i, hi);
                         for (const std::size_t name_index : decl.names) {
                             AddPort(name_index, decl.direction, decl.range);
@@ -1432,7 +1429,7 @@ private:
                         i = decl.next;
                         continue;
                     }
-                    if (DeclKeywords().count(tt) != 0) {
+                    if (DeclKeywords().contains(tt)) {
                         auto decl = parser_.ParseSignalDecl(i, hi);
                         for (const std::size_t name_index : decl.names) {
                             AddSignal(name_index, decl.keyword, decl.range);
@@ -1483,7 +1480,7 @@ private:
 
         void AddSignal(std::size_t name_index, const std::string& keyword,
                        const BusRange& range) {
-            if (port_by_name_.count(IdentKey(toks_[name_index].text)) != 0) return;
+            if (port_by_name_.contains(IdentKey(toks_[name_index].text))) return;
             Signal signal = parser_.MakeSignal(name_index, keyword, range, module_name_);
             info_.positions.signal_pos[{signal.line, signal.character}] = info_.signals.size();
             info_.signals.push_back(std::move(signal));
@@ -1593,9 +1590,9 @@ ParsedFile ParseVerilog(std::string_view path, std::string_view text) {
         parser.Run();
     } catch (const std::exception& exc) {
         file.parse_errors.push_back(
-            {0, 0, std::string("internal parser error: ") + exc.what()});
+            {.line=0, .character=0, .message=std::string("internal parser error: ") + exc.what()});
     } catch (...) {
-        file.parse_errors.push_back({0, 0, "internal parser error: unknown"});
+        file.parse_errors.push_back({.line=0, .character=0, .message="internal parser error: unknown"});
     }
     return file;
 }
@@ -1623,7 +1620,7 @@ ParsedFile ParseVhdlEntities(std::string_view path, std::string_view text) {
         const std::string key = ToLower(name);
         if (!seen.insert(key).second) continue;
 
-        const std::size_t name_offset =
+        const auto name_offset =
             static_cast<std::size_t>(match.data() - text.data());
         int line = 0;
         int character = 0;
@@ -1670,7 +1667,7 @@ bool IsVhdlPath(std::string_view path) {
     return ext == ".vhd" || ext == ".vhdl";
 }
 
-bool IsPrimitiveGate(std::string_view name) { return Primitives().count(std::string(name)) != 0; }
+bool IsPrimitiveGate(std::string_view name) { return Primitives().contains(std::string(name)); }
 
 ParsedFile ParseFile(std::string_view path, std::string_view text) {
     if (IsVhdlPath(path)) return ParseVhdlEntities(path, text);
@@ -1701,7 +1698,7 @@ std::string CacheKey(std::string_view path, std::string_view text) {
 std::shared_ptr<const ParsedFile> ParseCache::Get(std::string_view path,
                                                  std::string_view text) {
     const std::string key = CacheKey(path, text);
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::scoped_lock lock(mutex_);
     const auto it = entries_.find(key);
     if (it == entries_.end()) {
         ++misses_;
@@ -1715,28 +1712,28 @@ void ParseCache::Put(std::string_view path, std::string_view text,
                      std::shared_ptr<ParsedFile> file) {
     // 哈希与键构造在锁外做（CacheKey 只读 path/text，不碰共享状态）
     const std::string key = CacheKey(path, text);
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::scoped_lock lock(mutex_);
     if (entries_.size() >= capacity) entries_.clear();
     entries_[key] = std::move(file);
 }
 
 void ParseCache::Clear() {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::scoped_lock lock(mutex_);
     entries_.clear();
 }
 
 std::size_t ParseCache::size() const {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::scoped_lock lock(mutex_);
     return entries_.size();
 }
 
 std::size_t ParseCache::hits() const {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::scoped_lock lock(mutex_);
     return hits_;
 }
 
 std::size_t ParseCache::misses() const {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::scoped_lock lock(mutex_);
     return misses_;
 }
 
@@ -1933,7 +1930,7 @@ void HdlIndex::AddFile(std::shared_ptr<const ParsedFile> file) {
     for (std::size_t module_index = 0; module_index < file->modules.size(); ++module_index) {
         const Module& module = file->modules[module_index].module;
         const std::string key = ToLower(IdentKey(module.name));
-        if (modules_by_key_.find(key) == modules_by_key_.end()) {
+        if (!modules_by_key_.contains(key)) {
             modules_by_key_[key] = {file_index, module_index};
             module_order_.push_back(module.name);
         }
@@ -1993,7 +1990,7 @@ void HdlIndex::RebuildModuleIndex() {
         for (std::size_t module_index = 0; module_index < file->modules.size(); ++module_index) {
             const std::string& name = file->modules[module_index].module.name;
             const std::string key = ToLower(IdentKey(name));
-            if (modules_by_key_.find(key) == modules_by_key_.end()) {
+            if (!modules_by_key_.contains(key)) {
                 modules_by_key_.emplace(key, std::make_pair(file_index, module_index));
                 module_order_.push_back(name);
             }
@@ -2075,7 +2072,7 @@ const Token* HdlIndex::TokenAt(const ParsedFile& file, int line, int character) 
         }
         const Token& token = file.tokens[static_cast<std::size_t>(candidate)];
         if (token.line != line) continue;
-        if (!(token.character <= character && character <= token.end_character)) continue;
+        if (token.character > character || character > token.end_character) continue;
         if (character < token.end_character || character == token.character) return &token;
         if (fallback == nullptr) fallback = &token;
     }
@@ -2413,7 +2410,7 @@ std::vector<WorkspaceSymbol> HdlIndex::SearchSymbols(std::string_view query) con
 
     auto matches = [&needle](std::string_view name) {
         if (needle.empty()) return true;
-        return ToLower(name).find(needle) != std::string::npos;
+        return ToLower(name).contains(needle);
     };
 
     for (const auto& file_ptr : files_) {
@@ -2541,7 +2538,7 @@ std::vector<Location> HdlIndex::References(std::string_view path, int line, int 
                 // 只认本模块范围内的 token（同名 wire 在别的 module 里不算）
                 if (!InModuleRange(info->module, other.line, other.character)) continue;
                 // 端口标签 / 其它符号位置：不是本 net 的引用
-                if (excluded.count({other.line, other.character}) != 0) continue;
+                if (excluded.contains({other.line, other.character})) continue;
                 // 本 net 的声明：include_declaration=false 时丢掉
                 if (is_declaration(file->path, other)) continue;
                 out.push_back(

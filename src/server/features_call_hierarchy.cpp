@@ -194,12 +194,9 @@ int RowWidth(std::string_view row) {
 }
 
 bool IsBlank(std::string_view row) {
-    for (const char ch : row) {
-        if (ch != ' ' && ch != '\t' && ch != '\r' && ch != '\n' && ch != '\f' && ch != '\v') {
-            return false;
-        }
-    }
-    return true;
+    return std::ranges::all_of(row, [](char ch) {
+        return ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n' || ch == '\f' || ch == '\v';
+    });
 }
 
 // Python on_textDocument_formatting 的那条编辑：覆盖全文

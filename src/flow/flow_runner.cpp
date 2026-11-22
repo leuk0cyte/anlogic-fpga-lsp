@@ -45,6 +45,8 @@
 #include "td/td_session.h"
 #include "td/tcl_quote.h"
 
+#include "platform/text.h"
+#include <array>
 namespace fpgalsp::flow {
 namespace {
 
@@ -61,13 +63,7 @@ std::string Slashes(std::string text) {
     return text;
 }
 
-std::string Join(std::string_view dir, std::string_view name) {
-    if (dir.empty()) return std::string(name);
-    std::string out(dir);
-    if (out.back() != '/' && out.back() != '\\') out.push_back('/');
-    out += name;
-    return Slashes(std::move(out));
-}
+using platform::Join;
 
 bool IsFile(std::string_view path) {
     if (path.empty()) return false;
@@ -103,7 +99,7 @@ std::vector<std::string> ListDir(std::string_view dir) {
         it.increment(ec);
         if (ec) break;
     }
-    std::sort(names.begin(), names.end());
+    std::ranges::sort(names);
     return names;
 }
 
@@ -123,7 +119,7 @@ std::vector<std::string> ListSubdirs(std::string_view dir) {
         it.increment(ec);
         if (ec) break;
     }
-    std::sort(names.begin(), names.end());
+    std::ranges::sort(names);
     return names;
 }
 
@@ -155,10 +151,7 @@ std::string BaseName(std::string_view path) {
     return pos == std::string_view::npos ? std::string(path) : std::string(path.substr(pos + 1));
 }
 
-bool EndsWith(std::string_view text, std::string_view suffix) {
-    return text.size() >= suffix.size() &&
-           text.compare(text.size() - suffix.size(), suffix.size(), suffix) == 0;
-}
+using platform::EndsWith;
 
 // 扩展名比对要不区分大小写：TD 自己有时候写 .MDN（Windows 文件系统不区分）
 bool EndsWithNoCase(std::string_view text, std::string_view suffix) {
@@ -175,12 +168,9 @@ bool EndsWithNoCase(std::string_view text, std::string_view suffix) {
 }
 
 bool HasNonSpace(std::string_view text) {
-    for (const char c : text) {
-        if (!(c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\f' || c == '\v')) {
-            return true;
-        }
-    }
-    return false;
+    return std::ranges::any_of(text, [](char c) {
+        return c != ' ' && c != '\t' && c != '\r' && c != '\n' && c != '\f' && c != '\v';
+    });
 }
 
 // -----------------------------------------------------------------------------
@@ -192,21 +182,18 @@ bool HasNonSpace(std::string_view text) {
 //   * 普通（没配探针）工程必须继续走"不强制 watcher"的老路径 —— 这是回归红线。
 bool HasProbeMdn(const project::Project& project) {
     const std::string dir = probe::ChipDebuggerDir(project);
-    for (const std::string& name : ListDir(dir)) {
-        if (!EndsWithNoCase(name, ".mdn")) continue;
+    return std::ranges::any_of(ListDir(dir), [&dir](const std::string& name) {
+        if (!EndsWithNoCase(name, ".mdn")) return false;
         const std::string path = Join(dir, name);
-        if (!IsFile(path)) continue;
-        if (HasNonSpace(ReadTextFile(path))) return true;
-    }
-    return false;
+        if (!IsFile(path)) return false;
+        return HasNonSpace(ReadTextFile(path));
+    });
 }
 
 double Round1(double value) { return std::nearbyint(value * 10.0) / 10.0; }
 
 std::string Hex8(unsigned long long value) {
-    char buffer[24];
-    std::snprintf(buffer, sizeof(buffer), "%08llx", value);
-    return buffer;
+    return std::format("{:08x}", value);
 }
 
 std::string NormaliseNewlines(std::string_view text) {
@@ -238,7 +225,7 @@ std::string RunLogErrorTail(std::string_view run_log_path) {
             trimmed.remove_suffix(1);
         }
         if (!trimmed.empty() && trimmed.front() != '=' &&
-            RE2::PartialMatch(std::string(trimmed), kWarningRe)) {
+            RE2::PartialMatch(trimmed, kWarningRe)) {
             hits.emplace_back(trimmed);
         }
         if (pos == std::string::npos) break;
@@ -326,7 +313,7 @@ struct Failure {
     std::string reason;
 };
 
-Failure Fail(std::string reason) { return Failure{true, std::move(reason)}; }
+Failure Fail(std::string reason) { return Failure{.failed=true, .reason=std::move(reason)}; }
 Failure Ok() { return Failure{}; }
 
 }  // namespace
@@ -453,7 +440,7 @@ struct FlowRunner::Impl {
     jsonrpc::Json StepsJson() const {
         const double now = Now();
         {
-            std::lock_guard<std::mutex> lock(steps_mutex);
+            std::scoped_lock lock(steps_mutex);
             if (steps_cached && now - steps_cached_at < 1.0) return steps_cache;
         }
         const std::vector<RunFlowSteps> runs = CollectRunsFlowSteps(RunsRoot());
@@ -483,7 +470,7 @@ struct FlowRunner::Impl {
             steps.push_back(std::move(item));
         }
         {
-            std::lock_guard<std::mutex> lock(steps_mutex);
+            std::scoped_lock lock(steps_mutex);
             steps_cache = steps;
             steps_cached_at = now;
             steps_cached = true;
@@ -492,19 +479,19 @@ struct FlowRunner::Impl {
     }
 
     FlowSession* Session() {
-        std::lock_guard<std::mutex> lock(session_mutex);
+        std::scoped_lock lock(session_mutex);
         return session.get();
     }
     void SetSession(std::unique_ptr<FlowSession> value) {
-        std::lock_guard<std::mutex> lock(session_mutex);
+        std::scoped_lock lock(session_mutex);
         session = std::move(value);
     }
     void KillSession() {
-        std::lock_guard<std::mutex> lock(session_mutex);
+        std::scoped_lock lock(session_mutex);
         if (session) session->Kill();
     }
     std::string SessionError() {
-        std::lock_guard<std::mutex> lock(session_mutex);
+        std::scoped_lock lock(session_mutex);
         return session ? session->LastError() : std::string();
     }
 
@@ -512,18 +499,18 @@ struct FlowRunner::Impl {
     void SetCancel(bool value) { cancel.store(value); }
 
     void SetStallReason(std::string reason) {
-        std::lock_guard<std::mutex> lock(mutex);
+        std::scoped_lock lock(mutex);
         stall_reason = std::move(reason);
     }
     std::string GetStallReason() {
-        std::lock_guard<std::mutex> lock(mutex);
+        std::scoped_lock lock(mutex);
         return stall_reason;
     }
 
     void RememberRunLog(const std::string& run_name, std::string_view text) {
         const std::string path = ReportedRunLogPath(text);
         if (path.empty()) return;
-        std::lock_guard<std::mutex> lock(logs_mutex);
+        std::scoped_lock lock(logs_mutex);
         for (auto& [name, existing] : run_logs) {
             if (name == run_name) {
                 existing = path;
@@ -534,7 +521,7 @@ struct FlowRunner::Impl {
     }
 
     std::string ReportedLog(const std::string& run_name) {
-        std::lock_guard<std::mutex> lock(logs_mutex);
+        std::scoped_lock lock(logs_mutex);
         for (const auto& [name, path] : run_logs) {
             if (name == run_name) return path;
         }
@@ -568,7 +555,7 @@ struct FlowRunner::Impl {
               std::optional<bool> ok = std::nullopt, jsonrpc::Json extra = jsonrpc::Json::object()) {
         jsonrpc::Json payload = jsonrpc::Json::object();
         {
-            std::lock_guard<std::mutex> lock(mutex);
+            std::scoped_lock lock(mutex);
             const double elapsed =
                 state.started_at > 0.0 ? Round1(Now() - state.started_at) : 0.0;
             if (!message.empty()) {
@@ -618,7 +605,7 @@ struct FlowRunner::Impl {
 
     void SetStage(const std::string& stage) {
         {
-            std::lock_guard<std::mutex> lock(mutex);
+            std::scoped_lock lock(mutex);
             state.stage = stage;
         }
         Emit("step", "Starting " + StageLabel(stage));
@@ -653,31 +640,31 @@ struct FlowRunner::Impl {
     }
 
     std::string RunDir() const {
-        std::lock_guard<std::mutex> lock(mutex);
+        std::scoped_lock lock(mutex);
         return run_dir;
     }
     void SetRunDir(const std::string& value) {
-        std::lock_guard<std::mutex> lock(mutex);
+        std::scoped_lock lock(mutex);
         run_dir = value;
     }
     void SetStageRun(const std::string& value) {
-        std::lock_guard<std::mutex> lock(mutex);
+        std::scoped_lock lock(mutex);
         stage_run = value;
     }
     std::string GetStageRun() {
-        std::lock_guard<std::mutex> lock(mutex);
+        std::scoped_lock lock(mutex);
         return stage_run;
     }
     void SetStageStarted(double value) {
-        std::lock_guard<std::mutex> lock(mutex);
+        std::scoped_lock lock(mutex);
         stage_started = value;
     }
     double GetStageStarted() {
-        std::lock_guard<std::mutex> lock(mutex);
+        std::scoped_lock lock(mutex);
         return stage_started;
     }
     bool IsRunning() {
-        std::lock_guard<std::mutex> lock(mutex);
+        std::scoped_lock lock(mutex);
         return state.running;
     }
 
@@ -724,7 +711,7 @@ struct FlowRunner::Impl {
             const std::vector<std::string> names = ListDir(RunDirOf(run_name));
             if (step.empty()) return RunStarted(names);
             const auto has = [&names](const std::string& name) {
-                return std::find(names.begin(), names.end(), name) != names.end();
+                return std::ranges::find(names, name) != names.end();
             };
             return has("." + step + ".begin.f") || has("." + step + ".end.f");
         };
@@ -820,8 +807,8 @@ struct FlowRunner::Impl {
         const std::string step = "rtl";
 
         {
-            std::lock_guard<std::mutex> lock(hook_mutex);
-            if (probe_hook_state.find(run_name) != probe_hook_state.end()) return;
+            std::scoped_lock lock(hook_mutex);
+            if (probe_hook_state.contains(run_name)) return;
         }
 
         // 脚本里的路径必须正斜杠：TD 的 Tcl 会把反斜杠当转义符吃掉。
@@ -834,7 +821,7 @@ struct FlowRunner::Impl {
         {
             std::string user_cfg_error;
             if (probe::WriteUserCfgFromMdn(owner->project_, &user_cfg_error)) {
-                Emit("log", run_name + ": 已按 user.mdn 重写 chip_debugger/user.cfg");
+                Emit("log", run_name + ": rewrote chip_debugger/user.cfg from user.mdn");
             } else {
                 // 写不出来（最常见：没有 gate 数据库 -> 拿不到采样时钟）时，**把旧 user.cfg
                 // 挪走**，让 TD 回退到"按 user.mdn 自动建 watcher"。留着旧文件更糟：它与当前
@@ -852,11 +839,11 @@ struct FlowRunner::Impl {
                     platform::IgnoreResult(platform::writes::Remove(
                         owner->project_.dir, user_cfg, false,
                         platform::writes::Options{.caller = "flow.user_cfg_remove"}));
-                    Emit("log", run_name + ": 生成 user.cfg 失败（" + user_cfg_error +
-                                    "），已把旧文件移到 " + backup +
-                                    "；本次由 TD 按 user.mdn 自动建 watcher");
+                    Emit("log", run_name + ": failed to generate user.cfg (" + user_cfg_error +
+                                    "); moved the old file to " + backup +
+                                    "; TD will build the watcher from user.mdn");
                 } else {
-                    Emit("log", run_name + ": 生成 user.cfg 失败：" + user_cfg_error);
+                    Emit("log", run_name + ": failed to generate user.cfg: " + user_cfg_error);
                 }
             }
         }
@@ -864,7 +851,8 @@ struct FlowRunner::Impl {
         // 写一个钩子脚本；失败返回空字符串（调用方只留痕、不判死）。
         const auto write_hook = [this](const std::string& path, const std::string& body) {
             if (WriteTextFile(owner->project_.dir, path, body)) return true;
-            Emit("log", "无法写入钩子脚本 " + path + "，退回 TD 默认的裸调用（可能是静默空操作）");
+            Emit("log", "cannot write hook script " + path +
+                            "; falling back to TD default bare call (may be a silent no-op)");
             return false;
         };
 
@@ -885,7 +873,7 @@ struct FlowRunner::Impl {
                 if (begin != std::string::npos && finish != std::string::npos) {
                     value = out.substr(begin + 17, finish - (begin + 17));
                 }
-                std::lock_guard<std::mutex> lock(hook_mutex);
+                std::scoped_lock lock(hook_mutex);
                 saved_hook_values[key] = value;
             }
             const std::string command = "set_param -run " + run_name + " " + step_name + " " +
@@ -893,9 +881,10 @@ struct FlowRunner::Impl {
             const std::string out = RunCommand(command, 120.0);
             const bool applied = !td::HasFatal(out);
             if (!applied) {
-                Emit("log", run_name + ": 本机 TD 不支持 " + step_name + " " + keyword +
-                                "，退回 TD 默认的裸调用"
-                                "（DefaultFlow.tcl 在 chipDebugger 未设置时可能是静默空操作）：" +
+                Emit("log", run_name + ": local TD does not support " + step_name + " " + keyword +
+                                "; falling back to TD default bare call"
+                                "(may be a silent no-op when chipDebugger is unset in "
+                                "DefaultFlow.tcl): " +
                                 ErrorLines(out, 2));
             }
             return applied;
@@ -930,7 +919,8 @@ struct FlowRunner::Impl {
                 std::string cwc_text =
                     probe::BuildCwcFromTemplate(owner->project_, mdn, build, &config_error, &config_info);
                 if (cwc_text.empty()) {
-                    Emit("log", run_name + ": 没有可用的 cwc 模板，退回从零生成（place 可能失败）：" +
+                    Emit("log", run_name + ": no usable cwc template; generating from scratch "
+                                                  "(place may fail): " +
                                     config_error);
                     cwc_text = probe::BuildCwcFromConfig(owner->project_, mdn, build, &config_error,
                                                          &config_info, /*include_eram=*/true);
@@ -940,22 +930,23 @@ struct FlowRunner::Impl {
                     // S-02：同 insert_debugger —— 路径过 TclQuoteGrouped（正常路径逐字节不变）。
                     insert_body += " -cwc " + td::TclQuoteGrouped(config_path);
                     gate_cwc_path = config_path;
-                    Emit("log", run_name + ": 探针构建参数 clock=" +
+                    Emit("log", run_name + ": probe build options clock=" +
                                     (build.has_clock ? build.clock : std::string("<from cwc>")) +
                                     " depth=" + std::to_string(build.depth) +
                                     (build.disabled.empty()
                                          ? std::string()
                                          : " disabled=" + std::to_string(build.disabled.size()) +
-                                               " 项") +
+                                               " items") +
                                     " (-cwc " + config_path + ")");
                 } else {
-                    Emit("log", run_name + ": 无法生成探针配置，忽略 clock/depth/disabled：" +
+                    Emit("log", run_name + ": cannot generate probe config; ignoring "
+                                                  "clock/depth/disabled: " +
                                     (config_error.empty() ? std::string("write failed")
                                                           : config_error));
                 }
             }
         }
-        insert_body += "\n";
+        insert_body += '\n';
 
         // ⚠ 配置（`-cwc`：采样深度/时钟/disable）必须在 **rtl 之前**也交给 TD。
         // 实测对照（2026-11-22 02:0x）：
@@ -965,9 +956,9 @@ struct FlowRunner::Impl {
         //     还是"未按 disable 裁剪"的版本。
         // 所以这里保持"两处都带"，与 GUI 的差别只是**交配置的时刻更早**，TD 实际仍是在
         // Optimize Gate 之后建立 watcher 时才消费它。
-        const bool has_config = insert_body.find(" -cwc ") != std::string::npos;
+        const bool has_config = insert_body.contains(" -cwc ");
         if (!write_hook(insert_hook, insert_body)) {
-            std::lock_guard<std::mutex> lock(hook_mutex);
+            std::scoped_lock lock(hook_mutex);
             probe_hook_state[run_name] = false;
             return;
         }
@@ -982,13 +973,13 @@ struct FlowRunner::Impl {
             applied = set_hook("gate", "tcl_afterstep", insert_hook) && applied;
         }
         {
-            std::lock_guard<std::mutex> lock(hook_mutex);
+            std::scoped_lock lock(hook_mutex);
             probe_hook_state[run_name] = applied;
         }
         if (applied) {
-            Emit("log", run_name + ": 探针钩子已设置（insert_debugger " +
+            Emit("log", run_name + ": probe hook installed (insert_debugger " +
                             td::TclQuoteGrouped(debugger_dir) +
-                            (run_name == "phy_1" ? " + bitgen 后 setup_debugger" : "") + "）");
+                            (run_name == "phy_1" ? " + setup_debugger after bitgen" : "") + ")");
         }
     }
 
@@ -1047,7 +1038,7 @@ struct FlowRunner::Impl {
         } else {
             return;
         }
-        const auto first = std::find(steps.begin(), steps.end(), step);
+        const auto first = std::ranges::find(steps, step);
         if (first == steps.end()) return;
         const std::string dir = RunDirOf(run_name);
         for (auto it = first; it != steps.end(); ++it) {
@@ -1082,7 +1073,7 @@ struct FlowRunner::Impl {
             if (stripped != text) {
                 platform::IgnoreResult(platform::writes::Write(owner->project_.dir, path, stripped,
                                               platform::writes::Options{
-                                                  .caller = "flow.status_table"}));
+                                                  .caller = "flow.status_table",}));
             }
         }
     }
@@ -1209,7 +1200,7 @@ struct FlowRunner::Impl {
             // 第二判据 —— 否则会误报失败（2026-11-21 实测：bit 里已有 watcher，
             // 直接 probe_capture 抓到了 1024 点，但 compiled.cwc 仍然不存在）。
             for (const std::string& name : ListDir(Join(RunDirOf("syn_1"), "cw"))) {
-                if (name.find("cwc") == std::string::npos) continue;
+                if (!name.contains("cwc")) continue;
                 watcher_built = true;
                 break;
             }
@@ -1253,8 +1244,8 @@ struct FlowRunner::Impl {
                         const std::string one =
                             all.substr(start, sep == std::string::npos ? std::string::npos
                                                                       : sep - start);
-                        if (one.find("KIT-") != std::string::npos) {
-                            said = said.empty() ? one : said + " / " + one;
+                        if (one.contains("KIT-")) {
+                            said = said.empty() ? one : std::format("{} / {}", said, one);
                             if (said.size() > 400) break;
                         }
                         if (sep == std::string::npos) break;
@@ -1267,8 +1258,9 @@ struct FlowRunner::Impl {
                     cwc_path + (watcher_present ? " parsed to 0 nets)" : " is missing)") +
                     ": TD said: " +
                     (said.empty() ? std::string("no mark_debug exists in the netlist") : said) +
-                    " —— 探针没有编进 bit；请确认 chip_debugger 目录被 insert_debugger 实际采用（" +
-                    probe::ChipDebuggerDir(owner->project_) + "）");
+                    " -- the probe was not compiled into the bitstream; check that the "
+                    "chip_debugger directory is actually used by insert_debugger (" +
+                    probe::ChipDebuggerDir(owner->project_) + ")");
             }
         }
 
@@ -1309,7 +1301,7 @@ struct FlowRunner::Impl {
             return Fail("No reusable placement database (no *_place.db under " + phy_dir +
                         "): run Place & Route first");
         }
-        std::sort(candidates.begin(), candidates.end(),
+        std::ranges::sort(candidates,
                   [](const std::string& a, const std::string& b) { return Mtime(a) > Mtime(b); });
         const std::string source_db = Slashes(candidates.front());
 
@@ -1321,9 +1313,7 @@ struct FlowRunner::Impl {
         const double t0 = Now();
         out = RunCommand("route", owner->options_.timeout_seconds);
         if (td::HasFatal(out)) return Fail("route failed: " + ErrorLines(out));
-        char message[160];
-        std::snprintf(message, sizeof(message), "route complete (%.1fs)", Now() - t0);
-        Emit("step", message);
+        Emit("step", std::format("route complete ({:.1f}s)", Now() - t0));
 
         for (const char* command : {"fix_hold", "update_timing -mode final"}) {
             out = RunCommand(command, 300.0);
@@ -1383,14 +1373,14 @@ struct FlowRunner::Impl {
     }
 
     double started_at_value() {
-        std::lock_guard<std::mutex> lock(mutex);
+        std::scoped_lock lock(mutex);
         return state.started_at;
     }
 
     // -------------------------------------------------------------------------
     // 心跳 / 看门狗
     // -------------------------------------------------------------------------
-    void Heartbeat(std::uint64_t generation, std::vector<std::string> stages) {
+    void Heartbeat(std::uint64_t generation, const std::vector<std::string>& stages) {
         (void)stages;
         std::string last_message;
         std::vector<std::pair<std::string, std::string>> seen_warnings;
@@ -1403,7 +1393,7 @@ struct FlowRunner::Impl {
         while (!heartbeat_stop.load() && generation == heartbeat_generation.load()) {
             std::string stage;
             {
-                std::lock_guard<std::mutex> lock(mutex);
+                std::scoped_lock lock(mutex);
                 if (!state.running || generation != heartbeat_generation.load()) return;
                 stage = state.stage;
             }
@@ -1451,7 +1441,7 @@ struct FlowRunner::Impl {
                     while (!trimmed.empty() && (trimmed.back() == ' ' || trimmed.back() == '\t')) {
                         trimmed.remove_suffix(1);
                     }
-                    if (trimmed.empty() || !RE2::PartialMatch(std::string(trimmed), kWarningRe)) {
+                    if (trimmed.empty() || !RE2::PartialMatch(trimmed, kWarningRe)) {
                         continue;
                     }
                     bool seen = false;
@@ -1505,8 +1495,8 @@ struct FlowRunner::Impl {
                 const std::string reason =
                     StallReason(activity, now, GetStageStarted(), owner->options_.stall_seconds);
                 if (!reason.empty()) {
-                    SetStallReason(active + " " + reason);
-                    Emit("error", "Watchdog: " + active + " " + reason);
+                    SetStallReason(std::format("{} {}", active, reason));
+                    Emit("error", std::format("Watchdog: {} {}", active, reason));
                     KillSession();
                     return;
                 }
@@ -1514,7 +1504,8 @@ struct FlowRunner::Impl {
 
             if (!message.empty() && message != last_message) {
                 last_message = message;
-                Emit("progress", (phase.empty() ? "" : phase + " · ") + message);
+                Emit("progress",
+                     phase.empty() ? message : std::format("{} · {}", phase, message));
             }
             std::this_thread::sleep_for(
                 std::chrono::milliseconds(static_cast<int>(owner->options_.heartbeat_seconds *
@@ -1539,7 +1530,7 @@ struct FlowRunner::Impl {
         // 同一个 FlowRunner 可以被反复 Start，而每次 Worker 都会新建一个 TD 会话 ——
         // 上一次 flow 里的 set_param 不继承到新会话，所以钩子状态必须清空重设。
         {
-            std::lock_guard<std::mutex> lock(hook_mutex);
+            std::scoped_lock lock(hook_mutex);
             probe_hook_state.clear();
         }
 
@@ -1663,7 +1654,7 @@ struct FlowRunner::Impl {
             const std::string summary = SummaryFromReports(report_json);
             RestoreProbeHooks();
             {
-                std::lock_guard<std::mutex> lock(mutex);
+                std::scoped_lock lock(mutex);
                 state.running = false;
                 state.stage = "done";
                 state.ok = true;
@@ -1684,7 +1675,7 @@ struct FlowRunner::Impl {
     }
 
     void CloseSession() {
-        std::lock_guard<std::mutex> lock(session_mutex);
+        std::scoped_lock lock(session_mutex);
         if (session) session->Close();
         session.reset();
     }
@@ -1694,7 +1685,7 @@ struct FlowRunner::Impl {
     void RestoreProbeHooks() noexcept {
         std::map<std::string, std::string> pending;
         {
-            std::lock_guard<std::mutex> lock(hook_mutex);
+            std::scoped_lock lock(hook_mutex);
             pending.swap(saved_hook_values);
         }
         for (const auto& [key, value] : pending) {
@@ -1707,8 +1698,8 @@ struct FlowRunner::Impl {
             // 一律清空（默认值就是空）。**不要**回写抓到的原值：`get_param` 的输出在
             // TD 日志里会被掩码成 "NNN"，回写进去等于给 run 配了一个不存在的脚本，
             // 下一次 place 直接 PRJ-8806（实测踩过）。
-            const std::string command = "set_param -run " + run_name + " " + step_name + " " +
-                                        keyword + " {}";
+            const std::string command =
+                std::format("set_param -run {} {} {} {{}}", run_name, step_name, keyword);
             (void)value;
             try {
                 RunCommand(command, 60.0);
@@ -1739,7 +1730,7 @@ struct FlowRunner::Impl {
             }
         }
         {
-            std::lock_guard<std::mutex> lock(mutex);
+            std::scoped_lock lock(mutex);
             state.running = false;
             state.stage = was_cancelled ? "cancelled" : "error";
             state.ok = false;
@@ -1779,7 +1770,7 @@ FlowRunner::~FlowRunner() {
     impl_->heartbeat_stop.store(true);
     impl_->KillSession();
     if (impl_->thread.joinable()) impl_->thread.join();
-    std::lock_guard<std::mutex> lock(impl_->session_mutex);
+    std::scoped_lock lock(impl_->session_mutex);
     if (impl_->session) impl_->session->Close();
     impl_->session.reset();
 }
@@ -1794,7 +1785,7 @@ jsonrpc::Json FlowRunner::Start(const std::vector<std::string>& stages, int jobs
 
 jsonrpc::Json FlowRunner::StartInternal(const std::vector<std::string>& stages, int jobs,
                                         const std::string& single_step) {
-    std::lock_guard<std::mutex> start_lock(impl_->start_mutex);
+    std::scoped_lock start_lock(impl_->start_mutex);
     std::vector<std::string> normalised = NormaliseStages(stages);
     // ------------------------------------------------------------------
     // 只跑 phy 但探针清单比 gate 网表新 → 自动补上 syn
@@ -1817,7 +1808,7 @@ jsonrpc::Json FlowRunner::StartInternal(const std::vector<std::string>& stages, 
 
     std::string run_id;
     {
-        std::lock_guard<std::mutex> lock(impl_->mutex);
+        std::scoped_lock lock(impl_->mutex);
         if (impl_->state.running) {
             jsonrpc::Json out = jsonrpc::Json::object();
             out["ok"] = false;
@@ -1901,11 +1892,11 @@ jsonrpc::Json FlowRunner::StartFromStep(const std::string& step, bool force, int
         const char* run;    // syn_1 / phy_1
         const char* marker; // <run>/.<marker>.end.f
     };
-    static const StepInfo kSteps[] = {
-        {"read_design", "syn_1", "read_design"}, {"opt_rtl", "syn_1", "opt_rtl"},
-        {"opt_gate", "syn_1", "opt_gate"},       {"opt_place", "phy_1", "opt_place"},
-        {"opt_route", "phy_1", "opt_route"},     {"bitgen", "phy_1", "bitgen"},
-    };
+    static constexpr auto kSteps = std::to_array<StepInfo>({
+        {.name="read_design", .run="syn_1", .marker="read_design"}, {.name="opt_rtl", .run="syn_1", .marker="opt_rtl"},
+        {.name="opt_gate", .run="syn_1", .marker="opt_gate"},       {.name="opt_place", .run="phy_1", .marker="opt_place"},
+        {.name="opt_route", .run="phy_1", .marker="opt_route"},     {.name="bitgen", .run="phy_1", .marker="bitgen"},
+    });
     const StepInfo* found = nullptr;
     for (const StepInfo& info : kSteps) {
         if (step == info.name) found = &info;
@@ -1948,7 +1939,7 @@ jsonrpc::Json FlowRunner::StartFromStep(const std::string& step, bool force, int
 jsonrpc::Json FlowRunner::Cancel() {
     bool running = false;
     {
-        std::lock_guard<std::mutex> lock(impl_->mutex);
+        std::scoped_lock lock(impl_->mutex);
         running = impl_->state.running;
         if (!running) {
             jsonrpc::Json out = jsonrpc::Json::object();
@@ -1976,7 +1967,7 @@ jsonrpc::Json FlowRunner::Cancel() {
 FlowState FlowRunner::Status() const {
     FlowState state;
     {
-        std::lock_guard<std::mutex> lock(impl_->mutex);
+        std::scoped_lock lock(impl_->mutex);
         state = impl_->state;
     }
     if (state.running && state.started_at > 0.0) {

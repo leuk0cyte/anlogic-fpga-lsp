@@ -181,10 +181,10 @@ class ReportStore final : public reports::ReportParseCache {
     // 只读版本（shared lock 下可调）：只判断"是否可能过期"，不改任何状态。
     // 快路径用它实现"没有 watcher 时的请求时检查"——发现过期就落到慢路径统一处理。
     bool AnyStaleUnlocked(const ProjectState& state, const project::Project& project) const;
-    void DropSnapshotsLocked(ProjectState& state);
+    static void DropSnapshotsLocked(ProjectState& state);
     void BumpRevisionLocked(ProjectState& state);
     // 丢弃某个文件的全部解析结果（4 类 + suggestions）
-    std::size_t DropPathLocked(ProjectState& state, const std::string& path);
+    static std::size_t DropPathLocked(ProjectState& state, const std::string& path);
 
     // ReportParseCache 的实现（cache_mutex_ 保护；构建期间 current_ 指向正在构建的工程）
     template <typename T>

@@ -30,7 +30,7 @@ namespace fpgalsp::platform {
 
 // 按 CRT/CommandLineToArgvW 规则引用**一个**参数。
 inline std::wstring QuoteWindowsArgument(std::wstring_view arg) {
-    if (arg.empty()) return std::wstring(L"\"\"");
+    if (arg.empty()) return {L"\"\""};
     const bool needs_quotes =
         arg.find_first_of(L" \t\n\v\"") != std::wstring_view::npos;
     if (!needs_quotes) return std::wstring(arg);

@@ -30,7 +30,7 @@ public:
     //   shared_server == nullptr：每个连接自建 Bridge（`--mcp --mcp-port`，独立 MCP-over-TCP 服务端）
     bool Start(unsigned short port, server::LspServer* shared_server, const std::string& root,
                bool allow_flow, bool allow_write, std::string* error);
-    unsigned short actual_port() const;
+    [[nodiscard]] unsigned short actual_port() const;
     void Shutdown();
 
 private:

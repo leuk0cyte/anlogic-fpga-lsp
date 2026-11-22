@@ -36,6 +36,7 @@
 #include "platform/utf16.h"
 #include "verible/common/text/token-info.h"
 #include "verible/verilog/parser/verilog-lexer.h"
+#include <span>
 #include "verible/verilog/parser/verilog-parser.h"  // verilog_symbol_name()
 
 namespace fpgalsp::semantics {
@@ -45,42 +46,37 @@ namespace {
 //  Python 侧的三张词表（逐项照抄，顺序无关但内容不能改）
 // -----------------------------------------------------------------------------
 
-bool InSet(const std::string_view* table, std::size_t count, std::string_view word) {
-    return std::find(table, table + count, word) != table + count;
+bool InSet(std::span<const std::string_view> table, std::string_view word) {
+    return std::ranges::find(table, word) != table.end();
 }
 
-constexpr std::string_view kTypeWords[] = {
+constexpr auto kTypeWords = std::to_array<std::string_view>({
     "wire", "reg", "logic", "integer", "signed", "unsigned",
     "tri", "genvar", "real", "time", "supply0", "supply1",
-};
-constexpr std::size_t kTypeWordCount = std::size(kTypeWords);
+});
 
-constexpr std::string_view kKeywords[] = {
+constexpr auto kKeywords = std::to_array<std::string_view>({
     "module", "endmodule", "input", "output", "inout", "wire", "reg", "logic", "assign",
     "always", "always_ff", "always_comb", "always_latch", "begin", "end", "if", "else",
     "case", "casez", "casex", "endcase", "default", "for", "while", "repeat", "forever",
     "posedge", "negedge", "parameter", "localparam", "generate", "endgenerate",
     "function", "endfunction", "task", "endtask", "initial", "defparam",
     "specify", "endspecify", "and", "or", "nand", "nor", "xor", "xnor", "not", "buf",
-};
-constexpr std::size_t kKeywordCount = std::size(kKeywords);
+});
 
-constexpr std::string_view kOpenWords[] = {
+constexpr auto kOpenWords = std::to_array<std::string_view>({
     "module", "begin", "case", "casez", "casex", "generate", "function", "task", "fork",
-};
-constexpr std::size_t kOpenWordCount = std::size(kOpenWords);
+});
 
-constexpr std::string_view kCloseWords[] = {
+constexpr auto kCloseWords = std::to_array<std::string_view>({
     "endmodule", "end", "endcase", "endfunction", "endtask", "endgenerate", "join",
-};
-constexpr std::size_t kCloseWordCount = std::size(kCloseWords);
+});
 
 // declaration_re 的关键字顺序（Python 交替式的书写顺序）
-constexpr std::string_view kDeclKeywords[] = {
+constexpr auto kDeclKeywords = std::to_array<std::string_view>({
     "input", "output", "inout", "wire", "reg", "logic", "tri", "integer",
     "genvar", "real", "time", "parameter", "localparam",
-};
-constexpr std::size_t kDeclKeywordCount = std::size(kDeclKeywords);
+});
 
 // -----------------------------------------------------------------------------
 //  字符分类（全部按 ASCII，与 Python 的正则一致）
@@ -157,7 +153,7 @@ public:
         const auto key = std::make_pair(line, start);
         const auto it = found_.find(key);
         if (it != found_.end() && it->second.priority >= priority) return;  // 同优先级先到先得
-        found_[key] = Candidate{length, type, priority};
+        found_[key] = Candidate{.length=length, .type=type, .priority=priority};
     }
 
     // 排序 + 去同行重叠（Python 的 ordered / last_line,last_end 逻辑）
@@ -165,10 +161,10 @@ public:
         std::vector<SemToken> ordered;
         ordered.reserve(found_.size());
         for (const auto& [position, candidate] : found_) {
-            ordered.push_back(SemToken{position.first, position.second,
-                                       candidate.length, candidate.type});
+            ordered.push_back(SemToken{.line=position.first, .start=position.second,
+                                       .length=candidate.length, .type=candidate.type,});
         }
-        std::sort(ordered.begin(), ordered.end(), [](const SemToken& a, const SemToken& b) {
+        std::ranges::sort(ordered, [](const SemToken& a, const SemToken& b) {
             return a.line != b.line ? a.line < b.line : a.start < b.start;
         });
         std::vector<SemToken> result;
@@ -214,9 +210,9 @@ void ScanWords(int line, std::string_view row, std::string_view code, CandidateT
             ++index;
         }
         const std::string_view word = code.substr(begin, index - begin);
-        if (InSet(kTypeWords, kTypeWordCount, word)) {
+        if (InSet(kTypeWords, word)) {
             AddSpan(sink, line, row, begin, index, kType, 6);
-        } else if (InSet(kKeywords, kKeywordCount, word)) {
+        } else if (InSet(kKeywords, word)) {
             AddSpan(sink, line, row, begin, index, kKeyword, 2);
         }
     }
@@ -270,8 +266,7 @@ bool MatchDeclaration(std::string_view code, std::size_t at, std::size_t* name_b
                       std::size_t* match_end) {
     if (at > 0 && IsWordChar(static_cast<unsigned char>(code[at - 1]))) return false;
     std::size_t after = 0;
-    for (std::size_t i = 0; i < kDeclKeywordCount; ++i) {
-        const std::string_view keyword = kDeclKeywords[i];
+    for (auto keyword : kDeclKeywords) {
         if (code.compare(at, keyword.size(), keyword) != 0) continue;
         const std::size_t end = at + keyword.size();
         if (end < code.size() && IsWordChar(static_cast<unsigned char>(code[end]))) continue;
@@ -283,7 +278,7 @@ bool MatchDeclaration(std::string_view code, std::size_t at, std::size_t* name_b
     while (index < code.size() && IsSpaceChar(code[index])) ++index;  // \s*
     // (?:signed|unsigned)?
     for (const std::string_view qualifier : {std::string_view("signed"),
-                                             std::string_view("unsigned")}) {
+                                             std::string_view("unsigned"),}) {
         if (code.compare(index, qualifier.size(), qualifier) == 0) {
             const std::size_t end = index + qualifier.size();
             if (end >= code.size() || !IsWordChar(static_cast<unsigned char>(code[end]))) {
@@ -340,10 +335,10 @@ bool MatchLiteral(std::string_view code, std::size_t at, std::size_t* match_end)
 
 // number_re: (?<![A-Za-z0-9_$'\]])\d+(?![A-Za-z0-9_$'])
 bool PreviousAllowsNumber(char c) {
-    return !(IsWordChar(static_cast<unsigned char>(c)) || c == '\'' || c == ']');
+    return !IsWordChar(static_cast<unsigned char>(c)) && c != '\'' && c != ']';
 }
 bool NextAllowsNumber(char c) {
-    return !(IsWordChar(static_cast<unsigned char>(c)) || c == '\'');
+    return !IsWordChar(static_cast<unsigned char>(c)) && c != '\'';
 }
 
 // -----------------------------------------------------------------------------
@@ -371,8 +366,8 @@ std::vector<RawToken> LexVerible(std::string_view text) {
             verilog::verilog_symbol_name(static_cast<std::size_t>(code));
         const int type = TokenTypeFromSymbolName(name);
         if (type < 0) continue;
-        tokens.push_back(RawToken{type, static_cast<std::size_t>(left),
-                                  static_cast<std::size_t>(right)});
+        tokens.push_back(RawToken{.type=type, .begin=static_cast<std::size_t>(left),
+                                  .end=static_cast<std::size_t>(right),});
     }
     return tokens;
 }
@@ -388,7 +383,7 @@ std::vector<SemToken> Merge(const std::vector<SemToken>& primary,
     std::vector<SemToken> ordered;
     ordered.reserve(merged.size());
     for (const auto& [position, token] : merged) ordered.push_back(token);
-    std::sort(ordered.begin(), ordered.end(), [](const SemToken& a, const SemToken& b) {
+    std::ranges::sort(ordered, [](const SemToken& a, const SemToken& b) {
         return a.line != b.line ? a.line < b.line : a.start < b.start;
     });
     std::vector<SemToken> result;
@@ -431,7 +426,7 @@ std::string_view TokenTypeName(int type) {
 int TokenTypeFromSymbolName(std::string_view kind) {
     // Python _SKIP_KINDS = ("<<", "end of file", "space", "newline", "define-tokens")
     const auto contains = [kind](std::string_view needle) {
-        return kind.find(needle) != std::string_view::npos;
+        return kind.contains(needle);
     };
     if (contains("<<") || contains("end of file") || contains("space") ||
         contains("newline") || contains("define-tokens")) {
@@ -439,8 +434,8 @@ int TokenTypeFromSymbolName(std::string_view kind) {
     }
     if (kind.size() >= 2 && kind.front() == '"') {
         const std::string_view inner = kind.substr(1, kind.size() - 2);
-        if (inner.rfind("//", 0) == 0 || inner.rfind("/&lowast;", 0) == 0 ||
-            inner.find("comment") != std::string_view::npos) {
+        if (inner.starts_with("//") || inner.starts_with("/&lowast;") ||
+            inner.contains("comment")) {
             return kComment;
         }
         if (!inner.empty() && inner.front() == '`') return kKeyword;  // 预处理指令
@@ -657,12 +652,12 @@ std::vector<SemToken> VeribleSideTokens(const hdl::HdlIndex* index, std::string_
     for (const RawToken& token : raw) {
         // first = 最后一个 start <= token.begin 的行
         std::size_t first = static_cast<std::size_t>(
-            std::upper_bound(lines.starts.begin(), lines.starts.end(), token.begin) -
+            std::ranges::upper_bound(lines.starts, token.begin) -
             lines.starts.begin());
         if (first == 0) continue;
         --first;
         std::size_t last = static_cast<std::size_t>(
-            std::upper_bound(lines.starts.begin(), lines.starts.end(), token.end) -
+            std::ranges::upper_bound(lines.starts, token.end) -
             lines.starts.begin());
         if (last == 0) continue;
         --last;
@@ -675,27 +670,27 @@ std::vector<SemToken> VeribleSideTokens(const hdl::HdlIndex* index, std::string_
         if (first == last) {
             const int end_column = ByteToColumn(first_row, token.end - lines.starts[first]);
             if (end_column > start_column) {
-                decoded.push_back(SemToken{static_cast<int>(first), start_column,
-                                           end_column - start_column, token.type});
+                decoded.push_back(SemToken{.line=static_cast<int>(first), .start=start_column,
+                                           .length=end_column - start_column, .type=token.type,});
             }
             continue;
         }
         // 跨行 token（块注释）：每行一段
         const int first_length = RowWidth(first_row) - start_column;
         if (first_length > 0) {
-            decoded.push_back(SemToken{static_cast<int>(first), start_column, first_length,
-                                       token.type});
+            decoded.push_back(SemToken{.line=static_cast<int>(first), .start=start_column, .length=first_length,
+                                       .type=token.type,});
         }
         for (std::size_t line = first + 1; line < last && line < lines.rows.size(); ++line) {
             const int width = RowWidth(lines.rows[line]);
             if (width > 0) {
-                decoded.push_back(SemToken{static_cast<int>(line), 0, width, token.type});
+                decoded.push_back(SemToken{.line=static_cast<int>(line), .start=0, .length=width, .type=token.type});
             }
         }
         if (last < lines.rows.size()) {
             const int end_column = ByteToColumn(lines.rows[last], token.end - lines.starts[last]);
             if (end_column > 0) {
-                decoded.push_back(SemToken{static_cast<int>(last), 0, end_column, token.type});
+                decoded.push_back(SemToken{.line=static_cast<int>(last), .start=0, .length=end_column, .type=token.type});
             }
         }
     }
@@ -783,15 +778,15 @@ std::vector<FoldingRange> FoldingRanges(std::string_view text) {
         const std::string_view row = lines.rows[line];
         const int line_number = static_cast<int>(line);
         if (comment_start >= 0) {
-            if (row.find("*/") != std::string_view::npos) {
-                ranges.push_back(FoldingRange{comment_start, line_number, true});
+            if (row.contains("*/")) {
+                ranges.push_back(FoldingRange{.start_line=comment_start, .end_line=line_number, .comment=true});
                 comment_start = -1;
             }
             continue;
         }
         const std::size_t open_block = row.find("/*");
         if (open_block != std::string_view::npos &&
-            row.substr(open_block + 2).find("*/") == std::string_view::npos) {
+            !row.substr(open_block + 2).contains("*/")) {
             comment_start = line_number;
             continue;
         }
@@ -812,20 +807,20 @@ std::vector<FoldingRange> FoldingRanges(std::string_view text) {
                 ++index;
             }
             const std::string_view word = code.substr(begin, index - begin);
-            if (InSet(kOpenWords, kOpenWordCount, word)) {
+            if (InSet(kOpenWords, word)) {
                 stack.push_back(line_number);
-            } else if (InSet(kCloseWords, kCloseWordCount, word) && !stack.empty()) {
+            } else if (InSet(kCloseWords, word) && !stack.empty()) {
                 const int start = stack.back();
                 stack.pop_back();
                 if (line_number > start) {
-                    ranges.push_back(FoldingRange{start, line_number, false});
+                    ranges.push_back(FoldingRange{.start_line=start, .end_line=line_number, .comment=false});
                 }
             }
         }
     }
     if (comment_start >= 0 && comment_start < static_cast<int>(lines.rows.size()) - 1) {
-        ranges.push_back(FoldingRange{comment_start,
-                                      static_cast<int>(lines.rows.size()) - 1, true});
+        ranges.push_back(FoldingRange{.start_line=comment_start,
+                                      .end_line=static_cast<int>(lines.rows.size()) - 1, .comment=true,});
     }
 
     // 连续 `//` 行块
@@ -839,18 +834,18 @@ std::vector<FoldingRange> FoldingRanges(std::string_view text) {
         while (begin < end && IsSpaceChar(row[begin])) ++begin;
         while (end > begin && IsSpaceChar(row[end - 1])) --end;
         const std::string_view stripped = row.substr(begin, end - begin);
-        if (stripped.rfind("//", 0) == 0) {
+        if (stripped.starts_with("//")) {
             if (block_start < 0) block_start = line_number;
         } else {
             if (block_start >= 0 && line_number - 1 > block_start) {
-                ranges.push_back(FoldingRange{block_start, line_number - 1, true});
+                ranges.push_back(FoldingRange{.start_line=block_start, .end_line=line_number - 1, .comment=true});
             }
             block_start = -1;
         }
     }
     if (block_start >= 0 && static_cast<int>(lines.rows.size()) - 1 > block_start) {
-        ranges.push_back(FoldingRange{block_start,
-                                      static_cast<int>(lines.rows.size()) - 1, true});
+        ranges.push_back(FoldingRange{.start_line=block_start,
+                                      .end_line=static_cast<int>(lines.rows.size()) - 1, .comment=true,});
     }
     return ranges;
 }

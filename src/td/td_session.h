@@ -64,7 +64,7 @@ public:
     TdSession& operator=(const TdSession&) = delete;
 
     // 启动时的横幅文本（对应 Python self.banner）
-    const std::string& banner() const { return banner_; }
+    [[nodiscard]] const std::string& banner() const { return banner_; }
 
     // 执行一条 Tcl 命令，返回**未经 clean_lines 处理**的原始文本。
     // 语义与 Python run() 一致：截取 __B/__E 之间，再全局去掉 "td > "。
@@ -86,17 +86,17 @@ public:
     // └───────────────────────────────────────────────────────────────────────┘
     std::string Run(std::string_view tcl, double timeout_seconds = 180.0);
 
-    bool Alive() const;
+    [[nodiscard]] bool Alive() const;
     void Kill();
     void Close();
 
-    const TdChoice& td() const { return td_; }
+    [[nodiscard]] const TdChoice& td() const { return td_; }
 
     // 进程句柄（测试/诊断用）
-    unsigned long ProcessId() const;
+    [[nodiscard]] unsigned long ProcessId() const;
 
     // 本会话实际使用的 cwd（D-3：未显式指定时是 %TEMP%/fpgalsp-td-<pid>-<n>）。
-    const std::string& WorkDir() const;
+    [[nodiscard]] const std::string& WorkDir() const;
 
     // 默认超时（对应 Python run(..., timeout=180.0)）
     static constexpr double kDefaultTimeout = 180.0;

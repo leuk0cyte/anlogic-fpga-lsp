@@ -18,6 +18,7 @@
 #include "reports/report_patterns_internal.h"
 #include "reports/report_text.h"
 
+#include <array>
 namespace fpgalsp::reports {
 namespace {
 
@@ -60,27 +61,25 @@ struct PatternEntry {
     std::string_view pattern;
 };
 
-constexpr PatternEntry kPatterns[] = {
+constexpr auto kPatterns = std::to_array<PatternEntry>({
     {kSuggestionPattern},
     {kPriorityPattern},
-};
+});
 
 }  // namespace
 
 namespace detail {
 
 bool ValidateQorPatterns(std::string* error) {
-    for (const PatternEntry& entry : kPatterns) {
+    return std::ranges::all_of(kPatterns, [error](const PatternEntry& entry) {
         const RE2 probe{std::string(entry.pattern)};
-        if (!probe.ok()) {
-            if (error != nullptr) {
-                *error = "reports/qor: bad pattern '" + std::string(entry.pattern) +
-                         "': " + probe.error();
-            }
-            return false;
+        if (probe.ok()) return true;
+        if (error != nullptr) {
+            *error = "reports/qor: bad pattern '" + std::string(entry.pattern) +
+                     "': " + probe.error();
         }
-    }
-    return true;
+        return false;
+    });
 }
 
 }  // namespace detail
@@ -147,7 +146,7 @@ QorReport ParseQor(std::string_view text, std::string_view step) {
             group = std::string(key);  // 分组标题，后续行归入该组
             continue;
         }
-        report.metrics.push_back(QorMetric{group, std::string(key), std::string(value)});
+        report.metrics.push_back(QorMetric{.group=group, .key=std::string(key), .value=std::string(value)});
     }
 
     // ---- 建议表 ----
@@ -193,7 +192,7 @@ QorReport ParseQor(std::string_view text, std::string_view step) {
         // 后续行：只把最后一个单元格当作正文续行（复现 Python 的 cells[-1]）
         const std::string_view body = Strip(cells.back());
         if (body.empty()) continue;
-        current.text += "\n";
+        current.text += '\n';
         current.text += body;
     }
     if (has_current) report.suggestions.push_back(std::move(current));

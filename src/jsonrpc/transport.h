@@ -183,7 +183,7 @@ public:
         std::string body = Serialize(message, Framer::kCompactJson);
         // MCP 的 body 里绝对不能有换行（json.dump 的紧凑形式已保证，
         // 但字符串值里如果含 U+000A 会以 \n 转义形式出现，是安全的）。
-        std::lock_guard<std::mutex> lock(write_mutex_);
+        std::scoped_lock lock(write_mutex_);
         if (closed_) return false;
         try {
             if (!Framer::WriteFrame(out_, body)) {

@@ -169,8 +169,8 @@ struct TdCheckResult {
     bool failed = false;
     std::string error;
 
-    std::size_t total() const { return all.size(); }
-    bool empty() const { return all.empty(); }
+    [[nodiscard]] std::size_t total() const { return all.size(); }
+    [[nodiscard]] bool empty() const { return all.empty(); }
 };
 
 // 一条诊断归属哪个文件（与 lsp_server 原有的 DiagnosticPath 逐字一致）：

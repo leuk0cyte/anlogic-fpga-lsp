@@ -61,7 +61,7 @@ public:
     Logger& operator=(const Logger&) = delete;
 
     // 是否真的会写日志（对应 Python 里 stream is None 的判定）
-    bool enabled() const noexcept;
+    [[nodiscard]] bool enabled() const noexcept;
 
     // 日志写入。never-raise：任何 IO 失败都静默吞掉（对应 Python 的 except OSError: pass）
     void log(LogLevel level, std::string_view message) const;

@@ -20,16 +20,16 @@ uint64_t LintService::Request(const std::string& path, std::string uri) {
     uint64_t generation = 0;
     bool coalesced = false;
     {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::scoped_lock lock(mutex_);
         if (stop_) return 0;
         generation = ++next_generation_;
         latest_generation_[path] = generation;
         const auto now = std::chrono::steady_clock::now();
         const auto ready_at = now + std::chrono::milliseconds(std::max(0, options_.debounce_ms));
-        if (pending_.find(path) != pending_.end()) coalesced = true;
-        pending_[path] = Pending{std::move(uri), generation, now, ready_at};
+        if (pending_.contains(path)) coalesced = true;
+        pending_[path] = Pending{.uri=std::move(uri), .generation=generation, .requested_at=now, .ready_at=ready_at};
         {
-            std::lock_guard<std::mutex> stats_lock(stats_mutex_);
+            std::scoped_lock stats_lock(stats_mutex_);
             ++stats_.requests;
             if (coalesced) ++stats_.coalesced;
         }
@@ -40,7 +40,7 @@ uint64_t LintService::Request(const std::string& path, std::string uri) {
 
 void LintService::Cancel(const std::string& path) {
     {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::scoped_lock lock(mutex_);
         pending_.erase(path);
         // 让在跑的那一轮作废（结果算完会被丢弃，不发布）
         latest_generation_[path] = ++next_generation_;
@@ -50,7 +50,7 @@ void LintService::Cancel(const std::string& path) {
 
 void LintService::Shutdown() {
     {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::scoped_lock lock(mutex_);
         if (stop_ && !worker_.joinable()) return;
         stop_ = true;
         pending_.clear();
@@ -62,7 +62,7 @@ void LintService::Shutdown() {
 }
 
 LintService::Stats LintService::stats() const {
-    std::lock_guard<std::mutex> lock(stats_mutex_);
+    std::scoped_lock lock(stats_mutex_);
     return stats_;
 }
 
@@ -115,13 +115,13 @@ void LintService::Loop() {
 
         bool publish = false;
         {
-            std::lock_guard<std::mutex> lock(mutex_);
+            std::scoped_lock lock(mutex_);
             const auto it = latest_generation_.find(path);
             // 只有"这个文件的最新代次仍是这一轮"才发布：期间又编辑 / didClose 都会让代次前进
             publish = !stop_ && it != latest_generation_.end() && it->second == generation;
         }
         {
-            std::lock_guard<std::mutex> stats_lock(stats_mutex_);
+            std::scoped_lock stats_lock(stats_mutex_);
             stats_.last_ms = elapsed;
             stats_.last_queue_ms = queue_ms;
             if (publish) {

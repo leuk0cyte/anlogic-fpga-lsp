@@ -32,10 +32,10 @@ struct TdPhaseTimings {
     bool reused_session = false;  // 会话是否来自预热（A5 预热评估用）
 
     // 四段之和（用于核对 total 的"其余"部分）
-    double accounted_ms() const {
+    [[nodiscard]] double accounted_ms() const {
         return startup_ms + import_ms + read_hdl_ms + parse_ms;
     }
-    double other_ms() const { return total_ms > accounted_ms() ? total_ms - accounted_ms() : 0.0; }
+    [[nodiscard]] double other_ms() const { return total_ms > accounted_ms() ? total_ms - accounted_ms() : 0.0; }
 };
 
 namespace detail {
@@ -69,14 +69,14 @@ public:
         return ms;
     }
     // 只读不重置
-    double ElapsedMs() const {
+    [[nodiscard]] double ElapsedMs() const {
         if (!active_) return 0.0;
         const auto now = std::chrono::steady_clock::now();
         return std::chrono::duration<double, std::milli>(now - start_).count();
     }
 
 private:
-    std::chrono::steady_clock::time_point start_{};
+    std::chrono::steady_clock::time_point start_;
     bool active_ = false;
 };
 

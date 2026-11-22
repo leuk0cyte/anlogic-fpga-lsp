@@ -18,22 +18,20 @@
 #include "platform/never_throw.h"
 #include "platform/write_service.h"
 
+#include "platform/text.h"
+#include <array>
+#include <format>
 namespace fpgalsp::td {
 namespace {
 
 namespace plat = fpgalsp::platform;
 
-std::string ToLower(std::string_view s) {
-    std::string out(s);
-    for (char& c : out) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    return out;
-}
+using platform::ToLower;
 
 bool EndsWithLower(std::string_view s, std::string_view suffix_lower) {
     const std::string lower = ToLower(s);
     if (lower.size() < suffix_lower.size()) return false;
-    return lower.compare(lower.size() - suffix_lower.size(), suffix_lower.size(),
-                         suffix_lower) == 0;
+    return lower.ends_with(suffix_lower);
 }
 
 bool StartsWithUpper(std::string_view s, std::string_view prefix_upper) {
@@ -273,7 +271,7 @@ std::vector<std::string> InstallRootsWith(const TdEnv& env) {
         if (root.empty()) return;
 
         const std::string key = ToLower(root);
-        if (std::find(seen.begin(), seen.end(), key) != seen.end()) return;
+        if (std::ranges::find(seen, key) != seen.end()) return;
         seen.push_back(key);
         roots.push_back(root);
     };
@@ -282,7 +280,7 @@ std::vector<std::string> InstallRootsWith(const TdEnv& env) {
         const std::string d(1, drive);
 
         // 三个浅层基目录
-        const std::string bases[3] = {
+        const std::array<std::string, 3> bases = {
             d + ":/" + kReleaseDir,
             d + ":/Program Files/" + kReleaseDir,
             d + ":/Program Files (x86)/" + kReleaseDir,
@@ -290,17 +288,17 @@ std::vector<std::string> InstallRootsWith(const TdEnv& env) {
         for (const auto& base : bases) {
             for (const auto& name : env.list_dir(base)) {
                 if (StartsWithUpper(name, "TD_RELEASE")) {
-                    push(base + "/" + name);
+                    push(std::format("{}/{}", base, name));
                 }
             }
         }
 
         // 深一层：<drive>/<任意目录>/Anlogic/TD_Release_*
         for (const auto& top : env.list_dir(d + ":/")) {
-            const std::string candidate = d + ":/" + top + "/" + kReleaseDir;
+            const std::string candidate = std::format("{}:/{}/{}", d, top, kReleaseDir);
             for (const auto& name : env.list_dir(candidate)) {
                 if (StartsWithUpper(name, "TD_RELEASE")) {
-                    push(candidate + "/" + name);
+                    push(std::format("{}/{}", candidate, name));
                 }
             }
         }
@@ -329,7 +327,7 @@ std::vector<TdInstall> InstallsWith(const TdEnv& env) {
     }
 
     // 对应 Python: sort(key=(key, root), reverse=True) —— 最新在前
-    std::sort(found.begin(), found.end(), [](const TdInstall& a, const TdInstall& b) {
+    std::ranges::sort(found, [](const TdInstall& a, const TdInstall& b) {
         const int c = CompareVersionKey(a.key, b.key);
         if (c != 0) return c > 0;
         return a.root > b.root;

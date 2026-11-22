@@ -40,7 +40,7 @@ std::wstring WidePath(std::string_view utf8) {
 
 std::string Utf8FromPath(const fs::path& path) {
     const std::u8string utf8 = path.u8string();
-    return std::string(reinterpret_cast<const char*>(utf8.data()), utf8.size());
+    return {reinterpret_cast<const char*>(utf8.data()), utf8.size()};
 }
 
 }  // namespace
@@ -156,7 +156,7 @@ std::vector<std::string> ListSubdirectories(std::string_view dir) {
         iterator.increment(ec);
         if (ec) break;
     }
-    std::sort(out.begin(), out.end());
+    std::ranges::sort(out);
     return out;
 }
 
@@ -184,7 +184,7 @@ std::vector<std::string> GlobReportFiles(std::string_view dir, std::string_view 
         iterator.increment(ec);
         if (ec) break;
     }
-    std::sort(out.begin(), out.end());
+    std::ranges::sort(out);
     return out;
 }
 
@@ -192,7 +192,7 @@ std::string FirstExisting(const std::vector<std::string>& candidates) {
     for (const std::string& candidate : candidates) {
         if (!candidate.empty() && IsFile(candidate)) return candidate;
     }
-    return std::string();
+    return {};
 }
 
 std::string RunsDirectory(std::string_view project_dir, std::string_view project_name) {

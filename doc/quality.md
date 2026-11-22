@@ -57,7 +57,7 @@ cmd /c tools\audit\with_vcvars.cmd python tools\audit\clang_tidy_gate.py --only 
 | 项 | 值 |
 | --- | --- |
 | clang-tidy | **67/67 TU 解析成功，11,154 原始 → 8,234 唯一位置**（2026-11-22，LLVM 23.1.5，0.26.0） |
-| clang-tidy **门禁**基线 | **281 条唯一位置 / 67 TU**（2026-11-22 18:15，LLVM 23.1.5，0.27.0 修复后；修复前 320 条，atoi/静态初始化等已消）。此数只许下降 |
+| clang-tidy **门禁**基线 | **142 条唯一位置 / 67 TU**（2026-11-22 21:45，LLVM 23.1.5，0.28.0 B/C 批量修复后；0.27.0 为 281、修复前 320）。此数只许下降 |
 | MSVC `/analyze` | 62 TU **0 条**（2026-11-19 口径；control 证明生效，但 `CppCoreCheck.dll` 未安装，C26xxx 未覆盖） |
 
 ## 审计证据归档（按日期）

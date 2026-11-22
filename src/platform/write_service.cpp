@@ -9,12 +9,13 @@
 
 #include "platform/write_service.h"
 
+#include <array>
 #include <atomic>
 #include <chrono>
-#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <map>
 #include <mutex>
@@ -99,7 +100,7 @@ bool HasForbiddenSegment(const std::string& normalized, std::string* why) {
             if (why != nullptr) *why = "path traversal segment '..' is not allowed";
             return true;
         }
-        if (lower.find(".fpgalsp") != std::string::npos) {
+        if (lower.contains(".fpgalsp")) {
             if (why != nullptr) {
                 *why = "writing into '.fpgalsp' is not allowed (state lives in the OS temp dir; "
                        "see platform::state_dir)";
@@ -113,13 +114,13 @@ bool HasForbiddenSegment(const std::string& normalized, std::string* why) {
 }
 
 bool IsProjectUserFile(const std::string& rel_to_project) {
-    static const char* kExtensions[] = {".al", ".adc", ".sdc"};
-    for (const char* ext : kExtensions) {
+    static constexpr std::array<std::string_view, 3> kExtensions = {".al", ".adc", ".sdc"};
+    for (const std::string_view ext : kExtensions) {
         if (EndsWithNoCase(rel_to_project, ext)) return true;
     }
     // ChipWatcher 清单与配置：chip_debugger/user.mdn、user.cfg（TD GUI 也写这里）
     const std::string lower = LowerCopy(rel_to_project);
-    if (lower.rfind("chip_debugger/", 0) != 0) return false;
+    if (!lower.starts_with("chip_debugger/")) return false;
     return EndsWithNoCase(rel_to_project, ".mdn") || EndsWithNoCase(rel_to_project, ".cfg");
 }
 
@@ -128,7 +129,7 @@ std::string RelativeWithin(const std::string& path, const std::string& root) {
     std::string norm_root = LowerCopy(normalize_path(root));
     while (norm_root.size() > 1 && norm_root.back() == '/') norm_root.pop_back();
     if (norm_path.size() <= norm_root.size()) return {};
-    if (norm_path.compare(0, norm_root.size(), norm_root) != 0) return {};
+    if (!norm_path.starts_with(norm_root)) return {};
     if (norm_path[norm_root.size()] != '/') return {};
     return norm_path.substr(norm_root.size() + 1);
 }
@@ -151,10 +152,9 @@ std::string JsonEscape(std::string_view text) {
             case '\t': out += "\\t"; break;
             default:
                 if (static_cast<unsigned char>(c) < 0x20) {
-                    char buffer[8];
-                    std::snprintf(buffer, sizeof(buffer), "\\u%04x",
-                                  static_cast<unsigned>(static_cast<unsigned char>(c)));
-                    out += buffer;
+                    // 与原来 snprintf("\\u%04x") 逐字节一致（小写十六进制、零填充）。
+                    out += std::format("\\u{:04x}",
+                                       static_cast<unsigned>(static_cast<unsigned char>(c)));
                 } else {
                     out.push_back(c);
                 }
@@ -240,49 +240,36 @@ class MemoryBackend final : public Backend {
         return true;
     }
     bool Remove(const std::string& path, bool recursive) override {
-        bool removed = files_.erase(path) != 0;
-        if (dirs_.erase(path) != 0) removed = true;
+        files_.erase(path);
+        dirs_.erase(path);
         if (recursive) {
             const std::string prefix = path + "/";
             for (auto it = files_.begin(); it != files_.end();) {
-                if (it->first.rfind(prefix, 0) == 0) {
-                    it = files_.erase(it);
-                    removed = true;
-                } else {
-                    ++it;
-                }
+                it = it->first.starts_with(prefix) ? files_.erase(it) : std::next(it);
             }
             for (auto it = dirs_.begin(); it != dirs_.end();) {
-                if (it->rfind(prefix, 0) == 0) {
-                    it = dirs_.erase(it);
-                    removed = true;
-                } else {
-                    ++it;
-                }
+                it = it->starts_with(prefix) ? dirs_.erase(it) : std::next(it);
             }
         }
-        return removed || true;  // 删除不存在的东西也算成功（与 fs::remove 一致）
+        return true;  // 删除不存在的东西也算成功（与 fs::remove 一致）
     }
     bool Rename(const std::string& from, const std::string& to) override {
-        bool moved = false;
         if (const auto it = files_.find(from); it != files_.end()) {
             files_[to] = it->second;
             files_.erase(it);
-            moved = true;
         }
-        if (dirs_.erase(from) != 0) moved = true;
+        dirs_.erase(from);
         dirs_.insert(to);
         const std::string prefix = from + "/";
         for (auto it = files_.begin(); it != files_.end();) {
-            if (it->first.rfind(prefix, 0) == 0) {
+            if (it->first.starts_with(prefix)) {
                 files_[to + "/" + it->first.substr(prefix.size())] = it->second;
                 it = files_.erase(it);
-                moved = true;
             } else {
                 ++it;
             }
         }
-        return moved || true;
+        return true;
     }
     bool CopyTo(const std::string& from, const std::string& to) override {
         const auto it = files_.find(from);
@@ -291,7 +278,7 @@ class MemoryBackend final : public Backend {
         return true;
     }
     bool Exists(const std::string& path) override {
-        return files_.count(path) != 0 || dirs_.count(path) != 0;
+        return files_.contains(path) || dirs_.contains(path);
     }
 
   private:
@@ -306,7 +293,7 @@ std::unique_ptr<Backend> g_custom_backend;
 DiskBackend g_disk_backend;
 
 Backend& BackendRef() {
-    std::lock_guard<std::mutex> lock(g_backend_mutex);
+    std::scoped_lock lock(g_backend_mutex);
     return g_custom_backend != nullptr ? *g_custom_backend : g_disk_backend;
 }
 
@@ -328,20 +315,20 @@ const std::string& StateDirCached(std::string_view project_dir) {
         if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
     }
     {
-        std::lock_guard<std::mutex> lock(g_state_dir_mutex);
+        std::scoped_lock lock(g_state_dir_mutex);
         if (const auto it = g_state_dir_cache.find(key); it != g_state_dir_cache.end()) {
             return it->second;
         }
     }
     std::string value = state_dir(project_dir);
-    std::lock_guard<std::mutex> lock(g_state_dir_mutex);
+    std::scoped_lock lock(g_state_dir_mutex);
     // 小上界（工程数通常 1–2 个）；满了整体清空，避免无界增长。
     if (g_state_dir_cache.size() >= 64) g_state_dir_cache.clear();
     return g_state_dir_cache.emplace(std::move(key), std::move(value)).first->second;
 }
 
 bool UsingMemoryBackend() {
-    std::lock_guard<std::mutex> lock(g_backend_mutex);
+    std::scoped_lock lock(g_backend_mutex);
     return g_custom_backend != nullptr;
 }
 
@@ -350,26 +337,33 @@ void Audit(Root root, std::string_view project_dir, std::string_view display_pat
     if (UsingMemoryBackend()) return;  // 单测不写审计文件
     const char* disabled = std::getenv("FPGALSP_WRITE_AUDIT");
     if (disabled != nullptr && std::strcmp(disabled, "0") == 0) return;
-    static const char* kRootNames[] = {"state", "project", "run", "temp"};
+    // B-3（2026-11-22 现代化审计）：审计行原来用 10+ 次 `+=` 手工拼接 JSON，
+    // 现在一次 std::format 成形（1 次分配 + 转义后的字段各 1 份）。
+    //   * 字段顺序 / 名字 / 转义规则与旧实现**逐字节一致**（既有审计读取方依赖它）：
+    //     {"ts":..,"root":"..","path":"..","bytes":..,"ok":..,"caller":".."[,"error":".."]}\n
+    //   * 转义仍走 JsonEscape（本文件的 never-throw 实现），而不是 nlohmann::json ——
+    //     后者按 map 键排序输出，会改掉字段顺序。
+    //   * kRootNames 改成 std::array 并按上界取，越界时回落到 "unknown"（旧实现是
+    //     无检查的 C 数组下标，越界即 UB；这里只改越界行为，正常输入不变）。
+    static constexpr std::array<const char*, 4> kRootNames = {"state", "project", "run", "temp"};
+    const auto root_index = static_cast<std::size_t>(root);
+    const char* root_name =
+        root_index < kRootNames.size() ? kRootNames[root_index] : "unknown";
     const std::string audit_dir = StateDirCached(project_dir);
     const std::string audit_path = path_join(audit_dir, "logs/writes.jsonl");
 
     const auto now = std::chrono::system_clock::now();
     const auto millis =
         std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
-    std::string line = "{";
-    line += "\"ts\":" + std::to_string(millis);
-    line += ",\"root\":\"";
-    line += kRootNames[static_cast<int>(root)];
-    line += "\",\"path\":\"" + JsonEscape(display_path) + "\"";
-    line += ",\"bytes\":" + std::to_string(bytes);
-    line += ",\"ok\":";
-    line += ok ? "true" : "false";
-    line += ",\"caller\":\"" + JsonEscape(caller == nullptr ? "" : caller) + "\"";
-    if (!ok) line += ",\"error\":\"" + JsonEscape(error) + "\"";
-    line += "}\n";
+    std::string error_field;
+    if (!ok) error_field = std::format(R"(,"error":"{}")", JsonEscape(error));
+    const std::string line = std::format(
+        "{{\"ts\":{},\"root\":\"{}\",\"path\":\"{}\",\"bytes\":{},\"ok\":{},\"caller\":\"{}\"{}}}\n",
+        millis, root_name, JsonEscape(display_path), bytes, ok ? "true" : "false",
+        JsonEscape(caller == nullptr ? std::string_view{} : std::string_view{caller}),
+        error_field);
 
-    std::lock_guard<std::mutex> lock(g_audit_mutex);
+    std::scoped_lock lock(g_audit_mutex);
     // P2：长驻 stream + 每行 flush（外部 reader 仍能即时看到；省掉 open/close）。
     // 失败时回落到原来的 backend append，审计本身**永不**影响主写结果。
     bool stream_ok = false;
@@ -408,7 +402,7 @@ bool AtomicWrite(const std::string& target, std::string_view bytes, std::string*
     }
 
 #ifdef _WIN32
-    const unsigned long long pid = static_cast<unsigned long long>(_getpid());
+    const auto pid = static_cast<unsigned long long>(_getpid());
 #else
     const unsigned long long pid = 0;
 #endif
@@ -474,7 +468,7 @@ bool Classify(std::string_view project_dir, std::string_view path, Root* out,
         if (error != nullptr) *error = "empty path";
         return false;
     }
-    if (raw.find('\0') != std::string::npos) {
+    if (raw.contains('\0')) {
         if (error != nullptr) *error = "path contains NUL";
         return false;
     }
@@ -530,7 +524,7 @@ bool Classify(std::string_view project_dir, std::string_view path, Root* out,
     // 3) 系统临时目录下的 fpgalsp scratch（放最后：工程目录即使位于 temp 下也应优先识别）
     const std::string temp_root = TempRoot();
     if (!temp_root.empty() && path_is_within_canonical(normalized, temp_root) &&
-        LowerCopy(normalized).find("/fpgalsp") != std::string::npos) {
+        LowerCopy(normalized).contains("/fpgalsp")) {
         *out = Root::kTemp;
         return true;
     }
@@ -667,7 +661,7 @@ Result EnsureDir(std::string_view project_dir, std::string_view path,
     Result result;
     try {
         std::string normalized = normalize_path(path);
-        if (normalized.empty() || normalized.find('\0') != std::string::npos) {
+        if (normalized.empty() || normalized.contains('\0')) {
             result.ok = false;
             result.error = "invalid path";
             return result;
@@ -689,7 +683,7 @@ Result EnsureDir(std::string_view project_dir, std::string_view path,
                 path_is_within_canonical(normalized, normalize_path(project_dir))) {
                 const std::string rel = RelativeWithin(normalized, normalize_path(project_dir));
                 const bool registered_dir =
-                    rel == "chip_debugger" || rel.rfind("chip_debugger/", 0) == 0;
+                    rel == "chip_debugger" || rel.starts_with("chip_debugger/");
                 if (!BackendRef().Exists(normalized) && !registered_dir) {
                     g_denied.fetch_add(1);
                     result.ok = false;
@@ -767,7 +761,7 @@ Result Remove(std::string_view project_dir, std::string_view path, bool recursiv
             const std::string rel = RelativeWithin(normalize_path(path),
                                                    normalize_path(project_dir));
             const std::string lower = LowerCopy(rel);
-            const bool generated = lower.rfind("chip_debugger/", 0) == 0 &&
+            const bool generated = lower.starts_with("chip_debugger/") &&
                                    (EndsWithNoCase(rel, ".mdn") || EndsWithNoCase(rel, ".cfg"));
             if (!generated) {
                 g_denied.fetch_add(1);
@@ -895,8 +889,8 @@ Result Copy(std::string_view project_dir, std::string_view from, std::string_vie
                 const std::string rel = RelativeWithin(normalize_path(to),
                                                        normalize_path(project_dir));
                 const std::string lower = LowerCopy(rel);
-                project_dest_ok = lower.rfind("chip_debugger/", 0) == 0 ||
-                                  lower.rfind("log/", 0) == 0;
+                project_dest_ok = lower.starts_with("chip_debugger/") ||
+                                  lower.starts_with("log/");
                 to_root = Root::kProject;
             }
             if (!project_dest_ok) {
@@ -955,7 +949,7 @@ Metrics SnapshotMetrics() {
 void ResetMetricsForTest() {
     for (std::atomic<std::uint64_t>* counter :
          {&g_writes_ok, &g_writes_failed, &g_denied, &g_bytes_written, &g_dirs_created,
-          &g_removals, &g_renames, &g_backups, &g_copies}) {
+          &g_removals, &g_renames, &g_backups, &g_copies,}) {
         counter->store(0);
     }
     for (std::atomic<std::uint64_t>& counter : g_by_root) counter.store(0);
@@ -964,12 +958,12 @@ void ResetMetricsForTest() {
 std::unique_ptr<Backend> MakeMemoryBackend() { return std::make_unique<MemoryBackend>(); }
 
 void SetBackendForTest(std::unique_ptr<Backend> backend) {
-    std::lock_guard<std::mutex> lock(g_backend_mutex);
+    std::scoped_lock lock(g_backend_mutex);
     g_custom_backend = std::move(backend);
 }
 
 void ResetBackendForTest() {
-    std::lock_guard<std::mutex> lock(g_backend_mutex);
+    std::scoped_lock lock(g_backend_mutex);
     g_custom_backend.reset();
 }
 

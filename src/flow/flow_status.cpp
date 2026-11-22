@@ -25,6 +25,8 @@
 
 #include "platform/encoding.h"
 
+#include "platform/text.h"
+#include <array>
 namespace fpgalsp::flow {
 namespace {
 
@@ -38,15 +40,15 @@ struct StepTemplate {
 };
 
 // 顺序 = DefaultFlow.tcl 的 stepList（read_design opt_rtl opt_gate opt_place opt_route bitgen）
-constexpr StepTemplate kTemplates[] = {
-    {"Read Design", "design", "read_design"},
-    {"Optimize RTL", "rtl", "opt_rtl"},
-    {"Optimize Gate", "gate", "opt_gate"},
-    {"Optimize Placement", "place", "opt_place"},
-    {"Optimize Routing", "route", "opt_route"},
-    {"Generate Bitstream", "bitgen", "bitgen"},
-};
-constexpr std::size_t kStepCount = sizeof(kTemplates) / sizeof(kTemplates[0]);
+constexpr auto kTemplates = std::to_array<StepTemplate>({
+    {.name="Read Design", .stage="design", .marker="read_design"},
+    {.name="Optimize RTL", .stage="rtl", .marker="opt_rtl"},
+    {.name="Optimize Gate", .stage="gate", .marker="opt_gate"},
+    {.name="Optimize Placement", .stage="place", .marker="opt_place"},
+    {.name="Optimize Routing", .stage="route", .marker="opt_route"},
+    {.name="Generate Bitstream", .stage="bitgen", .marker="bitgen"},
+});
+constexpr std::size_t kStepCount = std::size(kTemplates);
 
 // -----------------------------------------------------------------------------
 // 命令名 -> GUI 步骤
@@ -67,51 +69,36 @@ struct CommandMapping {
     std::string_view name;  // kTemplates 里的 name
 };
 
-constexpr CommandMapping kCommandMap[] = {
-    {"analyze", "Read Design"},
-    {"elaborate", "Read Design"},
-    {"read_hdl", "Read Design"},
-    {"read_adc", "Read Design"},
-    {"read_sdc", "Read Design"},
-    {"import_db", "Read Design"},
-    {"import_device", "Read Design"},
-    {"optimize_rtl", "Optimize RTL"},
-    {"opt_rtl", "Optimize RTL"},
-    {"optimize_gate", "Optimize Gate"},
-    {"opt_gate", "Optimize Gate"},
-    {"place", "Optimize Placement"},
-    {"legalize_phy_inst", "Optimize Placement"},
-    {"opt_place", "Optimize Placement"},
-    {"route", "Optimize Routing"},
-    {"opt_route", "Optimize Routing"},
-    {"bitgen", "Generate Bitstream"},
-    {"setup_debugger", "Generate Bitstream"},
-};
+constexpr auto kCommandMap = std::to_array<CommandMapping>({
+    {.command="analyze", .name="Read Design"},
+    {.command="elaborate", .name="Read Design"},
+    {.command="read_hdl", .name="Read Design"},
+    {.command="read_adc", .name="Read Design"},
+    {.command="read_sdc", .name="Read Design"},
+    {.command="import_db", .name="Read Design"},
+    {.command="import_device", .name="Read Design"},
+    {.command="optimize_rtl", .name="Optimize RTL"},
+    {.command="opt_rtl", .name="Optimize RTL"},
+    {.command="optimize_gate", .name="Optimize Gate"},
+    {.command="opt_gate", .name="Optimize Gate"},
+    {.command="place", .name="Optimize Placement"},
+    {.command="legalize_phy_inst", .name="Optimize Placement"},
+    {.command="opt_place", .name="Optimize Placement"},
+    {.command="route", .name="Optimize Routing"},
+    {.command="opt_route", .name="Optimize Routing"},
+    {.command="bitgen", .name="Generate Bitstream"},
+    {.command="setup_debugger", .name="Generate Bitstream"},
+});
 
 // -----------------------------------------------------------------------------
 // 字符串小工具
 // -----------------------------------------------------------------------------
 
-bool IsSpace(char c) {
-    return c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\v' || c == '\f';
-}
+using platform::IsSpace;
 
-std::string Trim(std::string_view text) {
-    std::size_t begin = 0;
-    std::size_t end = text.size();
-    while (begin < end && IsSpace(text[begin])) ++begin;
-    while (end > begin && IsSpace(text[end - 1])) --end;
-    return std::string(text.substr(begin, end - begin));
-}
+using platform::Trim;
 
-std::string ToLowerAscii(std::string_view text) {
-    std::string out;
-    out.reserve(text.size());
-    for (const char c : text) {
-        out.push_back((c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c);
-    }
-    return out;
-}
+using platform::ToLowerAscii;
 
 bool StartsWithNoCase(std::string_view text, std::string_view prefix) {
     if (text.size() < prefix.size()) return false;
@@ -123,16 +110,7 @@ bool EndsWithNoCase(std::string_view text, std::string_view suffix) {
     return ToLowerAscii(text.substr(text.size() - suffix.size())) == ToLowerAscii(suffix);
 }
 
-std::string Join(std::string_view dir, std::string_view name) {
-    if (dir.empty()) return std::string(name);
-    std::string out(dir);
-    if (out.back() != '/' && out.back() != '\\') out.push_back('/');
-    out += name;
-    for (char& c : out) {
-        if (c == '\\') c = '/';
-    }
-    return out;
-}
+using platform::Join;
 
 // 目录里的文件名（不含路径），排序后返回。never-throw：目录不存在时返回空。
 std::vector<std::string> ListDir(std::string_view dir) {
@@ -148,7 +126,7 @@ std::vector<std::string> ListDir(std::string_view dir) {
         it.increment(ec);
         if (ec) break;
     }
-    std::sort(names.begin(), names.end());
+    std::ranges::sort(names);
     return names;
 }
 
@@ -169,7 +147,7 @@ std::vector<std::string> ListSubdirs(std::string_view dir) {
         it.increment(ec);
         if (ec) break;
     }
-    std::sort(names.begin(), names.end());
+    std::ranges::sort(names);
     return names;
 }
 
@@ -179,7 +157,7 @@ std::string ReadTextFile(std::string_view path) {
 }
 
 bool Contains(const std::vector<std::string>& items, std::string_view value) {
-    return std::find(items.begin(), items.end(), value) != items.end();
+    return std::ranges::find(items, value) != items.end();
 }
 
 // -----------------------------------------------------------------------------
@@ -271,7 +249,7 @@ void AggregateInto(std::vector<FlowStep>& steps, const std::vector<StatusRow>& r
 // 合并多份快照：同一命令取较大值（这些文件是同一 run 的累计快照，相加会重复计数）
 void MergeRows(std::vector<StatusRow>& into, const std::vector<StatusRow>& extra) {
     for (const StatusRow& row : extra) {
-        auto it = std::find_if(into.begin(), into.end(), [&row](const StatusRow& existing) {
+        auto it = std::ranges::find_if(into, [&row](const StatusRow& existing) {
             return existing.command == row.command;
         });
         if (it == into.end()) {
@@ -391,7 +369,7 @@ std::vector<FlowStep> ParseFlowStatus(std::string_view text) {
     std::vector<FlowStep> steps;
     for (std::size_t i = 0; i < kStepCount; ++i) {
         const bool present =
-            std::any_of(rows.begin(), rows.end(), [i](const StatusRow& row) {
+            std::ranges::any_of(rows, [i](const StatusRow& row) {
                 return GuiIndexForCommand(row.command) == static_cast<int>(i);
             });
         if (!present) continue;
@@ -500,13 +478,13 @@ std::vector<RunFlowSteps> CollectRunsFlowSteps(const std::string& runs_root) {
 
     std::vector<RunFlowSteps> runs;
     runs.push_back(RunFlowSteps{
-        syn_run,
-        syn_run.empty() ? std::vector<FlowStep>{}
-                        : CollectFlowSteps(Join(runs_root, syn_run), syn_run)});
+        .run_name=syn_run,
+        .steps=syn_run.empty() ? std::vector<FlowStep>{}
+                        : CollectFlowSteps(Join(runs_root, syn_run), syn_run),});
     runs.push_back(RunFlowSteps{
-        phy_run,
-        phy_run.empty() ? std::vector<FlowStep>{}
-                        : CollectFlowSteps(Join(runs_root, phy_run), phy_run)});
+        .run_name=phy_run,
+        .steps=phy_run.empty() ? std::vector<FlowStep>{}
+                        : CollectFlowSteps(Join(runs_root, phy_run), phy_run),});
     return runs;
 }
 

@@ -12,6 +12,7 @@
 #include <cstdlib>
 #include <ctime>
 #include <filesystem>
+#include <format>
 #include <map>
 #include <memory>
 #include <set>
@@ -33,6 +34,7 @@
 #include "td/td_output.h"
 #include "td/td_session.h"
 
+#include "platform/text.h"
 namespace fpgalsp::probe {
 namespace {
 
@@ -58,16 +60,7 @@ std::string Slashes(std::string text) {
     return text;
 }
 
-std::string Trim(std::string_view text) {
-    std::size_t begin = 0;
-    std::size_t end = text.size();
-    const auto is_space = [](char c) {
-        return c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\v' || c == '\f';
-    };
-    while (begin < end && is_space(text[begin])) ++begin;
-    while (end > begin && is_space(text[end - 1])) --end;
-    return std::string(text.substr(begin, end - begin));
-}
+using platform::Trim;
 
 std::vector<std::string> SplitWhitespace(std::string_view text) {
     std::vector<std::string> out;
@@ -78,8 +71,8 @@ std::vector<std::string> SplitWhitespace(std::string_view text) {
             ++i;
         }
         const std::size_t start = i;
-        while (i < text.size() && !(text[i] == ' ' || text[i] == '\t' || text[i] == '\r' ||
-                                    text[i] == '\n' || text[i] == '\v' || text[i] == '\f')) {
+        while (i < text.size() && text[i] != ' ' && text[i] != '\t' && text[i] != '\r' &&
+                                    text[i] != '\n' && text[i] != '\v' && text[i] != '\f') {
             ++i;
         }
         if (i > start) out.emplace_back(text.substr(start, i - start));
@@ -119,7 +112,7 @@ std::string ReadText(const std::string& path) {
 
 // 从一段 XML 里取属性值：`name="..."` / `name='...'`
 std::string Attr(std::string_view tag, std::string_view name) {
-    const std::string pattern = "\\b" + std::string(name) + "\\s*=\\s*[\"']([^\"']*)[\"']";
+    const std::string pattern = "\\b" + std::string(name) + R"(\s*=\s*["']([^"']*)["'])";
     const RE2 re(pattern);
     std::string value;
     if (RE2::PartialMatch(tag, re, &value)) return value;
@@ -148,10 +141,10 @@ std::string Timestamp() {
 #else
     localtime_r(&time, &local);
 #endif
-    char buffer[32] = {};
-    std::snprintf(buffer, sizeof(buffer), "%04d%02d%02d_%02d%02d%02d", local.tm_year + 1900,
-                  local.tm_mon + 1, local.tm_mday, local.tm_hour, local.tm_min, local.tm_sec);
-    return buffer;
+    // 与 snprintf("%04d%02d%02d_%02d%02d%02d") 逐字节一致
+    return std::format("{:04d}{:02d}{:02d}_{:02d}{:02d}{:02d}", local.tm_year + 1900,
+                       local.tm_mon + 1, local.tm_mday, local.tm_hour, local.tm_min,
+                       local.tm_sec);
 }
 
 // 二进制位串 -> 无符号整数（`0000000000000001` -> 1）。位串按「左高位」解释。
@@ -215,14 +208,11 @@ std::string IllegalSignalNameMessage(std::string_view name) {
     std::string bad_chars;
     for (const char c : name) {
         if (IsProbeSignalNameChar(c)) continue;
-        const unsigned char uc = static_cast<unsigned char>(c);
-        char escaped[8];
-        if (uc >= 0x20 && uc < 0x7F) {
-            std::snprintf(escaped, sizeof(escaped), "%c", c);
-        } else {
-            std::snprintf(escaped, sizeof(escaped), "\\x%02X", uc);
-        }
-        if (bad_chars.find(escaped) == std::string::npos) bad_chars += escaped;
+        const auto uc = static_cast<unsigned char>(c);
+        // 与 snprintf("%c") / snprintf("\\x%02X") 逐字节一致
+        const std::string escaped =
+            uc >= 0x20 && uc < 0x7F ? std::string(1, c) : std::format("\\x{:02X}", uc);
+        if (!bad_chars.contains(escaped)) bad_chars += escaped;
     }
     const std::string shown =
         name.size() > 80 ? std::string(name.substr(0, 80)) + "..." : std::string(name);
@@ -239,22 +229,18 @@ std::string IllegalSignalNameMessage(std::string_view name) {
 
 bool IsValidProbeSignalName(std::string_view name) {
     if (name.empty() || name.size() > kMaxProbeSignalNameLength) return false;
-    for (const char c : name) {
-        if (!IsProbeSignalNameChar(c)) return false;
-    }
-    return true;
+    return std::ranges::all_of(name, IsProbeSignalNameChar);
 }
 
 bool ValidateProbeSignalNames(const std::vector<std::string>& signals, std::string* error) {
     if (error != nullptr) error->clear();
-    for (const std::string& raw : signals) {
+    return std::ranges::all_of(signals, [error](const std::string& raw) {
         const std::string trimmed = Trim(raw);
-        if (trimmed.empty()) continue;  // 与 NormaliseSignals 的"去空"一致
-        if (IsValidProbeSignalName(trimmed)) continue;
+        if (trimmed.empty()) return true;  // 与 NormaliseSignals 的"去空"一致
+        if (IsValidProbeSignalName(trimmed)) return true;
         if (error != nullptr) *error = IllegalSignalNameMessage(trimmed);
         return false;
-    }
-    return true;
+    });
 }
 
 std::vector<std::string> ParseMarkDebug(std::string_view text) {
@@ -365,7 +351,7 @@ std::vector<std::string> NormaliseSignals(const std::vector<std::string>& signal
         if (!seen.insert(signal).second) continue;
         out.push_back(signal);
     }
-    std::sort(out.begin(), out.end(), [](const std::string& a, const std::string& b) {
+    std::ranges::sort(out, [](const std::string& a, const std::string& b) {
         const std::size_t open_a = a.find_last_of('[');
         const std::size_t open_b = b.find_last_of('[');
         const std::string base_a = open_a == std::string::npos ? a : a.substr(0, open_a);
@@ -471,7 +457,7 @@ MdnConfig ReadMdn(const std::string& path) {
         return out;
     }
     for (const std::string& line : Lines(text)) {
-        if (line.find(kMarkDebug) != std::string::npos) continue;
+        if (line.contains(kMarkDebug)) continue;
         out.other_lines.push_back(line);
     }
     out.ok = true;
@@ -825,7 +811,7 @@ std::map<std::string, std::set<int>> GroupBitSignals(const std::vector<std::stri
         std::string name = raw;
         if (!top.empty()) {
             const std::string prefix = std::string(top) + "/";
-            if (name.rfind(prefix, 0) == 0) name.erase(0, prefix.size());
+            if (name.starts_with(prefix)) name.erase(0, prefix.size());
         }
         const std::size_t open = name.find_last_of('[');
         if (open == std::string::npos || name.empty() || name.back() != ']') {
@@ -937,7 +923,7 @@ std::string NewestWatcherDir(const project::Project& project) {
         if (!std::filesystem::is_directory(cw, ec)) continue;
         for (std::filesystem::directory_iterator it(cw, ec), end; !ec && it != end; it.increment(ec)) {
             const std::string name = it->path().filename().string();
-            if (name.find("cwc") == std::string::npos) continue;
+            if (!name.contains("cwc")) continue;
             // ⚠ 只认目录：`phy_1/cw/compiled.cwc` 名字里也含 "cwc"，以前会被当成
             // watcher 目录，于是 inst 变成 "compiled.cwc"，生成的 cwc 里
             // inst/bram_name/trigger 全带着这个假名字。
@@ -967,7 +953,7 @@ std::string ResolveSampleClock(const project::Project& project) {
         for (std::filesystem::directory_iterator it(history, ec), end; !ec && it != end;
              it.increment(ec)) {
             const std::string name = it->path().filename().string();
-            if (name.size() > 4 && name.rfind(".cwc") == name.size() - 4) {
+            if (name.size() > 4 && name.ends_with(".cwc")) {
                 candidates.push_back(it->path().string());
             }
         }
@@ -978,7 +964,7 @@ std::string ResolveSampleClock(const project::Project& project) {
         for (std::filesystem::directory_iterator it(project_cwc, ec), end; !ec && it != end;
              it.increment(ec)) {
             const std::string name = it->path().filename().string();
-            if (name.size() > 4 && name.rfind(".cwc") == name.size() - 4) {
+            if (name.size() > 4 && name.ends_with(".cwc")) {
                 candidates.push_back(it->path().string());
             }
         }
@@ -1043,7 +1029,7 @@ std::vector<BidEram> ParseBidErams(const std::string& text, const std::string& i
         const std::string block = text.substr(at, end - at);
         at = end;
         const std::string name = TagText(block, "name");
-        if (name.rfind(prefix, 0) != 0) continue;
+        if (!name.starts_with(prefix)) continue;
         BidEram eram;
         eram.name = name;
         eram.rid = TagText(block, "rid");
@@ -1078,7 +1064,7 @@ std::vector<BidEram> ParseBidErams(const std::string& text, const std::string& i
         eram.wm_ecc = TagText(wm_source, "ecc");
         out.push_back(std::move(eram));
     }
-    std::sort(out.begin(), out.end(), [](const BidEram& a, const BidEram& b) {
+    std::ranges::sort(out, [](const BidEram& a, const BidEram& b) {
         return platform::DigitsToIntSaturating(a.data_offset) < platform::DigitsToIntSaturating(b.data_offset);
     });
     return out;
@@ -1105,7 +1091,7 @@ std::string ResolveClockPeriod(const project::Project& project) {
         for (std::filesystem::directory_iterator it(dir, ec), end; !ec && it != end;
              it.increment(ec)) {
             const std::string name = it->path().filename().string();
-            if (name.size() > 4 && name.rfind(".cwc") == name.size() - 4) {
+            if (name.size() > 4 && name.ends_with(".cwc")) {
                 candidates.push_back(it->path().string());
             }
         }
@@ -1142,7 +1128,7 @@ std::string BuildCwcFromWatcherImpl(const project::Project& project, const MdnCo
         const std::size_t open = signal.rfind('[');
         if (open != std::string::npos) base = signal.substr(0, open);
         if (buses.empty() || buses.back().first != base) {
-            if (std::find_if(buses.begin(), buses.end(), [&base](const auto& item) {
+            if (std::ranges::find_if(buses, [&base](const auto& item) {
                     return item.first == base;
                 }) != buses.end()) {
             }
@@ -1203,7 +1189,7 @@ std::string BuildCwcFromWatcherImpl(const project::Project& project, const MdnCo
         for (std::filesystem::directory_iterator it(dir_path, ec), end; !ec && it != end;
              it.increment(ec)) {
             const std::string name = it->path().filename().string();
-            if (name.size() > 3 && name.rfind(".sv") == name.size() - 3) {
+            if (name.size() > 3 && name.ends_with(".sv")) {
                 sv_path = it->path().string();
                 sv_name = name;
                 break;
@@ -1278,8 +1264,8 @@ std::string BuildCwcFromWatcherImpl(const project::Project& project, const MdnCo
         // 只能重跑 syn 让它重建，不能"猜"哪个 16 位总线对哪个 slot —— 猜错就是错的采样数据。
         std::vector<int> wanted = full_projection;
         std::vector<int> got = inst.widths;
-        std::sort(wanted.begin(), wanted.end());
-        std::sort(got.begin(), got.end());
+        std::ranges::sort(wanted);
+        std::ranges::sort(got);
         if (wanted == got) {
             return fail(
                 "the watcher in the bitstream was built from a DIFFERENT probe list "
@@ -1324,14 +1310,14 @@ std::string BuildCwcFromWatcherImpl(const project::Project& project, const MdnCo
     //      stale（missing e2e_cnt2l / extra WHG/e2e_cnt2l），抓取因此被拒。
     const std::string top_prefix = project.top.empty() ? std::string() : project.top + "/";
     const auto rel_name = [&top_prefix](const std::string& name) {
-        if (!top_prefix.empty() && name.rfind(top_prefix, 0) == 0) {
+        if (!top_prefix.empty() && name.starts_with(top_prefix)) {
             return name.substr(top_prefix.size());
         }
         return name;
     };
     std::string out;
     out += "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n";
-    out += "<chipwatcher version=\"3.070000\" project_name=\"" + project.name + "\" chip_name=\"" +
+    out += R"(<chipwatcher version="3.070000" project_name=")" + project.name + "\" chip_name=\"" +
            project.device + "\">\n";
     out += "\t<watcher_nodes>\n";
     for (const auto& bus : buses) {
@@ -1345,11 +1331,12 @@ std::string BuildCwcFromWatcherImpl(const project::Project& project, const MdnCo
         const bool bus_off = enabled_bits == 0;
         out += "\t\t<bus name=\"" + rel_name(bus.first) + "[" + std::to_string(bus.second - 1) + ":0]\" clock=\"" +
                clock + "\" inst=\"" + (bus_off ? std::string() : cwc1_name) +
-               "\" type=\"MARK_DEBUG_PROBE\" is_enabled=\"" + (bus_off ? "no" : "yes") + "\">\n";
+               R"(" type="MARK_DEBUG_PROBE" is_enabled=")" + (bus_off ? "no" : "yes") + "\">\n";
         for (int bit = bus.second - 1; bit >= 0; --bit) {
             const std::string state = bit_disabled(bus.first, bit) ? "disable" : "enable";
-            out += "\t\t\t<net name=\"" + rel_name(bus.first) + "[" + std::to_string(bit) +
-                   "]\" const=\"false\" data=\"" + state + "\" trig=\"" + state + "\"/>\n";
+            out += std::format(
+                "\t\t\t<net name=\"{}[{}]\" const=\"false\" data=\"{}\" trig=\"{}\"/>\n",
+                rel_name(bus.first), bit, state, state);
         }
         out += "\t\t</bus>\n";
     }
@@ -1357,7 +1344,7 @@ std::string BuildCwcFromWatcherImpl(const project::Project& project, const MdnCo
     out += "\t<instance name=\"" + cwc1_name + "\" id=\"0\" ipgen=\"false\" inst_enable=\"true\">\n";
     const std::string clock_period = ResolveClockPeriod(project);
     out += "\t\t<clock clk_name=\"" + clock + "\" clk_peroid=\"" + clock_period + "\"/>\n";
-    out += "\t\t<config bram_name=\"" + cwc1_name + "/wrapper_cwc_top/U_cwc_ram\" debughub_name=\"\" " +
+    out += "\t\t<config bram_name=\"" + cwc1_name + R"(/wrapper_cwc_top/U_cwc_ram" debughub_name="" )" +
            "input_pipe_num=\"" + std::to_string(inst.pipe_in) + "\" output_pipe_num=\"" +
            std::to_string(inst.pipe_out) + "\" sample_depth=\"" + std::to_string(inst.depth) +
            "\"/>\n";
@@ -1374,13 +1361,14 @@ std::string BuildCwcFromWatcherImpl(const project::Project& project, const MdnCo
         for (int bit = bus.second - 1; bit >= 0; --bit) {
             // disabled 的位不参与触发/采集比较（与 GUI 写出的 cwc 一致）。
             const std::string cond = bit_disabled(bus.first, bit) ? "dont_care" : "low";
-            out += "\t\t\t\t\t<net name=\"" + rel_name(bus.first) + "[" + std::to_string(bit) +
-                   "]\" cond=\"" + cond + "\" capture_cond=\"" + cond + "\"/>\n";
+            out += std::format(
+                "\t\t\t\t\t<net name=\"{}[{}]\" cond=\"{}\" capture_cond=\"{}\"/>\n",
+                rel_name(bus.first), bit, cond, cond);
         }
         out += "\t\t\t\t</bus>\n";
     }
     out += "\t\t\t</watcher_nodes>\n\t\t</signal_vec>\n";
-    out += "\t\t<trigger name=\"" + cwc1_name + "_trigger\" position=\"127\" window_num=\"1\" " +
+    out += "\t\t<trigger name=\"" + cwc1_name + R"(_trigger" position="127" window_num="1" )" +
            "window_depth=\"" + std::to_string(inst.depth) + "\">\n";
     out += std::string("\t\t\t<condition level=\"1\" enabled=\"yes\" type=\"basic_and\" ") +
            "capture_type=\"basic_and\"/>\n";
@@ -1449,7 +1437,7 @@ std::vector<std::string> SplitCsv(std::string_view value) {
 std::string JoinCsv(const std::vector<std::string>& items) {
     std::string joined;
     for (const std::string& item : items) {
-        if (!joined.empty()) joined += ",";
+        if (!joined.empty()) joined += ',';
         joined += item;
     }
     return joined;
@@ -1517,7 +1505,7 @@ bool WriteProbeBuildConfig(const project::Project& project, const ProbeBuildConf
     if (!config.cwc_bus_order.empty()) {
         std::string joined;
         for (const std::string& name : config.cwc_bus_order) {
-            if (!joined.empty()) joined += ",";
+            if (!joined.empty()) joined += ',';
             joined += name;
         }
         text += "bus_order=" + joined + "\n";
@@ -1585,7 +1573,7 @@ std::string BuildCwcFromConfig(const project::Project& project, const MdnConfig&
 
     const std::string top_prefix = project.top.empty() ? std::string() : project.top + "/";
     const auto rel = [&top_prefix](const std::string& name) {
-        if (!top_prefix.empty() && name.rfind(top_prefix, 0) == 0) {
+        if (!top_prefix.empty() && name.starts_with(top_prefix)) {
             return name.substr(top_prefix.size());
         }
         return name;
@@ -1603,29 +1591,30 @@ std::string BuildCwcFromConfig(const project::Project& project, const MdnConfig&
 
     std::string out;
     out += "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n";
-    out += "<chipwatcher version=\"3.070000\" project_name=\"" + project.name + "\" chip_name=\"" +
+    out += R"(<chipwatcher version="3.070000" project_name=")" + project.name + "\" chip_name=\"" +
            project.device + "\">\n\t<watcher_nodes>\n";
     for (const auto& bus : buses) {
         int enabled_bits = 0;
         for (int bit = 0; bit < bus.second; ++bit) {
             if (!bit_disabled(bus.first, bit)) ++enabled_bits;
         }
-        out += "\t\t<bus name=\"" + rel(bus.first) + "[" + std::to_string(bus.second - 1) +
-               ":0]\" clock=\"" + clock + "\" inst=\"" + inst +
-               "\" type=\"MARK_DEBUG_PROBE\" is_enabled=\"" +
-               (enabled_bits == 0 ? "no" : "yes") + "\">\n";
+        out += std::format(
+            "\t\t<bus name=\"{}[{}:0]\" clock=\"{}\" inst=\"{}\" type=\"MARK_DEBUG_PROBE\" "
+            "is_enabled=\"{}\">\n",
+            rel(bus.first), bus.second - 1, clock, inst, enabled_bits == 0 ? "no" : "yes");
         for (int bit = bus.second - 1; bit >= 0; --bit) {
             const std::string state = bit_disabled(bus.first, bit) ? "disable" : "enable";
-            out += "\t\t\t<net name=\"" + rel(bus.first) + "[" + std::to_string(bit) +
-                   "]\" const=\"false\" data=\"" + state + "\" trig=\"" + state + "\"/>\n";
+            out += std::format(
+                "\t\t\t<net name=\"{}[{}]\" const=\"false\" data=\"{}\" trig=\"{}\"/>\n",
+                rel(bus.first), bit, state, state);
         }
         out += "\t\t</bus>\n";
     }
     out += "\t</watcher_nodes>\n\t<instance name=\"" + inst +
            "\" id=\"0\" ipgen=\"false\" inst_enable=\"true\">\n";
     out += "\t\t<clock clk_name=\"" + clock + "\" clk_peroid=\"10ns\"/>\n";
-    out += "\t\t<config bram_name=\"" + inst + "/wrapper_cwc_top/U_cwc_ram\" debughub_name=\"\" " +
-           "input_pipe_num=\"0\" output_pipe_num=\"0\" sample_depth=\"" + std::to_string(depth) +
+    out += "\t\t<config bram_name=\"" + inst + R"(/wrapper_cwc_top/U_cwc_ram" debughub_name="" )" +
+           R"(input_pipe_num="0" output_pipe_num="0" sample_depth=")" + std::to_string(depth) +
            "\"/>\n";
     out += "\t\t<signal_vec>\n\t\t\t<watcher_nodes>\n";
     for (const auto& bus : buses) {
@@ -1635,14 +1624,15 @@ std::string BuildCwcFromConfig(const project::Project& project, const MdnConfig&
             // disabled 的位在触发/采集条件里必须是 dont_care，否则 TD 会认为
             // 它仍要参与比较（GUI 里 disable 的条目就是这个写法）。
             const std::string cond = bit_disabled(bus.first, bit) ? "dont_care" : "low";
-            out += "\t\t\t\t\t<net name=\"" + rel(bus.first) + "[" + std::to_string(bit) +
-                   "]\" cond=\"" + cond + "\" capture_cond=\"" + cond + "\"/>\n";
+            out += std::format(
+                "\t\t\t\t\t<net name=\"{}[{}]\" cond=\"{}\" capture_cond=\"{}\"/>\n",
+                rel(bus.first), bit, cond, cond);
         }
         out += "\t\t\t\t</bus>\n";
     }
     out += "\t\t\t</watcher_nodes>\n\t\t</signal_vec>\n";
     out += "\t\t<trigger name=\"" + inst + "_trigger\" position=\"" +
-           std::to_string(config.trigger_position) + "\" window_num=\"1\" window_depth=\"" +
+           std::to_string(config.trigger_position) + R"(" window_num="1" window_depth=")" +
            std::to_string(depth) + "\">\n";
     out += "\t\t\t<condition level=\"1\" enabled=\"yes\" type=\"basic_and\" " +
            std::string("capture_type=\"basic_and\"/>\n");
@@ -1842,7 +1832,7 @@ std::string BuildCwcFromTemplate(const project::Project& project, const MdnConfi
             // 只改 data/trig —— 实测把 signal_vec 的 cond/capture_cond 也改成
             // dont_care 会让 TD 在 opt_gate 直接崩；手工只改 data/trig 的那份
             // place 完全正常（4 总线/53 bit -> 3 总线/48 bit）。
-            if (line.find("data=\"") != std::string::npos) {
+            if (line.contains("data=\"")) {
                 ReplaceAttr(&line, "data", off ? "disable" : "enable");
                 ReplaceAttr(&line, "trig", off ? "disable" : "enable");
             }
@@ -1982,10 +1972,9 @@ jsonrpc::Json WriteCompiledCwcFromGate(const project::Project& project,
                 std::string base = name;
                 const std::size_t open = name.rfind('[');
                 if (open != std::string::npos) base = name.substr(0, open);
-                for (const std::string& off : off_buses) {
-                    if (off == base || TailName(off) == TailName(base)) return true;
-                }
-                return false;
+                return std::ranges::any_of(off_buses, [&base](const std::string& off) {
+                    return off == base || TailName(off) == TailName(base);
+                });
             };
             std::string out;
             std::size_t pos = 0;
@@ -1996,8 +1985,8 @@ jsonrpc::Json WriteCompiledCwcFromGate(const project::Project& project,
                 std::string line = text.substr(pos, next == std::string::npos ? std::string::npos
                                                                               : next - pos);
                 pos = next == std::string::npos ? text.size() : next + 1;
-                if (line.find("<signal_vec>") != std::string::npos) in_signal_vec = true;
-                if (line.find("</signal_vec>") != std::string::npos) in_signal_vec = false;
+                if (line.contains("<signal_vec>")) in_signal_vec = true;
+                if (line.contains("</signal_vec>")) in_signal_vec = false;
                 const std::size_t bus_at = line.find("<bus name=\"");
                 if (bus_at != std::string::npos) {
                     const std::size_t begin_q = bus_at + 11;
@@ -2013,7 +2002,7 @@ jsonrpc::Json WriteCompiledCwcFromGate(const project::Project& project,
                     }
                 }
                 if (skipping) {
-                    if (line.find("</bus>") != std::string::npos) skipping = false;
+                    if (line.contains("</bus>")) skipping = false;
                     continue;
                 }
                 out += line;
@@ -2070,7 +2059,7 @@ bool WriteUserCfgFromMdn(const project::Project& project, std::string* error) {
     const ProbeBuildConfig config = ReadProbeBuildConfig(project);
     // 模板优先级：现有 compiled.cwc（上一次 TD 自己写的）> user.cfg > 从零生成
     std::vector<std::string> candidates{CompiledCwc(project),
-                                        project.dir + "/chip_debugger/user.cfg"};
+                                        project.dir + "/chip_debugger/user.cfg",};
     std::string text;
     for (const std::string& path : candidates) {
         if (!IsFile(path)) continue;
@@ -2133,8 +2122,8 @@ bool WriteUserCfgFromMdn(const project::Project& project, std::string* error) {
             std::string line =
                 text.substr(pos, next == std::string::npos ? std::string::npos : next - pos);
             pos = next == std::string::npos ? text.size() : next + 1;
-            if (line.find("<signal_vec>") != std::string::npos) in_signal_vec = true;
-            if (line.find("</signal_vec>") != std::string::npos) in_signal_vec = false;
+            if (line.contains("<signal_vec>")) in_signal_vec = true;
+            if (line.contains("</signal_vec>")) in_signal_vec = false;
             const std::size_t bus_at = line.find("<bus name=\"");
             if (bus_at != std::string::npos) {
                 const std::size_t begin_q = bus_at + 11;
@@ -2157,7 +2146,7 @@ bool WriteUserCfgFromMdn(const project::Project& project, std::string* error) {
                 }
             }
             if (skipping) {
-                if (line.find("</bus>") != std::string::npos) skipping = false;
+                if (line.contains("</bus>")) skipping = false;
                 continue;
             }
             const std::size_t net_at = line.find("<net name=\"");
@@ -2184,7 +2173,7 @@ bool WriteUserCfgFromMdn(const project::Project& project, std::string* error) {
     // ⚠ 没有 `<logic_eram>` 的配置**不能**写给 TD：实测（2026-11-22 02:1x）TD 在
     // Optimize Gate 阶段读这份不完整的 user.cfg 会直接崩（PRJ-8806，syn 就挂）。
     // 有 ERAM 的完整配置才写；否则宁可退回"TD 按 user.mdn 自动建 watcher"。
-    if (text.find("<phy_eram") == std::string::npos) {
+    if (!text.contains("<phy_eram")) {
         if (error != nullptr) {
             *error = "generated config has no <phy_eram> rows (no phy bid yet) - leaving the "
                      "watcher to TD (auto-created from user.mdn)";
@@ -2270,7 +2259,7 @@ jsonrpc::Json WriteCompiledCwcAfterPhy(const project::Project& project) {
             }
         }
     }
-    if (config.write_sidecar_cwc == false) {
+    if (!config.write_sidecar_cwc) {
         // 默认只同步位流：我们生成的 cwc 与 TD 自己那份不等价（Chipwatcher code 不同 ->
         // 抓取挂死），写出去反而会被后续 capture 误用。
         copy_bit_sidecar();
@@ -2343,7 +2332,7 @@ std::vector<WatcherInstanceInfo> EnumerateWatcherInstances(const project::Projec
     if (!std::filesystem::is_directory(cw, ec)) return out;
     for (std::filesystem::directory_iterator it(cw, ec), end; !ec && it != end; it.increment(ec)) {
         const std::string name = it->path().filename().string();
-        if (name.find("auto_created_cwc") == std::string::npos) continue;
+        if (!name.contains("auto_created_cwc")) continue;
         const std::string sv = it->path().string() + "/" + name + "_watcherInst.sv";
         if (!IsFile(sv)) continue;
         WatcherInstanceInfo info;
@@ -2362,8 +2351,6 @@ std::vector<WatcherInstanceInfo> EnumerateWatcherInstances(const project::Projec
     }
     return out;
 }
-
-std::vector<std::string> ClockCandidatesFromReports(const project::Project& project);
 
 // =============================================================================
 // bus -> watcher 实例映射（多时钟域抓取的前提）
@@ -2406,7 +2393,7 @@ WatcherMap ParseWatcherMap(const std::string& text) {
             begin = bar + 1;
         }
         if (parts.size() == 3 && parts[0] == "node") {
-            map.nodes.push_back(WatcherMapNode{Trim(parts[1]), Trim(parts[2]), std::string()});
+            map.nodes.push_back(WatcherMapNode{.bus=Trim(parts[1]), .instance=Trim(parts[2]), .clock=std::string()});
         } else if (parts.size() == 3 && parts[0] == "nodeclock") {
             // 兼容：node 行的时钟单独一行
             if (!map.nodes.empty()) map.nodes.back().clock = Trim(parts[1]);
@@ -2425,7 +2412,7 @@ std::string SerializeWatcherMap(const std::string& key, const WatcherMap& map) {
         if (!node.clock.empty()) out += "nodeclock\t" + node.clock + "\t-\n";
     }
     for (const auto& [name, clock] : map.instances) {
-        out += "inst\t" + name + "\t" + clock + "\n";
+        out += std::format("inst\t{}\t{}\n", name, clock);
     }
     return out;
 }
@@ -2447,7 +2434,7 @@ bool QueryWatcherMap(const td::TdChoice& td, const project::Project& project, Wa
     const std::string cache_path = WatcherMapCachePath(project);
     if (IsFile(cache_path)) {
         const std::string cached = ReadText(cache_path);
-        if (cached.rfind("key\t" + key + "\n", 0) == 0) {
+        if (cached.starts_with("key\t" + key + "\n")) {
             *map = ParseWatcherMap(cached);
             if (!map->empty()) return true;
         }
@@ -2481,13 +2468,13 @@ bool QueryWatcherMap(const td::TdChoice& td, const project::Project& project, Wa
         out_text = session->Run(commands, 240.0);
         session->Kill();
         // 报告里有节点表（MARK_DEBUG_PROBE）或实例名，都算拿到了 watcher 信息
-        if (out_text.find("MARK_DEBUG_PROBE") != std::string::npos ||
-            out_text.find("auto_created_cwc") != std::string::npos) {
+        if (out_text.contains("MARK_DEBUG_PROBE") ||
+            out_text.contains("auto_created_cwc")) {
             break;
         }
     }
-    if (out_text.find("MARK_DEBUG_PROBE") == std::string::npos &&
-        out_text.find("auto_created_cwc") == std::string::npos) {
+    if (!out_text.contains("MARK_DEBUG_PROBE") &&
+        !out_text.contains("auto_created_cwc")) {
         return fail("report_cwc_status found no watcher rows (is the watcher built? run stages:[\"all\"])");
     }
 
@@ -2498,7 +2485,7 @@ bool QueryWatcherMap(const td::TdChoice& td, const project::Project& project, Wa
         const std::string line =
             out_text.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
         pos = end == std::string::npos ? out_text.size() : end + 1;
-        if (line.find('|') == std::string::npos) continue;
+        if (!line.contains('|')) continue;
         std::vector<std::string> fields;
         std::size_t begin = 0;
         while (begin <= line.size()) {
@@ -2517,8 +2504,8 @@ bool QueryWatcherMap(const td::TdChoice& td, const project::Project& project, Wa
         for (std::string& field : fields) field = strip_prefix(std::move(field));
         if (fields.size() >= 5 && fields[1] == "MARK_DEBUG_PROBE") {
             // bus | type | enabled | clock | instance
-            map->nodes.push_back(WatcherMapNode{fields[0], fields[4], fields[3]});
-        } else if (fields.size() >= 3 && fields[0].find("auto_created_cwc") != std::string::npos) {
+            map->nodes.push_back(WatcherMapNode{.bus=fields[0], .instance=fields[4], .clock=fields[3]});
+        } else if (fields.size() >= 3 && fields[0].contains("auto_created_cwc")) {
             bool seen = false;
             for (const auto& [name, clock] : map->instances) {
                 (void)clock;
@@ -2547,13 +2534,13 @@ namespace {
 
 bool LooksLikeClockNet(const std::string& name) {
     if (name.empty() || name.size() < 3) return false;
-    if (name.find('/') == std::string::npos) return false;
-    if (name.find("PH1_PHY") != std::string::npos) return false;
-    if (name.find(".clkc") != std::string::npos) return false;
-    if (name.find(' ') != std::string::npos) return false;
+    if (!name.contains('/')) return false;
+    if (name.contains("PH1_PHY")) return false;
+    if (name.contains(".clkc")) return false;
+    if (name.contains(' ')) return false;
     std::string lower = name;
     for (char& c : lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    return lower.find("clk") != std::string::npos || lower.find("clock") != std::string::npos;
+    return lower.contains("clk") || lower.contains("clock");
 }
 
 }  // namespace
@@ -2562,7 +2549,7 @@ std::vector<std::string> ClockCandidatesFromReports(const project::Project& proj
     std::vector<std::string> out;
     const std::string runs = RunsDir(project);
     for (const char* rel : {"/phy_1/route_clock_utilization.txt",
-                            "/phy_1/place_clock_utilization.txt"}) {
+                            "/phy_1/place_clock_utilization.txt",}) {
         const std::string path = runs + rel;
         if (!IsFile(path)) continue;
         const std::string text = ReadText(path);
@@ -2646,7 +2633,7 @@ std::string QuerySampleClockFromGateDb(const td::TdChoice& td, const project::Pr
         out = session->Run(commands, 240.0);
         session->Kill();
         session.reset();
-        if (out.find("auto_created_cwc") != std::string::npos) {
+        if (out.contains("auto_created_cwc")) {
             last_error.clear();
             break;
         }
@@ -2665,7 +2652,7 @@ std::string QuerySampleClockFromGateDb(const td::TdChoice& td, const project::Pr
         const std::string line = out.substr(pos, end == std::string::npos ? std::string::npos
                                                                         : end - pos);
         pos = end == std::string::npos ? out.size() : end + 1;
-        if (line.find('|') == std::string::npos) continue;
+        if (!line.contains('|')) continue;
         std::vector<std::string> fields;
         std::size_t begin = 0;
         while (begin <= line.size()) {
@@ -2676,8 +2663,8 @@ std::string QuerySampleClockFromGateDb(const td::TdChoice& td, const project::Pr
             begin = bar + 1;
         }
         if (fields.size() < 3) continue;
-        if (fields[0].find("auto_created_cwc") == std::string::npos &&
-            fields[0].find("chipwatcher") == std::string::npos) {
+        if (!fields[0].contains("auto_created_cwc") &&
+            !fields[0].contains("chipwatcher")) {
             continue;
         }
         const std::string candidate = fields[2];
@@ -2974,7 +2961,7 @@ jsonrpc::Json Status(const project::Project& project) {
         }
         bool bit_has_watcher = false;
         const std::string bid = RunsDir(project) + "/phy_1/" + project.name + "_inst.bid";
-        if (IsFile(bid) && ReadText(bid).find("U_cwc_ram") != std::string::npos) {
+        if (IsFile(bid) && ReadText(bid).contains("U_cwc_ram")) {
             bit_has_watcher = true;
         }
         out["bit_has_watcher"] = bit_has_watcher;
@@ -3014,7 +3001,7 @@ jsonrpc::Json Status(const project::Project& project) {
             std::error_code ec;
             if (!std::filesystem::is_directory(cw, ec)) continue;
             for (std::filesystem::directory_iterator it(cw, ec), end; !ec && it != end; it.increment(ec)) {
-                if (it->path().filename().string().find("cwc") != std::string::npos) {
+                if (it->path().filename().string().contains("cwc")) {
                     watcher_built = true;
                     break;
                 }
@@ -3091,10 +3078,10 @@ jsonrpc::Json Configure(const project::Project& project, const std::vector<std::
     jsonrpc::Json added = jsonrpc::Json::array();
     jsonrpc::Json removed = jsonrpc::Json::array();
     for (const std::string& item : after) {
-        if (old_set.find(item) == old_set.end()) added.push_back(item);
+        if (!old_set.contains(item)) added.push_back(item);
     }
     for (const std::string& item : before.signals) {
-        if (new_set.find(item) == new_set.end()) removed.push_back(item);
+        if (!new_set.contains(item)) removed.push_back(item);
     }
 
     jsonrpc::Json before_json = jsonrpc::Json::array();
@@ -3277,7 +3264,7 @@ struct RequestedBus {
 std::string StripTopPrefix(std::string name, std::string_view top) {
     if (!top.empty()) {
         const std::string prefix = std::string(top) + "/";
-        if (name.rfind(prefix, 0) == 0) name.erase(0, prefix.size());
+        if (name.starts_with(prefix)) name.erase(0, prefix.size());
     }
     return Trim(name);
 }
@@ -3407,7 +3394,7 @@ jsonrpc::Json Verify(const project::Project& project, bool include_bits,
             RunsDir(project) + "/phy_1/" + project.name + "_inst.bid";
         if (IsFile(bid_path)) {
             const std::string bid = ReadText(bid_path);
-            if (bid.find("U_cwc_ram") != std::string::npos) {
+            if (bid.contains("U_cwc_ram")) {
                 bid_has_watcher = true;
                 // 每个 ERAM 的 <width> 之和 ≈ 采集位宽
                 std::size_t pos = 0;
@@ -3416,7 +3403,7 @@ jsonrpc::Json Verify(const project::Project& project, bool include_bits,
                     if (close == std::string::npos) break;
                     const std::string name = bid.substr(pos + 6, close - pos - 6);
                     pos = close + 7;
-                    if (name.find("U_cwc_ram") == std::string::npos) continue;
+                    if (!name.contains("U_cwc_ram")) continue;
                     const std::size_t width_at = bid.find("<width>", pos);
                     const std::size_t width_end = width_at == std::string::npos
                                                       ? std::string::npos
@@ -3455,7 +3442,7 @@ jsonrpc::Json Verify(const project::Project& project, bool include_bits,
         int width = static_cast<int>(want.bits.size());
         int hit = 0;
         for (const int bit : want.bits) {
-            if (have != nullptr && have->count(bit) != 0) {
+            if (have != nullptr && have->contains(bit)) {
                 ++hit;
             } else {
                 const auto name = want.names.find(bit);
@@ -3514,7 +3501,7 @@ jsonrpc::Json Verify(const project::Project& project, bool include_bits,
             continue;
         }
         for (const int bit : bits) {
-            if (want->second.bits.count(bit) == 0) ++extra_bits;
+            if (!want->second.bits.contains(bit)) ++extra_bits;
         }
     }
 
@@ -3625,7 +3612,7 @@ std::string PatchTrigger(std::string_view cwc_text, const CaptureOptions::Trigge
         // 只改**有 cond 属性**的那条 <net>（顶层那条是 const/data/trig，不该动）
         const std::string pattern =
             R"((<net\b[^>]*?\bname=")" + RE2::QuoteMeta(net) + R"("[^>]*?\bcond=")[^"]*(")";
-        set_attr(pattern, "\\1" + net + "\\2" + cond + "\\3");
+        set_attr(pattern, std::format("\\1{}\\2{}\\3", net, cond));
     }
     for (const auto& bus : trigger.buses) {
         if (bus.name.empty()) continue;
@@ -3641,8 +3628,8 @@ std::string PatchTrigger(std::string_view cwc_text, const CaptureOptions::Trigge
             lsb = platform::DigitsToIntSaturating(lsb_s);
         } else {
             // `pwm_reg0_i` 这种没带宽度的写法：从 .cwc 的 bus 名里补
-            const RE2 find_bus("(<bus\\b[^>]*?\\bname=\")" + RE2::QuoteMeta(bus.name) +
-                               "(\\[(\\d+):(\\d+)\\])");
+            const RE2 find_bus(R"((<bus\b[^>]*?\bname="))" + RE2::QuoteMeta(bus.name) +
+                               R"((\[(\d+):(\d+)\]))");
             std::string full;
             std::string a;
             std::string b;
@@ -3660,7 +3647,7 @@ std::string PatchTrigger(std::string_view cwc_text, const CaptureOptions::Trigge
         if (!op.empty()) {
             const std::string pattern = R"((<bus\b[^>]*?\bname=")" + RE2::QuoteMeta(base) +
                                         R"((\[[^\]]*\]")[^>]*?\bop=")[^"]*(")";
-            set_attr(pattern, "\\1\\2" + base + "\\3\\4" + op + "\\5");
+            set_attr(pattern, std::format("\\1\\2{}\\3\\4{}\\5", base, op));
         }
         if (!bus.has_value) continue;
         for (int bit = lo; bit <= hi; ++bit) {
@@ -3682,7 +3669,7 @@ bool IsTriggerBusOp(std::string_view op) {
         "equal",   "not_equal",     "less", "less_equal",
         "greater", "greater_equal", "bit_trigger",
     };
-    return kOps.find(std::string(op)) != kOps.end();
+    return kOps.contains(std::string(op));
 }
 
 // -----------------------------------------------------------------------------
@@ -3815,7 +3802,7 @@ jsonrpc::Json Capture(const td::TdChoice& td, const project::Project& project,
     // disabled 位流现在可以正常抓（0.20.3 实测）：只要 chip_debugger/user.cfg 是完整配置，
     // TD 会在 phy 阶段自己写 phy_1/cw/compiled.cwc，config_chatcher/回读都正常。
     // 保留 allow_disabled_capture 参数只为兼容旧调用；默认不再拦截。
-    if (false && cwc.disabled_net_count > 0 && !options.allow_disabled_capture) {
+    if (false && !options.allow_disabled_capture) {
         out["refused"] = true;
         out["stage"] = "precheck";
         out["disabled_net_count"] = cwc.disabled_net_count;
@@ -3918,7 +3905,7 @@ jsonrpc::Json Capture(const td::TdChoice& td, const project::Project& project,
         out["stage"] = stage;
         out["reason"] = reason;
         out["log"] = log;
-        for (const std::string& line : ErrorLines(std::string(text), 6)) record(line);
+        for (const std::string& line : ErrorLines(text, 6)) record(line);
         out["log"] = log;
         session->Kill();
         return out;
@@ -3996,8 +3983,8 @@ jsonrpc::Json Capture(const td::TdChoice& td, const project::Project& project,
         //   在 exe 里扫不到，TD 升级后是否改号无法静态确认（SP1 实测仍是 KIT-1004）。
         //   两者取或，任一命中即认为配置已导入。
         const bool imported =
-            text.find("sanity check successfully") != std::string::npos ||
-            text.find("KIT-1004") != std::string::npos;
+            text.contains("sanity check successfully") ||
+            text.contains("KIT-1004");
         // 判致命只看 ERROR：与其它 TD 步骤一致（CRITICAL-WARNING 只记录，不判死），
         // 否则 SP1 起"警告不中断 Flow"的新行为会在这里把成功的导入判成失败。
         if (td::HasFatal(text) || !imported) {
@@ -4051,7 +4038,7 @@ jsonrpc::Json Capture(const td::TdChoice& td, const project::Project& project,
             failure_text = session->Run(command, effective.session_timeout);
             for (const std::string& line : ErrorLines(failure_text, 4)) record(line);
             if (!td::HasError(failure_text) &&
-                failure_text.find("Chip validation success") != std::string::npos) {
+                failure_text.contains("Chip validation success")) {
                 out["download_mode"] = mode;
                 out["download_speed"] = effective.speed;
                 return true;

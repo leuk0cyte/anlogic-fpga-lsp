@@ -31,6 +31,7 @@
 #include <string>
 #include <string_view>
 
+#include <array>
 namespace fpgalsp::platform::writes {
 
 // 写入目标分类（决定允许的路径范围）。
@@ -120,7 +121,7 @@ struct Metrics {
     std::uint64_t renames = 0;
     std::uint64_t copies = 0;
     std::uint64_t backups = 0;
-    std::uint64_t by_root[4] = {0, 0, 0, 0};  // state/project/run/temp
+    std::array<std::uint64_t, 4> by_root = {0, 0, 0, 0};  // state/project/run/temp
 };
 Metrics SnapshotMetrics();
 void ResetMetricsForTest();

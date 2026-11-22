@@ -37,7 +37,7 @@ struct ArtifactFile {
     std::optional<int64_t> size;
     std::optional<double> mtime;  // epoch 秒（浮点，与 os.stat().st_mtime 同值）
 
-    jsonrpc::Json ToJson() const;
+    [[nodiscard]] jsonrpc::Json ToJson() const;
 };
 
 // <name>_Runs 下的一个 run 目录
@@ -46,7 +46,7 @@ struct RunEntry {
     std::string dir;
     bool exists = true;
 
-    jsonrpc::Json ToJson() const;
+    [[nodiscard]] jsonrpc::Json ToJson() const;
 };
 
 struct ArtifactsReport {
@@ -58,7 +58,7 @@ struct ArtifactsReport {
     bool runs_found = false;
     std::string runs_dir;
 
-    jsonrpc::Json ToJson() const;
+    [[nodiscard]] jsonrpc::Json ToJson() const;
 };
 
 // -----------------------------------------------------------------------------

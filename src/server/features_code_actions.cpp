@@ -56,6 +56,7 @@
 
 #if defined(FPGA_LSP_HAVE_VERIBLE_BRIDGE)
 #include "verible_bridge/lint_text.h"
+#include "platform/text.h"
 #endif
 
 namespace fpgalsp::server {
@@ -90,18 +91,9 @@ void CodeActionPosition(const Json& range, int* line, int* character) {
     *character = std::max(0, jsonrpc::GetInt(start, "character", 0));
 }
 
-std::string LowerAscii(std::string_view text) {
-    std::string out(text);
-    for (char& ch : out) {
-        ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-    }
-    return out;
-}
+using platform::LowerAscii;
 
-bool EndsWith(std::string_view text, std::string_view suffix) {
-    return text.size() >= suffix.size() &&
-           text.compare(text.size() - suffix.size(), suffix.size(), suffix) == 0;
-}
+using platform::EndsWith;
 
 // Python: doc.path.lower().endswith((".v", ".sv", ".vh", ".svh"))
 bool IsCodeActionHdlPath(const std::string& lower_path) {
@@ -194,7 +186,7 @@ Json AdcCodeActions(std::string_view text, const std::string& uri, int line) {
     const std::vector<std::string_view> rows = SplitLines(text);
     if (line < 0 || static_cast<std::size_t>(line) >= rows.size()) return actions;
     const std::string_view row = rows[static_cast<std::size_t>(line)];
-    if (row.find("set_pin_assignment") == std::string_view::npos) return actions;
+    if (!row.contains("set_pin_assignment")) return actions;
 
     const Json delete_range =
         (static_cast<std::size_t>(line) + 1 < rows.size())
@@ -204,8 +196,8 @@ Json AdcCodeActions(std::string_view text, const std::string& uri, int line) {
                                      delete_range, ""));
 
     // Python: "IOSTANDARD" not in row.upper() 等价于大小写不敏感查找
-    const bool has_iostandard = LowerAscii(row).find("iostandard") != std::string::npos;
-    if (!has_iostandard && row.find('}') != std::string_view::npos) {
+    const bool has_iostandard = LowerAscii(row).contains("iostandard");
+    if (!has_iostandard && row.contains('}')) {
         const std::size_t insert_at = row.rfind('}');
         const int column = static_cast<int>(platform::utf16_len(row.substr(0, insert_at)));
         actions.push_back(MakeEditAction("Add IOSTANDARD = LVCMOS33", "quickfix", uri,
@@ -251,7 +243,7 @@ public:
     // 命中：返回 true 并把结果**拷贝**给调用方（调用方会继续修改 fixed.text）。
     bool TryGet(const std::string& filename, std::uint64_t text_hash,
                 verible_bridge::LintAutofixResult* out) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::scoped_lock lock(mutex_);
         for (auto it = entries_.begin(); it != entries_.end(); ++it) {
             if (it->text_hash != text_hash || it->filename != filename) continue;
             *out = it->result;
@@ -264,7 +256,7 @@ public:
     void Put(const std::string& filename, std::uint64_t text_hash,
              verible_bridge::LintAutofixResult result) {
         if (result.text.size() > kLintCacheMaxEntryBytes) return;
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::scoped_lock lock(mutex_);
         for (auto it = entries_.begin(); it != entries_.end(); ++it) {
             if (it->text_hash == text_hash && it->filename == filename) {
                 it->result = std::move(result);
@@ -357,7 +349,7 @@ Json LspServer::FeatureCodeActions(std::string_view path, const Json& range,
         const bool cache_hit = SharedLintCache().TryGet(path_string, text_hash, &fixed);
         if (!cache_hit) {
             {
-                std::lock_guard<std::mutex> lock(LintExecutionMutex());
+                std::scoped_lock lock(LintExecutionMutex());
                 fixed =
                     verible_bridge::AutofixText(text, path_string, settings_.verible_lint_args);
             }

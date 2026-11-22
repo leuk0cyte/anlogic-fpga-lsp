@@ -38,6 +38,7 @@ const { ReportsPanel } = require('./src/reportsPanel');
 const { ReportsService } = require('./src/reportsService');
 const { ReportsTreeProvider } = require('./src/reportsTree');
 const { renderTrendHtml } = require('./src/trendHtml');
+const { runUpdateProject } = require('./src/updateProject');
 const { registerLmTools } = require('./src/lmTools');
 const { renderConstraintHtml } = require('./src/constraintHtml');
 const { ProbePanel } = require('./src/probePanel');
@@ -1049,13 +1050,28 @@ function activate(context) {
     });
 
     register(VSCodeCommands.updateProject, async () => {
-        const result = await rpc.execute(COMMANDS.updateProject, []);
-        if (!result || !result.ok) {
-            vscode.window.showWarningMessage(`FPGA: failed to update the project: ${(result && result.error) || 'see logs'}`);
-            return;
-        }
-        vscode.window.showInformationMessage('FPGA: open_project -update completed (.al is in sync with disk)');
-        await Promise.allSettled([moduleProvider.refresh(activeDocumentUri()), flowProvider.refresh()]);
+        // Update Project: never swallow the reason. The TD diagnosis lives in the response
+        // `output` field, and this handler used to show only "see logs" while writing nothing
+        // anywhere. src/updateProject.js logs command/project/result to the "FPGA LSP" output
+        // channel (plus extension.log, which "FPGA: Show Logs" opens) and raises a readable error.
+        await runUpdateProject({
+            execute: () => rpc.execute(COMMANDS.updateProject, []),
+            project: statusState.project || 'no project selected',
+            appendLine: (line) => {
+                try {
+                    if (client && client.outputChannel &&
+                        typeof client.outputChannel.appendLine === 'function') {
+                        client.outputChannel.appendLine(line);
+                    }
+                } catch (_) { /* the output channel must never fail the command */ }
+                diag(line);
+            },
+            showInformationMessage: (message, ...items) =>
+                vscode.window.showInformationMessage(message, ...items),
+            showErrorMessage: (message, ...items) => vscode.window.showErrorMessage(message, ...items),
+            onShowLogs: () => vscode.commands.executeCommand(VSCodeCommands.showLogs),
+            refresh: () => Promise.allSettled([moduleProvider.refresh(activeDocumentUri()), flowProvider.refresh()]),
+        });
     });
 
     // Module hierarchy

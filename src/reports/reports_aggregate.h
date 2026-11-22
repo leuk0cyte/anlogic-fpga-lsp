@@ -116,7 +116,7 @@ struct ReportsFiles {
     std::string flow_status;
     std::string bit;
 
-    jsonrpc::Json ToJson(bool include_bit) const;
+    [[nodiscard]] jsonrpc::Json ToJson(bool include_bit) const;
 };
 
 // 一个阶段（Synthesis / Place & Route）的报告
@@ -129,7 +129,7 @@ struct StageSection {
     std::optional<AreaReport> area;
     std::optional<FlowStatusReport> flow_status;
 
-    jsonrpc::Json ToJson() const;
+    [[nodiscard]] jsonrpc::Json ToJson() const;
 };
 
 // -----------------------------------------------------------------------------
@@ -172,7 +172,7 @@ struct ReportsBundle {
     // 解析过程中所有子解析器的 warnings（不进 ToJson，供日志/测试）
     std::vector<std::string> warnings;
 
-    jsonrpc::Json ToJson() const;
+    [[nodiscard]] jsonrpc::Json ToJson() const;
 };
 
 // 汇总一个工程的最新一次 flow 的所有报告。

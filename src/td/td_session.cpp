@@ -52,7 +52,7 @@ std::string MakeTag() {
     // 对应 Python: "dsh%d" % (int(time.time() * 1000) % 1000000000)
     using namespace std::chrono;
     const auto ms = duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
-    return "dsh" + std::to_string(static_cast<long long>(ms % 1000000000LL));
+    return "dsh" + std::to_string((ms % 1000000000LL));
 }
 
 // D-3：options.work_dir 为空时**不再**让 TD 继承本进程的 cwd（那会把 TD 自己的
@@ -83,7 +83,7 @@ std::string MakeScratchWorkDir() {
     // 目录建不出来就退回"当前目录"，绝不因为 scratch 目录失败而让 TD 起不来。
     if (!plat::writes::EnsureDir(std::string(), dir_utf8, {.caller = "td.scratch_work_dir"})
              .ok) {
-        return std::string();
+        return {};
     }
     return dir_utf8;
 }
@@ -99,10 +99,10 @@ namespace {
 bool IsTransientSessionArtifact(std::string_view name) {
     const auto ends_with = [name](std::string_view suffix) {
         return name.size() >= suffix.size() &&
-               name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0;
+               name.ends_with(suffix);
     };
-    if (name.rfind("td_", 0) == 0 && (ends_with(".log") || ends_with(".logw"))) return true;
-    if (name.rfind("minidump-", 0) == 0 && ends_with(".dmp")) return true;
+    if (name.starts_with("td_") && (ends_with(".log") || ends_with(".logw"))) return true;
+    if (name.starts_with("minidump-") && ends_with(".dmp")) return true;
     return false;
 }
 
@@ -145,7 +145,7 @@ struct TdSession::Impl {
                  !ec && it != std::filesystem::directory_iterator(); it.increment(ec)) {
                 const std::string name = it->path().filename().string();
                 if (!IsTransientSessionArtifact(name)) continue;
-                if (preexisting.find(name) != preexisting.end()) continue;
+                if (preexisting.contains(name)) continue;
                 names.push_back(name);
             }
         }
@@ -425,14 +425,14 @@ TdSession::~TdSession() { Close(); }
 // -----------------------------------------------------------------------------
 
 std::string TdSession::ReadUntil(std::string_view marker, double timeout_seconds) {
-    std::lock_guard<std::mutex> lock(impl_->io_mutex);
+    std::scoped_lock lock(impl_->io_mutex);
 
     const auto deadline = std::chrono::steady_clock::now() +
                           std::chrono::milliseconds(
                               static_cast<long long>(timeout_seconds * 1000.0));
 
 #ifdef _WIN32
-    while (impl_->buffer.find(marker) == std::string::npos) {
+    while (!impl_->buffer.contains(marker)) {
         bool eof = false;
         bool timed_out = false;
         const std::string chunk = impl_->ReadChunk(&eof, &timed_out, deadline);
@@ -493,7 +493,7 @@ std::string TdSession::Run(std::string_view tcl, double timeout_seconds) {
     payload += "flush stdout\n";
 
     {
-        std::lock_guard<std::mutex> lock(impl_->io_mutex);
+        std::scoped_lock lock(impl_->io_mutex);
 #ifdef _WIN32
         DWORD written = 0;
         if (!WriteFile(impl_->stdin_write, payload.data(),
@@ -545,7 +545,7 @@ void TdSession::Close() {
 #ifdef _WIN32
         // 先礼貌退出（对应 Python: 写 "exit\n" 并 wait 8s）
         {
-            std::lock_guard<std::mutex> lock(impl_->io_mutex);
+            std::scoped_lock lock(impl_->io_mutex);
             const char* exit_cmd = "exit\n";
             DWORD written = 0;
             WriteFile(impl_->stdin_write, exit_cmd,

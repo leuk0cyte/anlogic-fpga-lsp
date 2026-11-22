@@ -44,7 +44,7 @@ struct DocumentSnapshot {
     std::optional<int64_t> version;
     std::string language_id;
 
-    bool valid() const { return !uri.empty(); }
+    [[nodiscard]] bool valid() const { return !uri.empty(); }
 };
 
 // contentChanges[] 里的一条内容变更。

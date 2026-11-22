@@ -24,10 +24,9 @@ void Dispatcher::Register(std::string method, Handler handler) {
 }
 
 bool Dispatcher::Has(std::string_view method) const {
-    for (const auto& [name, _] : handlers_) {
-        if (name == method) return true;
-    }
-    return false;
+    return std::ranges::any_of(handlers_, [method](const auto& entry) {
+        return entry.first == method;
+    });
 }
 
 std::vector<std::string> Dispatcher::Methods() const {
@@ -59,7 +58,7 @@ bool Dispatcher::Dispatch(const Json& message) {
     // A11 / LSP 3.17：`$/setTrace`、`$/logTrace` 是**客户端可以发给服务端**的
     // 通知；它们必须能被显式注册的 handler 处理（否则 trace 级别永远收不到）。
     // 其余 `$/`（未知扩展）仍按规范静默忽略、不回错误。
-    if (method.rfind("$/", 0) == 0) {
+    if (method.starts_with("$/")) {
         bool registered = false;
         for (const auto& [name, _] : handlers_) {
             if (name == method) {

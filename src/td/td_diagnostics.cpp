@@ -26,16 +26,14 @@
 #include "td/td_session.h"
 #include "td/tcl_quote.h"
 
+#include "platform/text.h"
+#include <array>
 namespace fpgalsp::td {
 namespace {
 
 namespace plat = fpgalsp::platform;
 
-std::string ToLower(std::string_view s) {
-    std::string out(s);
-    for (char& c : out) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    return out;
-}
+using platform::ToLower;
 
 // 反斜杠 -> 正斜杠
 std::string ToForwardSlashes(std::string_view s) {
@@ -86,7 +84,7 @@ std::string ResolveTdFile(const std::optional<std::string>& path,
     //   for base in (project.dir, project.declared_path):
     //       candidate = normpath(join(base, clean))
     //       if isfile(candidate): return candidate
-    const std::string bases[2] = {project.dir, project.declared_path};
+    const std::array<std::string, 2> bases = {project.dir, project.declared_path};
     for (const auto& base : bases) {
         if (base.empty()) continue;
         const std::string candidate = plat::normalize_path(plat::path_join(base, clean));
@@ -130,8 +128,8 @@ lsp::Diagnostic MapMessage(const TdMessage& message, const project::Project& pro
     //       severity = 2
     //       message += " (IP/module not in the build; load the IP first in project mode)"
     const std::string lower = ToLower(text);
-    if (lower.find("black box") != std::string::npos &&
-        text.find("TD ignored this file") == std::string::npos) {
+    if (lower.contains("black box") &&
+        !text.contains("TD ignored this file")) {
         severity = lsp::kWarning;
         text += " (IP/module not in the build; load the IP first in project mode)";
     }
@@ -169,7 +167,7 @@ std::vector<const project::AlFile*> SkippedSpaceHdlFiles(const project::Project&
     // 对应 Python: skipped = [f for f in project.hdl_files() if " " in f.path]
     std::vector<const project::AlFile*> out;
     for (const project::AlFile* f : project.HdlFiles()) {
-        if (f->path.find(' ') != std::string::npos) {
+        if (f->path.contains(' ')) {
             out.push_back(f);
         }
     }
@@ -201,7 +199,7 @@ std::string FileListTcl(const std::vector<std::string>& paths) {
     // 对应 Python _file_list_tcl：含空格的跳过（TD 会在空白处切分 -file 列表）
     std::string out;
     for (const auto& path : paths) {
-        if (path.find(' ') != std::string::npos) continue;
+        if (path.contains(' ')) continue;
         if (!out.empty()) out += ' ';
         out += ToForwardSlashes(path);
     }
@@ -222,7 +220,7 @@ std::vector<std::string> IpGeneratedHdl(const project::Project& project) {
 
         for (const char* ext : {".v", ".sv", ".vhd", ".vhdl"}) {
             const std::string candidate = stem + ext;
-            if (FileExists(candidate) && candidate.find(' ') == std::string::npos) {
+            if (FileExists(candidate) && !candidate.contains(' ')) {
                 out.push_back(candidate);
             }
         }
@@ -362,7 +360,7 @@ void UpdateDeviceCache(const project::Project& project, const std::string& path,
 bool DbFileExists(std::string_view td_root, const std::string& db) {
     std::error_code ec;
     return std::filesystem::exists(
-        std::filesystem::path(platform::path_join(std::string(td_root), "arch/" + db)), ec);
+        std::filesystem::path(platform::path_join(td_root, "arch/" + db)), ec);
 }
 
 }  // namespace
@@ -504,7 +502,7 @@ std::vector<std::string> FileFingerprints(const lsp::DiagnosticList& list) {
     std::vector<std::string> out;
     out.reserve(list.size());
     for (const lsp::Diagnostic& d : list) out.push_back(DiagnosticFingerprint(d));
-    std::sort(out.begin(), out.end());
+    std::ranges::sort(out);
     return out;
 }
 
@@ -557,8 +555,8 @@ std::vector<std::string> DiffChangedFiles(
         ++it_before;
         ++it_after;
     }
-    std::sort(changed.begin(), changed.end());
-    changed.erase(std::unique(changed.begin(), changed.end()), changed.end());
+    std::ranges::sort(changed);
+    changed.erase(std::ranges::unique(changed).begin(), changed.end());
     return changed;
 }
 

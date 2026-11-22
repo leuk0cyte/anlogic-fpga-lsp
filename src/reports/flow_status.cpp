@@ -16,6 +16,7 @@
 #include "reports/report_patterns_internal.h"
 #include "reports/report_text.h"
 
+#include <array>
 namespace fpgalsp::reports {
 namespace {
 
@@ -33,26 +34,24 @@ struct PatternEntry {
     std::string_view pattern;
 };
 
-constexpr PatternEntry kPatterns[] = {
+constexpr auto kPatterns = std::to_array<PatternEntry>({
     {kSetupPattern}, {kHoldPattern}, {kModePattern}, {kStepPattern},
-};
+});
 
 }  // namespace
 
 namespace detail {
 
 bool ValidateFlowStatusPatterns(std::string* error) {
-    for (const PatternEntry& entry : kPatterns) {
+    return std::ranges::all_of(kPatterns, [error](const PatternEntry& entry) {
         const RE2 probe{std::string(entry.pattern)};
-        if (!probe.ok()) {
-            if (error != nullptr) {
-                *error = "reports/flow_status: bad pattern '" + std::string(entry.pattern) +
-                         "': " + probe.error();
-            }
-            return false;
+        if (probe.ok()) return true;
+        if (error != nullptr) {
+            *error = "reports/flow_status: bad pattern '" + std::string(entry.pattern) +
+                     "': " + probe.error();
         }
-    }
-    return true;
+        return false;
+    });
 }
 
 }  // namespace detail
@@ -94,8 +93,8 @@ jsonrpc::Json FlowStatusReport::ToJson() const {
 }
 
 bool LooksLikeFlowStatus(std::string_view text) {
-    return text.find("Flow Statistics") != std::string_view::npos ||
-           text.find("NUM_FEPS") != std::string_view::npos;
+    return text.contains("Flow Statistics") ||
+           text.contains("NUM_FEPS");
 }
 
 FlowStatusReport ParseFlowStatusText(std::string_view text) {

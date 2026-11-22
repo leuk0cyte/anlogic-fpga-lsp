@@ -39,7 +39,7 @@ public:
         if (was_cancelled) return;
         std::function<void()> hook;
         {
-            std::lock_guard<std::mutex> lock(mutex_);
+            std::scoped_lock lock(mutex_);
             hook = hook_;
         }
         if (hook) hook();
@@ -57,10 +57,10 @@ public:
     void SetKillHook(std::function<void()> hook) const {
         std::function<void()> to_run;
         {
-            std::lock_guard<std::mutex> lock(mutex_);
+            std::scoped_lock lock(mutex_);
             // 已经在取消状态：立刻执行新 hook（保护"注册前就被取消"的竞态）
             if (cancelled_.load(std::memory_order_acquire)) {
-                to_run = hook;
+                to_run = std::move(hook);
             } else {
                 hook_ = std::move(hook);
             }
@@ -69,7 +69,7 @@ public:
     }
 
     void ClearKillHook() const {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::scoped_lock lock(mutex_);
         hook_ = nullptr;
     }
 

@@ -46,8 +46,8 @@
 #include "constraints/port.h"
 #include "lsp/diagnostic.h"
 
-namespace fpgalsp::constraints {
-namespace sdc {
+
+namespace fpgalsp::constraints::sdc {
 
 // Tcl 词法单元。字段与 Python 版 token dict 一一对应（span 均为 0-based 列）。
 enum class TokenKind {
@@ -181,5 +181,4 @@ Json ToJson(const Token& token);
 Json ToJson(const Command& command);
 Json ToJson(const std::vector<Command>& commands);
 
-}  // namespace sdc
-}  // namespace fpgalsp::constraints
+} // namespace fpgalsp::constraints::sdc

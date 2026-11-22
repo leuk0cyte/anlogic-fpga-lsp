@@ -54,7 +54,8 @@ bool HasObjectKey(const Json& obj, const char* key) {
 // P1-2：原实现每次 GetTextByPath 都要对每个打开文档的 path 调一次 normalize_path
 //（字符串副本 + 逐段切分 + 多轮拼接，约 0.3–1 µs/文档）。
 std::string PathKey(std::string_view path) {
-    std::string key = plat::normalize_path(std::string(path));
+    // B-5：normalize_path 收 string_view，原来多构造了一份临时 std::string 再转回 view。
+    std::string key = plat::normalize_path(path);
     for (char& c : key) {
         if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
     }
@@ -159,7 +160,7 @@ std::string DocumentStore::ApplyChanges(std::string_view text,
 
 DocumentStore::DocumentStore() {
     disk_reader_ = [](std::string_view path) -> std::optional<std::string> {
-        const auto result = plat::read_file_utf8(std::string(path));
+        const auto result = plat::read_file_utf8(path);
         if (!result.ok) return std::nullopt;
         return result.content;
     };
@@ -267,7 +268,7 @@ bool DocumentStore::Close(std::string_view uri) {
 
 bool DocumentStore::IsOpen(std::string_view uri) const {
     std::shared_lock lock(mutex_);
-    return documents_.find(uri) != documents_.end();
+    return documents_.contains(uri);
 }
 
 DocumentStore::FileStamp DocumentStore::StatFile(const std::string& path) {
@@ -313,7 +314,7 @@ bool DocumentStore::TryGetCached(const std::string& path, const FileStamp& stamp
 bool DocumentStore::TryGetCachedShared(const std::string& path, const FileStamp& stamp,
                                        std::shared_ptr<const std::string>* out) const {
     if (out == nullptr) return false;
-    std::lock_guard<std::mutex> lock(cache_mutex_);
+    std::scoped_lock lock(cache_mutex_);
     const auto it = text_cache_.find(plat::path_key(path));
     if (it == text_cache_.end()) return false;
     if (!(it->second.stamp == stamp)) return false;  // 文件被改过 -> 当未命中
@@ -326,7 +327,7 @@ void DocumentStore::PutCached(const std::string& path, const FileStamp& stamp,
                               std::shared_ptr<const std::string> text) const {
     if (!text || text->size() > kMaxEntryBytes || !stamp.valid) return;  // 单文件过大：不缓存
     const std::size_t bytes = text->size();
-    std::lock_guard<std::mutex> lock(cache_mutex_);
+    std::scoped_lock lock(cache_mutex_);
     const std::string key = plat::path_key(path);
     if (const auto it = text_cache_.find(key); it != text_cache_.end()) {
         cache_bytes_ -= it->second.text ? it->second.text->size() : 0;
@@ -353,7 +354,7 @@ void DocumentStore::PutCached(const std::string& path, const FileStamp& stamp,
 
 void DocumentStore::EvictCached(const std::string& path) const {
     if (path.empty()) return;
-    std::lock_guard<std::mutex> lock(cache_mutex_);
+    std::scoped_lock lock(cache_mutex_);
     const auto it = text_cache_.find(plat::path_key(path));
     if (it == text_cache_.end()) return;
     cache_bytes_ -= it->second.text ? it->second.text->size() : 0;
@@ -377,7 +378,7 @@ std::shared_ptr<const std::string> DocumentStore::GetTextByPathShared(
         }
     }
     // 未打开：走"路径 -> uri -> 磁盘缓存"路径（缓存条目本身也是 shared_ptr）。
-    return GetShared(plat::path_to_uri(std::string(path)));
+    return GetShared(plat::path_to_uri(path));
 }
 
 std::optional<std::string> DocumentStore::GetTextByPath(std::string_view path) const {
@@ -395,7 +396,7 @@ std::shared_ptr<const std::string> DocumentStore::GetShared(std::string_view uri
     }
 
     // 未打开：读磁盘。路径从 uri 反推。
-    const std::string path = plat::uri_to_path(std::string(uri));
+    const std::string path = plat::uri_to_path(uri);
     if (path.empty()) return nullptr;
 
     // ② 缓存命中判定带 (mtime, size)：stamp 一致才复用，文件改过就重读。
@@ -462,7 +463,7 @@ std::vector<std::string> DocumentStore::OpenUris() const {
     std::vector<std::string> out;
     out.reserve(documents_.size());
     for (const auto& [uri, _] : documents_) out.push_back(uri);
-    std::sort(out.begin(), out.end());
+    std::ranges::sort(out);
     return out;
 }
 

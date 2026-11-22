@@ -75,7 +75,7 @@ struct TimingEndpoint {
     std::optional<std::string> module;
     std::optional<std::string> reason;
 
-    jsonrpc::Json ToJson() const;
+    [[nodiscard]] jsonrpc::Json ToJson() const;
 };
 
 // 一条时序路径
@@ -100,7 +100,7 @@ struct TimingPath {
 
     // v3 的 begin_at / end_at 只挂在**展平后**的顶层 paths 上（与 server.py 的
     // _decorate_reports 一致）；groups[i].paths[j] 里不带这两个键，形状对齐 Python。
-    jsonrpc::Json ToJson(bool with_endpoints = false) const;
+    [[nodiscard]] jsonrpc::Json ToJson(bool with_endpoints = false) const;
 };
 
 // Statistics: 段里的 Max/Min 行
@@ -110,7 +110,7 @@ struct TimingStatistics {
     int viol_endpoints = 0;
     int total_endpoints = 0;
 
-    jsonrpc::Json ToJson() const;
+    [[nodiscard]] jsonrpc::Json ToJson() const;
 };
 
 struct TimingGroup {
@@ -124,7 +124,7 @@ struct TimingGroup {
     std::optional<TimingStatistics> min_statistics;  // statistics["min"]
     std::vector<TimingPath> paths;
 
-    jsonrpc::Json ToJson() const;
+    [[nodiscard]] jsonrpc::Json ToJson() const;
 };
 
 struct TimingClock {
@@ -133,14 +133,14 @@ struct TimingClock {
     int fanout = 0;
     std::string source;  // 时钟源网络名
 
-    jsonrpc::Json ToJson() const;
+    [[nodiscard]] jsonrpc::Json ToJson() const;
 };
 
 // Clock Summary 下面那张 17 列详表的一行
 struct TimingClockDetail {
     std::vector<std::pair<std::string, std::string>> fields;
 
-    jsonrpc::Json ToJson() const;
+    [[nodiscard]] jsonrpc::Json ToJson() const;
 };
 
 struct TimingCheckStatusRow {
@@ -148,7 +148,7 @@ struct TimingCheckStatusRow {
     std::string max;     // yes / no
     std::string min;
 
-    jsonrpc::Json ToJson() const;
+    [[nodiscard]] jsonrpc::Json ToJson() const;
 };
 
 struct TimingReport {
@@ -169,7 +169,7 @@ struct TimingReport {
 
     std::vector<std::string> warnings;
 
-    jsonrpc::Json ToJson() const;
+    [[nodiscard]] jsonrpc::Json ToJson() const;
 };
 
 // 解析时序报告。never-throw。

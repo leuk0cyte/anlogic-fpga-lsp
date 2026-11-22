@@ -194,7 +194,7 @@ public:
     };
     SemanticTokenContext SemanticTokenContextFor(std::string_view path);
     // 编码后的 5 元组（nullptr = 没有 token）。返回 shared_ptr：缓存/响应零深拷贝。
-    std::shared_ptr<const std::vector<int>> ComputeSemanticTokens(
+    static std::shared_ptr<const std::vector<int>> ComputeSemanticTokens(
         const SemanticTokenContext& context, const std::shared_ptr<const std::string>& text);
     Json FeatureFoldingRanges(std::string_view path);
     Json FeatureCodeActions(std::string_view path, const Json& range, const Json& context);
@@ -266,13 +266,13 @@ private:
     // A1：声明了 `workspaceFolders.changeNotifications:true` 就必须处理它（否则 dispatcher
     // 静默丢弃，多根工作区增删文件夹后服务端仍按旧根解析工程）。
     HandlerResult HandleDidChangeWorkspaceFolders(const Json& params);
-    HandlerResult HandleNoop(const Json& params);
+    static HandlerResult HandleNoop(const Json& params);
 
     // 已声明能力对应的方法：本阶段一律返回**合法的空结果**（不返回 -32601，
     // 否则编辑器每次悬停/补全都会在日志里刷错误）。详见 doc/commands.md。
-    HandlerResult HandleEmptyList(const Json& params);
+    static HandlerResult HandleEmptyList(const Json& params);
     HandlerResult HandleEmptyObject(const Json& params);
-    HandlerResult HandleNull(const Json& params);
+    static HandlerResult HandleNull(const Json& params);
     HandlerResult HandleSemanticTokensFull(const Json& params);
     HandlerResult HandleSemanticTokensDelta(const Json& params);
 
@@ -323,10 +323,10 @@ private:
     HandlerResult HandleCompletionResolve(const Json& params);
     HandlerResult HandleDocumentDiagnostic(const Json& params);
     HandlerResult HandleWorkspaceDiagnostic(const Json& params);
-    HandlerResult HandleWillSave(const Json& params);
-    HandlerResult HandleWillSaveWaitUntil(const Json& params);
+    static HandlerResult HandleWillSave(const Json& params);
+    static HandlerResult HandleWillSaveWaitUntil(const Json& params);
     HandlerResult HandleSetTrace(const Json& params);
-    HandlerResult HandleLogTrace(const Json& params);
+    static HandlerResult HandleLogTrace(const Json& params);
 
     // =========================================================================
     //  handler（自定义 v2 方法 / executeCommand）—— 定义在 commands.cpp
@@ -358,7 +358,7 @@ private:
     void ScheduleTdCheck(const project::Project& project);
     // W3：TdService 的 worker 线程回调 —— 一轮结果落地并按文件发布
     //     （被取消的轮次不会进来：TdService 只在 !cancelled && !stop_ 时回调）。
-    void ApplyTdResult(const project::Project& project, td::TdCheckResult result);
+    void ApplyTdResult(const project::Project& project, const td::TdCheckResult& result);
     // 保留下来的**同步单轮**实现（建会话 -> RunReadHdl -> 落表 -> 发布 -> 杀会话）。
     // 异步路径已全部改走 TdService/ApplyTdResult；本函数当前无生产调用方，
     // 仅作为"要同步等一轮"时的备用入口（A5 设计里同样保留）。
@@ -570,7 +570,7 @@ private:
     std::string td_cache_key_;
     std::optional<td::TdChoice> td_cache_value_;
     bool td_cache_valid_ = false;
-    std::chrono::steady_clock::time_point td_cache_at_{};
+    std::chrono::steady_clock::time_point td_cache_at_;
 };
 
 // JSON 里取诊断的落点路径：td::MapMessage 把绝对路径写在 data["path"]（见

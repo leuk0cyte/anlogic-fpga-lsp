@@ -21,6 +21,7 @@
 #include <cstdlib>
 #include <exception>
 #include <filesystem>
+#include <format>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -182,9 +183,11 @@ LspServer::LspServer(jsonrpc::TransportBaseCommon& transport, std::string td_exp
                                                          /*use_project_work_dir=*/true);
         },
         [this](const project::Project& project, td::TdCheckResult result) {
-            ApplyTdResult(project, std::move(result));
+            // ApplyTdResult 接 const&：这里传左值即可（不要 std::move，门禁会报
+            // performance-move-const-arg）。
+            ApplyTdResult(project, result);
         },
-        td::TdServiceOptions{/*debounce_ms=*/300});
+        td::TdServiceOptions{/*debounce_ms=*/.debounce_ms=300});
 
     // T1：服务端 lint（内嵌 Verible）。worker 线程上跑，300 ms 去抖 + 每文件 single-flight。
     //   * Runner：取文档快照 -> LintText -> 转 LSP Diagnostic（UTF-16 列）。
@@ -203,7 +206,7 @@ LspServer::~LspServer() { Shutdown(); }
 
 void LspServer::Shutdown() {
     {
-        std::lock_guard<std::mutex> lock(state_mutex_);
+        std::scoped_lock lock(state_mutex_);
         shutting_down_ = true;
     }
 
@@ -221,14 +224,14 @@ void LspServer::Shutdown() {
     {
         std::shared_ptr<flow::FlowRunner> runner;
         {
-            std::lock_guard<std::mutex> lock(flow_mutex_);
+            std::scoped_lock lock(flow_mutex_);
             runner.swap(flow_);
         }
         if (runner) {
             try {
                 runner->Cancel();
                 if (!runner->WaitUntilIdle(10.0)) {
-                    platform::default_logger().warn("flow 未在 10s 内停止，继续关停");
+                    platform::default_logger().warn("flow did not stop within 10s; continuing shutdown");
                 }
             } catch (const std::exception& exc) {
                 platform::default_logger().error(std::string("flow shutdown: ") + exc.what());
@@ -372,8 +375,8 @@ void LspServer::RegisterAll(jsonrpc::Dispatcher& dispatcher) {
     dispatcher.Register("workspace/executeCommand",
                         [this](const Json& params) { return HandleExecuteCommand(params); });
 
-    platform::default_logger().info("LSP handler 注册完成（" +
-                                    std::to_string(dispatcher.Methods().size()) + " 个方法）");
+    platform::default_logger().info("LSP handler registration complete (" +
+                                    std::to_string(dispatcher.Methods().size()) + " methods)");
 }
 
 // =============================================================================
@@ -512,7 +515,7 @@ Json LspServer::FeatureInitialize(const Json& params) {
     Json legend = Json::object();
     legend["tokenTypes"] = Json::array({"keyword", "type",      "class",   "property",
                                         "variable", "parameter", "function", "number",
-                                        "comment",  "string",    "operator", "macro"});
+                                        "comment",  "string",    "operator", "macro",});
     legend["tokenModifiers"] = Json::array();
     Json semantic = Json::object();
     semantic["legend"] = std::move(legend);
@@ -618,7 +621,7 @@ HandlerResult LspServer::HandleDidChangeWorkspaceFolders(const Json& params) {
             if (!folder.is_object()) continue;
             const std::string uri = jsonrpc::GetString(folder, "uri");
             if (uri.empty()) continue;
-            const auto it = std::find(workspace_folders_.begin(), workspace_folders_.end(), uri);
+            const auto it = std::ranges::find(workspace_folders_, uri);
             if (it != workspace_folders_.end()) {
                 workspace_folders_.erase(it);
                 ++removed_count;
@@ -631,7 +634,7 @@ HandlerResult LspServer::HandleDidChangeWorkspaceFolders(const Json& params) {
             if (!folder.is_object()) continue;
             const std::string uri = jsonrpc::GetString(folder, "uri");
             if (uri.empty()) continue;
-            if (std::find(workspace_folders_.begin(), workspace_folders_.end(), uri) ==
+            if (std::ranges::find(workspace_folders_, uri) ==
                 workspace_folders_.end()) {
                 workspace_folders_.push_back(uri);
                 ++added_count;
@@ -643,7 +646,7 @@ HandlerResult LspServer::HandleDidChangeWorkspaceFolders(const Json& params) {
     if (workspace_folders_.empty()) {
         if (removed_count > 0) root_uri_.clear();
     } else if (root_uri_.empty() ||
-               std::find(workspace_folders_.begin(), workspace_folders_.end(), root_uri_) ==
+               std::ranges::find(workspace_folders_, root_uri_) ==
                    workspace_folders_.end()) {
         root_uri_ = workspace_folders_.front();
     }
@@ -801,7 +804,7 @@ HandlerResult LspServer::HandleFormatting(const Json& params) {
     // 覆盖全文的编辑会让客户端本地的 semantic token 全部作废；这里把服务端那份
     // 缓存也丢掉，下一次请求必然是 full —— 否则可能拿旧基线算 delta，高亮会错位。
     {
-        std::lock_guard<std::mutex> lock(semantic_mutex_);
+        std::scoped_lock lock(semantic_mutex_);
         semantic_cache_.erase(uri);
     }
     return HandlerResult::Ok(std::move(edits));
@@ -857,15 +860,14 @@ std::string SemanticResultId(const std::vector<int>& data, std::string_view uri)
     for (const char c : uri) mix(static_cast<unsigned char>(c));
     mix(0xff);  // 分隔符，避免 (uri, data) 边界歧义
     for (const int value : data) {
-        const std::uint32_t bits = static_cast<std::uint32_t>(value);
+        const auto bits = static_cast<std::uint32_t>(value);
         mix(static_cast<unsigned char>(bits & 0xFFu));
         mix(static_cast<unsigned char>((bits >> 8) & 0xFFu));
         mix(static_cast<unsigned char>((bits >> 16) & 0xFFu));
         mix(static_cast<unsigned char>((bits >> 24) & 0xFFu));
     }
-    char buffer[20];
-    std::snprintf(buffer, sizeof(buffer), "%016llx", static_cast<unsigned long long>(hash));
-    return std::string(buffer);
+    // 与 snprintf("%016llx") 逐字节一致
+    return std::format("{:016x}", static_cast<unsigned long long>(hash));
 }
 
 // 编码后的 token -> LSP `data` 数组。只在**组装响应**时做一次。
@@ -1008,7 +1010,7 @@ HandlerResult LspServer::HandleSemanticTokensFull(const Json& params) {
     const std::string id = SemanticResultId(encoded ? *encoded : kNoSemanticData, uri);
     {
         // P1-1：锁内只做 shared_ptr 赋值（零深拷贝），不再拷贝整份 token 数组。
-        std::lock_guard<std::mutex> lock(semantic_mutex_);
+        std::scoped_lock lock(semantic_mutex_);
         SemanticCacheEntry& entry = semantic_cache_[uri];
         entry.result_id = id;
         entry.encoded = encoded;
@@ -1039,7 +1041,7 @@ HandlerResult LspServer::HandleSemanticTokensDelta(const Json& params) {
     // P1-1 增量短路：同版本 + 同索引 generation + 客户端基线就是缓存的那份
     // -> 内容不可能变，直接空 edits（旧实现这里会先全量重算再发现"没变"）。
     if (!previous.empty() && context.version.has_value() && context.have_generation) {
-        std::lock_guard<std::mutex> lock(semantic_mutex_);
+        std::scoped_lock lock(semantic_mutex_);
         if (const auto it = semantic_cache_.find(uri); it != semantic_cache_.end()) {
             const SemanticCacheEntry& entry = it->second;
             if (entry.encoded && entry.have_meta && entry.result_id == previous &&
@@ -1061,7 +1063,7 @@ HandlerResult LspServer::HandleSemanticTokensDelta(const Json& params) {
     Json edits = Json::array();
     bool full_result = false;
     {
-        std::lock_guard<std::mutex> lock(semantic_mutex_);
+        std::scoped_lock lock(semantic_mutex_);
         SemanticCacheEntry& entry = semantic_cache_[uri];
         // ⚠ 必须尊重 previousResultId：delta 的编辑是相对**客户端手里那份**数据算的。
         //   如果客户端的基线不是我们缓存的那一份（典型场景：格式化返回一条覆盖全文的
@@ -1424,7 +1426,7 @@ HandlerResult LspServer::HandleDidClose(const Json& params) {
     // T1：取消该文件的 lint 调度，并丢掉 lint 诊断（在跑的那轮结果也会作废）。
     if (lint_service_) lint_service_->Cancel(path);
     {
-        std::lock_guard<std::mutex> lock(state_mutex_);
+        std::scoped_lock lock(state_mutex_);
         diag_lint_.erase(path);
     }
     // 对应 Python didClose：把该文件的诊断清空（否则关掉文件后 Problems 还留着）
@@ -1474,7 +1476,7 @@ std::vector<std::string> ChangedDiagnosticFiles(
     }
     for (const auto& [path, list] : before) {
         (void)list;
-        if (after.find(path) == after.end()) changed.push_back(path);
+        if (!after.contains(path)) changed.push_back(path);
     }
     return changed;
 }
@@ -1502,7 +1504,7 @@ void LspServer::LogMessage(int type, std::string_view message) {
     params["type"] = type;
     params["message"] = std::string(message);
     SendNotification("window/logMessage", std::move(params));
-    platform::default_logger().info(std::string(message));
+    platform::default_logger().info(message);
 }
 
 void LspServer::PublishDiagnostics(std::string_view path,
@@ -1521,7 +1523,7 @@ void LspServer::PublishDiagnostics(std::string_view path,
     // A9：把**这次真正发出去的**数组同步进 pull 缓存（push 行为一行未改）。
     // 空数组也要存：pull 必须能反映"诊断已被清空"，而不是继续返回上次的旧条目。
     {
-        std::lock_guard<std::mutex> lock(state_mutex_);
+        std::scoped_lock lock(state_mutex_);
         latest_diagnostics_[uri] = wire;
     }
 
@@ -1550,7 +1552,7 @@ lsp::DiagnosticList MergeDiagnosticSources(const lsp::DiagnosticList& lint,
     // 为什么 severity 放第一位：这是 2026-11-19 之前（只有 TD 诊断时）的既有顺序，
     // tests/e2e/lsp_smoke.py 有断言锁着它；lint 并进来之后保持同样的可读性
     // （error 永远在最前），也让通知内容可回归比较。
-    std::stable_sort(merged.begin(), merged.end(),
+    std::ranges::stable_sort(merged,
                      [](const lsp::Diagnostic& a, const lsp::Diagnostic& b) {
                          if (a.severity != b.severity) return a.severity < b.severity;
                          if (a.range.start.line != b.range.start.line) {
@@ -1573,7 +1575,7 @@ lsp::DiagnosticList MergeDiagnosticSources(const lsp::DiagnosticList& lint,
                a.range.end.character == b.range.end.character && a.severity == b.severity &&
                a.code == b.code && a.source == b.source && a.message == b.message;
     };
-    merged.erase(std::unique(merged.begin(), merged.end(), same), merged.end());
+    merged.erase(std::ranges::unique(merged, same).begin(), merged.end());
     return merged;
 }
 
@@ -1595,8 +1597,8 @@ lsp::DiagnosticList ProjectDiagnostics(const project::Project& project) {
         diagnostic.code = "AL-MISSING-FILE";
         diagnostic.source = "fpga-lsp:project";
         diagnostic.message = "File listed in .al but missing on disk: " + rel_or(file);
-        diagnostic.range.start = lsp::Position{0, 0};
-        diagnostic.range.end = lsp::Position{0, 1};
+        diagnostic.range.start = lsp::Position{.line=0, .character=0};
+        diagnostic.range.end = lsp::Position{.line=0, .character=1};
         lsp::Json data = lsp::Json::object();
         data["origin"] = "al";
         data["rel"] = file.rel;
@@ -1613,8 +1615,8 @@ lsp::DiagnosticList ProjectDiagnostics(const project::Project& project) {
         diagnostic.code = "AL-WARNING";
         diagnostic.source = "fpga-lsp:project";
         diagnostic.message = warning;
-        diagnostic.range.start = lsp::Position{0, 0};
-        diagnostic.range.end = lsp::Position{0, 1};
+        diagnostic.range.start = lsp::Position{.line=0, .character=0};
+        diagnostic.range.end = lsp::Position{.line=0, .character=1};
         out.push_back(std::move(diagnostic));
         if (out.size() >= 40) break;
     }
@@ -1625,7 +1627,7 @@ void LspServer::PublishMergedPath(const project::Project* project, const std::st
     lsp::DiagnosticList lint;
     lsp::DiagnosticList td;
     {
-        std::lock_guard<std::mutex> lock(state_mutex_);
+        std::scoped_lock lock(state_mutex_);
         if (const auto it = diag_lint_.find(path); it != diag_lint_.end()) lint = it->second;
         if (project != nullptr) {
             if (const auto table = diag_td_.find(project->al_path); table != diag_td_.end()) {
@@ -1692,7 +1694,7 @@ void LspServer::PublishMerged(const project::Project& project, const std::string
     std::map<std::string, lsp::DiagnosticList> table;
     std::vector<std::string> paths;
     {
-        std::lock_guard<std::mutex> lock(state_mutex_);
+        std::scoped_lock lock(state_mutex_);
         if (const auto it = diag_td_.find(project.al_path); it != diag_td_.end()) {
             table = it->second;
         }
@@ -1722,7 +1724,7 @@ void LspServer::PublishMerged(const project::Project& project, const std::string
 void LspServer::ClearTdPath(const project::Project& project, std::string_view path) {
     bool changed = false;
     {
-        std::lock_guard<std::mutex> lock(state_mutex_);
+        std::scoped_lock lock(state_mutex_);
         if (auto it = diag_td_.find(project.al_path); it != diag_td_.end()) {
             if (it->second.erase(std::string(path)) > 0) changed = true;
         }
@@ -1760,7 +1762,7 @@ namespace {
 bool IsHdlTextPath(std::string_view lower_path) {
     const auto ends_with = [&](std::string_view suffix) {
         return lower_path.size() >= suffix.size() &&
-               lower_path.compare(lower_path.size() - suffix.size(), suffix.size(), suffix) == 0;
+               lower_path.ends_with(suffix);
     };
     return ends_with(".v") || ends_with(".sv") || ends_with(".vh") || ends_with(".svh");
 }
@@ -1800,7 +1802,7 @@ lsp::DiagnosticList LspServer::ComputeLint(const std::string& path) {
             if (!joined.empty()) joined += ' ';
             joined += flag;
         }
-        platform::log_warn("lint: 忽略未知参数 " + joined);
+        platform::log_warn("lint: ignoring unknown arguments " + joined);
     }
     if (!result.ok) return {};
 
@@ -1838,7 +1840,7 @@ lsp::DiagnosticList LspServer::ComputeLint(const std::string& path) {
 
 void LspServer::OnLintResult(const std::string& path, lsp::DiagnosticList diagnostics) {
     {
-        std::lock_guard<std::mutex> lock(state_mutex_);
+        std::scoped_lock lock(state_mutex_);
         if (shutting_down_) return;
         // 只写 lint 表：TD 表保持不动（这就是"互不覆盖"的落地）。
         diag_lint_[path] = std::move(diagnostics);
@@ -1860,7 +1862,7 @@ void LspServer::ScheduleTdCheck(const project::Project& project) {
         return;
     }
     {
-        std::lock_guard<std::mutex> lock(state_mutex_);
+        std::scoped_lock lock(state_mutex_);
         if (shutting_down_) return;
     }
     if (!td_service_) return;
@@ -1872,7 +1874,7 @@ void LspServer::ScheduleTdCheck(const project::Project& project) {
 // W3：一轮 TD 检查的结果落地（TdService 的 worker 线程调用）。
 // 语义与旧的 RunTdCheckOnce 尾部逐字对齐：失败清表 + 全量发布；成功只发布变更文件；
 // 日志格式不变（"TD check complete: N problem(s) in X.XXs"）。
-void LspServer::ApplyTdResult(const project::Project& project, td::TdCheckResult result) {
+void LspServer::ApplyTdResult(const project::Project& project, const td::TdCheckResult& result) {
     if (result.cancelled) return;  // 防御：TdService 已保证被取消的轮次不回调
 
     // 保留旧的失败文案：工厂拿不到 TD 时给出与 CreateSession 相同的提示。
@@ -1884,7 +1886,7 @@ void LspServer::ApplyTdResult(const project::Project& project, td::TdCheckResult
     if (result.failed) {
         // 失败必须清掉旧表，否则上一版诊断会永远挂在 Problems 里。
         {
-            std::lock_guard<std::mutex> lock(state_mutex_);
+            std::scoped_lock lock(state_mutex_);
             diag_td_.erase(project.al_path);
         }
         PublishMerged(project, nullptr);
@@ -1894,7 +1896,7 @@ void LspServer::ApplyTdResult(const project::Project& project, td::TdCheckResult
 
     std::map<std::string, lsp::DiagnosticList> before;
     {
-        std::lock_guard<std::mutex> lock(state_mutex_);
+        std::scoped_lock lock(state_mutex_);
         if (shutting_down_) return;
         before = diag_td_[project.al_path];
         diag_td_[project.al_path] = result.by_file;
@@ -1905,12 +1907,10 @@ void LspServer::ApplyTdResult(const project::Project& project, td::TdCheckResult
         PublishMerged(project, &path);
     }
 
-    char buffer[256];
     // 旧实现用"从建会话到发布的墙钟"，这里用 TD 轮次内部耗时（startup+import+read_hdl+parse），
     // 差 ~1 ms（我们的分组/发布时间），格式与文案不变。
-    std::snprintf(buffer, sizeof(buffer), "TD check complete: %zu problem(s) in %.2fs",
-                  result.total(), result.timings.total_ms / 1000.0);
-    LogMessage(3, buffer);
+    LogMessage(3, std::format("TD check complete: {} problem(s) in {:.2f}s", result.total(),
+                              result.timings.total_ms / 1000.0));
 }
 
 void LspServer::RunTdCheckOnce(const project::Project& project) {
@@ -1926,7 +1926,7 @@ void LspServer::RunTdCheckOnce(const project::Project& project) {
     if (!session) {
         // 建不起会话：必须清掉旧表，否则上一版诊断会永远挂在 Problems 里
         {
-            std::lock_guard<std::mutex> lock(state_mutex_);
+            std::scoped_lock lock(state_mutex_);
             diag_td_.erase(project.al_path);
         }
         PublishMerged(project, nullptr);
@@ -1950,7 +1950,7 @@ void LspServer::RunTdCheckOnce(const project::Project& project) {
     // 直接 Kill（Close 会写 exit 并等 8s，此时管道已死，纯属浪费）。
     session->Kill();
     {
-        std::lock_guard<std::mutex> lock(session_mutex_);
+        std::scoped_lock lock(session_mutex_);
         if (session_ == session) session_.reset();
     }
 
@@ -1958,16 +1958,16 @@ void LspServer::RunTdCheckOnce(const project::Project& project) {
     // 绝不能把"读了一半的空结果"当成"这个工程没有问题"发布出去。
     // （实测：exit 时 Kill 会话，read_hdl 的输出会截断成空 → 会误报 0 条诊断。）
     {
-        std::lock_guard<std::mutex> lock(state_mutex_);
+        std::scoped_lock lock(state_mutex_);
         if (shutting_down_) {
-            platform::default_logger().info("TD 检查因退出被中断，跳过发布");
+            platform::default_logger().info("TD check interrupted by shutdown; skipping publish");
             return;
         }
     }
 
     if (!failure.empty()) {
         {
-            std::lock_guard<std::mutex> lock(state_mutex_);
+            std::scoped_lock lock(state_mutex_);
             diag_td_.erase(project.al_path);
         }
         PublishMerged(project, nullptr);
@@ -1989,7 +1989,7 @@ void LspServer::RunTdCheckOnce(const project::Project& project) {
 
     std::map<std::string, lsp::DiagnosticList> before;
     {
-        std::lock_guard<std::mutex> lock(state_mutex_);
+        std::scoped_lock lock(state_mutex_);
         before = diag_td_[project.al_path];
         diag_td_[project.al_path] = table;
     }
@@ -1999,10 +1999,7 @@ void LspServer::RunTdCheckOnce(const project::Project& project) {
     }
 
     const double elapsed = std::chrono::duration<double>(clock_type::now() - started).count();
-    char buffer[256];
-    std::snprintf(buffer, sizeof(buffer), "TD check complete: %zu problem(s) in %.2fs",
-                  total, elapsed);
-    LogMessage(3, buffer);
+    LogMessage(3, std::format("TD check complete: {} problem(s) in {:.2f}s", total, elapsed));
 }
 
 // =============================================================================
@@ -2010,14 +2007,14 @@ void LspServer::RunTdCheckOnce(const project::Project& project) {
 // =============================================================================
 
 bool LspServer::SessionAlive() const {
-    std::lock_guard<std::mutex> lock(session_mutex_);
+    std::scoped_lock lock(session_mutex_);
     return session_ != nullptr && session_->Alive();
 }
 
 void LspServer::KillSession() {
     std::shared_ptr<td::TdSession> session;
     {
-        std::lock_guard<std::mutex> lock(session_mutex_);
+        std::scoped_lock lock(session_mutex_);
         session = std::move(session_);
         session_ = nullptr;
     }
@@ -2051,7 +2048,7 @@ std::shared_ptr<td::TdSession> LspServer::CreateSession(const project::Project& 
     try {
         auto session = std::make_shared<td::TdSession>(*choice, options);
         {
-            std::lock_guard<std::mutex> lock(session_mutex_);
+            std::scoped_lock lock(session_mutex_);
             session_ = session;
         }
         return session;
@@ -2088,7 +2085,7 @@ std::shared_ptr<const project::Project> LspServer::ParseAlCachedShared(
         static_cast<std::int64_t>(write_time.time_since_epoch().count());
 
     {
-        std::lock_guard<std::mutex> lock(project_cache_mutex_);
+        std::scoped_lock lock(project_cache_mutex_);
         const auto it = project_cache_.find(al_path);
         if (it != project_cache_.end() && it->second.mtime == mtime &&
             it->second.size == size) {
@@ -2101,7 +2098,7 @@ std::shared_ptr<const project::Project> LspServer::ParseAlCachedShared(
     std::shared_ptr<const project::Project> parsed =
         std::make_shared<const project::Project>(project::ParseAl(al_path));
     {
-        std::lock_guard<std::mutex> lock(project_cache_mutex_);
+        std::scoped_lock lock(project_cache_mutex_);
         if (project_cache_.size() >= 8) project_cache_.clear();
         ParsedProjectEntry entry;
         entry.mtime = mtime;
@@ -2153,7 +2150,7 @@ std::shared_ptr<const project::Project> LspServer::ProjectForPathShared(std::str
     const std::string key = configured + "|" + root + "|" + scope;
     const auto now = clock_type::now();
     {
-        std::lock_guard<std::mutex> lock(discovery_mutex_);
+        std::scoped_lock lock(discovery_mutex_);
         if (const auto it = discovery_cache_.find(key); it != discovery_cache_.end()) {
             if (now - it->second.at < std::chrono::seconds(5)) {
                 it->second.last_used = now;
@@ -2166,7 +2163,7 @@ std::shared_ptr<const project::Project> LspServer::ProjectForPathShared(std::str
 
     const auto al = ResolveProjectAl(root, normalized_path, configured);
     {
-        std::lock_guard<std::mutex> lock(discovery_mutex_);
+        std::scoped_lock lock(discovery_mutex_);
         // LRU 淘汰（原来"≥64 条整体清空"会让 200 文件工程周期性全失效）
         if (discovery_cache_.size() >= kDiscoveryCapacity) {
             auto victim = discovery_cache_.begin();
@@ -2201,7 +2198,7 @@ std::optional<std::string> LspServer::ResolveProjectAl(const std::string& root,
     if (root.empty()) return std::nullopt;
     std::vector<std::string> candidates;
     {
-        std::lock_guard<std::mutex> lock(discovery_mutex_);
+        std::scoped_lock lock(discovery_mutex_);
         const auto it = discovered_cache_.find(root);
         if (it != discovered_cache_.end() && clock_type::now() - it->second.at < std::chrono::seconds(5)) {
             candidates = it->second.candidates;  // 拷贝：锁外做 affinity
@@ -2209,8 +2206,8 @@ std::optional<std::string> LspServer::ResolveProjectAl(const std::string& root,
     }
     if (candidates.empty()) {
         candidates = project::DiscoverProjects(root);
-        std::lock_guard<std::mutex> lock(discovery_mutex_);
-        discovered_cache_[root] = DiscoveredProjectsEntry{clock_type::now(), candidates};
+        std::scoped_lock lock(discovery_mutex_);
+        discovered_cache_[root] = DiscoveredProjectsEntry{.at=clock_type::now(), .candidates=candidates};
     }
     if (candidates.empty()) return std::nullopt;
     if (candidates.size() == 1) return candidates[0];
@@ -2252,23 +2249,23 @@ std::optional<project::Project> LspServer::ProjectFromParams(const Json& params)
 
 void LspServer::InvalidateProjectCaches() {
     {
-        std::lock_guard<std::mutex> lock(state_mutex_);
+        std::scoped_lock lock(state_mutex_);
         diag_td_.clear();
         published_.clear();
     }
     {
         // 工程切换后旧索引不再有意义（键是 al_path，留着也只是占内存）
-        std::lock_guard<std::mutex> lock(hdl_mutex_);
+        std::scoped_lock lock(hdl_mutex_);
         hdl_cache_.clear();
     }
     {
         // 同上：已解析的 Project 也一起丢（下次按 (mtime, size) 重新解析）
-        std::lock_guard<std::mutex> lock(project_cache_mutex_);
+        std::scoped_lock lock(project_cache_mutex_);
         project_cache_.clear();
     }
     {
         // F2/R3b：工作区扫描结果与按目录的发现缓存也一起失效
-        std::lock_guard<std::mutex> lock(discovery_mutex_);
+        std::scoped_lock lock(discovery_mutex_);
         discovery_cache_.clear();
         discovered_cache_.clear();
     }
@@ -2284,13 +2281,13 @@ void LspServer::SendFlowEvent(const Json& event) {
 // =============================================================================
 
 std::shared_ptr<flow::FlowRunner> LspServer::flow_runner() {
-    std::lock_guard<std::mutex> lock(flow_mutex_);
+    std::scoped_lock lock(flow_mutex_);
     return flow_;
 }
 
 std::shared_ptr<flow::FlowRunner> LspServer::EnsureFlowRunner(const project::Project& project,
                                                              const td::TdChoice& td) {
-    std::lock_guard<std::mutex> lock(flow_mutex_);
+    std::scoped_lock lock(flow_mutex_);
     // 同一个 .al 复用 runner；工程变了必须重建，否则 flow 会跑到旧工程上
     if (flow_ && flow_->project().al_path == project.al_path) return flow_;
 
@@ -2314,7 +2311,7 @@ std::shared_ptr<flow::FlowRunner> LspServer::EnsureFlowRunner(const project::Pro
         },
         // 日志：走 window/logMessage（同样线程安全）
         [this](int type, std::string_view text) { LogMessage(type, text); });
-    platform::default_logger().info("flow runner 已创建: " + project.al_path);
+    platform::default_logger().info("flow runner created: " + project.al_path);
     return flow_;
 }
 

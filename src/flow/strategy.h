@@ -28,7 +28,7 @@ namespace fpgalsp::flow {
 const std::vector<std::string>& DefaultStrategies();
 
 // 器件族 -> 策略文件名（PH1/PH1P -> ph1，PH2/PH2A -> ph2，其余 -> cpld）
-std::string StrategyFileForFamily(std::string_view family);
+std::string_view StrategyFileForFamily(std::string_view family);
 
 // 读 <td_root>/doc/strategies/<file> 的 JSON，返回排序后的键。
 // 文件缺失/不是 JSON -> 空表（不抛）。
@@ -44,7 +44,7 @@ struct QorNumbers {
     std::optional<int64_t> slices;
     std::string slice_pct;             // "61.52%"（注意 Python 返回的是带 % 的原串）
 
-    jsonrpc::Json ToJson() const;
+    [[nodiscard]] jsonrpc::Json ToJson() const;
 };
 
 QorNumbers QorNumbersFromReport(const jsonrpc::Json& qor);

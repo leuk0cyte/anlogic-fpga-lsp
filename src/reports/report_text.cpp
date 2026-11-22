@@ -13,6 +13,7 @@
 #include "platform/encoding.h"
 #include "reports/report_patterns_internal.h"
 
+#include "platform/text.h"
 namespace fpgalsp::reports {
 namespace {
 
@@ -84,30 +85,17 @@ std::string_view RStripSpaces(std::string_view text) {
     return text.substr(0, n);
 }
 
-bool StartsWith(std::string_view text, std::string_view prefix) {
-    return text.size() >= prefix.size() && text.compare(0, prefix.size(), prefix) == 0;
-}
+using platform::StartsWith;
 
-bool EndsWith(std::string_view text, std::string_view suffix) {
-    return text.size() >= suffix.size() &&
-           text.compare(text.size() - suffix.size(), suffix.size(), suffix) == 0;
-}
+using platform::EndsWith;
 
 bool StartsWithAny(std::string_view text, std::initializer_list<std::string_view> prefixes) {
-    for (const std::string_view prefix : prefixes) {
-        if (StartsWith(text, prefix)) return true;
-    }
-    return false;
+    return std::ranges::any_of(prefixes, [text](std::string_view prefix) {
+        return StartsWith(text, prefix);
+    });
 }
 
-std::string ToLowerAscii(std::string_view text) {
-    std::string out;
-    out.reserve(text.size());
-    for (const char c : text) {
-        out.push_back((c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c);
-    }
-    return out;
-}
+using platform::ToLowerAscii;
 
 bool EqualsIgnoreCase(std::string_view a, std::string_view b) {
     if (a.size() != b.size()) return false;

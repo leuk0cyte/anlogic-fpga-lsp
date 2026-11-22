@@ -27,21 +27,13 @@
 #include "constraints/sdc.h"
 #include "server/lsp_server.h"
 
+#include "platform/text.h"
 namespace fpgalsp::server {
 namespace {
 
-std::string LowerAscii(std::string_view text) {
-    std::string lowered(text);
-    for (char& c : lowered) {
-        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
-    }
-    return lowered;
-}
+using platform::LowerAscii;
 
-bool EndsWith(std::string_view text, std::string_view suffix) {
-    return text.size() >= suffix.size() &&
-           text.compare(text.size() - suffix.size(), suffix.size(), suffix) == 0;
-}
+using platform::EndsWith;
 
 enum class ConstraintKind { kNone, kAdc, kSdc };
 

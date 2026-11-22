@@ -8,6 +8,8 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <format>
+#include <ranges>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -20,37 +22,17 @@
 #include "platform/write_service.h"
 #include "td/td_output.h"
 
+#include "platform/text.h"
 namespace fpgalsp::flow {
 namespace {
 
-bool EndsWith(std::string_view text, std::string_view suffix) {
-    return text.size() >= suffix.size() &&
-           text.compare(text.size() - suffix.size(), suffix.size(), suffix) == 0;
-}
+using platform::EndsWith;
 
-bool StartsWith(std::string_view text, std::string_view prefix) {
-    return text.size() >= prefix.size() && text.compare(0, prefix.size(), prefix) == 0;
-}
+using platform::StartsWith;
 
-std::string ToLowerAscii(std::string_view text) {
-    std::string out;
-    out.reserve(text.size());
-    for (const char c : text) {
-        out.push_back((c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c);
-    }
-    return out;
-}
+using platform::ToLowerAscii;
 
-std::string Trim(std::string_view text) {
-    std::size_t begin = 0;
-    std::size_t end = text.size();
-    const auto is_space = [](char c) {
-        return c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\v' || c == '\f';
-    };
-    while (begin < end && is_space(text[begin])) ++begin;
-    while (end > begin && is_space(text[end - 1])) --end;
-    return std::string(text.substr(begin, end - begin));
-}
+using platform::Trim;
 
 // 对应 Python 的 out.replace("\r", "\n").split("\n")：
 // 先把每个 \r 换成 \n，再按 \n 切（\r\n 会因此切出一个空行，与 Python 一致）
@@ -73,18 +55,16 @@ std::vector<std::string> SplitNormalisedLines(std::string_view text) {
 }
 
 bool Contains(const std::vector<std::string>& items, std::string_view value) {
-    return std::find(items.begin(), items.end(), value) != items.end();
+    return std::ranges::find(items, value) != items.end();
 }
 
 bool AnyEndsWith(const std::vector<std::string>& names, std::string_view suffix) {
-    for (const std::string& name : names) {
-        if (EndsWith(name, suffix)) return true;
-    }
-    return false;
+    return std::ranges::any_of(names,
+                               [suffix](const std::string& name) { return EndsWith(name, suffix); });
 }
 
 bool ContainsToken(std::string_view text, std::string_view token) {
-    return text.find(token) != std::string_view::npos;
+    return text.contains(token);
 }
 
 }  // namespace
@@ -114,11 +94,11 @@ std::vector<std::string> NormaliseStages(const std::vector<std::string>& stages)
             return {"route"};
         }
         if (stage == "syn" || stage == "synthesis" || stage == "synth") {
-            out.push_back("syn");
+            out.emplace_back("syn");
         } else if (stage == "phy" || stage == "pnr" || stage == "place_route") {
             // ⚠ Python 的 elif 里还写了一个 "route"，但上面已经提前 return，
             //   那个分支是死代码。这里保留同样的语义（不额外接受 "route"）。
-            out.push_back("phy");
+            out.emplace_back("phy");
         }
     }
 
@@ -137,17 +117,17 @@ const std::vector<PhaseToken>& PhaseTokens() {
     // 顺序与 Python 完全一致：同一行命中多个 token 时取靠前的那个。
     // 实测 TD 2026.2 的两种写法（opt_rtl / optimize_rtl、opt_gate / optimize_gate）都在表里。
     static const std::vector<PhaseToken> kTokens = {
-        {"read_design", "Read Design"},
-        {"opt_rtl", "Optimize RTL"},
-        {"optimize_rtl", "Optimize RTL"},
-        {"opt_gate", "Optimize Gate"},
-        {"optimize_gate", "Optimize Gate"},
-        {"legalize_phy_inst", "Legalize"},
-        {"place", "Place"},
-        {"route", "Route"},
-        {"fix_hold", "Fix Hold"},
-        {"update_timing", "Update Timing"},
-        {"bitgen", "Bitgen"},
+        {.token="read_design", .label="Read Design"},
+        {.token="opt_rtl", .label="Optimize RTL"},
+        {.token="optimize_rtl", .label="Optimize RTL"},
+        {.token="opt_gate", .label="Optimize Gate"},
+        {.token="optimize_gate", .label="Optimize Gate"},
+        {.token="legalize_phy_inst", .label="Legalize"},
+        {.token="place", .label="Place"},
+        {.token="route", .label="Route"},
+        {.token="fix_hold", .label="Fix Hold"},
+        {.token="update_timing", .label="Update Timing"},
+        {.token="bitgen", .label="Bitgen"},
     };
     return kTokens;
 }
@@ -162,12 +142,12 @@ std::string MatchPhaseToken(std::string_view line) {
 
 PhaseDetection DetectProgress(const std::vector<std::string>& tail_lines) {
     PhaseDetection out;
-    for (auto it = tail_lines.rbegin(); it != tail_lines.rend(); ++it) {
-        out.phase = MatchPhaseToken(*it);
+    for (const auto& tail_line : std::views::reverse(tail_lines)) {
+        out.phase = MatchPhaseToken(tail_line);
         if (!out.phase.empty()) break;
     }
-    for (auto it = tail_lines.rbegin(); it != tail_lines.rend(); ++it) {
-        const std::string trimmed = Trim(*it);
+    for (const auto& tail_line : std::views::reverse(tail_lines)) {
+        const std::string trimmed = Trim(tail_line);
         if (trimmed.empty() || StartsWith(trimmed, "===")) continue;
         out.message = trimmed.size() > 160 ? trimmed.substr(0, 160) : trimmed;
         break;
@@ -252,10 +232,9 @@ bool OnlyToleratedPrjErrors(std::string_view text) {
         if (ContainsToken(line, "ERROR")) errors.push_back(Trim(line));
     }
     if (errors.empty()) return false;
-    for (const std::string& error : errors) {
-        if (!IsToleratedPrjCode(error)) return false;
-    }
-    return true;
+    return std::ranges::all_of(errors, [](const std::string& error) {
+        return IsToleratedPrjCode(error);
+    });
 }
 
 std::string ErrorLines(std::string_view text, int limit) {
@@ -364,11 +343,10 @@ std::string StallReason(double activity_mtime, double now, double stage_started,
         return "produced no run trace (the child process may have failed, e.g. PRJ-8001)";
     }
     if (activity_mtime > 0.0 && now - activity_mtime > stall_seconds) {
-        char buffer[160];
-        std::snprintf(buffer, sizeof(buffer),
-                      "produced no new artifacts for %.0f s (stalled or child process died)",
-                      now - activity_mtime);
-        return buffer;
+        // 与 snprintf("%.0f") 逐字节一致
+        return std::format(
+            "produced no new artifacts for {:.0f} s (stalled or child process died)",
+            now - activity_mtime);
     }
     return {};
 }
@@ -383,10 +361,8 @@ std::vector<std::string> TrimLog(std::vector<std::string> log, std::size_t limit
 }
 
 std::string FormatLogLine(double elapsed, std::string_view stage, std::string_view message) {
-    // 对应 Python 的 "%6.1fs [%s] %s"
-    char prefix[64];
-    std::snprintf(prefix, sizeof(prefix), "%6.1fs [", elapsed);
-    std::string out(prefix);
+    // 对应 Python 的 "%6.1fs [%s] %s"；`{:6.1f}` 与 printf 的宽度/精度语义一致
+    std::string out = std::format("{:6.1f}s [", elapsed);
     out += stage.empty() ? "-" : std::string(stage);
     out += "] ";
     out += message;
@@ -423,9 +399,7 @@ std::string SummaryFromReports(const jsonrpc::Json& reports) {
         if (summary != timing->end() && summary->is_object()) {
             const auto swns = summary->find("SWNS");
             if (swns != summary->end() && swns->is_number()) {
-                char buffer[64];
-                std::snprintf(buffer, sizeof(buffer), "SWNS %gns", swns->get<double>());
-                parts.emplace_back(buffer);
+                parts.emplace_back(std::format("SWNS {:g}ns", swns->get<double>()));
             }
         }
     }

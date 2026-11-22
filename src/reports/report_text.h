@@ -21,6 +21,7 @@
 #include <string_view>
 #include <vector>
 
+#include "platform/text.h"
 namespace fpgalsp::reports {
 
 // -----------------------------------------------------------------------------
@@ -48,14 +49,13 @@ std::string_view RStrip(std::string_view text);
 std::string_view LStripSpaces(std::string_view text);
 std::string_view RStripSpaces(std::string_view text);
 
-bool StartsWith(std::string_view text, std::string_view prefix);
-bool EndsWith(std::string_view text, std::string_view suffix);
+using platform::StartsWith;
+using platform::EndsWith;
 bool StartsWithAny(std::string_view text, std::initializer_list<std::string_view> prefixes);
 
 // 大小写不敏感的 ASCII 比较（报告里 QoR 表头大小写不完全固定）
 bool EqualsIgnoreCase(std::string_view a, std::string_view b);
-std::string ToLowerAscii(std::string_view text);
-
+using platform::ToLowerAscii;
 // -----------------------------------------------------------------------------
 // 数字
 // -----------------------------------------------------------------------------

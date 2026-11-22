@@ -73,7 +73,7 @@ struct AreaReport {
     std::string raw;
     std::vector<std::string> warnings;
 
-    jsonrpc::Json ToJson() const;
+    [[nodiscard]] jsonrpc::Json ToJson() const;
 };
 
 // 解析 .area 文本。never-throw。

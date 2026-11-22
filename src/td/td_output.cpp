@@ -86,12 +86,9 @@ std::string RStrip(std::string_view s) {
 }
 
 bool IsBlank(std::string_view s) {
-    for (char c : s) {
-        if (!(c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\f' || c == '\v')) {
-            return false;
-        }
-    }
-    return true;
+    return std::ranges::all_of(s, [](char c) {
+        return c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\f' || c == '\v';
+    });
 }
 
 // Python str.strip() 的近似（ASCII 空白 + 常见 Unicode 空白按 ASCII 处理）
@@ -113,7 +110,7 @@ std::string StripTrailingPreposition(std::string message) {
 
     for (const auto& word : kWords) {
         if (message.size() < word.size()) continue;
-        if (message.compare(message.size() - word.size(), word.size(), word) != 0) continue;
+        if (!message.ends_with(word)) continue;
 
         // 往前跳过一个或多个空白
         std::size_t j = message.size() - word.size();
@@ -215,8 +212,7 @@ std::vector<TdMessage> ParseMessageLines(std::string_view text) {
             std::string head = (p == std::string::npos) ? body : body.substr(0, p);
             // 去掉被匹配到的 path 部分（head 的尾部就是 path）
             if (!matched_path.empty() && head.size() >= matched_path.size() &&
-                head.compare(head.size() - matched_path.size(), matched_path.size(),
-                             matched_path) == 0) {
+                head.ends_with(matched_path)) {
                 head.resize(head.size() - matched_path.size());
             }
             message = LStripColonSpace(head);
@@ -261,18 +257,16 @@ std::vector<TdMessage> ParseMessageLines(std::string_view text) {
 }
 
 bool HasError(std::string_view text) {
-    return RE2::PartialMatch(std::string(text), ErrorRe());
+    return RE2::PartialMatch(re2::StringPiece(text.data(), text.size()), ErrorRe());
 }
 
 bool HasFatal(std::string_view text) {
-    return RE2::PartialMatch(std::string(text), FatalRe());
+    return RE2::PartialMatch(re2::StringPiece(text.data(), text.size()), FatalRe());
 }
 
 bool HasNotice(std::string_view text) {
-    for (const std::string& line : CleanLines(text)) {
-        if (IsNoticeLine(line)) return true;
-    }
-    return false;
+    return std::ranges::any_of(CleanLines(text),
+                               [](const std::string& line) { return IsNoticeLine(line); });
 }
 
 std::string NoticeLines(std::string_view text, int limit) {

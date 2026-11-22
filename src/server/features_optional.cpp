@@ -17,6 +17,7 @@
 #include <cctype>
 #include <cstdint>
 #include <cstdio>
+#include <format>
 #include <map>
 #include <optional>
 #include <set>
@@ -35,6 +36,7 @@
 #include "semantics/semantics.h"
 #include "server/lsp_server.h"
 
+#include "platform/text.h"
 namespace fpgalsp::server {
 
 namespace {
@@ -57,18 +59,9 @@ Json MakeRange(int start_line, int start_character, int end_line, int end_charac
     return range;
 }
 
-std::string LowerAscii(std::string_view text) {
-    std::string out(text);
-    for (char& c : out) {
-        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    }
-    return out;
-}
+using platform::LowerAscii;
 
-bool EndsWith(std::string_view text, std::string_view suffix) {
-    return text.size() >= suffix.size() &&
-           text.compare(text.size() - suffix.size(), suffix.size(), suffix) == 0;
-}
+using platform::EndsWith;
 
 // `.v/.sv/.vh/.svh`：只有这些扩展名才走 HDL 索引路径。
 bool IsHdlFilePath(std::string_view path) {
@@ -132,10 +125,10 @@ std::string PortDocumentation(const hdl::Port& port) {
         doc += " [";
         doc += std::to_string(*port.msb);
         if (port.lsb.has_value()) {
-            doc += ":";
+            doc += ':';
             doc += std::to_string(*port.lsb);
         }
-        doc += "]";
+        doc += ']';
     } else if (port.width > 1) {
         doc += " [" + std::to_string(port.width) + " bits]";
     }
@@ -185,19 +178,19 @@ std::vector<BlockSpan> CollectBlocks(const hdl::HdlIndex& index, std::string_vie
     for (const hdl::Token& token : file->tokens) {
         const std::string_view text = token.text;
         if (text == "module" || text == "macromodule") {
-            stack.push_back({'m', token.line, token.character});
+            stack.push_back({.kind='m', .line=token.line, .character=token.character});
         } else if (text == "begin") {
-            stack.push_back({'b', token.line, token.character});
+            stack.push_back({.kind='b', .line=token.line, .character=token.character});
         } else if (text == "function") {
-            stack.push_back({'f', token.line, token.character});
+            stack.push_back({.kind='f', .line=token.line, .character=token.character});
         } else if (text == "task") {
-            stack.push_back({'t', token.line, token.character});
+            stack.push_back({.kind='t', .line=token.line, .character=token.character});
         } else if (text == "generate") {
-            stack.push_back({'g', token.line, token.character});
+            stack.push_back({.kind='g', .line=token.line, .character=token.character});
         } else if (text == "case" || text == "casex" || text == "casez") {
-            stack.push_back({'c', token.line, token.character});
+            stack.push_back({.kind='c', .line=token.line, .character=token.character});
         } else if (text == "{") {
-            stack.push_back({'{', token.line, token.character});
+            stack.push_back({.kind='{', .line=token.line, .character=token.character});
         } else if (text == "endmodule") {
             close_blocks('m', token.line, token.end_character);
         } else if (text == "end") {
@@ -410,7 +403,7 @@ Json SignatureHelp(const hdl::HdlIndex& index, std::string_view path, std::strin
         parameter["documentation"] = PortDocumentation(port);
         parameters.push_back(std::move(parameter));
     }
-    label += ")";
+    label += ')';
 
     Json signature = Json::object();
     signature["label"] = std::move(label);
@@ -456,7 +449,7 @@ bool InFileElementTag(std::string_view row, std::size_t attr_pos) {
         from = p + 5;
     }
     if (found == std::string_view::npos) return false;
-    return row.substr(found, attr_pos - found).find('>') == std::string_view::npos;
+    return !row.substr(found, attr_pos - found).contains('>');
 }
 
 Json DocumentLinks(std::string_view path, std::string_view text) {
@@ -596,8 +589,8 @@ Json SelectionRanges(const hdl::HdlIndex& index, std::string_view path, std::str
     const int last_line = static_cast<int>(platform::line_count(text)) - 1;
     const std::string_view last_row = platform::line_at(text, static_cast<std::size_t>(
                                                                   std::max(last_line, 0)));
-    const SimpleRange document_range{0, 0, std::max(last_line, 0),
-                                     static_cast<int>(platform::utf16_len(last_row))};
+    const SimpleRange document_range{.start_line=0, .start_character=0, .end_line=std::max(last_line, 0),
+                                     .end_character=static_cast<int>(platform::utf16_len(last_row)),};
     const std::vector<BlockSpan> blocks =
         CollectBlocks(index, path, std::max(last_line, 0),
                       static_cast<int>(platform::utf16_len(last_row)));
@@ -610,9 +603,9 @@ Json SelectionRanges(const hdl::HdlIndex& index, std::string_view path, std::str
 
         std::vector<SimpleRange> chain;
         const auto [word_begin, word_end] = WordSpan(row, character);
-        chain.push_back(SimpleRange{line, word_begin, line, word_end});
+        chain.push_back(SimpleRange{.start_line=line, .start_character=word_begin, .end_line=line, .end_character=word_end});
 
-        const SimpleRange line_range{line, 0, line, row_length};
+        const SimpleRange line_range{.start_line=line, .start_character=0, .end_line=line, .end_character=row_length};
         if (!SameRange(line_range, chain.back())) chain.push_back(line_range);
 
         // 包含光标行的块，按"由内向外"排序（区间小的先）。
@@ -621,7 +614,7 @@ Json SelectionRanges(const hdl::HdlIndex& index, std::string_view path, std::str
             if (!SpanContains(block, line)) continue;
             containing.push_back(block);
         }
-        std::sort(containing.begin(), containing.end(),
+        std::ranges::sort(containing,
                   [](const BlockSpan& a, const BlockSpan& b) {
                       const int span_a = a.end_line - a.start_line;
                       const int span_b = b.end_line - b.start_line;
@@ -631,9 +624,9 @@ Json SelectionRanges(const hdl::HdlIndex& index, std::string_view path, std::str
         for (const BlockSpan& block : containing) {
             // 用"整行"边界，保证 parent 一定包含 child（LSP 规范硬要求）。
             const SimpleRange block_range{
-                block.start_line, 0, block.end_line,
-                static_cast<int>(platform::utf16_len(platform::line_at(
-                    text, static_cast<std::size_t>(std::max(block.end_line, 0)))))};
+                .start_line=block.start_line, .start_character=0, .end_line=block.end_line,
+                .end_character=static_cast<int>(platform::utf16_len(platform::line_at(
+                    text, static_cast<std::size_t>(std::max(block.end_line, 0))))),};
             if (SameRange(block_range, chain.back())) continue;
             chain.push_back(block_range);
         }
@@ -733,10 +726,8 @@ std::string DiagnosticsResultId(std::string_view uri, const Json& items) {
     mix(uri);
     mix("\x1f");
     mix(payload);
-    char buffer[24];
-    std::snprintf(buffer, sizeof(buffer), "%016llx",
-                  static_cast<unsigned long long>(hash));
-    return std::string(buffer);
+    // 与 snprintf("%016llx") 逐字节一致
+    return std::format("{:016x}", static_cast<unsigned long long>(hash));
 }
 
 Json BuildDocumentDiagnosticReport(const Json& items, std::string_view result_id) {
@@ -924,7 +915,7 @@ Json LspServer::FeatureDocumentDiagnostic(std::string_view uri,
         {
             // A9：数据源 = 服务端最近一次 push publishDiagnostics 的缓存（同一把
             // state_mutex_ 保护，发布线程与 pull 线程不会读到半份数组）。
-            std::lock_guard<std::mutex> lock(state_mutex_);
+            std::scoped_lock lock(state_mutex_);
             const auto found = latest_diagnostics_.find(uri_string);
             if (found != latest_diagnostics_.end()) items = found->second;
         }
@@ -946,7 +937,7 @@ Json LspServer::FeatureWorkspaceDiagnostic() {
     try {
         std::map<std::string, Json> latest;
         {
-            std::lock_guard<std::mutex> lock(state_mutex_);
+            std::scoped_lock lock(state_mutex_);
             latest = latest_diagnostics_;
         }
         return features_optional::BuildWorkspaceDiagnosticReport(latest);
@@ -1053,7 +1044,7 @@ HandlerResult LspServer::HandleSetTrace(const Json& params) {
     const std::string value = jsonrpc::GetString(params, "value", "off");
     const std::string normalized = LowerAscii(value);
     if (normalized == "off" || normalized == "messages" || normalized == "verbose") {
-        std::lock_guard<std::mutex> lock(state_mutex_);
+        std::scoped_lock lock(state_mutex_);
         trace_level_ = normalized;
     }
     return HandlerResult::Ok(Json());

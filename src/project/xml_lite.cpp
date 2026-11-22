@@ -4,6 +4,7 @@
 
 #include "project/xml_lite.h"
 
+#include <algorithm>
 #include <cctype>
 #include <string>
 #include <string_view>
@@ -412,10 +413,9 @@ std::string XmlNode::GetAttr(std::string_view name, std::string default_value) c
 }
 
 bool XmlNode::HasAttr(std::string_view name) const {
-    for (const auto& [key, value] : attributes) {
-        if (key == name) return true;
-    }
-    return false;
+    return std::ranges::any_of(attributes, [name](const auto& attribute) {
+        return attribute.first == name;
+    });
 }
 
 const XmlNode* XmlNode::FindChild(std::string_view tag_name) const {

@@ -27,6 +27,7 @@
 #include "reports/report_patterns_internal.h"
 #include "reports/report_text.h"
 
+#include <array>
 namespace fpgalsp::reports {
 namespace {
 
@@ -59,30 +60,30 @@ struct PatternEntry {
     std::string_view pattern;
 };
 
-constexpr PatternEntry kPatterns[] = {
-    {"summary", kSummaryPattern},
-    {"coverage", kCoveragePattern},
-    {"confidence", kConfidencePattern},
-    {"clock_section", kClockSectionPattern},
-    {"metadata", kMetadataPattern},
-    {"check_status", kCheckStatusPattern},
-    {"path_group", kPathGroupPattern},
-    {"group_meta", kGroupMetaPattern},
-    {"statistics", kStatisticsPattern},
-    {"slack", kSlackPattern},
-    {"detail", kDetailPattern},
-    {"legacy_slack", kLegacySlackPattern},
-    {"td_suffix", kTdSuffixPattern},
-    {"pin_suffix", kPinSuffixPattern},
-    {"bit_suffix", kBitSuffixPattern},
-};
+constexpr auto kPatterns = std::to_array<PatternEntry>({
+    {.name="summary", .pattern=kSummaryPattern},
+    {.name="coverage", .pattern=kCoveragePattern},
+    {.name="confidence", .pattern=kConfidencePattern},
+    {.name="clock_section", .pattern=kClockSectionPattern},
+    {.name="metadata", .pattern=kMetadataPattern},
+    {.name="check_status", .pattern=kCheckStatusPattern},
+    {.name="path_group", .pattern=kPathGroupPattern},
+    {.name="group_meta", .pattern=kGroupMetaPattern},
+    {.name="statistics", .pattern=kStatisticsPattern},
+    {.name="slack", .pattern=kSlackPattern},
+    {.name="detail", .pattern=kDetailPattern},
+    {.name="legacy_slack", .pattern=kLegacySlackPattern},
+    {.name="td_suffix", .pattern=kTdSuffixPattern},
+    {.name="pin_suffix", .pattern=kPinSuffixPattern},
+    {.name="bit_suffix", .pattern=kBitSuffixPattern},
+});
 
 // clock_detail 的 17 个列名（顺序固定，与 Python 的 keys 列表一致）
-constexpr std::string_view kClockDetailKeys[] = {
+constexpr auto kClockDetailKeys = std::to_array<std::string_view>({
     "name",        "type",       "rise_ns",    "fall_ns",   "c_period_ns", "c_freq_mhz",
     "r_period_ns", "r_freq_mhz", "swns_ns",    "stns_ns",   "hwns_ns",     "htns_ns",
     "skew_ns",     "fanout",     "max_level",  "cc_from",   "cc_to",
-};
+});
 
 // 等价 Python dict 的 `d[key] = value`（已存在则原位覆盖，保持插入顺序）。
 // 返回该项在 vector 里的下标（metadata 续行需要原地追加，不能只看 back()）。
@@ -138,7 +139,7 @@ void ParseMetadata(const std::vector<std::string_view>& lines,
             // 续行：`                    : Copyright (c) ...` 追加到上一条的值
             // Python: metadata[last] = (metadata.get(last) or "") + " " + stripped[1:].strip()
             std::string& value = metadata[last_index].second;
-            value += " ";
+            value += ' ';
             value += Strip(stripped.substr(1));
             continue;
         }
@@ -179,9 +180,9 @@ void ParseClockDetail(const std::vector<std::string_view>& lines,
     for (const std::string_view raw_line : lines) {
         const std::string_view stripped = Strip(raw_line);
         if (!have_header) {
-            if (stripped.find("Name") != std::string_view::npos &&
-                stripped.find("Type") != std::string_view::npos &&
-                stripped.find("Rise(ns)") != std::string_view::npos) {
+            if (stripped.contains("Name") &&
+                stripped.contains("Type") &&
+                stripped.contains("Rise(ns)")) {
                 have_header = true;
             }
             continue;
@@ -333,7 +334,7 @@ std::vector<TimingPath> ParseLegacyPaths(const std::vector<std::string_view>& li
     for (std::size_t index = 0; index < lines.size(); ++index) {
         const std::string_view line = lines[index];
         if (!StartsWith(line, "Slack")) continue;
-        if (line.find(':') == std::string_view::npos) continue;
+        if (!line.contains(':')) continue;
 
         std::string slack_text;
         if (!RE2::PartialMatch(line, kLegacySlackRe, &slack_text)) continue;
@@ -371,17 +372,15 @@ std::vector<TimingPath> ParseLegacyPaths(const std::vector<std::string_view>& li
 namespace detail {
 
 bool ValidateTimingPatterns(std::string* error) {
-    for (const PatternEntry& entry : kPatterns) {
+    return std::ranges::all_of(kPatterns, [error](const PatternEntry& entry) {
         const RE2 probe{std::string(entry.pattern)};
-        if (!probe.ok()) {
-            if (error != nullptr) {
-                *error = "reports/timing: bad pattern '" + std::string(entry.name) + "' (" +
-                         std::string(entry.pattern) + "): " + probe.error();
-            }
-            return false;
+        if (probe.ok()) return true;
+        if (error != nullptr) {
+            *error = "reports/timing: bad pattern '" + std::string(entry.name) + "' (" +
+                     std::string(entry.pattern) + "): " + probe.error();
         }
-    }
-    return true;
+        return false;
+    });
 }
 
 }  // namespace detail

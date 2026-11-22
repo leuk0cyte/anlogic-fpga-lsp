@@ -7,10 +7,12 @@
 
 #include "constraints/text_util.h"
 
+#include "platform/text.h"
 #include <cctype>
 #include <cerrno>
 #include <cstdio>
 #include <cstdlib>
+#include <format>
 
 namespace fpgalsp::constraints::text {
 namespace {
@@ -117,13 +119,7 @@ std::string UpperAscii(std::string_view s) {
     return out;
 }
 
-std::string LowerAscii(std::string_view s) {
-    std::string out(s);
-    for (char& c : out) {
-        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
-    }
-    return out;
-}
+using platform::LowerAscii;
 
 int FindOffset(std::string_view haystack, std::string_view needle) {
     const size_t position = haystack.find(needle);
@@ -146,14 +142,13 @@ std::string_view LeadingIdentifier(std::string_view text, bool allow_dollar) {
 }
 
 std::string PyRepr(std::string_view s) {
-    const bool has_single = s.find('\'') != std::string_view::npos;
-    const bool has_double = s.find('"') != std::string_view::npos;
+    const bool has_single = s.contains('\'');
+    const bool has_double = s.contains('"');
     // Python 的规则：能不用转义就不用；只有含单引号且不含双引号时才改用双引号
     const char quote = (has_single && !has_double) ? '"' : '\'';
     std::string out;
     out.reserve(s.size() + 2);
     out.push_back(quote);
-    char buffer[8];
     for (const char ch : s) {
         switch (ch) {
             case '\\':
@@ -169,13 +164,13 @@ std::string PyRepr(std::string_view s) {
                 out += "\\t";
                 break;
             default: {
-                const unsigned char byte = static_cast<unsigned char>(ch);
+                const auto byte = static_cast<unsigned char>(ch);
                 if (ch == quote) {
                     out.push_back('\\');
                     out.push_back(ch);
                 } else if (byte < 0x20 || byte == 0x7f) {
-                    std::snprintf(buffer, sizeof(buffer), "\\x%02x", byte);
-                    out += buffer;
+                    // 与原来 snprintf("\\x%02x") 逐字节一致（小写十六进制、零填充）
+                    out += std::format("\\x{:02x}", byte);
                 } else {
                     out.push_back(ch);
                 }
@@ -207,8 +202,8 @@ std::optional<double> PyFloat(std::string_view s) {
 
     // Python 只认十进制：strtod 会额外接受 "0x10"、"nan(...)"，这里提前挡掉
     const std::string lower = LowerAscii(cleaned);
-    if (lower.find('x') != std::string::npos) return std::nullopt;
-    if (lower.find('(') != std::string::npos) return std::nullopt;
+    if (lower.contains('x')) return std::nullopt;
+    if (lower.contains('(')) return std::nullopt;
 
     const char* const begin = cleaned.c_str();
     char* end = nullptr;

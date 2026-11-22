@@ -17,6 +17,7 @@
 #include <string_view>
 #include <vector>
 
+#include "platform/text.h"
 namespace fpgalsp::constraints::text {
 
 // Python str.isspace() 的 ASCII 子集：space / \t / \n / \r / \v / \f。
@@ -45,8 +46,7 @@ std::string_view LineAt(std::string_view text, int line);
 
 // ASCII 大小写转换（Python .upper()/.lower() 对 ASCII 部分等价）
 std::string UpperAscii(std::string_view s);
-std::string LowerAscii(std::string_view s);
-
+using platform::LowerAscii;
 // substring 的绝对起点，用于 Span 计算（越界输入一律夹到 [0, size]）
 int FindOffset(std::string_view haystack, std::string_view needle);
 

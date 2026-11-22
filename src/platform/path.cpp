@@ -142,7 +142,7 @@ std::string get_cwd() {
 #ifdef _MSC_VER
     std::array<char, 4096> buf{};
     if (::_getcwd(buf.data(), static_cast<int>(buf.size())) != nullptr) {
-        return std::string(buf.data());
+        return {buf.data()};
     }
 #else
     std::array<char, 4096> buf{};
@@ -161,7 +161,7 @@ int hex_value(char c) {
 }
 
 std::string percent_encode(std::string_view in) {
-    static constexpr char kHex[] = "0123456789ABCDEF";
+    static constexpr std::string_view kHex = "0123456789ABCDEF";
     std::string out;
     out.reserve(in.size() + 8);
     for (unsigned char c : in) {
@@ -314,8 +314,8 @@ namespace {
 std::filesystem::path to_fs_path(std::string_view utf8) {
     // Windows 上 std::filesystem::path 的窄字符构造按 ACP 解释，必须显式走
     // UTF-8 -> char8_t 的路径，否则非 ASCII 用户名下的工程会被解析成乱码。
-    return std::filesystem::path(std::u8string(reinterpret_cast<const char8_t*>(utf8.data()),
-                                               utf8.size()));
+    return {std::u8string(reinterpret_cast<const char8_t*>(utf8.data()),
+                                               utf8.size())};
 }
 
 }  // namespace
@@ -351,7 +351,7 @@ bool path_is_within_canonical(std::string_view path, std::string_view root) {
     if (base.empty()) return false;
     if (target == base) return true;
     if (target.size() <= base.size()) return false;
-    if (target.compare(0, base.size(), base) != 0) return false;
+    if (!target.starts_with(base)) return false;
     const char separator = target[base.size()];
     return separator == '/' || separator == '\\';
 }
@@ -497,7 +497,7 @@ std::string state_dir(std::string_view project_or_base) {
         hash ^= static_cast<std::uint32_t>(static_cast<unsigned char>(c));
         hash *= 0x01000193u;
     }
-    static const char kHex[] = "0123456789abcdef";
+    static constexpr std::string_view kHex = "0123456789abcdef";
     std::string suffix(8, '0');
     for (int i = 7; i >= 0; --i) {
         suffix[static_cast<std::size_t>(i)] = kHex[hash & 0xFu];

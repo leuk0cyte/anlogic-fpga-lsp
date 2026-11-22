@@ -69,10 +69,10 @@ struct AlFile {
     ResolvedVia resolved_via = ResolvedVia::Project;
 
     // 是否参与构建（对应 Python 的 in_build property）
-    bool InBuild() const { return enabled && !excluded && exists; }
+    [[nodiscard]] bool InBuild() const { return enabled && !excluded && exists; }
 
     // 取属性值
-    std::string GetAttr(std::string_view name, std::string default_value = {}) const;
+    [[nodiscard]] std::string GetAttr(std::string_view name, std::string default_value = {}) const;
 };
 
 struct Project {
@@ -91,25 +91,25 @@ struct Project {
 
     // ---- 派生分组（对应 Python 的 _group / *_files）----
     // 按 (compile_order, path) 排序
-    std::vector<const AlFile*> Group(std::initializer_list<FileKind> kinds,
+    [[nodiscard]] std::vector<const AlFile*> Group(std::initializer_list<FileKind> kinds,
                                      bool in_build_only = true) const;
 
-    std::vector<const AlFile*> HdlFiles() const;
-    std::vector<const AlFile*> VerilogFiles() const;
-    std::vector<const AlFile*> VhdlFiles() const;
-    std::vector<const AlFile*> AdcFiles() const;
-    std::vector<const AlFile*> SdcFiles() const;
-    std::vector<const AlFile*> IpFiles() const;
-    std::vector<const AlFile*> NotInBuild() const;
+    [[nodiscard]] std::vector<const AlFile*> HdlFiles() const;
+    [[nodiscard]] std::vector<const AlFile*> VerilogFiles() const;
+    [[nodiscard]] std::vector<const AlFile*> VhdlFiles() const;
+    [[nodiscard]] std::vector<const AlFile*> AdcFiles() const;
+    [[nodiscard]] std::vector<const AlFile*> SdcFiles() const;
+    [[nodiscard]] std::vector<const AlFile*> IpFiles() const;
+    [[nodiscard]] std::vector<const AlFile*> NotInBuild() const;
 
     // 该工程里参与构建的 hdl 文件的绝对路径
-    std::vector<std::string> HdlPaths() const;
+    [[nodiscard]] std::vector<std::string> HdlPaths() const;
 
     // declared_path 与当前目录是否一致（对应 Python 的 path_matches）
-    bool PathMatches() const;
+    [[nodiscard]] bool PathMatches() const;
 
     // 单行描述（对应 Python 的 describe）
-    std::string Describe() const;
+    [[nodiscard]] std::string Describe() const;
 };
 
 // -----------------------------------------------------------------------------

@@ -25,7 +25,7 @@ TdCheckResult TdSessionRunner::Run(const project::Project& project, const Cancel
     //   重新长出 `.fpgalsp`（2026-11-22 实测复现：删掉后一次 didSave 立刻重建 `run/`）。
     //   工程目录里的 `.fpgalsp` 已废弃（Wave 3），状态一律走 platform::state_dir()。
     TdSessionOptions options = options_;
-    if (use_project_work_dir_ && project.dir.empty() == false) {
+    if (use_project_work_dir_ && !project.dir.empty()) {
         options.work_dir = platform::path_join(platform::state_dir(project.dir), "run");
     }
 
@@ -84,7 +84,7 @@ uint64_t TdService::Request(project::Project project) {
     std::shared_ptr<CancelToken> to_cancel;
     uint64_t seq = 0;
     {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::scoped_lock lock(mutex_);
         if (stop_) return 0;
         seq = ++next_seq_;
         const auto now = std::chrono::steady_clock::now();
@@ -94,12 +94,12 @@ uint64_t TdService::Request(project::Project project) {
         const auto ready_at = now + std::chrono::milliseconds(wait_ms > 0 ? wait_ms : 0);
         if (pending_.has_value()) {
             // 还在去抖窗口里：覆盖 pending（只跑最新的那份 project），并顺延静默期
-            std::lock_guard<std::mutex> stats_lock(stats_mutex_);
+            std::scoped_lock stats_lock(stats_mutex_);
             ++stats_.coalesced;
         }
-        pending_ = Pending{std::move(project), seq, now, ready_at};
+        pending_ = Pending{.project=std::move(project), .seq=seq, .requested_at=now, .ready_at=ready_at};
         {
-            std::lock_guard<std::mutex> stats_lock(stats_mutex_);
+            std::scoped_lock stats_lock(stats_mutex_);
             ++stats_.requests;
         }
         // 在跑的一轮必须让路：先取消（置位 + kill 进程树），worker 会把它标成 cancelled
@@ -114,7 +114,7 @@ uint64_t TdService::Request(project::Project project) {
 void TdService::CancelActive() {
     std::shared_ptr<CancelToken> to_cancel;
     {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::scoped_lock lock(mutex_);
         pending_.reset();
         to_cancel = active_;
     }
@@ -125,7 +125,7 @@ void TdService::CancelActive() {
 void TdService::Shutdown() {
     std::shared_ptr<CancelToken> to_cancel;
     {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::scoped_lock lock(mutex_);
         stop_ = true;
         pending_.reset();
         to_cancel = active_;
@@ -141,7 +141,7 @@ void TdService::Shutdown() {
 }
 
 TdService::Stats TdService::stats() const {
-    std::lock_guard<std::mutex> lock(stats_mutex_);
+    std::scoped_lock lock(stats_mutex_);
     return stats_;
 }
 
@@ -172,7 +172,6 @@ void TdService::Loop() {
             token = std::make_shared<CancelToken>();
             active_ = token;
         }
-
         std::unique_ptr<TdCheckRunner> runner;
         TdCheckResult result;
         try {
@@ -194,7 +193,7 @@ void TdService::Loop() {
         bool publish = false;
         bool superseded = false;
         {
-            std::lock_guard<std::mutex> lock(mutex_);
+            std::scoped_lock lock(mutex_);
             active_.reset();
             // 跑完时如果已经有更新的请求在 pending：这一轮的结果**已经过期**。
             // 发布它只会让 Problems 闪一下旧数据（旧策略就是这样），所以直接丢弃。
@@ -202,7 +201,7 @@ void TdService::Loop() {
             publish = !result.cancelled && !stop_ && !superseded;
         }
         {
-            std::lock_guard<std::mutex> stats_lock(stats_mutex_);
+            std::scoped_lock stats_lock(stats_mutex_);
             if (result.cancelled || stop_) {
                 ++stats_.cancelled;
             } else if (superseded) {

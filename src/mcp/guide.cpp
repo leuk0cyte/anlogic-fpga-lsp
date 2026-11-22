@@ -348,7 +348,7 @@ constexpr std::array<TopicText, 7> kGuides{{
     {"probe", kProbe},
     {"program", kProgram},
     {"troubleshoot", kTroubleshoot},
-}};
+},};
 
 }  // namespace
 

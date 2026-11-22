@@ -59,7 +59,7 @@ struct PhaseDetection {
     std::string phase;    // "Optimize RTL" / "Route" / ...，可能为空
     std::string message;  // 最后一条非空、非 "===" 开头的行（截到 160 字符）
 
-    bool Empty() const { return phase.empty() && message.empty(); }
+    [[nodiscard]] bool Empty() const { return phase.empty() && message.empty(); }
 };
 
 // 对应 Python _heartbeat 里从 log 尾部推导进度的那两段循环：

@@ -186,7 +186,7 @@ struct ParsedFile {
     std::vector<ParseError> parse_errors;
     std::vector<Token> tokens;
 
-    bool ok() const { return parse_errors.empty(); }
+    [[nodiscard]] bool ok() const { return parse_errors.empty(); }
 };
 
 // -----------------------------------------------------------------------------
@@ -313,7 +313,7 @@ public:
     //  这些方法都**不深拷贝 ParsedFile**（只搬 shared_ptr），也不重新解析别的文件。
 
     // 深拷贝"索引结构"（files_ 里是 shared_ptr，拷贝的是指针）——供写者做 COW。
-    HdlIndex Clone() const;
+    [[nodiscard]] HdlIndex Clone() const;
 
     // 同路径替换（路径不存在时追加，语义等于 Upsert）。会重建 modules_by_key_。
     void ReplaceFile(std::shared_ptr<const ParsedFile> file);
@@ -329,21 +329,21 @@ public:
     void RebuildModuleIndex();
 
     // 按路径取文件；大小写不敏感回退（Windows 语义）
-    const ParsedFile* File(std::string_view path) const;
+    [[nodiscard]] const ParsedFile* File(std::string_view path) const;
 
     // 按名字取模块定义（第一个）
-    const Module* ModuleByName(std::string_view name) const;
+    [[nodiscard]] const Module* ModuleByName(std::string_view name) const;
 
     // 所有模块名（原始大小写，按首次出现顺序）
-    std::vector<std::string> ModuleNames() const;
+    [[nodiscard]] std::vector<std::string> ModuleNames() const;
 
-    std::vector<const ModuleInfo*> ModulesOfFile(std::string_view path) const;
-    std::vector<const Instance*> InstancesOfFile(std::string_view path) const;
-    std::vector<const Instance*> AllInstances() const;
-    std::vector<std::string> Paths() const;
+    [[nodiscard]] std::vector<const ModuleInfo*> ModulesOfFile(std::string_view path) const;
+    [[nodiscard]] std::vector<const Instance*> InstancesOfFile(std::string_view path) const;
+    [[nodiscard]] std::vector<const Instance*> AllInstances() const;
+    [[nodiscard]] std::vector<std::string> Paths() const;
 
-    std::size_t FileCount() const { return files_.size(); }
-    std::size_t ModuleCount() const { return module_order_.size(); }
+    [[nodiscard]] std::size_t FileCount() const { return files_.size(); }
+    [[nodiscard]] std::size_t ModuleCount() const { return module_order_.size(); }
 
     // (line, character) 处的 token
     static const Token* TokenAt(const ParsedFile& file, int line, int character);
@@ -351,13 +351,13 @@ public:
     static const ModuleInfo* ModuleAt(const ParsedFile& file, int line);
 
     // 光标处符号 / 种类 / 跳转定义
-    std::optional<SymbolAtResult> SymbolAt(std::string_view path, int line,
+    [[nodiscard]] std::optional<SymbolAtResult> SymbolAt(std::string_view path, int line,
                                            int character) const;
-    std::string KindAt(std::string_view path, int line, int character) const;
-    std::optional<Location> DefinitionOf(std::string_view path, int line, int character) const;
+    [[nodiscard]] std::string KindAt(std::string_view path, int line, int character) const;
+    [[nodiscard]] std::optional<Location> DefinitionOf(std::string_view path, int line, int character) const;
 
-    std::vector<DocSymbol> DocumentSymbols(std::string_view path) const;
-    std::vector<WorkspaceSymbol> SearchSymbols(std::string_view query) const;
+    [[nodiscard]] std::vector<DocSymbol> DocumentSymbols(std::string_view path) const;
+    [[nodiscard]] std::vector<WorkspaceSymbol> SearchSymbols(std::string_view query) const;
 
     // 引用搜索（对应 server.py on_textDocument_references 的语义，net 上更精确）：
     // 先看光标处 token 的名字，再在已索引文件的 token 里找同名标识符。
@@ -378,8 +378,8 @@ public:
     // 符号解析不出来时无法判定声明位置，此时保持"不过滤"。
     // 4 参重载放在索引层，是为了让单测能直接覆盖 include_declaration 语义，
     // 而不是只能在 server::features 里间接验证。
-    std::vector<Location> References(std::string_view path, int line, int character) const;
-    std::vector<Location> References(std::string_view path, int line, int character,
+    [[nodiscard]] std::vector<Location> References(std::string_view path, int line, int character) const;
+    [[nodiscard]] std::vector<Location> References(std::string_view path, int line, int character,
                                      bool include_declaration) const;
 
 private:

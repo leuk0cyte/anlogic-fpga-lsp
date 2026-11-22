@@ -18,7 +18,6 @@
 
 #include "platform/path.h"
 #include "hdl/primitives.h"
-#include "hdl/primitives.h"
 
 namespace fpgalsp::server::features {
 namespace {
@@ -86,7 +85,7 @@ Json WorkspaceSymbolToJson(const WorkspaceSymbol& symbol) {
 // -----------------------------------------------------------------------------
 
 bool IsIdentifierChar(char c) {
-    const unsigned char uc = static_cast<unsigned char>(c);
+    const auto uc = static_cast<unsigned char>(c);
     return std::isalnum(uc) != 0 || c == '_' || c == '$';
 }
 
@@ -134,7 +133,7 @@ std::string InstantiationSnippet(const Module& module, const std::string& indent
     if (!module.ports.empty()) {
         const std::string trailing = "),\n";
         if (out.size() >= trailing.size() &&
-            out.compare(out.size() - trailing.size(), trailing.size(), trailing) == 0) {
+            out.ends_with(trailing)) {
             out.resize(out.size() - 2);  // 去掉最后的 ",\n"（保留 ')'）
             out += "\n";
         }
@@ -150,10 +149,10 @@ std::string UniqueInstanceName(const HdlIndex& index, const std::string& path,
     for (const Instance* instance : index.InstancesOfFile(path)) {
         if (!instance->name.empty()) used.insert(instance->name);
     }
-    if (used.count(base) == 0) return base;
+    if (!used.contains(base)) return base;
     for (int i = 1; i < 1000; ++i) {
         const std::string candidate = base + "_" + std::to_string(i);
-        if (used.count(candidate) == 0) return candidate;
+        if (!used.contains(candidate)) return candidate;
     }
     return base;
 }
@@ -219,7 +218,7 @@ Json BuildNode(const HdlIndex& index, const std::string& module_name,
 
     std::string lowered = definition->name;
     for (char& c : lowered) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    if (std::find(stack.begin(), stack.end(), lowered) != stack.end() || depth >= 24) {
+    if (std::ranges::find(stack, lowered) != stack.end() || depth >= 24) {
         node["recursive"] = true;
         node["children"] = Json::array();
         return node;
@@ -378,7 +377,7 @@ Json Completion(const HdlIndex& index, std::string_view path, std::string_view t
     // 与 Python 的排序口径不同。这里排一次，保证「按 limit 截断」时 LSP 与 MCP
     // 截到的窗口一致（MCP 默认 limit=50，顺序不一致会让窗口内容漂移）。
     std::vector<std::string> names = index.ModuleNames();
-    std::sort(names.begin(), names.end());
+    std::ranges::sort(names);
 
     for (const std::string& name : names) {
         if (!matches(name)) continue;
@@ -550,13 +549,13 @@ std::string Lowered(std::string_view text) {
 bool LooksLikeClock(std::string_view name) {
     const std::string lowered = Lowered(name);
     return lowered == "clk" || lowered == "clock" || lowered == "clk_i" ||
-           lowered.find("clk") != std::string::npos;
+           lowered.contains("clk");
 }
 
 bool LooksLikeReset(std::string_view name) {
     const std::string lowered = Lowered(name);
     return lowered == "rst" || lowered == "reset" || lowered == "rst_n" ||
-           lowered == "reset_n" || lowered.find("rst") != std::string::npos;
+           lowered == "reset_n" || lowered.contains("rst");
 }
 
 }  // namespace
@@ -828,16 +827,18 @@ namespace {
 
 bool HasChildInstances(const HdlIndex& index, const Module& definition,
                        bool include_primitives) {
-    for (const Instance* child : index.InstancesOfFile(definition.file)) {
-        if (child->module.empty()) continue;
-        if (child->line < definition.line || child->line > definition.end_line) continue;
-        if (!include_primitives && index.ModuleByName(child->module) == nullptr &&
-            (hdl::IsPrimitiveGate(child->module) || hdl::IsDevicePrimitive(child->module))) {
-            continue;
-        }
-        return true;
-    }
-    return false;
+    return std::ranges::any_of(
+        index.InstancesOfFile(definition.file),
+        [&index, &definition, include_primitives](const Instance* child) {
+            if (child->module.empty()) return false;
+            if (child->line < definition.line || child->line > definition.end_line) return false;
+            if (!include_primitives && index.ModuleByName(child->module) == nullptr &&
+                (hdl::IsPrimitiveGate(child->module) ||
+                 hdl::IsDevicePrimitive(child->module))) {
+                return false;
+            }
+            return true;
+        });
 }
 
 // 与 BuildNode 的节点头**逐字段一致**，只是不带 children。

@@ -6,6 +6,7 @@
 
 #include "reports/reports_aggregate.h"
 
+#include <algorithm>
 #include <chrono>
 #include <string>
 #include <string_view>
@@ -23,6 +24,7 @@
 #include "reports/timing.h"
 #include "reports/report_text.h"
 
+#include <format>
 namespace fpgalsp::reports {
 
 // -----------------------------------------------------------------------------
@@ -82,7 +84,7 @@ std::vector<std::string> Concat(std::vector<std::string> head,
 
 std::string DirName(std::string_view path) {
     const std::size_t pos = path.find_last_of("/\\");
-    if (pos == std::string_view::npos) return std::string();
+    if (pos == std::string_view::npos) return {};
     return std::string(path.substr(0, pos));
 }
 
@@ -300,7 +302,7 @@ ReportsBundle BuildReports(const project::Project& project,
 
     // ---- 顶层：挑"最新/最完整"的那一份 ----
     bundle.files.qor = FirstExisting({JoinPath(phy, "route.qor"), JoinPath(phy, "place.qor"),
-                                      JoinPath(syn, "gate.qor")});
+                                      JoinPath(syn, "gate.qor"),});
 
     std::vector<std::string> timing_candidates{JoinPath(phy, "final_timing.rpt")};
     timing_candidates = Concat(std::move(timing_candidates), GlobReportFiles(phy, R"(.*_pr\.timing)"));
@@ -313,7 +315,7 @@ ReportsBundle BuildReports(const project::Project& project,
 
     bundle.files.flow_status = FirstExisting({JoinPath(phy, "route_flow.status"),
                                               JoinPath(phy, "place_flow.status"),
-                                              JoinPath(syn, "flow.status")});
+                                              JoinPath(syn, "flow.status"),});
     bundle.files.bit = bundle.artifacts.bit.path;
 
     if ((mask & sections::kQor) != 0u && !bundle.files.qor.empty()) {
@@ -377,7 +379,7 @@ ReportsBundle BuildReports(const project::Project& project,
     if (IsDirectory(phy)) {
         bundle.phy = BuildStageSection(phy, "Place & Route", {"route.qor", "place.qor"},
                                        {"final_timing.rpt"}, {}, {"route_flow.status",
-                                                                  "place_flow.status"},
+                                                                  "place_flow.status",},
                                        R"(.*_pr\.timing)", R"(.*_phy\.area)", mask, cache,
                                        &bundle.warnings);
     }
@@ -405,7 +407,7 @@ ReportsBundle BuildReports(const project::Project& project,
         // stages 里放各阶段的原始 flowStatus（steps 不带 stage 标签），与 Python 一致
         for (const auto& [key, section] :
              {std::pair<std::string, const std::optional<StageSection>*>{"syn", &bundle.syn},
-              std::pair<std::string, const std::optional<StageSection>*>{"phy", &bundle.phy}}) {
+              std::pair<std::string, const std::optional<StageSection>*>{"phy", &bundle.phy},}) {
             if (!section->has_value()) continue;
             jsonrpc::Json status_json = jsonrpc::Json::object();
             if ((*section)->flow_status.has_value()) {
@@ -432,14 +434,9 @@ std::string ReadWholeFile(const std::string& path) {
 }
 
 bool EndsWithAny(const std::string& name, std::initializer_list<const char*> suffixes) {
-    for (const char* suffix : suffixes) {
-        const std::string tail(suffix);
-        if (name.size() >= tail.size() &&
-            name.compare(name.size() - tail.size(), tail.size(), tail) == 0) {
-            return true;
-        }
-    }
-    return false;
+    return std::ranges::any_of(suffixes, [&name](const char* suffix) {
+        return name.ends_with(suffix);
+    });
 }
 
 
@@ -448,8 +445,8 @@ bool EndsWithAny(const std::string& name, std::initializer_list<const char*> suf
 std::optional<double> ParseMetricValue(std::string_view text) {
     std::size_t start = 0;
     while (start < text.size() &&
-           !(std::isdigit(static_cast<unsigned char>(text[start])) || text[start] == '-' ||
-             text[start] == '+' || text[start] == '.')) {
+           !std::isdigit(static_cast<unsigned char>(text[start])) && text[start] != '-' &&
+             text[start] != '+' && text[start] != '.') {
         ++start;
     }
     if (start >= text.size()) return std::nullopt;
@@ -472,9 +469,9 @@ std::optional<double> ParseMetricValue(std::string_view text) {
 
 // 指标方向：slack / WNS / TNS / FMAX 越大越好；面积/资源/线长越小越好。
 bool HigherIsBetter(const std::string& name) {
-    return name.find("SN") != std::string::npos || name.find("slack") != std::string::npos ||
-           name.find("WNS") != std::string::npos || name.find("TNS") != std::string::npos ||
-           name.find("FMAX") != std::string::npos || name.find("coverage") != std::string::npos;
+    return name.contains("SN") || name.contains("slack") ||
+           name.contains("WNS") || name.contains("TNS") ||
+           name.contains("FMAX") || name.contains("coverage");
 }
 
 }  // namespace
@@ -489,10 +486,10 @@ std::vector<RunMetrics> ListRuns(const project::Project& project) {
         if (!entry.is_directory(ec)) continue;
         names.push_back(entry.path().filename().string());
     }
-    std::sort(names.begin(), names.end());
+    std::ranges::sort(names);
 
     for (const std::string& name : names) {
-        const std::string dir = runs_dir + "/" + name;
+        const std::string dir = std::format("{}/{}", runs_dir, name);
         RunMetrics run;
         run.name = name;
         run.dir = dir;

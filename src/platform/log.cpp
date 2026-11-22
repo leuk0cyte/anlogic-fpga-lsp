@@ -131,7 +131,7 @@ Logger g_default_logger;
 Logger& default_logger() { return g_default_logger; }
 
 void set_default_logger(Logger logger) {
-    std::lock_guard<std::mutex> lock(g_logger_mutex);
+    std::scoped_lock lock(g_logger_mutex);
     g_default_logger = std::move(logger);
 }
 

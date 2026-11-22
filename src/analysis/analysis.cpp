@@ -44,6 +44,7 @@
 #include "platform/number.h"
 #include "platform/path.h"
 #include "platform/write_service.h"
+#include "platform/text.h"
 #include "td/td_diagnostics.h"  // EnsureDevice
 #include "td/td_install.h"      // FindTd / TdChoice
 #include "td/td_output.h"       // HasError
@@ -81,19 +82,7 @@ double SecondsSince(std::chrono::steady_clock::time_point start) {
     return std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
 }
 
-std::string Trim(std::string_view text) {
-    std::size_t begin = 0;
-    std::size_t end = text.size();
-    while (begin < end && (text[begin] == ' ' || text[begin] == '\t' || text[begin] == '\r' ||
-                           text[begin] == '\n')) {
-        ++begin;
-    }
-    while (end > begin && (text[end - 1] == ' ' || text[end - 1] == '\t' ||
-                           text[end - 1] == '\r' || text[end - 1] == '\n')) {
-        --end;
-    }
-    return std::string(text.substr(begin, end - begin));
-}
+using platform::Trim;
 
 void RightTrimInPlace(std::string& text) {
     while (!text.empty() && (text.back() == '\r' || text.back() == '\n' || text.back() == ' ' ||
@@ -153,21 +142,15 @@ std::vector<std::string> SplitPipeRow(const std::string& line) {
 }
 
 bool AllDashOrSpace(const std::string& cell) {
-    for (const char ch : cell) {
-        if (ch != '-' && ch != ' ') return false;
-    }
-    return true;
+    return std::ranges::all_of(cell, [](char ch) { return ch == '-' || ch == ' '; });
 }
 
 bool AnyNonEmpty(const std::vector<std::string>& cells) {
-    for (const std::string& cell : cells) {
-        if (!cell.empty()) return true;
-    }
-    return false;
+    return std::ranges::any_of(cells, [](const std::string& cell) { return !cell.empty(); });
 }
 
 std::string ReplaceBackslashes(std::string text) {
-    std::replace(text.begin(), text.end(), '\\', '/');
+    std::ranges::replace(text, '\\', '/');
     return text;
 }
 
@@ -187,7 +170,7 @@ std::string ExceptionText(const std::exception& exc) {
 // C++20 起 u8path 已弃用；这里用 char8_t 构造，保持"UTF-8 输入 -> 原生路径"的语义
 // （工程路径可能含中文，不能用 path(std::string) 的窄字符转换）。
 fs::path AsPath(const std::string& utf8) {
-    return fs::path(std::u8string(utf8.begin(), utf8.end()));
+    return {std::u8string(utf8.begin(), utf8.end())};
 }
 
 bool IsRegularFile(const std::string& path) {
@@ -207,7 +190,7 @@ std::string ReadTextOrEmpty(const std::string& path) {
 // -----------------------------------------------------------------------------
 
 std::string NewestRoutedDb(const project::Project& project) {
-    if (project.dir.empty() || project.name.empty()) return std::string();
+    if (project.dir.empty() || project.name.empty()) return {};
     const std::string phy = platform::normalize_path(
         project.dir + "/" + project.name + "_Runs/phy_1");
 
@@ -218,23 +201,23 @@ std::string NewestRoutedDb(const project::Project& project) {
     std::vector<Candidate> candidates;
     std::error_code ec;
     fs::directory_iterator iterator(AsPath(phy), ec);
-    if (ec) return std::string();
+    if (ec) return {};
     for (const fs::directory_entry& entry : iterator) {
         const std::string name = entry.path().filename().string();
         // Python: name.endswith(("_pr.db", "_route.db")) —— "_pr.db" 是 6 个字符
-        const bool ends_pr = name.size() >= 6 && name.compare(name.size() - 6, 6, "_pr.db") == 0;
+        const bool ends_pr = name.size() >= 6 && name.ends_with("_pr.db");
         const bool ends_route =
-            name.size() >= 9 && name.compare(name.size() - 9, 9, "_route.db") == 0;
+            name.size() >= 9 && name.ends_with("_route.db");
         if (!ends_pr && !ends_route) continue;
         std::error_code type_ec;
         if (!entry.is_regular_file(type_ec) || type_ec) continue;
         std::error_code time_ec;
         const fs::file_time_type mtime = entry.last_write_time(time_ec);
         if (time_ec) continue;
-        candidates.push_back({mtime, entry.path().generic_string()});
+        candidates.push_back({.mtime=mtime, .path=entry.path().generic_string()});
     }
-    if (candidates.empty()) return std::string();
-    std::sort(candidates.begin(), candidates.end(), [](const Candidate& left, const Candidate& right) {
+    if (candidates.empty()) return {};
+    std::ranges::sort(candidates, [](const Candidate& left, const Candidate& right) {
         if (left.mtime != right.mtime) return left.mtime > right.mtime;  // 最新在前
         return left.path < right.path;                                    // 同 mtime：稳定兜底
     });
@@ -242,7 +225,7 @@ std::string NewestRoutedDb(const project::Project& project) {
 }
 
 std::string CacheDir(const project::Project& project) {
-    if (project.dir.empty()) return std::string();
+    if (project.dir.empty()) return {};
     return platform::path_join(platform::state_dir(project.dir), "cache");
 }
 
@@ -276,13 +259,13 @@ Json ParseDrc(std::string_view text) {
         if (stripped.empty()) continue;
 
         std::string upper = stripped;
-        std::transform(upper.begin(), upper.end(), upper.begin(),
+        std::ranges::transform(upper, upper.begin(),
                        [](unsigned char ch) { return static_cast<char>(std::toupper(ch)); });
-        if (upper.rfind("REPORT SUMMARY", 0) == 0) {
+        if (upper.starts_with("REPORT SUMMARY")) {
             section = "summary";
             continue;
         }
-        if (upper.rfind("REPORT DETAILS", 0) == 0) {
+        if (upper.starts_with("REPORT DETAILS")) {
             section = "details";
             continue;
         }
@@ -326,10 +309,10 @@ Json ParseCdc(std::string_view text) {
     const RE2 count_re(kCdcCountPattern);
 
     Json rows = Json::array();
-    for (std::string line : SplitLinesKeepEmpty(text)) {
+    for (const std::string& line : SplitLinesKeepEmpty(text)) {
         const std::string stripped = Trim(line);
         if (stripped.empty()) continue;
-        if (stripped.rfind("---", 0) == 0) continue;
+        if (stripped.starts_with("---")) continue;
         const std::size_t pipes = static_cast<std::size_t>(
             std::count(stripped.begin(), stripped.end(), '|'));
         if (pipes < 3) continue;
@@ -389,12 +372,12 @@ Json ParseCdc(std::string_view text) {
 
 std::string FirstError(std::string_view text) {
     for (const std::string& line : SplitLinesKeepEmpty(text)) {
-        if (line.find("ERROR") != std::string::npos ||
-            line.find("CRITICAL-WARNING") != std::string::npos) {
+        if (line.contains("ERROR") ||
+            line.contains("CRITICAL-WARNING")) {
             return Trim(line);
         }
     }
-    return std::string();
+    return {};
 }
 
 std::string CdcUnsupportedReason(std::string_view device) {
@@ -402,18 +385,18 @@ std::string CdcUnsupportedReason(std::string_view device) {
 }
 
 bool CdcUnsupportedByDevice(std::string_view output) {
-    return output.find("does not support") != std::string_view::npos;
+    return output.contains("does not support");
 }
 
 std::string TailLines(std::string_view text, std::size_t count) {
-    if (count == 0) return std::string();
+    if (count == 0) return {};
     std::vector<std::string> lines = SplitLinesKeepEmpty(text);
     // Python str.splitlines()：文本以换行结尾时不会产生末尾空串
     if (!lines.empty() && lines.back().empty() &&
         !text.empty() && (text.back() == '\n' || text.back() == '\r')) {
         lines.pop_back();
     }
-    if (lines.empty()) return std::string();
+    if (lines.empty()) return {};
     const std::size_t begin = lines.size() > count ? lines.size() - count : 0;
     std::string out;
     for (std::size_t index = begin; index < lines.size(); ++index) {
@@ -508,7 +491,7 @@ Json Run(const project::Project& project, std::string_view td_explicit, const Lo
         out = session.Run("report_drc -name fpgalsp_drc -file " + td::TclQuoteGrouped(drc_path),
                          kDrcTimeout);
         result["drc"]["elapsed"] = RoundOne(SecondsSince(started));
-        if (out.find("ERROR") != std::string::npos && out.find("report_drc") != std::string::npos) {
+        if (out.contains("ERROR") && out.contains("report_drc")) {
             result["drc"]["supported"] = false;
             result["drc"]["reason"] = FirstError(out);
         } else if (IsRegularFile(drc_path)) {
@@ -596,15 +579,28 @@ Json UpdateProject(const project::Project& project, std::string_view td_explicit
 
         std::string output = session.Run("check_project_version -file " + td::TclQuoteGrouped(al),
                                          kCheckVersionTimeout);
-        output += "\n";
+        output += '\n';
         output += session.Run("open_project " + td::TclQuoteGrouped(al) + " -update",
                                          kOpenProjectUpdateTimeout);
         session.Close();
 
         Json result = Json::object();
-        result["ok"] = !td::HasError(output);
+        // Update Project 修复：TD 的 CRITICAL-WARNING 是**设计告警**，不是 open_project -update 失败。
+        // 典型：HDL-7225 "'gen_status' is already implicitly declared"、HDL-5373 "used before
+        // its declaration" —— 只要工程里有这样一条，旧的 `!HasError(output)` 就把整条命令判成
+        // ok:false（插件于是每次都弹 "Update Project failed"，可 .al 其实已经同步成功）。
+        // 真正的 TD 失败是带 ERROR 的代码行（如 PRJ-8640 ERROR: Open project file ... failed），
+        // 那正是 HasFatal 的语义；SP1 起 read_adc 的 CRITICAL-WARNING 也不再中断流程，与此一致。
+        result["ok"] = !td::HasFatal(output);
         result["al"] = al;
         result["output"] = TailLines(output, 30);
+        if (!result["ok"].get<bool>()) {
+            // 失败必须带可读原因（插件把它显示给用户、MCP 工具把它回给 agent）。
+            const std::string reason = FirstError(output);
+            result["error"] = reason.empty()
+                                  ? "open_project -update reported an error (see output)"
+                                  : reason;
+        }
         log_message(std::string("updateProject: ok=") + (result["ok"].get<bool>() ? "true" : "false"));
         return result;
     } catch (const std::exception& exc) {

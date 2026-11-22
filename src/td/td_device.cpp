@@ -15,20 +15,14 @@
 #include "td/td_output.h"
 #include "td/tcl_quote.h"
 
+#include "platform/text.h"
+#include <format>
 namespace fpgalsp::td {
 namespace {
 
-std::string ToUpper(std::string_view s) {
-    std::string out(s);
-    for (char& c : out) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-    return out;
-}
+using platform::ToUpper;
 
-std::string ToLower(std::string_view s) {
-    std::string out(s);
-    for (char& c : out) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    return out;
-}
+using platform::ToLower;
 
 std::string Strip(std::string_view s) {
     std::size_t b = 0, e = s.size();
@@ -57,10 +51,7 @@ std::optional<int> IntOrNone(std::string_view value) {
 // 对应 Python re.fullmatch(r"\d+", cells[0] or "")
 bool IsAllDigits(std::string_view s) {
     if (s.empty()) return false;
-    for (char c : s) {
-        if (c < '0' || c > '9') return false;
-    }
-    return true;
+    return std::ranges::all_of(s, [](char c) { return c >= '0' && c <= '9'; });
 }
 
 std::vector<std::string> Split(std::string_view s, char sep) {
@@ -160,7 +151,7 @@ std::vector<std::string> DbCandidates(std::string_view td_root, std::string_view
 
     // Python 在 prefix 循环里用 `sorted(dbs)`；目录遍历顺序是文件系统顺序，
     // 不排序会让"同前缀的多个 db 谁先被试"与参考实现不一致。
-    std::sort(dbs.begin(), dbs.end());
+    std::ranges::sort(dbs);
 
     const auto prefixes = DbPrefixesForFamily(family);
     // Python: re.search(r"(?:L|X)(\d+)|_(\d+)", project.device) -> 型号里的容量数字
@@ -172,7 +163,7 @@ std::vector<std::string> DbCandidates(std::string_view td_root, std::string_view
     std::set<std::string> seen;
 
     auto push = [&](const std::string& name) {
-        if (!name.empty() && seen.find(name) == seen.end()) {
+        if (!name.empty() && !seen.contains(name)) {
             seen.insert(name);
             ordered.push_back(name);
         }
@@ -180,14 +171,14 @@ std::vector<std::string> DbCandidates(std::string_view td_root, std::string_view
 
     for (const auto& prefix : prefixes) {
         if (!size.empty()) {
-            const std::string want = prefix + "_" + size;
+            const std::string want = std::format("{}_{}", prefix, size);
             for (const auto& db : dbs) {
-                if (ToLower(db).compare(0, want.size(), want) == 0) push(db);
+                if (ToLower(db).starts_with(want)) push(db);
             }
         }
         const std::string prefix_underscore = prefix + "_";
         for (const auto& db : dbs) {
-            if (ToLower(db).compare(0, prefix_underscore.size(), prefix_underscore) == 0) {
+            if (ToLower(db).starts_with(prefix_underscore)) {
                 push(db);
             }
         }
@@ -212,7 +203,7 @@ std::vector<std::vector<std::string>> ParsePipeTable(const std::vector<std::stri
     std::vector<std::vector<std::string>> rows;
     for (const auto& raw : lines) {
         const std::string line = Strip(raw);
-        if (line.find('|') == std::string::npos) continue;
+        if (!line.contains('|')) continue;
 
         // 至少 2 个 '|'
         if (std::count(line.begin(), line.end(), '|') < 2) continue;
@@ -306,12 +297,12 @@ std::vector<DedicatedPin> ParseCfgIo(std::string_view text) {
         const std::string ios = Strip(cells[1]);
         const std::string setting = Strip(cells[2]);
 
-        if (ToLower(setting).find("dedicate") == std::string::npos) continue;
+        if (!ToLower(setting).contains("dedicate")) continue;
 
         for (const auto& pe : Split(ios, '/')) {
             const std::string cleaned = Strip(pe);
             if (!cleaned.empty()) {
-                dedicated.push_back({option, cleaned});
+                dedicated.push_back({.role=option, .pe=cleaned});
             }
         }
     }
@@ -361,9 +352,9 @@ std::string DeviceCacheKey(std::string_view device, std::string_view family,
     // 对应 Python:
     //   re.sub(r"[^A-Za-z0-9_.-]+", "_", "%s_%s_%s" % (device, family, speed or "na"))
     std::string raw(device);
-    raw += "_";
+    raw += '_';
     raw += std::string(family);
-    raw += "_";
+    raw += '_';
     raw += (speed.has_value() && !speed->empty()) ? *speed : std::string("na");
 
     std::string safe;

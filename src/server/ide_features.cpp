@@ -44,6 +44,8 @@
 #include "platform/path.h"
 #include "platform/write_service.h"
 
+#include "platform/text.h"
+#include <format>
 namespace fpgalsp::server::ide {
 namespace {
 
@@ -53,13 +55,7 @@ using platform::normalize_path;
 using platform::path_dirname;
 using platform::path_join;
 
-std::string LowerAscii(std::string_view text) {
-    std::string out(text);
-    for (char& c : out) {
-        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
-    }
-    return out;
-}
+using platform::LowerAscii;
 
 std::string TrimText(std::string_view text) {
     const auto is_space = [](char c) {
@@ -82,18 +78,18 @@ std::string NormaliseSlashes(std::string_view text) {
 
 std::string ToUtf8(const fs::path& path) {
     const std::u8string text = path.u8string();
-    return std::string(reinterpret_cast<const char*>(text.data()), text.size());
+    return {reinterpret_cast<const char*>(text.data()), text.size()};
 }
 
 // UTF-8 字节串 -> fs::path。不用 fs::u8path（C++20 起被标记 deprecated，会触发 C4996；
 // fs::path(std::string) 在 Windows 上按 ANSI 解释，中文路径会坏）。
 fs::path ToPath(std::string_view utf8) {
-    return fs::path(std::u8string(reinterpret_cast<const char8_t*>(utf8.data()), utf8.size()));
+    return {std::u8string(reinterpret_cast<const char8_t*>(utf8.data()), utf8.size())};
 }
 
 // 把 "\n" 换成文件里实际使用的行尾（.al 在 Windows 上是 CRLF）
 std::string ApplyLineEnding(std::string block, std::string_view text) {
-    if (text.find("\r\n") == std::string_view::npos) return block;
+    if (!text.contains("\r\n")) return block;
     std::string out;
     out.reserve(block.size() + block.size() / 8);
     for (const char c : block) {
@@ -163,7 +159,8 @@ InstantiationText BuildInstantiationText(const hdl::Module& module, std::string_
         for (std::size_t i = 0; i < module.parameters.size(); ++i) {
             const std::string& parameter = module.parameters[i];
             const bool last = (i + 1 == module.parameters.size());
-            body += pad + "    ." + parameter + " (" + parameter + ")" + (last ? "" : ",") + "\n";
+            body += std::format("{}    .{} ({}){}\n", pad, parameter, parameter,
+                                  last ? "" : ",");
         }
         body += pad + ") " + out.instance + " (\n";
     } else {
@@ -172,7 +169,8 @@ InstantiationText BuildInstantiationText(const hdl::Module& module, std::string_
     for (std::size_t i = 0; i < module.ports.size(); ++i) {
         const std::string& port_name = module.ports[i].name;
         const bool last = (i + 1 == module.ports.size());
-        body += pad + "    ." + port_name + " (" + port_name + ")" + (last ? "" : ",") + "\n";
+        body += std::format("{}    .{} ({}){}\n", pad, port_name, port_name,
+                             last ? "" : ",");
     }
     body += pad + ");\n";
 
@@ -185,7 +183,7 @@ Json Instantiation(const hdl::HdlIndex& index, std::string_view module_name,
                    std::string_view indent) {
     if (module_name.empty()) {
         std::vector<std::string> names = index.ModuleNames();
-        std::sort(names.begin(), names.end());
+        std::ranges::sort(names);
         Json out = Json::object();
         out["ok"] = true;
         out["modules"] = std::move(names);
@@ -391,7 +389,7 @@ Json SearchHierarchy(const hdl::HdlIndex& index, std::string_view query, int lim
 
     // 模块名命中（Python 不在这里截断，最后统一 results[:limit]）
     for (const hdl::Module* module : ModulesInIndexOrder(index)) {
-        if (LowerAscii(module->name).find(needle) == std::string::npos) continue;
+        if (!LowerAscii(module->name).contains(needle)) continue;
         Json item = Json::object();
         item["kind"] = "module";
         item["name"] = module->name;
@@ -404,8 +402,8 @@ Json SearchHierarchy(const hdl::HdlIndex& index, std::string_view query, int lim
 
     // 实例名 / 被例化模块名命中
     for (const hdl::Instance* instance : index.AllInstances()) {
-        if (LowerAscii(instance->name).find(needle) == std::string::npos &&
-            LowerAscii(instance->module).find(needle) == std::string::npos) {
+        if (!LowerAscii(instance->name).contains(needle) &&
+            !LowerAscii(instance->module).contains(needle)) {
             continue;
         }
         std::string parent;
@@ -542,8 +540,8 @@ Json AddSourceFile(std::string_view al_path, std::string_view source_path) {
 
     const std::string lowered_rel = LowerAscii(rel);
     const bool vhdl =
-        (lowered_rel.size() >= 4 && lowered_rel.compare(lowered_rel.size() - 4, 4, ".vhd") == 0) ||
-        (lowered_rel.size() >= 5 && lowered_rel.compare(lowered_rel.size() - 5, 5, ".vhdl") == 0);
+        (lowered_rel.size() >= 4 && lowered_rel.ends_with(".vhd")) ||
+        (lowered_rel.size() >= 5 && lowered_rel.ends_with(".vhdl"));
     const std::string tag = vhdl ? "VHDL" : "Verilog";
 
     // 缩进：沿用同段里第一个 <Verilog>/<VHDL>/<ADC_FILE>/<SDC_FILE>/<IP> 的缩进，缺省 8 空格
@@ -562,7 +560,7 @@ Json AddSourceFile(std::string_view al_path, std::string_view source_path) {
     block += inner + "        <Attr Name=\"UsedInSyn\" Val=\"true\"/>\n";
     block += inner + "        <Attr Name=\"UsedInP&R\" Val=\"true\"/>\n";
     block += inner + "        <Attr Name=\"BelongTo\" Val=\"design_1\"/>\n";
-    block += inner + "        <Attr Name=\"CompileOrder\" Val=\"" + std::to_string(compile_order) +
+    block += inner + R"(        <Attr Name="CompileOrder" Val=")" + std::to_string(compile_order) +
              "\"/>\n";
     block += inner + "    </FileInfo>\n";
     block += inner + "</File>\n";
@@ -646,8 +644,8 @@ Json SetProjectName(std::string_view al_path, std::string_view name_value) {
             const std::string::size_type after = at + 8;
             const bool boundary =
                 after >= original.size() ||
-                !(std::isalnum(static_cast<unsigned char>(original[after])) ||
-                  original[after] == '_');
+                (!std::isalnum(static_cast<unsigned char>(original[after])) &&
+                  original[after] != '_');
             if (boundary) {
                 const std::string::size_type close = original.find('>', after);
                 if (close != std::string::npos) {

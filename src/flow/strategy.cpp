@@ -30,6 +30,8 @@
 #include "td/td_session.h"
 #include "td/tcl_quote.h"
 
+#include "platform/text.h"
+#include <array>
 namespace fpgalsp::flow {
 namespace {
 
@@ -42,13 +44,7 @@ std::string Slashes(std::string text) {
     return text;
 }
 
-std::string Join(std::string_view dir, std::string_view name) {
-    if (dir.empty()) return std::string(name);
-    std::string out(dir);
-    if (out.back() != '/' && out.back() != '\\') out.push_back('/');
-    out += name;
-    return Slashes(std::move(out));
-}
+using platform::Join;
 
 bool IsFile(std::string_view path) {
     if (path.empty()) return false;
@@ -81,7 +77,7 @@ bool ShouldSkip(const std::string& name, bool is_directory) {
     if (name.size() >= 6 && name.compare(name.size() - 6, 6, "_Runs") == 0) return true;
     const auto ends_with = [&name](std::string_view suffix) {
         return name.size() >= suffix.size() &&
-               name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0;
+               name.ends_with(suffix);
     };
     return ends_with(".log") || ends_with(".dmp");
 }
@@ -111,7 +107,7 @@ void CopyProjectTree(const std::string& project_dir, const std::string& from,
             } else {
                 platform::IgnoreResult(platform::writes::Copy(project_dir, it->path().string(), target,
                                              platform::writes::Options{
-                                                 .caller = "strategy.copy_file"}));
+                                                 .caller = "strategy.copy_file",}));
             }
         }
         it.increment(ec);
@@ -181,7 +177,7 @@ void PruneWorkDirs(const std::string& project_dir, std::string_view root, int ke
         it.increment(ec);
         if (ec) break;
     }
-    std::sort(names.begin(), names.end());  // 目录名是时间戳，字典序即时间序
+    std::ranges::sort(names);  // 目录名是时间戳，字典序即时间序
     while (static_cast<int>(names.size()) > keep) {
         // 统一写服务：compare 工作目录（kState）递归删除；失败照旧忽略（旧 remove_ec 也未使用）。
         platform::IgnoreResult(platform::writes::Remove(
@@ -195,11 +191,11 @@ void PruneWorkDirs(const std::string& project_dir, std::string_view root, int ke
 
 const std::vector<std::string>& DefaultStrategies() {
     static const std::vector<std::string> kDefaults = {"TimingHigh", "CongestionHigh",
-                                                       "AreaOptimize"};
+                                                       "AreaOptimize",};
     return kDefaults;
 }
 
-std::string StrategyFileForFamily(std::string_view family) {
+std::string_view StrategyFileForFamily(std::string_view family) {
     const std::string upper = Upper(family);
     if (upper == "PH1" || upper == "PH1P") return "official_strategy_ph1.json";
     if (upper == "PH2" || upper == "PH2A") return "official_strategy_ph2.json";
@@ -217,7 +213,7 @@ std::vector<std::string> AvailableStrategies(std::string_view td_root, std::stri
     const jsonrpc::Json parsed = jsonrpc::Json::parse(text, nullptr, /*allow_exceptions=*/false);
     if (!parsed.is_object()) return names;
     for (auto it = parsed.begin(); it != parsed.end(); ++it) names.push_back(it.key());
-    std::sort(names.begin(), names.end());
+    std::ranges::sort(names);
     return names;
 }
 
@@ -260,7 +256,7 @@ std::vector<std::string> ChooseStrategies(const std::vector<std::string>& reques
     if (wanted.empty()) {
         for (const std::string& name : DefaultStrategies()) {
             if (available.empty()) continue;
-            if (std::find(available.begin(), available.end(), name) != available.end()) {
+            if (std::ranges::find(available, name) != available.end()) {
                 wanted.push_back(name);
             }
         }
@@ -271,7 +267,7 @@ std::vector<std::string> ChooseStrategies(const std::vector<std::string>& reques
     }
     if (unknown != nullptr && !available.empty()) {
         for (const std::string& name : wanted) {
-            if (std::find(available.begin(), available.end(), name) == available.end()) {
+            if (std::ranges::find(available, name) == available.end()) {
                 unknown->push_back(name);
             }
         }
@@ -330,15 +326,19 @@ jsonrpc::Json CompareStrategies(const project::Project& project, const td::TdCho
             ? Join(platform::state_dir(project.dir), "compare")
             : options.work_root;
     // 子目录名 = 本地时间戳（与 Python 的 "%Y%m%d_%H%M%S" 同构，字典序即时间序）
-    char stamp[32] = "run";
+    // C 数组 -> std::array（安全子集：只在本 TU 内当容器用，不给系统 API 当指针）。
+    std::array<char, 32> stamp{};
+    stamp[0] = 'r';
+    stamp[1] = 'u';
+    stamp[2] = 'n';  // 与原来的初值 "run" 一致：strftime 失败时仍得到 run
     {
         const std::time_t now = std::time(nullptr);
         std::tm local{};
         if (localtime_s(&local, &now) == 0) {
-            (void)std::strftime(stamp, sizeof(stamp), "%Y%m%d_%H%M%S", &local);
+            (void)std::strftime(stamp.data(), stamp.size(), "%Y%m%d_%H%M%S", &local);
         }
     }
-    const std::string stamp_dir = Join(work_root, stamp);
+    const std::string stamp_dir = Join(work_root, stamp.data());
     const std::string work = Join(stamp_dir, "prj");
     result["work"] = Slashes(stamp_dir);
 

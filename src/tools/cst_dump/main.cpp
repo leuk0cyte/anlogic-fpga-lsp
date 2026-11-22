@@ -38,6 +38,7 @@
 // =============================================================================
 
 #include <cstdio>
+#include <format>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -80,7 +81,7 @@ void PrintTokenEnumName(std::ostream &stream, int e) {
 void JsonEscape(std::ostream &out, std::string_view text) {
   out << '"';
   for (const char ch : text) {
-    const unsigned char uc = static_cast<unsigned char>(ch);
+    const auto uc = static_cast<unsigned char>(ch);
     switch (ch) {
       case '"':  out << "\\\""; break;
       case '\\': out << "\\\\"; break;
@@ -91,10 +92,8 @@ void JsonEscape(std::ostream &out, std::string_view text) {
       case '\f': out << "\\f"; break;
       default:
         if (uc < 0x20) {
-          // 其它控制字符用 \u00XX
-          char buf[8];
-          std::snprintf(buf, sizeof(buf), "\\u%04x", uc);
-          out << buf;
+          // 其它控制字符用 \u00XX（与原来 snprintf("\\u%04x") 逐字节一致）
+          out << std::format("\\u{:04x}", uc);
         } else {
           out << ch;
         }

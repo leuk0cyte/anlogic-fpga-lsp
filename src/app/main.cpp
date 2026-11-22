@@ -23,6 +23,7 @@
 #include <filesystem>
 #include <iostream>
 #include <memory>
+#include <print>
 #include <string>
 #include <string_view>
 
@@ -74,15 +75,8 @@ struct Options {
 };
 
 void PrintUsage() {
-    std::fprintf(stderr,
-                 "fpgalsp-native %s\n"
-                 "用法:\n"
-                 "  fpgalsp-native.exe --stdio [--td <TD安装根>] [--project <AL>] [--mcp-port <n>] [--log <path>] [--verbose]\n"
-                 "  fpgalsp-native.exe --mcp   [--root <dir>] [--project <AL>] [--mcp-port <n>]\n"
-                 "                            [--allow-flow] [--allow-write] [--verible <path>]\n"
-                 "                            [--log <path>] [--verbose]\n"
-                 "  fpgalsp-native.exe --mcp --attach-port <n>   （薄代理：接入 LSP 进程的 loopback MCP）\n"
-                 "  -h/--help 显示本帮助并以 0 退出\n",
+    std::println(stderr,
+                 "fpgalsp-native {}\nUsage:\n  fpgalsp-native.exe --stdio [--td <TD install root>] [--project <AL>] [--mcp-port <n>] [--log <path>] [--verbose]\n  fpgalsp-native.exe --mcp   [--root <dir>] [--project <AL>] [--mcp-port <n>]\n                            [--allow-flow] [--allow-write] [--verible <path>]\n                            [--log <path>] [--verbose]\n  fpgalsp-native.exe --mcp --attach-port <n>   (thin proxy: attach to the LSP process loopback MCP)\n  -h/--help  show this help and exit with 0",
                  kServerVersion);
 }
 
@@ -112,11 +106,11 @@ bool ParseArgs(int argc, char** argv, Options& out) {
             // 端口现在严格解析：非法/越界一律报错并以 2 退出（与其它参数错误一致）。
             const auto port = fpgalsp::platform::ParseDecimal<int>(argv[++i]);
             if (!port) {
-                std::fprintf(stderr, "--mcp-port: %s\n", port.error().c_str());
+                std::println(stderr, "--mcp-port: {}", port.error());
                 return false;
             }
             if (*port < 0 || *port > 65535) {
-                std::fprintf(stderr, "--mcp-port: 端口必须在 0..65535: '%s'\n", argv[i]);
+                std::println(stderr, "--mcp-port: port must be in 0..65535: '{}'", argv[i]);
                 return false;
             }
             out.mcp_port = *port;
@@ -125,7 +119,7 @@ bool ParseArgs(int argc, char** argv, Options& out) {
             // 不再有 static_cast 静默截断。
             const auto port = fpgalsp::platform::ParseDecimal<unsigned short>(argv[++i]);
             if (!port) {
-                std::fprintf(stderr, "--attach-port: %s\n", port.error().c_str());
+                std::println(stderr, "--attach-port: {}", port.error());
                 return false;
             }
             out.attach_port = *port;
@@ -139,7 +133,7 @@ bool ParseArgs(int argc, char** argv, Options& out) {
             out.help = true;
             return true;
         } else {
-            std::fprintf(stderr, "未知参数: %s\n", std::string(arg).c_str());
+            std::println(stderr, "Unknown argument: {}", std::string(arg));
             PrintUsage();
             return false;
         }
@@ -313,8 +307,8 @@ int main(int argc, char** argv) {
         fpgalsp::platform::set_default_logger(fpgalsp::platform::create_logger(log_options));
     }
 
-    fpgalsp::platform::default_logger().info(is_lsp ? "fpgalsp-native 以 LSP 模式启动"
-                                           : "fpgalsp-native 以 MCP 模式启动");
+    fpgalsp::platform::default_logger().info(is_lsp ? "fpgalsp-native started in LSP mode"
+                                           : "fpgalsp-native started in MCP mode");
 
     auto transport = fpgalsp::jsonrpc::MakeTransport(options.mode, std::cin, std::cout);
 
@@ -394,10 +388,10 @@ int main(int argc, char** argv) {
                           async_dispatcher.get());
     } catch (const std::exception& exc) {
         fpgalsp::platform::default_logger().error(std::string("fatal: ") + exc.what());
-        std::fprintf(stderr, "fpgalsp-native fatal: %s\n", exc.what());
+        std::println(stderr, "fpgalsp-native fatal: {}", exc.what());
         exit_code = 1;
     } catch (...) {
-        std::fprintf(stderr, "fpgalsp-native fatal: unknown exception\n");
+        std::println(stderr, "fpgalsp-native fatal: unknown exception");
         exit_code = 1;
     }
 

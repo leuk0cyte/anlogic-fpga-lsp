@@ -1190,7 +1190,7 @@ TEST(PlatformNumber, ParseDecimalIsStrict) {
     // 失败必须有原因、且不能返回 0（atoi 的失败形状）
     const auto junk = ParseDecimal<int>("abc");
     ASSERT_FALSE(junk.has_value());
-    EXPECT_NE(junk.error().find("不是整数"), std::string::npos);
+    EXPECT_NE(junk.error().find("not an integer"), std::string::npos);
     // 尾巴没吃完也算失败（atoi 会把 "12abc" 当 12）
     EXPECT_FALSE(ParseDecimal<int>("12abc").has_value());
     // 不跳前后空白（CLI 参数严格）
@@ -1200,7 +1200,7 @@ TEST(PlatformNumber, ParseDecimalIsStrict) {
     EXPECT_FALSE(ParseDecimal<unsigned short>("-1").has_value());
     const auto port = ParseDecimal<unsigned short>("70000");
     ASSERT_FALSE(port.has_value());
-    EXPECT_NE(port.error().find("范围"), std::string::npos)
+    EXPECT_NE(port.error().find("out of range"), std::string::npos)
         << "70000 以前被 static_cast<unsigned short> 静默截断成 4464（连错端口）";
     ASSERT_TRUE(ParseDecimal<unsigned short>("65535").has_value());
     EXPECT_EQ(ParseDecimal<unsigned short>("65535").value(), 65535);

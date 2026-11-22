@@ -36,7 +36,7 @@ std::int64_t MtimeNs(const fs::file_time_type& time) {
 }
 
 std::string Lower(std::string text) {
-    std::transform(text.begin(), text.end(), text.begin(), [](unsigned char ch) {
+    std::ranges::transform(text, text.begin(), [](unsigned char ch) {
         return static_cast<char>(std::tolower(ch));
     });
     return text;
@@ -119,7 +119,7 @@ std::uint32_t SectionsForPaths(const std::vector<std::string>& paths) {
         const std::string path = Lower(platform::normalize_path(raw));
         const auto ends_with = [&path](std::string_view suffix) {
             return path.size() >= suffix.size() &&
-                   path.compare(path.size() - suffix.size(), suffix.size(), suffix) == 0;
+                   path.ends_with(suffix);
         };
         if (ends_with(".qor")) {
             mask |= reports::sections::kQor;
@@ -169,7 +169,7 @@ bool ReportStore::CheckStaleLocked(ProjectState& state, const project::Project& 
 
     // F3：构建现在跑在 state_mutex_ 之外，解析表由 cache_mutex_ 保护。
     // 锁序固定 state -> cache（LookupOrParse 只拿 cache，不反向）。
-    std::lock_guard<std::mutex> tables(cache_mutex_);
+    std::scoped_lock tables(cache_mutex_);
 
     // 1) `*_Runs` 目录：新 run 出现 / 目录被删时，之前挑中的文件可能整体换掉，
     //    这种情况下把该工程的解析结果全丢（否则会继续拿旧 run 的报告）。
@@ -213,7 +213,7 @@ bool ReportStore::CheckStaleLocked(ProjectState& state, const project::Project& 
     if (changed) {
         DropSnapshotsLocked(state);
         BumpRevisionLocked(state);
-        std::lock_guard<std::mutex> stats_lock(stats_mutex_);
+        std::scoped_lock stats_lock(stats_mutex_);
         stats_.invalidations += dropped;
         ++stats_.revisions;
     }
@@ -237,7 +237,7 @@ bool ReportStore::CheckForChanges(const project::Project& project) {
 
 bool ReportStore::AnyStaleUnlocked(const ProjectState& state,
                                    const project::Project& project) const {
-    std::lock_guard<std::mutex> tables(cache_mutex_);  // F3：构建在 state 锁外，表要单独护
+    std::scoped_lock tables(cache_mutex_);  // F3：构建在 state 锁外，表要单独护
     const std::string runs = platform::normalize_path(project.dir + "/" + project.name + "_Runs");
     bool runs_ok = false;
     const FileStamp runs_stamp = StatOf(runs, &runs_ok);
@@ -262,7 +262,7 @@ std::size_t ReportStore::InvalidatePaths(const std::vector<std::string>& paths) 
     for (const std::string& path : paths) normalized.push_back(platform::normalize_path(path));
 
     std::unique_lock<std::shared_mutex> write(state_mutex_);
-    std::lock_guard<std::mutex> tables(cache_mutex_);
+    std::scoped_lock tables(cache_mutex_);
     std::size_t dropped = 0;
     for (auto& [key, state] : projects_) {
         std::size_t project_dropped = 0;
@@ -273,7 +273,7 @@ std::size_t ReportStore::InvalidatePaths(const std::vector<std::string>& paths) 
         BumpRevisionLocked(state);
     }
     if (dropped != 0) {
-        std::lock_guard<std::mutex> stats_lock(stats_mutex_);
+        std::scoped_lock stats_lock(stats_mutex_);
         stats_.invalidations += dropped;
         ++stats_.revisions;
     }
@@ -282,7 +282,7 @@ std::size_t ReportStore::InvalidatePaths(const std::vector<std::string>& paths) 
 
 void ReportStore::InvalidateAll() {
     std::unique_lock<std::shared_mutex> write(state_mutex_);
-    std::lock_guard<std::mutex> tables(cache_mutex_);
+    std::scoped_lock tables(cache_mutex_);
     std::size_t dropped = 0;
     for (auto& [key, state] : projects_) {
         dropped += state.qor.size() + state.timing.size() + state.area.size() +
@@ -297,7 +297,7 @@ void ReportStore::InvalidateAll() {
         state.runs_stamp = FileStamp{};
     }
     {
-        std::lock_guard<std::mutex> stats_lock(stats_mutex_);
+        std::scoped_lock stats_lock(stats_mutex_);
         stats_.invalidations += dropped;
         ++stats_.revisions;
     }
@@ -308,13 +308,13 @@ std::uint64_t ReportStore::revision() const {
 }
 
 ReportStoreStats ReportStore::stats() const {
-    std::lock_guard<std::mutex> lock(stats_mutex_);
+    std::scoped_lock lock(stats_mutex_);
     return stats_;
 }
 
 std::size_t ReportStore::cached_file_count() const {
     std::shared_lock<std::shared_mutex> read(state_mutex_);
-    std::lock_guard<std::mutex> tables(cache_mutex_);
+    std::scoped_lock tables(cache_mutex_);
     std::size_t count = 0;
     for (const auto& [key, state] : projects_) {
         count += state.qor.size() + state.timing.size() + state.area.size() + state.flow.size() +
@@ -351,7 +351,7 @@ std::shared_ptr<const ReportsSnapshot> ReportStore::Get(const project::Project& 
             if (snapshot != it->second.snapshots.end() &&
                 !AnyStaleUnlocked(it->second, project)) {
                 // 统计用独立的短锁：绝不能因为别的线程正在解析大文件（cache_mutex_）而排队。
-                std::lock_guard<std::mutex> stats_lock(stats_mutex_);
+                std::scoped_lock stats_lock(stats_mutex_);
                 ++stats_.gets;
                 ++stats_.snapshot_hits;
                 return snapshot->second;
@@ -377,7 +377,7 @@ std::shared_ptr<const ReportsSnapshot> ReportStore::Get(const project::Project& 
             const auto snapshot = it->second.snapshots.find(slot);
             if (snapshot != it->second.snapshots.end() &&
                 !AnyStaleUnlocked(it->second, project)) {
-                std::lock_guard<std::mutex> stats_lock(stats_mutex_);
+                std::scoped_lock stats_lock(stats_mutex_);
                 ++stats_.gets;
                 ++stats_.snapshot_hits;
                 return snapshot->second;
@@ -417,7 +417,7 @@ std::shared_ptr<const ReportsSnapshot> ReportStore::Get(const project::Project& 
             DropSnapshotsLocked(*state);
             BumpRevisionLocked(*state);
             {
-                std::lock_guard<std::mutex> stats_lock(stats_mutex_);
+                std::scoped_lock stats_lock(stats_mutex_);
                 stats_.invalidations += dropped;
                 ++stats_.revisions;
             }
@@ -428,14 +428,14 @@ std::shared_ptr<const ReportsSnapshot> ReportStore::Get(const project::Project& 
         if (!changed) {
             const auto snapshot = state->snapshots.find(slot);
             if (snapshot != state->snapshots.end()) {
-                std::lock_guard<std::mutex> stats_lock(stats_mutex_);
+                std::scoped_lock stats_lock(stats_mutex_);
                 ++stats_.gets;
                 ++stats_.snapshot_hits;
                 return snapshot->second;
             }
         }
         {
-            std::lock_guard<std::mutex> stats_lock(stats_mutex_);
+            std::scoped_lock stats_lock(stats_mutex_);
             ++stats_.gets;
         }
         // 审查 C2（P0）：记录构建开始时的 revision。构建在锁外跑几百毫秒，
@@ -490,11 +490,11 @@ std::shared_ptr<const ReportsSnapshot> ReportStore::Get(const project::Project& 
     }
     if (!published) {
         // 构建期间被失效：这份快照只服务本次请求，不进缓存；计一次失效便于观察。
-        std::lock_guard<std::mutex> stats_lock(stats_mutex_);
+        std::scoped_lock stats_lock(stats_mutex_);
         ++stats_.revisions;
     }
     {
-        std::lock_guard<std::mutex> stats_lock(stats_mutex_);
+        std::scoped_lock stats_lock(stats_mutex_);
         ++stats_.builds;
         stats_.last_build_ms = elapsed_ms;
         stats_.total_build_ms += elapsed_ms;
@@ -521,16 +521,16 @@ std::shared_ptr<const T> ReportStore::LookupOrParse(std::map<std::string, Parsed
     const std::string key = platform::normalize_path(path);
 
     {
-        std::lock_guard<std::mutex> lock(cache_mutex_);
+        std::scoped_lock lock(cache_mutex_);
         const auto it = table.find(key);
         if (it != table.end() && SameStamp(it->second.stamp, stamp)) {
-            std::lock_guard<std::mutex> stats_lock(stats_mutex_);
+            std::scoped_lock stats_lock(stats_mutex_);
             ++stats_.stamp_checks;
             ++stats_.parse_hits;
             ++stats_.file_hits;
             return it->second.value;
         }
-        std::lock_guard<std::mutex> stats_lock(stats_mutex_);
+        std::scoped_lock stats_lock(stats_mutex_);
         ++stats_.stamp_checks;
     }
     // F3：解析移到 cache_mutex_ **之外**。以前整个 10 MB 解析（200+ ms）在锁内，

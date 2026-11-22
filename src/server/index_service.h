@@ -182,7 +182,7 @@ private:
 
         // R3：TTL 窗口 + "下一次必须校验"标志（didSave/didClose/watcher 事件置位）
         std::chrono::milliseconds stamp_ttl{DefaultStampValidationInterval()};
-        std::chrono::steady_clock::time_point last_validation{};
+        std::chrono::steady_clock::time_point last_validation;
         bool force_validation = true;
 
         bool watcher_active = false;

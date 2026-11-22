@@ -91,10 +91,7 @@ bool ensure_directory(std::string_view path) {
         std::error_code ec;
         std::filesystem::create_directories(std::filesystem::path(std::string(path)), ec);
         // 已存在不算错误
-        if (ec && !std::filesystem::exists(std::filesystem::path(std::string(path)), ec)) {
-            return false;
-        }
-        return true;
+        return !(ec && !std::filesystem::exists(std::filesystem::path(std::string(path)), ec));
     } catch (...) {
         return false;
     }

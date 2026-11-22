@@ -61,7 +61,7 @@ inline std::string NormalizeNewlines(std::string_view text) {
 
 // Verilog 标识符字符（ASCII）：alnum / '_' / '$'
 inline bool IsIdentifierChar(char ch) {
-    const unsigned char uc = static_cast<unsigned char>(ch);
+    const auto uc = static_cast<unsigned char>(ch);
     return std::isalnum(uc) != 0 || ch == '_' || ch == '$';
 }
 
@@ -107,7 +107,7 @@ inline TextToken TextTokenAt(std::string_view text, int line, int character) {
     const std::string_view row = platform::line_at(text, static_cast<std::size_t>(line));
     if (row.empty()) return out;
 
-    std::size_t column = static_cast<std::size_t>(character < 0 ? 0 : character);
+    auto column = static_cast<std::size_t>(character < 0 ? 0 : character);
     if (column > platform::utf16_len(row)) column = platform::utf16_len(row);
     const std::size_t cursor = platform::utf16_column_to_byte_index(row, column);
 
@@ -140,10 +140,10 @@ inline std::string LeadingIndent(std::string_view row) {
 // ⚠ Python 的关键字黑名单只有这 4 个（不是完整关键字表）—— 逐字复刻，别"顺手"扩大。
 inline bool IsValidVerilogIdentifier(std::string_view name) {
     if (name.empty()) return false;
-    const unsigned char first = static_cast<unsigned char>(name.front());
+    const auto first = static_cast<unsigned char>(name.front());
     if (std::isalpha(first) == 0 && name.front() != '_') return false;
     for (const char ch : name) {
-        const unsigned char uc = static_cast<unsigned char>(ch);
+        const auto uc = static_cast<unsigned char>(ch);
         if (std::isalnum(uc) != 0 || ch == '_' || ch == '$') continue;
         return false;
     }
@@ -225,8 +225,8 @@ inline std::vector<BlockScope> BlockScopes(std::string_view text) {
             if (word == "begin") {
                 if (pending_for >= 0) {
                     const bool is_for = generate_depth > 0 ||
-                                        rows[static_cast<std::size_t>(pending_for)].find(
-                                            "genvar") != std::string::npos;
+                                        rows[static_cast<std::size_t>(pending_for)].contains(
+                                            "genvar");
                     stack.emplace_back(is_for ? "for-begin" : "begin",
                                        is_for ? pending_for : line_number);
                     pending_for = -1;

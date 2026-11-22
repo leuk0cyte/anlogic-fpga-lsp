@@ -5,11 +5,14 @@
 #include "project/al_project.h"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <ranges>
 #include <set>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -18,37 +21,23 @@
 #include "platform/path.h"
 #include "project/xml_lite.h"
 
+#include "platform/text.h"
 namespace fpgalsp::project {
 namespace {
 
 namespace plat = fpgalsp::platform;
 
-constexpr const char* kVerilogExt[] = {".v", ".sv", ".vh", ".svh"};
-constexpr const char* kVhdlExt[] = {".vhd", ".vhdl"};
+// B-6：数组表 + 显式 count 换成 std::array，接口收 std::span（不再退化成指针+长度）。
+constexpr std::array<const char*, 4> kVerilogExt = {".v", ".sv", ".vh", ".svh"};
+constexpr std::array<const char*, 2> kVhdlExt = {".vhd", ".vhdl"};
 
-std::string ToLower(std::string_view s) {
-    std::string out(s);
-    for (char& c : out) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    return out;
-}
+using platform::ToLower;
 
-std::string Trim(std::string_view s) {
-    std::size_t b = 0, e = s.size();
-    while (b < e && std::isspace(static_cast<unsigned char>(s[b]))) ++b;
-    while (e > b && std::isspace(static_cast<unsigned char>(s[e - 1]))) --e;
-    return std::string(s.substr(b, e - b));
-}
+using platform::Trim;
 
-bool EndsWithAny(std::string_view s, const char* const* exts, std::size_t count) {
+bool EndsWithAny(std::string_view s, std::span<const char* const> exts) {
     const std::string lower = ToLower(s);
-    for (std::size_t i = 0; i < count; ++i) {
-        const std::string_view ext = exts[i];
-        if (lower.size() >= ext.size() &&
-            lower.compare(lower.size() - ext.size(), ext.size(), ext) == 0) {
-            return true;
-        }
-    }
-    return false;
+    return std::ranges::any_of(exts, [&lower](const char* ext) { return lower.ends_with(ext); });
 }
 
 FileKind KindOfTag(std::string_view tag) {
@@ -179,28 +168,28 @@ ResolveResult ResolveRelative(std::string_view project_dir, std::string_view rel
     cleaned = Trim(cleaned);
 
     if (cleaned.empty()) {
-        return {"", ResolvedVia::Missing};
+        return {.path="", .via=ResolvedVia::Missing};
     }
 
     if (IsAbsoluteDeclared(cleaned)) {
         const std::string path = plat::normalize_path(cleaned);
-        return {path, DefaultFileExists(path) ? ResolvedVia::Absolute : ResolvedVia::Missing};
+        return {.path=path, .via=DefaultFileExists(path) ? ResolvedVia::Absolute : ResolvedVia::Missing};
     }
 
     const std::string candidate = plat::normalize_path(plat::path_join(project_dir, cleaned));
     if (DefaultFileExists(candidate)) {
-        return {candidate, ResolvedVia::Project};
+        return {.path=candidate, .via=ResolvedVia::Project};
     }
 
     if (!declared_dir.empty()) {
         const std::string fallback =
             plat::normalize_path(plat::path_join(declared_dir, cleaned));
         if (DefaultFileExists(fallback)) {
-            return {fallback, ResolvedVia::Declared};
+            return {.path=fallback, .via=ResolvedVia::Declared};
         }
     }
 
-    return {candidate, ResolvedVia::Missing};
+    return {.path=candidate, .via=ResolvedVia::Missing};
 }
 
 // -----------------------------------------------------------------------------
@@ -212,12 +201,12 @@ std::vector<const AlFile*> Project::Group(std::initializer_list<FileKind> kinds,
     std::vector<const AlFile*> out;
     for (const auto& f : files) {
         const bool kind_match =
-            std::find(kinds.begin(), kinds.end(), f.kind) != kinds.end();
+            std::ranges::find(kinds, f.kind) != kinds.end();
         if (!kind_match) continue;
         if (in_build_only && !f.InBuild()) continue;
         out.push_back(&f);
     }
-    std::sort(out.begin(), out.end(), [](const AlFile* a, const AlFile* b) {
+    std::ranges::sort(out, [](const AlFile* a, const AlFile* b) {
         if (a->compile_order != b->compile_order) return a->compile_order < b->compile_order;
         return a->path < b->path;
     });
@@ -300,8 +289,8 @@ Project ParseAlText(std::string_view al_path, std::string_view text) {
             const XmlNode* node = stack.back();
             stack.pop_back();
             all_nodes.push_back(node);
-            for (auto it = node->children.rbegin(); it != node->children.rend(); ++it) {
-                stack.push_back(&(*it));
+            for (const auto& it : std::views::reverse(node->children)) {
+                stack.push_back(&it);
             }
         }
     }
@@ -393,9 +382,7 @@ Project ParseAlText(std::string_view al_path, std::string_view text) {
 
             FileKind effective_kind = kind;
             // verilog section 里出现非 verilog 扩展名 -> 降级为 other
-            if (kind == FileKind::Verilog &&
-                !EndsWithAny(resolved.path, kVerilogExt,
-                             sizeof(kVerilogExt) / sizeof(kVerilogExt[0]))) {
+            if (kind == FileKind::Verilog && !EndsWithAny(resolved.path, kVerilogExt)) {
                 effective_kind = FileKind::Other;
             }
 
@@ -416,10 +403,10 @@ Project ParseAlText(std::string_view al_path, std::string_view text) {
     // ---- 7) 结构化警告（对应 Python 的 structural warnings）----
 
     if (proj.top.empty()) {
-        proj.warnings.push_back("Project has no top module (TOP_MODULE)");
+        proj.warnings.emplace_back("Project has no top module (TOP_MODULE)");
     }
     if (proj.device.empty()) {
-        proj.warnings.push_back("Project has no target device (HardWare/Device)");
+        proj.warnings.emplace_back("Project has no target device (HardWare/Device)");
     }
     if (!proj.declared_path.empty() && !proj.PathMatches()) {
         proj.warnings.push_back(
@@ -442,13 +429,11 @@ Project ParseAlText(std::string_view al_path, std::string_view text) {
         }
     }
     if (proj.AdcFiles().empty()) {
-        proj.warnings.push_back(
-            "No ADC pin constraint file: bitgen will reject the design with BIT-8123 "
+        proj.warnings.emplace_back("No ADC pin constraint file: bitgen will reject the design with BIT-8123 "
             "(projects with I/O must constrain pins)");
     }
     if (proj.SdcFiles().empty()) {
-        proj.warnings.push_back(
-            "No SDC timing constraint file: timing checks will have no constrained objects");
+        proj.warnings.emplace_back("No SDC timing constraint file: timing checks will have no constrained objects");
     }
 
     // HDL 文件在磁盘上但被排除且不在构建里
@@ -456,7 +441,7 @@ Project ParseAlText(std::string_view al_path, std::string_view text) {
     for (const AlFile* f : proj.HdlFiles()) hdl_present.insert(f->path);
     for (const auto& f : proj.files) {
         if (f.kind == FileKind::Verilog && !f.InBuild() && f.exists &&
-            hdl_present.find(f.path) == hdl_present.end()) {
+            !hdl_present.contains(f.path)) {
             proj.warnings.push_back(
                 "HDL file on disk is unregistered/excluded and not part of the build: " +
                 f.rel);
@@ -544,7 +529,7 @@ std::optional<std::string> FindAl(std::string_view start_path, int max_up) {
                 }
             }
             std::vector<std::string> sorted = entries;
-            std::sort(sorted.begin(), sorted.end());
+            std::ranges::sort(sorted);
             return plat::normalize_path(plat::path_join(directory, sorted[0]));
         }
 
@@ -571,14 +556,14 @@ std::vector<std::string> DiscoverProjects(std::string_view root, int max_depth,
 
     static const std::set<std::string> kSkipDirs = {
         ".git", ".svn", ".hg", "node_modules", ".fpgalsp", "log", "logs", "obj",
-        "dist", "build", "__pycache__", ".vs", ".idea", "out", "backup", "bak"};
+        "dist", "build", "__pycache__", ".vs", ".idea", "out", "backup", "bak",};
 
     // 递归用显式栈，避免深目录把调用栈打爆
     struct Frame {
         std::string dir;
         int depth;
     };
-    std::vector<Frame> stack{{plat::normalize_path(root), 0}};
+    std::vector<Frame> stack{{.dir=plat::normalize_path(root), .depth=0}};
 
     while (!stack.empty()) {
         if (results.size() >= limit) break;
@@ -595,19 +580,18 @@ std::vector<std::string> DiscoverProjects(std::string_view root, int max_depth,
         } catch (...) {
             continue;
         }
-        std::sort(entries.begin(), entries.end());
+        std::ranges::sort(entries);
 
         // 先收 .al（对应 Python 先遍历文件名再遍历目录）
         for (const auto& name : entries) {
             const std::string lower = ToLower(name);
-            if (lower.size() >= 3 && lower.compare(lower.size() - 3, 3, ".al") == 0) {
+            if (lower.size() >= 3 && lower.ends_with(".al")) {
                 results.push_back(plat::normalize_path(plat::path_join(frame.dir, name)));
                 if (results.size() >= limit) break;
             }
         }
 
-        for (auto it = entries.rbegin(); it != entries.rend(); ++it) {
-            const std::string& name = *it;
+        for (const auto& name : std::views::reverse(entries)) {
             const std::string full = plat::path_join(frame.dir, name);
             bool is_dir = false;
             try {
@@ -618,11 +602,11 @@ std::vector<std::string> DiscoverProjects(std::string_view root, int max_depth,
             if (!is_dir) continue;
 
             const std::string lower = ToLower(name);
-            if (kSkipDirs.count(lower) > 0) continue;
+            if (kSkipDirs.contains(lower)) continue;
             if (!lower.empty() && lower[0] == '.') continue;
-            if (lower.size() >= 5 && lower.compare(lower.size() - 5, 5, "_runs") == 0) continue;
+            if (lower.size() >= 5 && lower.ends_with("_runs")) continue;
 
-            stack.push_back({full, frame.depth + 1});
+            stack.push_back({.dir=full, .depth=frame.depth + 1});
         }
     }
 
@@ -635,7 +619,7 @@ std::pair<int, std::size_t> Affinity(std::string_view al_path, std::string_view 
 
     // 目标在工程目录内 -> tier 2，按目录长度决胜
     const std::string prefix = project_dir + "/";
-    if (target.compare(0, prefix.size(), prefix) == 0) {
+    if (target.starts_with(prefix)) {
         return {2, project_dir.size()};
     }
 

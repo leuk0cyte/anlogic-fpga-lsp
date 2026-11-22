@@ -11,6 +11,7 @@
 #include <cstring>
 #include <memory>
 #include <mutex>
+#include <print>
 #include <set>
 #include <string>
 #include <thread>
@@ -263,14 +264,14 @@ class McpTcpHost::Impl {
         // P-A1：会话线程可能正阻塞在 recv 上 —— 必须 shutdown 对端 socket 才能唤醒。
         // （只 closesocket 不够：另一个线程阻塞在 recv 时，close 的语义是未定义的。）
         {
-            std::lock_guard<std::mutex> lock(sessions_mutex_);
+            std::scoped_lock lock(sessions_mutex_);
             for (SOCKET client : clients_) {
                 ::shutdown(client, SD_BOTH);
             }
         }
         std::vector<std::thread> pending;
         {
-            std::lock_guard<std::mutex> lock(sessions_mutex_);
+            std::scoped_lock lock(sessions_mutex_);
             pending.swap(sessions_);
         }
         for (std::thread& worker : pending) {
@@ -348,14 +349,14 @@ class McpTcpHost::Impl {
             // ⚠ 必须**先**把连接计入 active_/clients_ 再起线程：会话线程可能在
             // fetch_add 之前就开始服务（实测会让"第 N+1 个连接被拒"的判定漏掉，
             // 表现为 max_clients 偶发不生效）。
-            std::lock_guard<std::mutex> lock(sessions_mutex_);
+            std::scoped_lock lock(sessions_mutex_);
             clients_.insert(client);
             active_.fetch_add(1);
             sessions_.emplace_back([this, client]() {
                 Serve(client);
                 closesocket(client);
                 {
-                    std::lock_guard<std::mutex> guard(sessions_mutex_);
+                    std::scoped_lock guard(sessions_mutex_);
                     clients_.erase(client);
                 }
                 active_.fetch_sub(1);
@@ -372,7 +373,7 @@ class McpTcpHost::Impl {
                sizeof(wake_addr_));
     }
 
-    bool SendAll(SOCKET socket, const std::string& payload) {
+    static bool SendAll(SOCKET socket, const std::string& payload) {
         std::size_t offset = 0;
         while (offset < payload.size()) {
             const int sent = send(socket, payload.data() + offset,
@@ -399,7 +400,7 @@ class McpTcpHost::Impl {
             // 没有这把锁，两个线程的 JSON 行会互相穿插（客户端直接解析失败）。
             auto write_mutex = std::make_shared<std::mutex>();
             auto write_line = [this, client, write_mutex](const std::string& payload) {
-                std::lock_guard<std::mutex> lock(*write_mutex);
+                std::scoped_lock lock(*write_mutex);
                 return SendAll(client, payload);
             };
             server.SetNotificationWriter([write_line](const jsonrpc::Json& note) {
@@ -533,7 +534,7 @@ int RunTcpAttachProxy(unsigned short port) {
 #ifdef _WIN32
     WSADATA data;
     if (WSAStartup(MAKEWORD(2, 2), &data) != 0) return 3;
-    SOCKET socket = INVALID_SOCKET;
+    auto socket = INVALID_SOCKET;
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
@@ -549,7 +550,7 @@ int RunTcpAttachProxy(unsigned short port) {
         }
     }
     if (socket == INVALID_SOCKET) {
-        std::fprintf(stderr, "fpgalsp-native: cannot attach to mcp port %u\n",
+        std::println(stderr, "fpgalsp-native: cannot attach to mcp port {}",
                      static_cast<unsigned>(port));
         WSACleanup();
         return 3;
@@ -618,7 +619,7 @@ int RunTcpAttachProxy(unsigned short port) {
     return 0;
 #else
     (void)port;
-    std::fprintf(stderr, "fpgalsp-native: --attach-port is Windows-only\n");
+    std::println(stderr, "fpgalsp-native: --attach-port is Windows-only");
     return 3;
 #endif
 }

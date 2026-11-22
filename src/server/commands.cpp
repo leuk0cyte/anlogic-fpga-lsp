@@ -54,6 +54,7 @@
 #include "td/td_output.h"
 #include "td/td_session.h"
 
+#include "platform/text.h"
 namespace fpgalsp::server {
 namespace {
 
@@ -110,7 +111,7 @@ std::map<std::string, std::pair<std::chrono::steady_clock::time_point, Json>> g_
 bool GetFlowStatusCache(const std::string& runs_dir, const char* kind, Json* out) {
     if (out == nullptr) return false;
     const auto now = std::chrono::steady_clock::now();
-    std::lock_guard<std::mutex> lock(g_flow_status_cache_mutex);
+    std::scoped_lock lock(g_flow_status_cache_mutex);
     const auto it = g_flow_status_cache.find(std::string(kind) + "|" + runs_dir);
     if (it == g_flow_status_cache.end()) return false;
     if (now - it->second.first >= std::chrono::seconds(1)) return false;
@@ -119,7 +120,7 @@ bool GetFlowStatusCache(const std::string& runs_dir, const char* kind, Json* out
 }
 
 void PutFlowStatusCache(const std::string& runs_dir, const char* kind, const Json& value) {
-    std::lock_guard<std::mutex> lock(g_flow_status_cache_mutex);
+    std::scoped_lock lock(g_flow_status_cache_mutex);
     g_flow_status_cache[std::string(kind) + "|" + runs_dir] = {std::chrono::steady_clock::now(),
                                                                value};
 }
@@ -136,11 +137,7 @@ HandlerResult Failure(std::string error) {
 // 占位命令的返回值现在由各 Feature stub 自己给（带 "not implemented: <缺什么>"），
 // 这里不再保留统一的 NotImplemented()，避免出现"看起来实现了"的死代码。
 
-std::string ToLower(std::string_view text) {
-    std::string out(text);
-    for (char& c : out) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    return out;
-}
+using platform::ToLower;
 
 std::string LowerExtension(std::string_view path) {
     return ToLower(platform::path_extension(path));
@@ -230,7 +227,7 @@ Json BuildNode(const hdl::HdlIndex& index, const std::string& module_name,
     node["usedAt"] = instance != nullptr ? MakeUsedAt(*instance) : Json(nullptr);
 
     const std::string lowered = ToLower(definition->name);
-    if (std::find(stack.begin(), stack.end(), lowered) != stack.end() || depth >= 24) {
+    if (std::ranges::find(stack, lowered) != stack.end() || depth >= 24) {
         // 环路保护：recursive=true + children=[]（PROTOCOL-V2.md §1）
         node["recursive"] = true;
         node["children"] = Json::array();
@@ -273,7 +270,7 @@ HandlerResult LspServer::HandleModuleChildren(const Json& params) {
 Json LspServer::FeatureModuleChildren(const Json& params) {
     const std::string uri = jsonrpc::GetString(params, "uri");
     const auto project = uri.empty() ? CurrentProject()
-                                     : ProjectForPath(platform::uri_to_path(std::string(uri)));
+                                     : ProjectForPath(platform::uri_to_path(uri));
     if (!project.has_value()) {
         Json out = Json::object();
         out["ok"] = false;
@@ -304,7 +301,7 @@ HandlerResult LspServer::HandleModuleTree(const Json& params) {
 
 Json LspServer::FeatureModuleTree(std::string_view uri, bool include_primitives) {
     const auto project = uri.empty() ? CurrentProject()
-                                     : ProjectForPath(platform::uri_to_path(std::string(uri)));
+                                     : ProjectForPath(platform::uri_to_path(uri));
     if (!project.has_value()) {
         Json out = Json::object();
         out["ok"] = false;
@@ -345,12 +342,12 @@ std::string NewestRoutedDb(const project::Project& project) {
         if (ec) break;
         if (!entry.is_regular_file(ec)) continue;
         const std::string name = entry.path().filename().string();
-        if (name.size() >= 6 && name.compare(name.size() - 6, 6, "_pr.db") == 0) {
+        if (name.size() >= 6 && name.ends_with("_pr.db")) {
             candidates.push_back(platform::normalize_path(entry.path().string()));
         }
     }
     if (candidates.empty()) return "";
-    std::sort(candidates.begin(), candidates.end(), [](const std::string& a, const std::string& b) {
+    std::ranges::sort(candidates, [](const std::string& a, const std::string& b) {
         std::error_code ea;
         std::error_code eb;
         const auto ta = std::filesystem::last_write_time(std::filesystem::path(a), ea);
@@ -525,7 +522,7 @@ Json LspServer::FeatureReports(const Json& params) {
 std::optional<td::TdChoice> LspServer::FindTdCached(const std::string& configured) {
     constexpr auto kTtl = std::chrono::seconds(5);
     const auto now = std::chrono::steady_clock::now();
-    std::lock_guard<std::mutex> lock(td_cache_mutex_);
+    std::scoped_lock lock(td_cache_mutex_);
     if (td_cache_valid_ && td_cache_key_ == configured &&
         now - td_cache_at_ < kTtl) {
         return td_cache_value_;
@@ -545,7 +542,7 @@ HandlerResult LspServer::HandleFlowStatus(const Json& params) {    return OkObje
 jsonrpc::Json SliceFlowLog(const flow::FlowState& state, std::optional<std::uint64_t> since,
                            std::uint64_t* log_start_seq) {
     const std::uint64_t total = state.log_seq;
-    const std::uint64_t lines = static_cast<std::uint64_t>(state.log.size());
+    const auto lines = static_cast<std::uint64_t>(state.log.size());
     const std::uint64_t start_seq = total > lines ? total - lines : 0u;
     if (log_start_seq != nullptr) *log_start_seq = start_seq;
 
@@ -677,7 +674,7 @@ std::optional<DeviceSummary> LspServer::CachedDevice(const project::Project& pro
     const std::string key = project.device + "|" + project.family + "|" +
                             (project.speed.has_value() ? *project.speed : std::string());
     {
-        std::lock_guard<std::mutex> lock(device_mutex_);
+        std::scoped_lock lock(device_mutex_);
         if (const auto it = device_mem_.find(key); it != device_mem_.end()) return it->second;
     }
 
@@ -701,7 +698,7 @@ std::optional<DeviceSummary> LspServer::CachedDevice(const project::Project& pro
     summary.package = jsonrpc::GetString(data, "package");
     summary.pins = jsonrpc::GetObject(data, "pins").size();
 
-    std::lock_guard<std::mutex> lock(device_mutex_);
+    std::scoped_lock lock(device_mutex_);
     device_mem_[key] = summary;
     return summary;
 }
@@ -716,7 +713,7 @@ std::string ExtractPackage(std::string_view text, std::string_view fallback) {
     std::size_t pos = at + kNeedle.size();
     std::string name;
     while (pos < text.size()) {
-        const unsigned char c = static_cast<unsigned char>(text[pos]);
+        const auto c = static_cast<unsigned char>(text[pos]);
         if (!std::isalnum(c) && c != '_') break;
         name.push_back(static_cast<char>(c));
         ++pos;
@@ -805,7 +802,7 @@ std::optional<DeviceSummary> LspServer::LoadDeviceSummary(const project::Project
     summary.pins = pins.size();
 
     {
-        std::lock_guard<std::mutex> lock(device_mutex_);
+        std::scoped_lock lock(device_mutex_);
         const std::string key = project.device + "|" + project.family + "|" +
                                 (project.speed.has_value() ? *project.speed : std::string());
         device_mem_[key] = summary;
@@ -932,11 +929,7 @@ std::string ReadTextFileOrEmpty(const std::string& path) {
     return buffer.str();
 }
 
-std::string LowerAscii(std::string_view text) {
-    std::string out(text);
-    for (char& ch : out) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-    return out;
-}
+using platform::LowerAscii;
 
 // `.al` 里记录的路径可能是相对（最常见）或绝对；新值保持同样的风格。
 std::string RebasedPath(const project::Project& project, const std::string& old_rel,
@@ -946,7 +939,7 @@ std::string RebasedPath(const project::Project& project, const std::string& old_
     if (absolute) return platform::normalize_path(new_abs);
     const std::string dir = LowerAscii(platform::normalize_path(project.dir)) + "/";
     const std::string normal = platform::normalize_path(new_abs);
-    if (LowerAscii(normal).rfind(dir, 0) == 0) {
+    if (LowerAscii(normal).starts_with(dir)) {
         return normal.substr(dir.size());  // 相对 .al 目录
     }
     return normal;  // 移到工程外了：只能写绝对路径
@@ -1097,9 +1090,9 @@ void LspServer::PublishAnalysisDiagnostics(const project::Project& project) {
                     diagnostic.code = "CDC-UNSAFE";
                     diagnostic.source = "fpga-lsp:analysis";
                     diagnostic.message = "CDC: asynchronous crossing at " + text;
-                    diagnostic.range.start = lsp::Position{location->line, location->character};
+                    diagnostic.range.start = lsp::Position{.line=location->line, .character=location->character};
                     diagnostic.range.end =
-                        lsp::Position{location->line, location->character + 1};
+                        lsp::Position{.line=location->line, .character=location->character + 1};
                     Json data = Json::object();
                     data["origin"] = "analysis";
                     diagnostic.data = std::move(data);
@@ -1120,14 +1113,14 @@ void LspServer::PublishAnalysisDiagnostics(const project::Project& project) {
             diagnostic.source = "fpga-lsp:analysis";
             diagnostic.message = "DRC: " + std::to_string(violations) +
                                  " violation(s); see the DRC report table";
-            diagnostic.range.start = lsp::Position{0, 0};
-            diagnostic.range.end = lsp::Position{0, 1};
+            diagnostic.range.start = lsp::Position{.line=0, .character=0};
+            diagnostic.range.end = lsp::Position{.line=0, .character=1};
             table[project.al_path].push_back(std::move(diagnostic));
         }
     }
 
     {
-        std::lock_guard<std::mutex> lock(state_mutex_);
+        std::scoped_lock lock(state_mutex_);
         diag_analysis_[project.al_path] = std::move(table);
     }
     PublishMerged(project, nullptr);
@@ -1356,7 +1349,7 @@ HandlerResult LspServer::HandleExecuteCommand(const Json& params) {
     if (command == "fpgalsp.check") {
         std::optional<::fpgalsp::project::Project> project = CurrentProject();
         if (!project.has_value() && !args.empty()) {
-            const Json first = args.front();
+            const Json& first = args.front();
             if (first.is_string()) {
                 project = ProjectForPath(platform::uri_to_path(first.get<std::string>()));
             } else if (first.is_object()) {
@@ -1428,7 +1421,7 @@ HandlerResult LspServer::HandleExecuteCommand(const Json& params) {
             stages.push_back(single);
         }
         // 缺省等价于 GUI 的 "Generate Bitstream"
-        if (stages.empty()) stages.push_back("all");
+        if (stages.empty()) stages.emplace_back("all");
 
         const int jobs = jsonrpc::GetInt(options, "jobs", 6);
         const std::shared_ptr<flow::FlowRunner> runner = EnsureFlowRunner(*project, *td);
@@ -1802,7 +1795,7 @@ HandlerResult LspServer::CommandDevice() {
     const std::optional<DeviceSummary> summary = LoadDeviceSummary(*project, *session, &error);
     session->Kill();  // import_device 之后本会话可复用，但保持"用完即杀"的简单策略
     {
-        std::lock_guard<std::mutex> lock(session_mutex_);
+        std::scoped_lock lock(session_mutex_);
         if (session_ == session) session_.reset();
     }
     if (!summary.has_value()) {

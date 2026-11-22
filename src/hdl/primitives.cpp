@@ -15,19 +15,15 @@
 #include <algorithm>
 #include <cstddef>
 
+#include "platform/text.h"
+
 namespace fpgalsp::hdl {
 namespace {
 
 // 生成数据：kDevicePrimitiveNames（已排序）/ kVerilogKeywords（Python 原顺序）
 #include "hdl/data/primitives.inc"
 
-std::string LowerAscii(std::string_view text) {
-    std::string lowered(text);
-    for (char& c : lowered) {
-        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
-    }
-    return lowered;
-}
+using platform::LowerAscii;
 
 const std::set<std::string>& PrimitiveSet() {
     static const std::set<std::string> set = [] {
@@ -55,7 +51,7 @@ const std::set<std::string>& DevicePrimitives() { return PrimitiveSet(); }
 
 bool IsDevicePrimitive(std::string_view name) {
     if (name.empty()) return false;
-    return LowerPrimitiveSet().count(LowerAscii(name)) != 0;
+    return LowerPrimitiveSet().contains(LowerAscii(name));
 }
 
 const std::vector<std::string>& VerilogKeywords() {

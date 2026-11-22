@@ -55,7 +55,7 @@ struct MessageId {
     std::string string_value;
     int64_t int_value = 0;
 
-    Json ToJson() const;
+    [[nodiscard]] Json ToJson() const;
 };
 
 std::optional<MessageId> GetMessageId(const Json& message);

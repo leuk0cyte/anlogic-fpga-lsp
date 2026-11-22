@@ -73,7 +73,7 @@ public:
     TdCheckResult Run(const project::Project& project, const CancelToken& cancel) override;
 
     // 上一次运行时实际使用的会话 work_dir（诊断用）
-    const std::string& last_work_dir() const { return last_work_dir_; }
+    [[nodiscard]] const std::string& last_work_dir() const { return last_work_dir_; }
 
 private:
     TdChoice td_;

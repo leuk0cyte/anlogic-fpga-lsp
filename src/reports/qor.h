@@ -56,7 +56,7 @@ struct QorReport {
     // 解析过程中的问题（畸形/空报告）。不进 ToJson，见完成报告里的说明。
     std::vector<std::string> warnings;
 
-    jsonrpc::Json ToJson() const;
+    [[nodiscard]] jsonrpc::Json ToJson() const;
 };
 
 // 解析 .qor 文本。never-throw：空文本/二进制垃圾返回空 metrics + warnings。

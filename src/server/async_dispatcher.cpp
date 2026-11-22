@@ -11,6 +11,7 @@
 
 #include "platform/log.h"
 
+#include <array>
 namespace fpgalsp::server {
 namespace {
 
@@ -41,7 +42,7 @@ void UpdateMax(std::atomic<double>& target, double value) {
 
 bool IsHeavyMethod(std::string_view method) {
     // 只列「不依赖可变索引快照 / 自带锁」的方法；索引类方法等 A1 接入后再迁入。
-    static const char* const kHeavy[] = {
+    static constexpr auto kHeavy = std::to_array<const char*>({
         "fpgaLsp/reports",
         // P-C6（M1）：索引类方法基于不可变快照（IndexService::Get 内部已加锁），
         // 以前留在 IO 线程上，冷索引时会和 didChange 抢同一个线程。
@@ -64,11 +65,9 @@ bool IsHeavyMethod(std::string_view method) {
         // didChange→publishDiagnostics p95 从 1 ms 拖到 343 ms。移到 worker 后
         // IO 线程只负责收发，响应字节不变（F1 报告有 before/after 协议快照 diff）。
         "textDocument/codeAction",
-    };
-    for (const char* name : kHeavy) {
-        if (method == name) return true;
-    }
-    return false;
+    });
+    return std::ranges::any_of(kHeavy,
+                               [method](const char* name) { return method == name; });
 }
 
 namespace {
@@ -111,7 +110,7 @@ AsyncDispatcher::~AsyncDispatcher() { Shutdown(); }
 
 void AsyncDispatcher::Shutdown() {
     {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::scoped_lock lock(mutex_);
         if (stopping_) return;
         stopping_ = true;
         for (auto& [key, token] : inflight_) token->store(true);
@@ -148,7 +147,7 @@ bool AsyncDispatcher::Dispatch(const jsonrpc::Json& message) {
     task.enqueued = std::chrono::steady_clock::now();
 
     {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::scoped_lock lock(mutex_);
         if (stopping_) {
             WriteError(task, jsonrpc::kInternalError, "server is shutting down");
             return true;
@@ -165,7 +164,7 @@ bool AsyncDispatcher::Dispatch(const jsonrpc::Json& message) {
 void AsyncDispatcher::HandleCancelRequest(const jsonrpc::Json& params) {
     if (!params.is_object() || !params.contains("id")) return;
     const std::string key = params["id"].dump();
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::scoped_lock lock(mutex_);
     const auto it = inflight_.find(key);
     if (it != inflight_.end()) it->second->store(true);
 }
@@ -189,7 +188,7 @@ void AsyncDispatcher::WorkerLoop() {
             g_cancelled.fetch_add(1);
             g_inflight.fetch_sub(1);
             {
-                std::lock_guard<std::mutex> lock(mutex_);
+                std::scoped_lock lock(mutex_);
                 inflight_.erase(task.id_key);
             }
             continue;
@@ -204,7 +203,7 @@ void AsyncDispatcher::WorkerLoop() {
                            "unsupported method: " + task.method);
                 g_failed.fetch_add(1);
                 g_inflight.fetch_sub(1);
-                std::lock_guard<std::mutex> lock(mutex_);
+                std::scoped_lock lock(mutex_);
                 inflight_.erase(task.id_key);
                 continue;
             }
@@ -216,14 +215,14 @@ void AsyncDispatcher::WorkerLoop() {
                        std::string("exception: ") + exc.what());
             g_failed.fetch_add(1);
             g_inflight.fetch_sub(1);
-            std::lock_guard<std::mutex> lock(mutex_);
+            std::scoped_lock lock(mutex_);
             inflight_.erase(task.id_key);
             continue;
         } catch (...) {
             WriteError(task, jsonrpc::kInternalError, "exception: unknown");
             g_failed.fetch_add(1);
             g_inflight.fetch_sub(1);
-            std::lock_guard<std::mutex> lock(mutex_);
+            std::scoped_lock lock(mutex_);
             inflight_.erase(task.id_key);
             continue;
         }
@@ -245,7 +244,7 @@ void AsyncDispatcher::WorkerLoop() {
         }
         g_inflight.fetch_sub(1);
         {
-            std::lock_guard<std::mutex> lock(mutex_);
+            std::scoped_lock lock(mutex_);
             inflight_.erase(task.id_key);
         }
     }

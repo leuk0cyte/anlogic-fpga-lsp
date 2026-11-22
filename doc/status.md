@@ -1,4 +1,4 @@
-# 交付状态（当前：2026-11-22，扩展 0.27.0）
+# 交付状态（当前：2026-11-22，扩展 0.28.0）
 
 ## 构建与测试
 
@@ -1722,3 +1722,34 @@ hash；`DiagnosticsOptions::text` 改 `std::string`。**A-7 巨型函数重构�
 **验证**：`ctest --preset windows-msvc-release` **72/72**；插件 **58/58**；真实 VS Code 套件
 **PASS**；真机 CorpusAlpha 单步 flow 正常、`.fpgalsp` 不出现、wire 引用 0 误报；`check_tcl_invariant.py`
 PASS（132 文件/45 调用点）。
+
+---
+
+## 第四十轮（2026-11-22，0.28.0）：现代化 B/C 批量 + 插件/日志英文化 + Update Project
+
+**现代化 B/C（MODERNIZATION.md 19 类）**：
+- 批次 1 机械 `--fix` **719 处**（scoped-lock/contains/trailing-comma 537、return-braced/raw-string/
+  emplace/namespace 105、12 个零散 check 77）；fix 工具缺陷的人工修正：trailing-comma 误删实参逗号 2 处、
+  `Json` braced-init 语义 28 处改回显式构造、use-string-view 破坏三元 1 处。
+- 批次 2 **504 处**：designated 208（残留 0）、nodiscard 96（虚函数/`.cpp` 24 处按纪律跳过）、
+  starts-ends 82（先补长度保护）、ranges 75、auto 20、std-print 5（仅 stderr，输出逐字不变）。
+- 批次 3 人工项：43 个文本工具定义点 → `src/platform/text.h` 唯一实现；审计行 `std::format`；
+  printf 17→0、拼接 23→0；sv 往返 9→0；`(const char*,size_t)` 2→span；u8path 11→0；
+  anyofallof 27→0；C 数组 64→22（安全子集）。
+- **未做**：A-7 巨型函数结构重构（JSON 契约敏感，单独立项）。
+- 根因门禁：根 `.clang-tidy` 的 `Checks:` 会与命令行 `--checks=` 合并，批量修必须写 `-*,<check>`
+  （过程记录见 `static/FIXES-0.28.0.md`）。
+
+**插件界面/日志英文化**：插件代码本身自 `e57a273` 起已是英文（中文仅在注释）；
+真正来源是后端 `Emit("log",…)`/`LogMessage`/logger/`--help`/CLI 错误——已翻译 **51 个字面量
+（40 条消息）**、7 个源文件，结构字段零改动；注释/文档保留中文。扫描器结果 0（改前 51）。
+
+**Update Project 修复**：根因 `ok = !HasError(output)` 把 `<CODE> CRITICAL-WARNING` 判失败，
+而 TD 实际 `PRJ-1401 : Successfully analyzed…` → 改 `!HasFatal(output)`（只有 `<CODE> ERROR` 失败），
+失败补 `error`；插件新增 `src/updateProject.js`：成功/失败写 "FPGA LSP" 输出通道 + extension.log，
+失败弹 `Update Project failed: <reason> (see FPGA LSP output for details)`。真机 MCP
+`fpga_project_update` 修复前 ok:false → 修复后 **ok:true**；插件单测 58→**63**。
+
+**验证**：`ctest` release **72/72**（含 `docs_clang_tidy`，基线 281→**142**）；插件 **63/63**；
+真实 VS Code 套件 **PASS**；e2e LSP 冒烟 **PASS**；真机 `didSave` 后 `.fpgalsp` 不出现；
+`check_tcl_invariant`/`check_raw_file_writes`/`check_project_state_paths` 全 PASS。

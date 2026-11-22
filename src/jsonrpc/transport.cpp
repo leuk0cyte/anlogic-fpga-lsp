@@ -4,6 +4,7 @@
 
 #include "jsonrpc/transport.h"
 
+#include "platform/text.h"
 #include <cctype>
 #include <charconv>
 #include <memory>
@@ -14,13 +15,7 @@ namespace {
 
 char ToLower(char c) { return static_cast<char>(std::tolower(static_cast<unsigned char>(c))); }
 
-std::string Trim(std::string_view s) {
-    std::size_t b = 0;
-    std::size_t e = s.size();
-    while (b < e && std::isspace(static_cast<unsigned char>(s[b]))) ++b;
-    while (e > b && std::isspace(static_cast<unsigned char>(s[e - 1]))) --e;
-    return std::string(s.substr(b, e - b));
-}
+using platform::Trim;
 
 std::string ToLowerString(std::string_view s) {
     std::string out(s);

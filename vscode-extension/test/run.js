@@ -18,6 +18,12 @@ class FakeLanguageClient {
         this.clientOptions = clientOptions;
         this.notificationHandlers = {};
         this.running = false;
+        // The real client owns the "FPGA LSP" output channel; the updateProject command
+        // appends its diagnosis there (see extension.js / src/updateProject.js).
+        this.outputChannel = {
+            lines: [],
+            appendLine(line) { this.lines.push(line); },
+        };
         FakeLanguageClient.instance = this;
     }
 
@@ -84,6 +90,7 @@ const { renderConstraintHtml } = require('../src/constraintHtml');
 const { ReportsPanel } = require('../src/reportsPanel');
 const { appendLog, flushLogSync } = require('../src/launchCheck');
 const writeService = require('../src/writeService');
+const { runUpdateProject, failureReason } = require('../src/updateProject');
 
 // ------------------------------------------------------------------ tiny test harness
 
@@ -2235,4 +2242,120 @@ test('constraints html: rows jump to the adc line and flag diagnostics', () => {
     ok(html.includes('has-issue'), 'flagged rows are highlighted');
     const empty = renderConstraintHtml({ files: [] });
     ok(empty.includes('No <code>.adc</code>'), 'empty state is explained');
+});
+
+// ------------------------------------------------------------------ update project
+// Root cause this covers: a TD HDL CRITICAL-WARNING used to make the backend report ok:false,
+// and the command surfaced only "see logs" without writing anything. Every outcome must now be
+// logged (command / project / result JSON or exception) and failures must name the reason.
+
+function fakeUpdateProjectDeps(result) {
+    const lines = [];
+    const errors = [];
+    const info = [];
+    const deps = {
+        execute: async () => result,
+        project: 'demo',
+        appendLine: (line) => lines.push(line),
+        showErrorMessage: async (message, ...items) => { errors.push({ message, items }); return undefined; },
+        showInformationMessage: async (message) => { info.push(message); },
+        refresh: async () => { deps.refreshed += 1; },
+        refreshed: 0,
+    };
+    return { deps, lines, errors, info };
+}
+
+test('update project: failure logs command/project/result and shows the backend reason', async () => {
+    const { deps, lines, errors, info } = fakeUpdateProjectDeps({
+        ok: false,
+        al: 'Y:/p/demo.al',
+        error: "PRJ-8640 ERROR: Open project file Y:/p/demo.al failed because of previous error(s).",
+        output: 'check_project_version\n',
+    });
+    const outcome = await runUpdateProject(deps);
+    eq(outcome.ok, false, 'outcome is a failure');
+    eq(errors.length, 1, 'exactly one error message');
+    includes(errors[0].message, 'Update Project failed:');
+    includes(errors[0].message, 'PRJ-8640 ERROR: Open project file Y:/p/demo.al failed');
+    includes(errors[0].message, 'see FPGA LSP output for details');
+    includes(errors[0].items.join(','), 'Show Logs');
+    eq(info.length, 0, 'no success notification on failure');
+    eq(lines.length, 1, 'one log line');
+    includes(lines[0], '[updateProject] FAILED');
+    includes(lines[0], 'command=fpgalsp.updateProject');
+    includes(lines[0], 'project=demo');
+    includes(lines[0], 'result=');
+    includes(lines[0], 'PRJ-8640');   // the whole JSON is on the line
+    eq(deps.refreshed, 0, 'trees are not refreshed on failure');
+});
+
+test('update project: response without error falls back to the last TD output line', async () => {
+    const { deps, errors, lines } = fakeUpdateProjectDeps({
+        ok: false,
+        al: 'Y:/p/demo.al',
+        output: 'PRJ-1401 : Successfully analyzed 22 source files.\nPRJ-8643 : Project name mismatch',
+    });
+    eq(failureReason({ ok: false, output: ' a \n\n  b  \n' }), 'b', 'last non-empty line wins');
+    const outcome = await runUpdateProject(deps);
+    eq(outcome.ok, false, 'failure without an error field');
+    includes(errors[0].message, 'Update Project failed: PRJ-8643 : Project name mismatch');
+    includes(lines[0], '[updateProject] FAILED');
+    // No reason at all must still be a sentence, never "undefined".
+    eq(failureReason({ ok: false }), 'unknown error (the response has no error/output field)',
+        'empty reason fallback');
+});
+
+test('update project: exception is logged and reported instead of escaping the command', async () => {
+    const { deps, lines, errors } = fakeUpdateProjectDeps(undefined);
+    deps.execute = async () => { throw new Error('fpga-lsp is not running yet'); };
+    const outcome = await runUpdateProject(deps);
+    eq(outcome.ok, false, 'exception is a failure');
+    includes(errors[0].message, 'Update Project failed: fpga-lsp is not running yet');
+    includes(lines[0], 'exception=fpga-lsp is not running yet');
+});
+
+test('update project: success logs the project and .al', async () => {
+    const { deps, lines, errors, info } = fakeUpdateProjectDeps({ ok: true, al: 'Y:/p/demo.al' });
+    const outcome = await runUpdateProject(deps);
+    eq(outcome.ok, true, 'outcome is a success');
+    eq(errors.length, 0, 'no error message');
+    eq(lines.length, 1, 'one log line');
+    includes(lines[0], '[updateProject] ok');
+    includes(lines[0], 'project=demo');
+    includes(lines[0], 'al=Y:/p/demo.al');
+    includes(info[0], 'open_project -update completed');
+    eq(deps.refreshed, 1, 'trees refresh after success');
+});
+
+test('update project: command wiring writes the failure to the FPGA LSP output channel', async () => {
+    const path = require('path');
+    const extension = require('../extension.js');
+    const context = {
+        extensionPath: path.join(__dirname, '..'),
+        subscriptions: [],
+        workspaceState: { get: () => undefined, update: () => Promise.resolve() },
+        globalState: { get: () => undefined, update: () => Promise.resolve() },
+    };
+    FakeLanguageClient.responses['workspace/executeCommand'] = async () => ({
+        ok: false,
+        al: 'Y:/p/demo.al',
+        output: 'PRJ-1401 : Successfully analyzed 22 source files.\n' +
+            "HDL-7225 CRITICAL-WARNING: 'gen_status' is already implicitly declared",
+    });
+    extension.activate(context);
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    try {
+        await mock.commands.executeCommand('fpgaLsp.updateProject');
+        const channel = FakeLanguageClient.instance.outputChannel.lines.join('\n');
+        includes(channel, '[updateProject] FAILED');
+        includes(channel, 'command=fpgalsp.updateProject');
+        includes(channel, 'project=');
+        includes(channel, 'HDL-7225');
+        const error = mock.__state.messages.error[mock.__state.messages.error.length - 1];
+        ok(error, 'failure surfaced through showErrorMessage');
+        includes(error.message, 'Update Project failed: HDL-7225');
+        includes(error.items.join(','), 'Show Logs');
+    } finally {
+        await extension.deactivate();
+    }
 });

@@ -36,15 +36,15 @@ struct XmlNode {
     std::vector<XmlNode> children;
 
     // 取属性；不存在返回 default_value
-    std::string GetAttr(std::string_view name, std::string default_value = {}) const;
+    [[nodiscard]] std::string GetAttr(std::string_view name, std::string default_value = {}) const;
 
-    bool HasAttr(std::string_view name) const;
+    [[nodiscard]] bool HasAttr(std::string_view name) const;
 
     // 直接子元素里第一个 tag 匹配的（不递归）
-    const XmlNode* FindChild(std::string_view tag_name) const;
+    [[nodiscard]] const XmlNode* FindChild(std::string_view tag_name) const;
 
     // 所有直接子元素
-    const std::vector<XmlNode>& Children() const { return children; }
+    [[nodiscard]] const std::vector<XmlNode>& Children() const { return children; }
 };
 
 struct XmlParseResult {

@@ -120,9 +120,9 @@ int main(int argc, char **argv) {
       do_lint = true;
     } else if (arg == "--check-syntax") {
       check_syntax = true;
-    } else if (arg.rfind("--ruleset=", 0) == 0) {
+    } else if (arg.starts_with("--ruleset=")) {
       ruleset_text = std::string(arg.substr(10));
-    } else if (arg.rfind("--rules=", 0) == 0) {
+    } else if (arg.starts_with("--rules=")) {
       rules_text = std::string(arg.substr(8));
     } else if (arg == "--help" || arg == "-h") {
       PrintUsage(argv[0]);

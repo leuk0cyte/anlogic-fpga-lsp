@@ -26,7 +26,7 @@ namespace fpgalsp::server {
 namespace {
 
 std::string KeyOf(std::string_view path) {
-    if (path.empty()) return std::string();
+    if (path.empty()) return {};
     return platform::path_key(platform::normalize_path(path));
 }
 
@@ -150,7 +150,7 @@ IndexService::~IndexService() = default;
 // =============================================================================
 
 IndexService::Snapshot IndexService::Get() const {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::scoped_lock lock(mutex_);
     return EnsureFreshLocked();
 }
 
@@ -175,7 +175,7 @@ IndexService::Snapshot IndexService::EnsureFreshLocked() const {
 // =============================================================================
 
 void IndexService::SetProject(const project::Project& project) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::scoped_lock lock(mutex_);
 
     // 工程模型没变（同一个 .al、同一批 HDL 文件）：只换字段，不动索引、不重算
     // 文件集合。集成方可以每个请求都调用（ProjectForPath 本来就是每请求一次）。
@@ -193,7 +193,7 @@ void IndexService::SetProject(const project::Project& project) {
 }
 
 void IndexService::OnFileChanged(const std::string& path, std::optional<std::string> text) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::scoped_lock lock(mutex_);
     if (!state_.have_project || path.empty()) return;
 
     const std::string key = KeyOf(path);
@@ -269,11 +269,11 @@ void IndexService::RecordChangesLocked(const std::vector<std::string>& paths,
                 delta.port_count = static_cast<int>(info->module.ports.size());
                 delta.defined = state_.snapshot->ModuleByName(name) != nullptr;
                 changes.modules.push_back(std::move(delta));
-                if (before.count(name) == 0) changes.full = true;  // 新增模块
+                if (!before.contains(name)) changes.full = true;  // 新增模块
             }
         }
         for (const std::string& name : before) {
-            if (after.count(name) == 0) {
+            if (!after.contains(name)) {
                 changes.full = true;  // 模块消失（改名/删除）
                 break;
             }
@@ -283,13 +283,13 @@ void IndexService::RecordChangesLocked(const std::vector<std::string>& paths,
 }
 
 IndexService::ChangeSet IndexService::LastChanges() const {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::scoped_lock lock(mutex_);
     return state_.last_changes;
 }
 
 void IndexService::OnWatchedFiles(const std::vector<std::string>& changed,
                                   const std::vector<std::string>& deleted) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::scoped_lock lock(mutex_);
     if (!state_.have_project) return;
 
     bool al_changed = false;
@@ -386,7 +386,7 @@ void IndexService::OnWatchedFiles(const std::vector<std::string>& changed,
 }
 
 void IndexService::InvalidateAll() {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::scoped_lock lock(mutex_);
     state_.dirty = true;
     state_.stamps.assign(state_.expected.size(), FileStamp{});
     state_.stamps_initialized = false;
@@ -394,7 +394,7 @@ void IndexService::InvalidateAll() {
 }
 
 void IndexService::SetWatcherActive(bool active) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::scoped_lock lock(mutex_);
     if (state_.watcher_active == active) return;
     state_.watcher_active = active;
     // 从"有 watcher"切到"没有"：此刻磁盘状态就是基线（索引刚构建/刚增量过），
@@ -411,14 +411,14 @@ std::chrono::milliseconds IndexService::DefaultStampValidationInterval() {
 }
 
 void IndexService::SetStampValidationInterval(std::chrono::milliseconds interval) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::scoped_lock lock(mutex_);
     state_.stamp_ttl = interval < std::chrono::milliseconds(0) ? std::chrono::milliseconds(0)
                                                                : interval;
     state_.force_validation = true;  // 改了间隔，立刻按新设置校验一次
 }
 
 std::chrono::milliseconds IndexService::stamp_validation_interval() const {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::scoped_lock lock(mutex_);
     return state_.stamp_ttl;
 }
 
@@ -427,37 +427,37 @@ std::chrono::milliseconds IndexService::stamp_validation_interval() const {
 // =============================================================================
 
 bool IndexService::watcher_active() const {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::scoped_lock lock(mutex_);
     return state_.watcher_active;
 }
 
 IndexService::Stats IndexService::stats() const {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::scoped_lock lock(mutex_);
     return state_.stats;
 }
 
 bool IndexService::has_project() const {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::scoped_lock lock(mutex_);
     return state_.have_project;
 }
 
 std::string IndexService::al_path() const {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::scoped_lock lock(mutex_);
     return state_.project.al_path;
 }
 
 bool IndexService::truncated() const {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::scoped_lock lock(mutex_);
     return state_.truncated;
 }
 
 std::size_t IndexService::parse_errors() const {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::scoped_lock lock(mutex_);
     return state_.parse_errors;
 }
 
 std::size_t IndexService::tracked_files() const {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::scoped_lock lock(mutex_);
     return state_.expected.size();
 }
 
@@ -616,7 +616,7 @@ void IndexService::SyncStampLocked(const State::ExpectedFile& file) const {
 void IndexService::RequestValidationLocked() const { state_.force_validation = true; }
 
 bool IndexService::IsExpected(std::string_view key) const {
-    return state_.expected_index.find(std::string(key)) != state_.expected_index.end();
+    return state_.expected_index.contains(std::string(key));
 }
 
 }  // namespace fpgalsp::server

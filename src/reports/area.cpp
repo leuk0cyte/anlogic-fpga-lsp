@@ -16,6 +16,7 @@
 #include "reports/report_patterns_internal.h"
 #include "reports/report_text.h"
 
+#include <array>
 namespace fpgalsp::reports {
 namespace {
 
@@ -30,12 +31,12 @@ struct PatternEntry {
     std::string_view pattern;
 };
 
-constexpr PatternEntry kPatterns[] = {
+constexpr auto kPatterns = std::to_array<PatternEntry>({
     {kUtilPattern},
     {kIoCountPattern},
     {kLePattern},
     {kGenericCountPattern},
-};
+});
 
 // 等价 line.strip("|").split("|")
 std::vector<std::string_view> SplitPipeCellsRaw(std::string_view line) {
@@ -73,17 +74,15 @@ void SetDefault(std::map<std::string, int>& map, const std::string& key, int val
 namespace detail {
 
 bool ValidateAreaPatterns(std::string* error) {
-    for (const PatternEntry& entry : kPatterns) {
+    return std::ranges::all_of(kPatterns, [error](const PatternEntry& entry) {
         const RE2 probe{std::string(entry.pattern)};
-        if (!probe.ok()) {
-            if (error != nullptr) {
-                *error = "reports/area: bad pattern '" + std::string(entry.pattern) +
-                         "': " + probe.error();
-            }
-            return false;
+        if (probe.ok()) return true;
+        if (error != nullptr) {
+            *error = "reports/area: bad pattern '" + std::string(entry.pattern) +
+                     "': " + probe.error();
         }
-    }
-    return true;
+        return false;
+    });
 }
 
 }  // namespace detail
@@ -180,7 +179,7 @@ std::vector<AreaModule> ParseAreaHierarchy(std::string_view text,
 
     std::size_t start = lines.size();
     for (std::size_t i = 0; i < lines.size(); ++i) {
-        if (lines[i].find("Report Hierarchy Area") != std::string_view::npos) {
+        if (lines[i].contains("Report Hierarchy Area")) {
             start = i;
             break;
         }
@@ -244,7 +243,7 @@ std::vector<AreaModule> ParseAreaHierarchy(std::string_view text,
     // 由 level 栈拼完整层次路径（等价 Python 的 stack = stack[:level] + [name]）
     std::vector<std::string> stack;
     for (AreaModule& row : rows) {
-        const std::size_t level = static_cast<std::size_t>(row.level < 0 ? 0 : row.level);
+        const auto level = static_cast<std::size_t>(row.level < 0 ? 0 : row.level);
         if (stack.size() > level) stack.resize(level);
         stack.push_back(row.name);
         std::string path;
@@ -329,7 +328,7 @@ AreaReport ParseArea(std::string_view text) {
     report.modules = ParseAreaHierarchy(text, report.totals);
 
     if (!saw_utilization) report.warnings.emplace_back("no-utilization-rows");
-    if (text.find("Report Hierarchy Area") == std::string_view::npos) {
+    if (!text.contains("Report Hierarchy Area")) {
         report.warnings.emplace_back("no-hierarchy-table");
     }
     return report;

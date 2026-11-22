@@ -134,8 +134,8 @@ int main(int argc, char** argv) {
     return 2;
   }
   if (file_args.size() > 2) {
-    std::cerr << "format_dump: 只支持一个输入文件（收到 "
-              << (file_args.size() - 1) << " 个）\n";
+    std::cerr << "format_dump: only one input file is supported (got "
+              << (file_args.size() - 1) << ")\n";
     return 2;
   }
 
@@ -195,7 +195,7 @@ int main(int argc, char** argv) {
     if (range_start > 0 && range_end > 0) {
       if (range_start > range_end) {
         std::cerr << "format_dump: --range_start=" << range_start
-                  << " 大于 --range_end=" << range_end << "\n";
+                  << " is greater than --range_end=" << range_end << "\n";
         return 2;
       }
       // 与官方 --lines 完全同形："N-M"
@@ -205,12 +205,12 @@ int main(int argc, char** argv) {
       if (!verible::ParseInclusiveRanges(&lines_to_format,
                                          line_ranges.begin(),
                                          line_ranges.end(), &std::cerr, '-')) {
-        std::cerr << "format_dump: --range 解析失败\n";
+        std::cerr << "format_dump: failed to parse --range\n";
         return 2;
       }
     } else if (range_start != 0 || range_end != 0) {
-      std::cerr << "format_dump: --range_start 与 --range_end 必须同时给出"
-                   "（0 表示格式化整个文件）\n";
+      std::cerr << "format_dump: --range_start and --range_end must be given together"
+                   " (0 means format the whole file)\n";
       return 2;
     }
   }

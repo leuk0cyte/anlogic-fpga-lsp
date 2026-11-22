@@ -53,7 +53,7 @@ struct CableInfo {
     int index = 0;
     std::string device;  // 如 "PH1A100"
 
-    jsonrpc::Json ToJson() const;
+    [[nodiscard]] jsonrpc::Json ToJson() const;
 };
 
 // `list_cable` 输出 -> 电缆列表。空列表 = 没接板子。

@@ -20,6 +20,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <deque>
+#include <format>
 #include <set>
 #include <string>
 #include <unordered_map>
@@ -30,8 +31,8 @@
 
 #include <re2/re2.h>
 
-namespace fpgalsp::constraints {
-namespace adc {
+
+namespace fpgalsp::constraints::adc {
 namespace {
 
 using lsp::Diagnostic;
@@ -122,7 +123,7 @@ lsp::Range RangeOf(const Span& span) { return RangeOf(span.line, span.start, spa
 
 // Python: _whole_line(entry) -> _range(line, 0, len(raw))
 Span WholeLineSpan(const Entry& entry) {
-    return Span{entry.line, 0, static_cast<int>(entry.raw.size())};
+    return Span{.line=entry.line, .start=0, .end=static_cast<int>(entry.raw.size())};
 }
 
 // Python: _in_span(span, character) -> start <= character <= end
@@ -146,7 +147,7 @@ Diagnostic MakeDiag(std::string code, int severity, const Span& span, std::strin
 
 // Python: 诊断最终按 (line, character, code) 排序（稳定排序）
 void SortDiagnostics(std::vector<Diagnostic>& diagnostics) {
-    std::stable_sort(diagnostics.begin(), diagnostics.end(),
+    std::ranges::stable_sort(diagnostics,
                      [](const Diagnostic& a, const Diagnostic& b) {
                          if (a.range.start.line != b.range.start.line) {
                              return a.range.start.line < b.range.start.line;
@@ -176,9 +177,8 @@ std::string JsonToPyStr(const Json& json) {
     if (json.is_number_integer()) return std::to_string(json.get<long long>());
     if (json.is_number_unsigned()) return std::to_string(json.get<unsigned long long>());
     if (json.is_number_float()) {
-        char buffer[40];
-        std::snprintf(buffer, sizeof(buffer), "%g", json.get<double>());
-        return buffer;
+        // 与 snprintf("%g") 逐字节一致：std::format 的 'g' 默认精度同为 6。
+        return std::format("{:g}", json.get<double>());
     }
     if (json.is_null()) return "None";
     return {};
@@ -226,7 +226,7 @@ std::string PortGroupKey(const Entry& entry) {
     if (entry.bit.has_value()) {
         key += std::to_string(*entry.bit);
     } else {
-        key += "-";
+        key += '-';
     }
     return key;
 }
@@ -265,7 +265,7 @@ std::vector<BraceGroup> BraceGroups(std::string_view line) {
                 --depth;
                 if (depth == 0 && content_start >= 0) {
                     groups.push_back(
-                        BraceGroup{content_start - 1, content_start, index, index + 1});
+                        BraceGroup{.brace_start=content_start - 1, .content_start=content_start, .content_end=index, .brace_end=index + 1});
                     content_start = -1;
                 }
             }
@@ -283,7 +283,7 @@ std::string GroupToken(std::string_view line, const BraceGroup& group, int linen
     const size_t lead = segment.size() - text::LStrip(segment).size();
     const int token_start = group.content_start + static_cast<int>(lead);
     const int token_end = token_start + static_cast<int>(trimmed.size());
-    *span = Span{lineno, token_start, token_end};
+    *span = Span{.line=lineno, .start=token_start, .end=token_end};
     return std::string(trimmed);
 }
 
@@ -298,7 +298,7 @@ std::string GroupToken(std::string_view line, const BraceGroup& group, int linen
 //   列号（hover 和诊断都指向属性值）。手写扫描把"不匹配就前进一个字符"的
 //   finditer 语义写清楚，比反推 re2 的下标映射更可靠。
 void ParseAttrs(std::string_view line, const BraceGroup& group, int lineno, Entry* entry) {
-    const size_t content_len = static_cast<size_t>(group.content_end - group.content_start);
+    const auto content_len = static_cast<size_t>(group.content_end - group.content_start);
     const std::string_view segment =
         line.substr(static_cast<size_t>(group.content_start), content_len);
     const int base = group.content_start;
@@ -367,8 +367,8 @@ void ParseAttrs(std::string_view line, const BraceGroup& group, int lineno, Entr
         item.key_upper = key;
         item.value = value;
         item.key_span =
-            Span{lineno, base + static_cast<int>(key_start), base + static_cast<int>(key_end)};
-        item.value_span = Span{lineno, value_start, value_end};
+            Span{.line=lineno, .start=base + static_cast<int>(key_start), .end=base + static_cast<int>(key_end)};
+        item.value_span = Span{.line=lineno, .start=value_start, .end=value_end};
         entry->attr_items.push_back(item);
         // Python: 后者覆盖前者（TD 的顺序解析语义）
         entry->attrs[key] = value;
@@ -573,7 +573,7 @@ std::optional<Entry> ParseLine(std::string_view raw, int line) {
     std::string command;
     int command_end = character;
     {
-        size_t index = static_cast<size_t>(character);
+        auto index = static_cast<size_t>(character);
         while (index < raw.size() && !IsSpace(raw[index])) ++index;
         command.assign(raw.substr(static_cast<size_t>(character),
                                   index - static_cast<size_t>(character)));
@@ -586,8 +586,8 @@ std::optional<Entry> ParseLine(std::string_view raw, int line) {
     entry.character = character;
     entry.raw = std::string(raw);
     entry.command = command;
-    entry.command_span = Span{line, character, command_end};
-    entry.port_span = Span{line, character, command_end};  // Python 的初值
+    entry.command_span = Span{.line=line, .start=character, .end=command_end};
+    entry.port_span = Span{.line=line, .start=character, .end=command_end};  // Python 的初值
 
     const std::vector<BraceGroup> groups = BraceGroups(raw);
     std::vector<BraceGroup> attr_groups;
@@ -601,7 +601,7 @@ std::optional<Entry> ParseLine(std::string_view raw, int line) {
         const std::string_view content =
             raw.substr(static_cast<size_t>(group.content_start),
                        static_cast<size_t>(group.content_end - group.content_start));
-        if (content.find('=') != std::string_view::npos) {
+        if (content.contains('=')) {
             attr_groups.push_back(group);
         } else {
             port = GroupToken(raw, group, line, &entry.port_span);
@@ -657,7 +657,7 @@ CoverageReport Coverage(const std::vector<Entry>& entries, const std::vector<Por
         DuplicatePort duplicate;
         duplicate.port = group.front()->port;
         for (const Entry* entry : group) duplicate.lines.push_back(entry->line);
-        std::sort(duplicate.lines.begin(), duplicate.lines.end());
+        std::ranges::sort(duplicate.lines);
         result.duplicate_ports.push_back(std::move(duplicate));
     }
     for (const auto& group : pin_groups.groups()) {
@@ -669,7 +669,7 @@ CoverageReport Coverage(const std::vector<Entry>& entries, const std::vector<Por
             duplicate.ports.push_back(entry->port);
             duplicate.lines.push_back(entry->line);
         }
-        std::sort(duplicate.lines.begin(), duplicate.lines.end());
+        std::ranges::sort(duplicate.lines);
         result.duplicate_pins.push_back(std::move(duplicate));
     }
 
@@ -695,7 +695,7 @@ CoverageReport Coverage(const std::vector<Entry>& entries, const std::vector<Por
         if (is_bus) {
             present.reserve(valid_bits.size());
             for (const int bit : bits) {
-                if (valid_bits.find(bit) != valid_bits.end()) present.push_back(bit);
+                if (valid_bits.contains(bit)) present.push_back(bit);
             }
         }
 
@@ -707,7 +707,7 @@ CoverageReport Coverage(const std::vector<Entry>& entries, const std::vector<Por
 
             std::vector<int> missing;
             for (const int bit : bits) {
-                if (std::find(present.begin(), present.end(), bit) == present.end()) {
+                if (std::ranges::find(present, bit) == present.end()) {
                     missing.push_back(bit);
                 }
             }
@@ -727,7 +727,7 @@ CoverageReport Coverage(const std::vector<Entry>& entries, const std::vector<Por
     // ---- 顶层模块里不存在的端口（按条目顺序） ----
     for (const Entry& entry : entries) {
         if (entry.base.empty()) continue;
-        if (ordered.by_name.find(entry.base) == ordered.by_name.end()) {
+        if (!ordered.by_name.contains(entry.base)) {
             result.extra_ports.push_back(entry);
         }
     }
@@ -778,7 +778,7 @@ std::vector<Diagnostic> Diagnostics(const std::vector<Entry>& entries,
         std::unordered_set<std::string> seen;
         for (const AttrItem& item : entry.attr_items) {
             const std::string key = item.key_upper.empty() ? item.key : item.key_upper;
-            if (seen.find(key) != seen.end()) {
+            if (seen.contains(key)) {
                 result.push_back(MakeDiag("ADC-ATTR", kWarning, item.value_span,
                                           "Duplicate attribute " + key +
                                               "; later values override earlier ones"));
@@ -817,7 +817,7 @@ std::vector<Diagnostic> Diagnostics(const std::vector<Entry>& entries,
                     result.push_back(MakeDiag("USR-8052", kError, port_range,
                                               "Scalar port " + entry.base +
                                                   " must not have a bit index"));
-                } else if (std::find(bits.begin(), bits.end(), *entry.bit) == bits.end()) {
+                } else if (std::ranges::find(bits, *entry.bit) == bits.end()) {
                     result.push_back(MakeDiag("USR-8052", kError, port_range,
                                               "Port bit " + entry.port +
                                                   " is outside the range of " + entry.base));
@@ -955,21 +955,22 @@ std::optional<Diagnostic> CoverageDiagnostic(const CoverageReport& coverage,
     }
 
     const double percent = 100.0 * coverage.constrained_bits / coverage.total_bits;
-    char buffer[64];
-    std::snprintf(buffer, sizeof(buffer), "%.1f", percent);
+    // 与 snprintf("%.1f") 逐字节一致
+    const std::string percent_text = std::format("{:.1f}", percent);
 
     std::string message = "ADC coverage: " + std::to_string(coverage.constrained_bits) + "/" +
-                          std::to_string(coverage.total_bits) + " bits constrained (" + buffer +
-                          "%)";
+                          std::to_string(coverage.total_bits) + " bits constrained (" +
+                          percent_text + "%)";
 
     // 只列前 8 项：消息要能一眼看完，这是"不许刷屏"这条原则的延伸。
     constexpr size_t kMaxListed = 8;
     std::vector<std::string> items;
-    for (const std::string& name : coverage.unconstrained_ports) {
+    items.reserve(coverage.unconstrained_ports.size());
+for (const std::string& name : coverage.unconstrained_ports) {
         items.push_back(name);
     }
     for (const auto& [name, bits] : coverage.missing) {
-        if (std::find(coverage.unconstrained_ports.begin(), coverage.unconstrained_ports.end(),
+        if (std::ranges::find(coverage.unconstrained_ports,
                       name) != coverage.unconstrained_ports.end()) {
             continue;
         }
@@ -1015,7 +1016,7 @@ std::optional<CursorContext> Context(std::string_view text, int line, int charac
 
     // Python: if _in_span(command_span, character) or character <= command_span["end"]
     if (InSpan(entry->command_span, character) || character <= entry->command_span.end) {
-        return CursorContext{"command", entry->command_span};
+        return CursorContext{.kind="command", .span=entry->command_span};
     }
 
     const std::vector<BraceGroup> groups = BraceGroups(raw);
@@ -1028,7 +1029,7 @@ std::optional<CursorContext> Context(std::string_view text, int line, int charac
         const std::string_view content =
             raw.substr(static_cast<size_t>(groups[0].content_start),
                        static_cast<size_t>(groups[0].content_end - groups[0].content_start));
-        if (content.find('=') != std::string_view::npos) {
+        if (content.contains('=')) {
             attr_group = &groups[0];
         } else {
             port_group = &groups[0];
@@ -1045,7 +1046,7 @@ std::optional<CursorContext> Context(std::string_view text, int line, int charac
             raw.substr(static_cast<size_t>(span.start), entry->base.size()) == entry->base) {
             span.end = span.start + static_cast<int>(entry->base.size());
         }
-        return CursorContext{"port", span};
+        return CursorContext{.kind="port", .span=span};
     }
 
     const auto value_kind = [](const std::string& key) -> const char* {
@@ -1058,10 +1059,10 @@ std::optional<CursorContext> Context(std::string_view text, int line, int charac
     for (const AttrItem& item : entry->attr_items) {
         const std::string key = item.key_upper.empty() ? UpperAscii(item.key) : item.key_upper;
         if (InSpan(item.value_span, character)) {
-            if (const char* kind = value_kind(key)) return CursorContext{kind, item.value_span};
+            if (const char* kind = value_kind(key)) return CursorContext{.kind=kind, .span=item.value_span};
             return std::nullopt;
         }
-        if (InSpan(item.key_span, character)) return CursorContext{"attr_key", item.key_span};
+        if (InSpan(item.key_span, character)) return CursorContext{.kind="attr_key", .span=item.key_span};
     }
 
     (void)attr_group;
@@ -1123,8 +1124,8 @@ std::optional<Word> WordAt(std::string_view text, int line, int character) {
         // Python: start <= character <= end（end 是半开右端，但比较用闭区间）
         if (match_start <= static_cast<size_t>(character) &&
             static_cast<size_t>(character) <= match_end) {
-            return Word{std::string(raw.substr(match_start, match_end - match_start)), line,
-                        static_cast<int>(match_start), static_cast<int>(match_end)};
+            return Word{.word=std::string(raw.substr(match_start, match_end - match_start)), .line=line,
+                        .start=static_cast<int>(match_start), .end=static_cast<int>(match_end),};
         }
         position = match_end;
     }
@@ -1303,9 +1304,9 @@ std::string AttributesMarkdown(const Entry& entry) {
 #include "constraints/data/adc_io.inc"
 
 // Python: ADC_ATTRS（attribute-key 补全的候选；顺序原样）
-constexpr std::string_view kAdcAttrs[] = {
+constexpr auto kAdcAttrs = std::to_array<std::string_view>({
     "LOCATION", "IOSTANDARD", "PULLTYPE", "SLEWRATE", "DRIVE", "IN_TERM", "OUT_TERM",
-};
+});
 
 // LSP CompletionItemKind
 constexpr int kKindFunction = 3;   // Method/Function
@@ -1424,7 +1425,7 @@ Json Completion(std::string_view text, int line, int character, const std::vecto
             const int width = port.width.value_or(1);
             const std::string direction = port.direction.empty() ? "?" : port.direction;
             if (width <= 1) {
-                if (coverage.covered.find(port.name) != coverage.covered.end()) continue;
+                if (coverage.covered.contains(port.name)) continue;
                 items.push_back(CompletionItemJson(
                     port.name, kKindField, direction + " · " + std::to_string(width) + " bit"));
                 continue;
@@ -1434,7 +1435,7 @@ Json Completion(std::string_view text, int line, int character, const std::vecto
             const std::vector<int>& have = covered == coverage.covered.end() ? empty
                                                                             : covered->second;
             for (int bit = 0; bit < width; ++bit) {
-                if (std::find(have.begin(), have.end(), bit) != have.end()) continue;
+                if (std::ranges::find(have, bit) != have.end()) continue;
                 items.push_back(CompletionItemJson(
                     port.name + "[" + std::to_string(bit) + "]", kKindField,
                     direction + " · [" + std::to_string(width - 1) + ":0] · unconstrained"));
@@ -1465,5 +1466,4 @@ Json Completion(std::string_view text, int line, int character, const std::vecto
     return result;
 }
 
-}  // namespace adc
-}  // namespace fpgalsp::constraints
+} // namespace fpgalsp::constraints::adc

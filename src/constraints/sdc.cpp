@@ -33,8 +33,8 @@
 
 #include <re2/re2.h>
 
-namespace fpgalsp::constraints {
-namespace sdc {
+
+namespace fpgalsp::constraints::sdc {
 namespace {
 
 using lsp::Diagnostic;
@@ -82,39 +82,39 @@ using OptionSet = std::set<std::string>;
 const std::map<std::string, OptionSet>& CommandOptions() {
     static const std::map<std::string, OptionSet> options = {
         {"create_clock",
-         {"-name", "-period", "-waveform", "-add", "-comment"}},
+         {"-name", "-period", "-waveform", "-add", "-comment"},},
         {"create_generated_clock",
          {"-name", "-source", "-master_clock", "-divide_by", "-multiply_by", "-edges",
-          "-edge_shift", "-duty_cycle", "-invert", "-add", "-comment"}},
+          "-edge_shift", "-duty_cycle", "-invert", "-add", "-comment",},},
         {"derive_pll_clocks", {"-create_base_clock", "-include_generated_clocks"}},
         {"set_input_delay",
          {"-clock", "-clock_fall", "-reference_pin", "-rise", "-fall", "-max", "-min",
-          "-add_delay", "-source_latency_included", "-network_latency_included", "-comment"}},
+          "-add_delay", "-source_latency_included", "-network_latency_included", "-comment",},},
         {"set_output_delay",
          {"-clock", "-clock_fall", "-reference_pin", "-rise", "-fall", "-max", "-min",
-          "-add_delay", "-source_latency_included", "-network_latency_included", "-comment"}},
+          "-add_delay", "-source_latency_included", "-network_latency_included", "-comment",},},
         {"set_false_path",
          {"-from", "-to", "-through", "-rise_from", "-fall_from", "-rise_to", "-fall_to",
-          "-setup", "-hold", "-comment", "-reset_path"}},
+          "-setup", "-hold", "-comment", "-reset_path",},},
         {"set_max_delay",
          {"-from", "-to", "-through", "-rise_from", "-fall_from", "-rise_to", "-fall_to",
           "-rise", "-fall", "-setup", "-hold", "-datapath_only", "-ignore_clock_latency",
-          "-comment", "-reset_path"}},
+          "-comment", "-reset_path",},},
         {"set_min_delay",
          {"-from", "-to", "-through", "-rise_from", "-fall_from", "-rise_to", "-fall_to",
-          "-comment", "-reset_path"}},
+          "-comment", "-reset_path",},},
         {"set_multicycle_path",
          {"-setup", "-hold", "-from", "-to", "-through", "-rise_from", "-fall_from",
-          "-rise_to", "-fall_to", "-start", "-end", "-comment", "-reset_path"}},
+          "-rise_to", "-fall_to", "-start", "-end", "-comment", "-reset_path",},},
         {"set_clock_groups",
          {"-asynchronous", "-synchronous", "-physically_exclusive", "-logically_exclusive",
-          "-group", "-name", "-comment"}},
+          "-group", "-name", "-comment",},},
         {"set_clock_uncertainty",
          {"-setup", "-hold", "-from", "-to", "-rise_from", "-fall_from", "-rise_to",
-          "-fall_to", "-rise", "-fall", "-comment"}},
+          "-fall_to", "-rise", "-fall", "-comment",},},
         {"set_clock_latency",
          {"-source", "-rise", "-fall", "-min", "-max", "-early", "-late", "-clock",
-          "-comment"}},
+          "-comment",},},
         {"set_clock_transition", {"-rise", "-fall", "-min", "-max", "-comment"}},
         {"set_propagated_clock", {"-comment"}},
         {"set_disable_timing", {"-from", "-to", "-comment"}},
@@ -175,7 +175,7 @@ Diagnostic MakeDiag(std::string code, int severity, const lsp::Range& range, std
 }
 
 void SortDiagnostics(std::vector<Diagnostic>& diagnostics) {
-    std::stable_sort(diagnostics.begin(), diagnostics.end(),
+    std::ranges::stable_sort(diagnostics,
                      [](const Diagnostic& a, const Diagnostic& b) {
                          if (a.range.start.line != b.range.start.line) {
                              return a.range.start.line < b.range.start.line;
@@ -205,7 +205,7 @@ Span SmallSpan(const Token& token) {
     }
     const size_t lead = payload.size() - LStrip(payload).size();
     const size_t tail = RStrip(payload).size();
-    return Span{0, start + static_cast<int>(lead), start + static_cast<int>(tail)};
+    return Span{.line=0, .start=start + static_cast<int>(lead), .end=start + static_cast<int>(tail)};
 }
 
 // Python: _subword_span —— 载荷内被空白分隔的、光标所在的那个词
@@ -226,7 +226,7 @@ std::optional<Span> SubwordSpan(const Token& token, int character) {
         const int span_start = start + static_cast<int>(begin);
         const int span_end = start + static_cast<int>(index);
         if (span_start <= character && character <= span_end) {
-            return Span{0, span_start, span_end};
+            return Span{.line=0, .start=span_start, .end=span_end};
         }
     }
     return std::nullopt;
@@ -315,12 +315,12 @@ TokenizeResult Tokenize(std::string_view text, int offset) {
             continue;
         }
         if (ch == '}') {
-            result.errors.push_back({offset + static_cast<int>(index), "Unmatched '}'"});
+            result.errors.push_back({.character=offset + static_cast<int>(index), .message="Unmatched '}'"});
             ++index;
             continue;
         }
         if (ch == ']') {
-            result.errors.push_back({offset + static_cast<int>(index), "Unmatched ']'"});
+            result.errors.push_back({.character=offset + static_cast<int>(index), .message="Unmatched ']'"});
             ++index;
             continue;
         }
@@ -356,7 +356,7 @@ TokenizeResult Tokenize(std::string_view text, int offset) {
                 token.inner_end = offset + static_cast<int>(cursor);
                 index = cursor + 1;
             } else {
-                result.errors.push_back({offset + static_cast<int>(index), "Unclosed '{'"});
+                result.errors.push_back({.character=offset + static_cast<int>(index), .message="Unclosed '{'"});
                 token.text = slice(index, length);
                 token.inner_text = slice(index + 1, length);
                 token.start = offset + static_cast<int>(index);
@@ -415,7 +415,7 @@ TokenizeResult Tokenize(std::string_view text, int offset) {
                 token.inner_end = offset + static_cast<int>(cursor);
                 index = cursor + 1;
             } else {
-                result.errors.push_back({offset + static_cast<int>(index), "Unclosed '['"});
+                result.errors.push_back({.character=offset + static_cast<int>(index), .message="Unclosed '['"});
                 token.text = slice(index, length);
                 token.inner_text = slice(index + 1, length);
                 token.start = offset + static_cast<int>(index);
@@ -524,7 +524,7 @@ std::vector<LogicalLine> LogicalLines(std::string_view text) {
                 break;
             }
         }
-        out.push_back(LogicalLine{static_cast<int>(start), std::move(buffer)});
+        out.push_back(LogicalLine{.line=static_cast<int>(start), .text=std::move(buffer)});
         ++index;
     }
     return out;
@@ -607,12 +607,12 @@ Command MakeCommand(const std::vector<Token>& tokens, int line, const std::strin
         const Token& first = tokens.front();
         command.command = TokText(first);
         command.command_span =
-            Span{line, first.start, first.end};
+            Span{.line=line, .start=first.start, .end=first.end};
         command.arg_tokens.assign(tokens.begin() + 1, tokens.end());
         command.args.reserve(command.arg_tokens.size());
         for (const Token& token : command.arg_tokens) command.args.push_back(TokText(token));
     } else {
-        command.command_span = Span{line, 0, 0};
+        command.command_span = Span{.line=line, .start=0, .end=0};
     }
     return command;
 }
@@ -644,7 +644,7 @@ std::vector<Command> Parse(std::string_view text) {
                 Command synthetic;
                 synthetic.line = logical.line;
                 synthetic.raw = stripped;
-                synthetic.command_span = Span{logical.line, 0, 0};
+                synthetic.command_span = Span{.line=logical.line, .start=0, .end=0};
                 commands.push_back(std::move(synthetic));
                 target_index = static_cast<int>(commands.size()) - 1;
                 added.push_back(static_cast<size_t>(target_index));
@@ -701,7 +701,7 @@ Command WithTokens(Command command) {
         const size_t found = raw.find(command.command);
         const int start = (found == std::string::npos) ? 0 : static_cast<int>(found);
         command.command_span =
-            Span{line, start, start + static_cast<int>(command.command.size())};
+            Span{.line=line, .start=start, .end=start + static_cast<int>(command.command.size())};
     }
     return command;
 }
@@ -767,12 +767,12 @@ void PatternsFrom(const std::vector<Token>& tokens, size_t start_index,
                 if (cursor >= inner.size()) break;
                 const size_t begin = cursor;
                 while (cursor < inner.size() && !IsSpace(inner[cursor])) ++cursor;
-                out->push_back(PortPattern{inner.substr(begin, cursor - begin),
-                                           base + static_cast<int>(begin),
-                                           base + static_cast<int>(cursor)});
+                out->push_back(PortPattern{.pattern=inner.substr(begin, cursor - begin),
+                                           .start=base + static_cast<int>(begin),
+                                           .end=base + static_cast<int>(cursor),});
             }
         } else if (token.kind == TokenKind::kWord) {
-            out->push_back(PortPattern{text, token.start, token.end});
+            out->push_back(PortPattern{.pattern=text, .start=token.start, .end=token.end});
         }
     }
 }
@@ -830,7 +830,7 @@ std::optional<bool> ValidPortPattern(std::string_view pattern, const PortLookup&
     const std::string text(StripQuotes(Strip(pattern)));
     if (text.empty()) return std::nullopt;
 
-    if (text.find('[') != std::string::npos) {
+    if (text.contains('[')) {
         const size_t bracket = text.find('[');
         const std::string base(Strip(std::string_view(text).substr(0, bracket)));
         const std::string rest = text.substr(bracket + 1);
@@ -844,7 +844,7 @@ std::optional<bool> ValidPortPattern(std::string_view pattern, const PortLookup&
 
         const std::vector<int> bits = PortBits(*port);
         const auto contains = [&bits](int bit) {
-            return std::find(bits.begin(), bits.end(), bit) != bits.end();
+            return std::ranges::find(bits, bit) != bits.end();
         };
 
         {
@@ -872,7 +872,7 @@ std::optional<bool> ValidPortPattern(std::string_view pattern, const PortLookup&
         return std::nullopt;  // 位选择写法不认识 -> 不判断
     }
 
-    if (text.find('*') != std::string::npos || text.find('?') != std::string::npos) {
+    if (text.contains('*') || text.contains('?')) {
         // Python: re.escape(text).replace("\\*", ".*").replace("\\?", ".")
         // 即：除通配符外全部字面转义
         std::string regex;
@@ -880,7 +880,7 @@ std::optional<bool> ValidPortPattern(std::string_view pattern, const PortLookup&
             if (c == '*') {
                 regex += ".*";
             } else if (c == '?') {
-                regex += ".";
+                regex += '.';
             } else {
                 regex += re2::RE2::QuoteMeta(std::string(1, c));
             }
@@ -893,10 +893,10 @@ std::optional<bool> ValidPortPattern(std::string_view pattern, const PortLookup&
         return false;
     }
 
-    if (text.find('$') != std::string::npos || text.find('(') != std::string::npos) {
+    if (text.contains('$') || text.contains('(')) {
         return std::nullopt;  // 变量替换 / 表达式：不判断
     }
-    return lookup.find(text) != lookup.end();
+    return lookup.contains(text);
 }
 
 bool IsOptionToken(const std::string& text) {
@@ -937,7 +937,7 @@ std::vector<Diagnostic> Diagnostics(const std::vector<Command>& commands,
             clock_present = true;
 
         // ---- 未知命令（只有调用方给了 known_commands 才判断）----
-        if (known_commands != nullptr && known_commands->find(name) == known_commands->end()) {
+        if (known_commands != nullptr && !known_commands->contains(name)) {
             result.push_back(
                 MakeDiag("SDC-CMD", kWarning, CommandRange(command), "Unknown SDC command " + name));
         }
@@ -946,10 +946,10 @@ std::vector<Diagnostic> Diagnostics(const std::vector<Command>& commands,
         if (const std::set<std::string>* options = OptionsFor(name)) {
             for (const Token& token : command.arg_tokens) {
                 const std::string text = TokText(token);
-                if (IsOptionToken(text) && options->find(text) == options->end()) {
-                    result.push_back(MakeDiag("SDC-OPT", kInfo, TokenRange(command, &token),
-                                              "Command " + name + " does not support option " +
-                                                  text));
+                if (IsOptionToken(text) && !options->contains(text)) {
+                    result.push_back(MakeDiag(
+                        "SDC-OPT", kInfo, TokenRange(command, &token),
+                        std::format("Command {} does not support option {}", name, text)));
                 }
             }
         }
@@ -1039,8 +1039,8 @@ std::vector<Diagnostic> UndefinedClockDiagnostics(const std::vector<Command>& co
                ")";
     };
     const auto looks_like_pattern = [](std::string_view name) {
-        return name.find('*') != std::string_view::npos ||
-               name.find('?') != std::string_view::npos;
+        return name.contains('*') ||
+               name.contains('?');
     };
 
     for (const Command& command : commands) {
@@ -1053,7 +1053,7 @@ std::vector<Diagnostic> UndefinedClockDiagnostics(const std::vector<Command>& co
             if (token.kind == TokenKind::kBracket) continue;  // [get_clocks {...}] 走下面
             const std::string name(Strip(TokText(token)));
             if (name.empty() || looks_like_pattern(name)) continue;
-            if (defined.find(name) != defined.end()) continue;
+            if (defined.contains(name)) continue;
             const Span span = SmallSpan(token);
             result.push_back(MakeDiag("SDC-CLOCK", kWarning,
                                       RangeOf(command.line, span.start, span.end),
@@ -1065,10 +1065,10 @@ std::vector<Diagnostic> UndefinedClockDiagnostics(const std::vector<Command>& co
         for (const PortPattern& pattern : patterns) {
             const std::string name(Strip(pattern.pattern));
             if (name.empty() || looks_like_pattern(name) ||
-                name.find('[') != std::string::npos) {
+                name.contains('[')) {
                 continue;
             }
-            if (defined.find(name) != defined.end()) continue;
+            if (defined.contains(name)) continue;
             result.push_back(MakeDiag("SDC-CLOCK", kWarning,
                                       RangeOf(command.line, pattern.start, pattern.end),
                                       describe(name)));
@@ -1127,16 +1127,16 @@ CursorContext PortContext(int line, const Token& token, int character) {
 
     const std::string text = TokText(token);
     const std::string_view prefix = text::LeadingIdentifier(text);
-    if (!prefix.empty() && text.find('[') != std::string::npos) {
+    if (!prefix.empty() && text.contains('[')) {
         const int length = static_cast<int>(prefix.size());
         // 语义上的端口是基名（`pwmG`），不是位选择（`pwmG[3:0]`）
         if (sub->start + length <= sub->end) {
-            sub = Span{line, sub->start, sub->start + length};
+            sub = Span{.line=line, .start=sub->start, .end=sub->start + length};
         }
     }
     CursorContext context;
     context.kind = "port";
-    context.span = Span{line, sub->start, sub->end};
+    context.span = Span{.line=line, .start=sub->start, .end=sub->end};
     return context;
 }
 
@@ -1145,7 +1145,7 @@ CursorContext ClockNameContext(int line, const Token& token, int character) {
     context.kind = "clock_name";
     std::optional<Span> sub = SubwordSpan(token, character);
     if (!sub.has_value()) sub = SmallSpan(token);
-    context.span = Span{line, sub->start, sub->end};
+    context.span = Span{.line=line, .start=sub->start, .end=sub->end};
     return context;
 }
 
@@ -1164,7 +1164,7 @@ std::optional<CursorContext> Context(std::string_view text, int line, int charac
     if (first.start <= character && character <= first.end) {
         CursorContext context;
         context.kind = "command";
-        context.span = Span{line, first.start, first.end};
+        context.span = Span{.line=line, .start=first.start, .end=first.end};
         return context;
     }
 
@@ -1183,14 +1183,14 @@ std::optional<CursorContext> Context(std::string_view text, int line, int charac
             if (text_value == "get_ports") {
                 CursorContext context;
                 context.kind = "command";
-                context.span = Span{line, token.start, token.end};
+                context.span = Span{.line=line, .start=token.start, .end=token.end};
                 return context;
             }
             if (token.kind == TokenKind::kWord && !text_value.empty() &&
                 text_value.front() == '-') {
                 CursorContext context;
                 context.kind = "option";
-                context.span = Span{line, token.start, token.end};
+                context.span = Span{.line=line, .start=token.start, .end=token.end};
                 context.command = TokText(first);
                 return context;
             }
@@ -1230,7 +1230,7 @@ std::vector<std::string> DefinedClockNames(std::string_view text) {
         if (rest.size() >= before) break;  // 防止零长匹配导致死循环
         const std::string name(captured.data(), captured.size());
         if (name.empty()) continue;
-        if (std::find(names.begin(), names.end(), name) == names.end()) names.push_back(name);
+        if (std::ranges::find(names, name) == names.end()) names.push_back(name);
     }
     return names;
 }
@@ -1256,15 +1256,15 @@ std::vector<CompletionItem> Completion(std::string_view text, int line, int char
         }
         for (const std::string& name : known_commands) {
             const std::string lowered = LowerAscii(name);
-            if (!prefix.empty() && lowered.rfind(prefix, 0) != 0) continue;
-            items.push_back(CompletionItem{name, "SDC command", "command"});
+            if (!prefix.empty() && !lowered.starts_with(prefix)) continue;
+            items.push_back(CompletionItem{.label=name, .detail="SDC command", .kind="command"});
         }
         return items;
     }
 
     if (context->kind == "clock_name") {
         for (const std::string& name : DefinedClockNames(text)) {
-            items.push_back(CompletionItem{name, "clock", "clock"});
+            items.push_back(CompletionItem{.label=name, .detail="clock", .kind="clock"});
         }
         return items;
     }
@@ -1278,7 +1278,7 @@ std::vector<CompletionItem> Completion(std::string_view text, int line, int char
             const std::string detail =
                 std::format("{} · {} bit", port.direction.empty() ? "?" : port.direction.c_str(),
                             port.width.value_or(1));
-            items.push_back(CompletionItem{port.name, detail, "port"});
+            items.push_back(CompletionItem{.label=port.name, .detail=detail, .kind="port"});
         }
         return items;
     }
@@ -1286,7 +1286,7 @@ std::vector<CompletionItem> Completion(std::string_view text, int line, int char
     if (context->kind == "option") {
         if (const std::set<std::string>* options = OptionsFor(context->command)) {
             for (const std::string& option : *options) {
-                items.push_back(CompletionItem{option, context->command, "option"});
+                items.push_back(CompletionItem{.label=option, .detail=context->command, .kind="option"});
             }
         }
         return items;
@@ -1305,8 +1305,8 @@ namespace {
 }  // namespace
 
 std::span<const CommandUsage> CommandUsages() {
-    return std::span<const CommandUsage>(kSdcCommandUsages,
-                                         std::size(kSdcCommandUsages));
+    return {kSdcCommandUsages,
+                                         std::size(kSdcCommandUsages)};
 }
 
 // =============================================================================
@@ -1393,7 +1393,7 @@ Json DocumentSymbols(std::string_view text) {
         const int line = command.line;
         std::string detail;
         for (std::size_t i = 0; i < command.args.size(); ++i) {
-            if (i != 0) detail += " ";
+            if (i != 0) detail += ' ';
             detail += command.args[i];
         }
         if (detail.size() > 60) detail.resize(60);  // Python: `" ".join(args)[:60]`
@@ -1470,7 +1470,7 @@ Json LspCompletion(std::string_view text, int line, int character,
         if (!leading.empty()) prefix = LowerAscii(leading);
         for (const CommandUsage& row_entry : CommandUsages()) {
             const std::string name(row_entry.name);
-            if (!prefix.empty() && name.rfind(prefix, 0) != 0) continue;
+            if (!prefix.empty() && !name.starts_with(prefix)) continue;
             items.push_back(
                 CompletionItemJson(name, kKindFunction, TruncatedUsage(row_entry.usage)));
         }
@@ -1594,5 +1594,5 @@ Json ToJson(const std::vector<Command>& commands) {
     return json;
 }
 
-}  // namespace sdc
-}  // namespace fpgalsp::constraints
+} // namespace fpgalsp::constraints::sdc
+

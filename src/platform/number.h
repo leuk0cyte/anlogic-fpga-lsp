@@ -63,18 +63,18 @@ constexpr std::string_view IntTypeName() noexcept {
     } else if constexpr (std::is_same_v<T, unsigned long long>) {
         return "unsigned long long";
     } else {
-        return "整数类型";
+        return "integer";
     }
 }
 
 }  // namespace detail
 
 // 严格解析十进制整数（可带正负号；**不接受**前后空白、不接受 0x 前缀、不接受
-// 除数字外的任何字符）。成功返回 T；失败返回可直接展示的中文原因。
+// 除数字外的任何字符）。成功返回 T；失败返回可直接展示的原因。
 //
 //   ParseDecimal<int>("-42")        -> -42
-//   ParseDecimal<int>("abc")        -> unexpected("不是整数: 'abc'")
-//   ParseDecimal<uint16_t>("70000") -> unexpected("超出 unsigned short 范围: '70000'")
+//   ParseDecimal<int>("abc")        -> unexpected("not an integer: 'abc'")
+//   ParseDecimal<uint16_t>("70000") -> unexpected("out of range for unsigned short: '70000'")
 //   ParseDecimal<unsigned short>("-1") -> unexpected(...)（负号对无符号非法）
 template <std::integral T>
 [[nodiscard]] std::expected<T, std::string> ParseDecimal(std::string_view text) {
@@ -84,10 +84,10 @@ template <std::integral T>
     const auto [ptr, ec] = std::from_chars(begin, end, value);
     if (ec == std::errc::result_out_of_range) {
         return std::unexpected(
-            std::format("超出 {} 范围: '{}'", detail::IntTypeName<T>(), text));
+            std::format("out of range for {}: '{}'", detail::IntTypeName<T>(), text));
     }
     if (ec != std::errc{} || ptr != end) {
-        return std::unexpected(std::format("不是整数: '{}'", text));
+        return std::unexpected(std::format("not an integer: '{}'", text));
     }
     return value;
 }

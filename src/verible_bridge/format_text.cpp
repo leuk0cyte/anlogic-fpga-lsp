@@ -107,12 +107,12 @@ enum class ApplyOutcome {
 
 ApplyOutcome SetInt(const ParsedFlag& flag, int* field, std::string* error) {
     if (!flag.has_value) {
-        *error = "--" + flag.name + " 需要一个整数取值（形如 --" + flag.name + "=160）";
+        *error = "--" + flag.name + " requires an integer value (e.g. --" + flag.name + "=160)";
         return ApplyOutcome::kInvalid;
     }
     int parsed = 0;
     if (!ParseIntValue(flag.value, &parsed)) {
-        *error = "--" + flag.name + "=" + flag.value + " 不是合法整数";
+        *error = "--" + flag.name + "=" + flag.value + " is not a valid integer";
         return ApplyOutcome::kInvalid;
     }
     *field = parsed;
@@ -126,7 +126,7 @@ ApplyOutcome SetBool(const ParsedFlag& flag, bool* field, std::string* error) {
     }
     bool parsed = false;
     if (!ParseBoolValue(flag.value, &parsed)) {
-        *error = "--" + flag.name + "=" + flag.value + " 不是合法布尔值（true/false）";
+        *error = "--" + flag.name + "=" + flag.value + " is not a valid boolean (true/false)";
         return ApplyOutcome::kInvalid;
     }
     *field = parsed;
@@ -182,7 +182,7 @@ ApplyOutcome OverlayStyleFlag(const ParsedFlag& flag, fmt::FormatStyle* style,
         verible::AlignmentPolicy parsed{};
         std::string parse_error;
         if (!verible::AbslParseFlag(flag.value, &parsed, &parse_error)) {
-            *error = "--" + name + "=" + flag.value + " 非法：" + parse_error;
+            *error = "--" + name + "=" + flag.value + " is invalid: " + parse_error;
             return ApplyOutcome::kInvalid;
         }
         *field = parsed;
@@ -192,7 +192,7 @@ ApplyOutcome OverlayStyleFlag(const ParsedFlag& flag, fmt::FormatStyle* style,
         verible::IndentationStyle parsed{};
         std::string parse_error;
         if (!verible::AbslParseFlag(flag.value, &parsed, &parse_error)) {
-            *error = "--" + name + "=" + flag.value + " 非法：" + parse_error;
+            *error = "--" + name + "=" + flag.value + " is invalid: " + parse_error;
             return ApplyOutcome::kInvalid;
         }
         *field = parsed;
@@ -249,7 +249,7 @@ ApplyOutcome OverlayStyleFlag(const ParsedFlag& flag, fmt::FormatStyle* style,
         fmt::AlignmentGroupBoundary parsed{};
         std::string parse_error;
         if (!fmt::AbslParseFlag(flag.value, &parsed, &parse_error)) {
-            *error = "--" + name + "=" + flag.value + " 非法：" + parse_error;
+            *error = "--" + name + "=" + flag.value + " is invalid: " + parse_error;
             return ApplyOutcome::kInvalid;
         }
         style->alignment_group_boundary = parsed;
@@ -260,7 +260,7 @@ ApplyOutcome OverlayStyleFlag(const ParsedFlag& flag, fmt::FormatStyle* style,
         verible::LineTerminatorOptionStyle parsed{};
         std::string parse_error;
         if (!verible::AbslParseFlag(flag.value, &parsed, &parse_error)) {
-            *error = "--" + name + "=" + flag.value + " 非法：" + parse_error;
+            *error = "--" + name + "=" + flag.value + " is invalid: " + parse_error;
             return ApplyOutcome::kInvalid;
         }
         style->line_terminator = parsed;

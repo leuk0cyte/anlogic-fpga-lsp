@@ -30,9 +30,7 @@ std::string AddPythonStyleSpaces(const std::string& compact) {
     bool in_string = false;
     bool escaped = false;
 
-    for (std::size_t i = 0; i < compact.size(); ++i) {
-        const char c = compact[i];
-
+    for (char c : compact) {
         if (in_string) {
             out.push_back(c);
             if (escaped) {
@@ -257,7 +255,7 @@ std::string Serialize(const Json& value, bool compact) {
         }
         return out;
     } catch (...) {
-        return std::string("{}");
+        return {"{}"};
     }
 }
 

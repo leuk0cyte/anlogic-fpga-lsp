@@ -62,10 +62,10 @@ public:
     void Register(std::string method, Handler handler);
 
     // 是否已注册
-    bool Has(std::string_view method) const;
+    [[nodiscard]] bool Has(std::string_view method) const;
 
     // 已注册方法名（测试与 tools/list 用）
-    std::vector<std::string> Methods() const;
+    [[nodiscard]] std::vector<std::string> Methods() const;
 
     // 设置一个「未知方法」的回退 handler（MCP 需要返回 tools/list 等固定集合时用）。
     void SetFallback(Handler handler);
@@ -78,7 +78,7 @@ public:
     // 直接调用已注册的 handler（不写 transport、不捕获异常）。
     // 供异步调度器在 worker 线程里复用同一份 handler 表。
     // 方法未注册时返回 nullopt；异常原样抛出，由调用方转 JSON-RPC error。
-    std::optional<HandlerResult> Invoke(std::string_view method, const Json& params) const;
+    [[nodiscard]] std::optional<HandlerResult> Invoke(std::string_view method, const Json& params) const;
 
     // 处理一条无法解析的帧：回 -32700 ParseError（id 为 null）。
     void SendParseError(std::string_view detail = {});
