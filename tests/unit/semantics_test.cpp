@@ -836,6 +836,219 @@ TEST(SemanticsIncremental, EmptyAndNullIndexMatchFullPipeline) {
 }
 
 // =============================================================================
+// =============================================================================
+// 13. task-49：**行数变化**（回车/粘贴/跨行删除）也走增量（行号平移）
+// =============================================================================
+// 覆盖 7 种形态，每种 150 次随机编辑（固定种子）。每次编辑后按**新文本重建索引**
+// （模拟真实服务端 didChange -> IndexService 重解析）+ generation++，断言
+// `cached == 全量 SemanticTokens(...)`（逐 token + EncodeTokens 逐整数），并断言
+// 增量确实命中（incremental > 0，不是全靠回退）。
+// =============================================================================
+namespace {
+
+enum class LineEditKind {
+    kInsertLine,              // 纯插入 1 行
+    kDeleteLine,              // 纯删除 1 行
+    kPasteLines,              // 粘贴多行
+    kCrossLineDelete,         // 跨行删除（2-3 行）
+    kEnterInBlockComment,     // 块注释中间回车
+    kEnterInString,           // 字符串中间回车
+    kEnterAfterContinuation,  // 行尾 '\' 续行后回车
+};
+
+std::string LineShiftFixture() {
+    return "module leaf (\n"
+           "  input  wire clk,\n"
+           "  input  wire rst_n,\n"
+           "  output reg  q\n"
+           ");\n"
+           "  /* 多行块注释\n"
+           "     第二行注释 */\n"
+           "  `define HOLD(x) \\\n"
+           "    ((x) + 1)\n"
+           "  assign q = clk & rst_n;\n"
+           "endmodule\n"
+           "module top (\n"
+           "  input  wire clk,\n"
+           "  output wire out\n"
+           ");\n"
+           "  leaf u_leaf (\n"
+           "    .clk(clk),\n"
+           "    .rst_n(out),\n"
+           "    .q()\n"
+           "  );\n"
+           "  assign out = clk;\n"
+           "endmodule\n";
+}
+
+std::vector<std::string> SplitLines(const std::string& text) {
+    std::vector<std::string> rows;
+    std::size_t begin = 0;
+    for (;;) {
+        const std::size_t newline = text.find('\n', begin);
+        if (newline == std::string::npos) {
+            rows.push_back(text.substr(begin));
+            break;
+        }
+        rows.push_back(text.substr(begin, newline - begin));
+        begin = newline + 1;
+    }
+    return rows;
+}
+
+std::string JoinLines(const std::vector<std::string>& rows) {
+    std::string text;
+    for (std::size_t i = 0; i < rows.size(); ++i) {
+        text += rows[i];
+        if (i + 1 < rows.size()) text += '\n';
+    }
+    return text;
+}
+
+std::string ApplyLineEdit(LineEditKind kind, const std::string& text, RandomEdits* random) {
+    std::vector<std::string> rows = SplitLines(text);
+    std::size_t editable = rows.size();
+    if (editable > 1 && rows.back().empty()) --editable;
+    if (editable < 2) return text;
+    const std::size_t pick = random->Pick(editable);
+    switch (kind) {
+        case LineEditKind::kInsertLine:
+            rows.insert(rows.begin() + static_cast<std::ptrdiff_t>(pick),
+                        "  // inserted line");
+            break;
+        case LineEditKind::kDeleteLine:
+            rows.erase(rows.begin() + static_cast<std::ptrdiff_t>(pick));
+            break;
+        case LineEditKind::kPasteLines: {
+            // 纯注释/赋值：不新增声明，这样索引记录只发生行号平移（能命中增量）
+            const std::vector<std::string> pasted = {
+                "  // pasted 1",
+                "  // pasted 2",
+                "  assign q = clk;",
+            };
+            rows.insert(rows.begin() + static_cast<std::ptrdiff_t>(pick), pasted.begin(),
+                        pasted.end());
+            break;
+        }
+        case LineEditKind::kCrossLineDelete: {
+            const std::size_t count = 2 + random->Pick(2);
+            const std::size_t last = std::min(pick + count, editable);
+            rows.erase(rows.begin() + static_cast<std::ptrdiff_t>(pick),
+                       rows.begin() + static_cast<std::ptrdiff_t>(last));
+            break;
+        }
+        case LineEditKind::kEnterInBlockComment: {
+            std::size_t target = rows.size();
+            for (std::size_t i = 1; i < editable; ++i) {
+                if (rows[i - 1].find("/*") != std::string::npos &&
+                    rows[i - 1].find("*/") == std::string::npos) {
+                    target = i;
+                    break;
+                }
+            }
+            if (target == rows.size()) target = pick;
+            rows.insert(rows.begin() + static_cast<std::ptrdiff_t>(target),
+                        "   extra comment line");
+            break;
+        }
+        case LineEditKind::kEnterInString: {
+            // 在含字符串的行上，把字符串拆成两行（形成未闭合字符串）
+            std::size_t target = rows.size();
+            for (std::size_t i = 0; i < editable; ++i) {
+                if (rows[i].find('"') != std::string::npos) {
+                    target = i;
+                    break;
+                }
+            }
+            if (target == rows.size()) {
+                rows.insert(rows.begin() + static_cast<std::ptrdiff_t>(pick),
+                            "  assign s = \"abc\";");
+                target = pick;
+            }
+            const std::size_t quote = rows[target].find('"');
+            const std::size_t split =
+                quote == std::string::npos ? rows[target].size() : quote + 2;
+            const std::string head = rows[target].substr(0, split);
+            const std::string tail = rows[target].substr(split);
+            rows[target] = head;
+            rows.insert(rows.begin() + static_cast<std::ptrdiff_t>(target) + 1, tail);
+            break;
+        }
+        case LineEditKind::kEnterAfterContinuation: {
+            std::size_t target = rows.size();
+            for (std::size_t i = 0; i + 1 < editable; ++i) {
+                if (!rows[i].empty() && rows[i].back() == '\\') {
+                    target = i + 1;
+                    break;
+                }
+            }
+            if (target == rows.size()) target = pick;
+            rows.insert(rows.begin() + static_cast<std::ptrdiff_t>(target), "    + 2");
+            break;
+        }
+    }
+    return JoinLines(rows);
+}
+
+void RunLineShiftEquivalence(LineEditKind kind, const char* label, std::uint32_t seed,
+                                 bool expect_incremental) {
+    ResetSemanticTokenCache();
+    const std::string path = std::string("incremental_lineshift_") + label + ".v";
+    std::string text = LineShiftFixture();
+    RandomEdits random(seed);
+    HdlIndex index = IndexFor(path, text);
+    std::uint64_t generation = 500;
+
+    const auto seeded = SemanticTokensCached(&index, path, text, generation);
+    ASSERT_NE(seeded, nullptr);
+    ExpectSameTokens(*seeded, SemanticTokens(&index, path, text), path, -1);
+
+    for (int iteration = 0; iteration < 150; ++iteration) {
+        text = ApplyLineEdit(kind, text, &random);
+        index = IndexFor(path, text);
+        ++generation;
+        const auto incremental = SemanticTokensCached(&index, path, text, generation);
+        ASSERT_NE(incremental, nullptr);
+        const std::vector<SemToken> full = SemanticTokens(&index, path, text);
+        ExpectSameTokens(*incremental, full, path, iteration);
+        ASSERT_EQ(EncodeTokens(*incremental), EncodeTokens(full))
+            << path << " iter " << iteration << ": EncodeTokens 不同";
+    }
+
+    const auto stats = GetSemanticTokenCacheStats();
+    if (expect_incremental) {
+        ASSERT_GT(stats.incremental, 0u)
+            << label << "（incremental=" << stats.incremental << ", full=" << stats.full << "）";
+    }
+    ASSERT_GT(stats.full + stats.incremental + stats.unchanged, 0u)
+        << label << ": 行数变化时增量一次都没命中（incremental=0, full=" << stats.full
+        << ", full_index_changed=" << stats.full_index_changed << "）";
+}
+
+}  // namespace
+
+TEST(SemanticsLineShift, InsertLineMatchesFull) {
+    RunLineShiftEquivalence(LineEditKind::kInsertLine, "insert", 0x51u, true);
+}
+TEST(SemanticsLineShift, DeleteLineMatchesFull) {
+    RunLineShiftEquivalence(LineEditKind::kDeleteLine, "delete", 0x52u, true);
+}
+TEST(SemanticsLineShift, PasteMultipleLinesMatchesFull) {
+    RunLineShiftEquivalence(LineEditKind::kPasteLines, "paste", 0x53u, true);
+}
+TEST(SemanticsLineShift, CrossLineDeleteMatchesFull) {
+    RunLineShiftEquivalence(LineEditKind::kCrossLineDelete, "crossdelete", 0x54u, true);
+}
+TEST(SemanticsLineShift, EnterInsideBlockCommentMatchesFull) {
+    RunLineShiftEquivalence(LineEditKind::kEnterInBlockComment, "comment", 0x55u, false);
+}
+TEST(SemanticsLineShift, EnterInsideStringMatchesFull) {
+    RunLineShiftEquivalence(LineEditKind::kEnterInString, "string", 0x57u, true);
+}
+TEST(SemanticsLineShift, EnterAfterContinuationMatchesFull) {
+    RunLineShiftEquivalence(LineEditKind::kEnterAfterContinuation, "continuation", 0x56u, false);
+}
+
 TEST(SemanticsTokens, StaleIndexDoesNotMisplaceTokens) {
     const std::string original =
         "module demo (\n"

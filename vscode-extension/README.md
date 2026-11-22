@@ -47,7 +47,7 @@
 ### 2. 安装扩展并重载
 
 ```powershell
-code --install-extension Y:\fpga-lsp-cpp\vscode-extension\fpga-lsp-anlogic-0.33.0.vsix
+code --install-extension Y:\fpga-lsp-cpp\vscode-extension\fpga-lsp-anlogic-0.34.0.vsix
 ```
 
 安装后按提示 **Reload**，或执行 `Developer: Reload Window`。

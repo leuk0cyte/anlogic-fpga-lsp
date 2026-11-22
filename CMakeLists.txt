@@ -38,7 +38,7 @@ endif()
 
 project(
     fpga-lsp-cpp
-    VERSION 0.33.0
+    VERSION 0.34.0
     DESCRIPTION "Anlogic TangDynasty FPGA language server (C++23 rewrite of Y:\\fpga-lsp)"
     LANGUAGES C CXX
 )

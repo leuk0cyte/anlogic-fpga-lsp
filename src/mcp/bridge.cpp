@@ -5189,6 +5189,27 @@ Json Bridge::RenameEditsTool(const Json& arguments) {
         column = it->get<int>();
     }
 
+    // 第六轮：16 项 LRU（失效挂在 IndexService::generation 上，理由见 bridge.h）。
+    std::string rename_key;
+    rename_key.reserve(proj.al_path.size() + path.size() + new_name.size() + 48);
+    rename_key += proj.al_path;
+    rename_key += '\x1f';
+    rename_key += std::to_string(index_service_ != nullptr ? index_service_->stats().generation : 0);
+    rename_key += '\x1f';
+    rename_key += path;
+    rename_key += ',';
+    rename_key += std::to_string(line);
+    rename_key += ',';
+    rename_key += std::to_string(column);
+    rename_key += '\x1f';
+    rename_key += new_name;
+    for (auto hit = rename_cache_.begin(); hit != rename_cache_.end(); ++hit) {
+        if (hit->key != rename_key) continue;
+        Json cached = hit->value;  // 12.8 KB 拷贝 ≈ 几十 µs vs 重扫 2.45 ms
+        rename_cache_.splice(rename_cache_.begin(), rename_cache_, hit);
+        return cached;
+    }
+
     const Json renamed = FeatureServer().FeatureRename(path, std::max(0, line - 1),
                                                        std::max(0, column - 1), new_name);
     // Python: if not result: return {"ok": True, "changes": {}}
@@ -5211,7 +5232,9 @@ Json Bridge::RenameEditsTool(const Json& arguments) {
 
     Json out = Json::object();
     out["ok"] = true;
-    out["changes"] = std::move(changes);
+    out["changes"] = changes;
+    rename_cache_.push_front(RenameCacheEntry{std::move(rename_key), out});
+    while (rename_cache_.size() > kRenameCacheCapacity) rename_cache_.pop_back();
     return out;
 }
 }  // namespace fpgalsp::mcp

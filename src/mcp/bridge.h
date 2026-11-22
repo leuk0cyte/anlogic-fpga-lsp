@@ -312,6 +312,18 @@ class Bridge : public ToolDispatcher {
     static constexpr std::size_t kReferencesCacheCapacity = 32;
     // 头部 = 最近使用（LRU）；容量很小，命中走线性扫描（≤32 次字符串比较，纳秒级）。
     std::list<ReferencesCacheEntry> references_cache_;
+
+    // 第六轮：`rename_edits` 结果缓存（16 项 LRU）。
+    // 审计实测 p50 2.45 ms / 12.8 KB —— 它每次都要重扫索引找出该符号的全部引用再算编辑，
+    // 而同一 (索引 generation, 文件, 光标, 新名字) 的结果是确定的。
+    // 失效语义与 references 一致：键含 IndexService::stats().generation，
+    // 任何 HDL/.al 变化都会让它前进，旧键自然命中不到。
+    struct RenameCacheEntry {
+        std::string key;
+        Json value;
+    };
+    static constexpr std::size_t kRenameCacheCapacity = 16;
+    std::list<RenameCacheEntry> rename_cache_;
 };
 
 }  // namespace fpgalsp::mcp

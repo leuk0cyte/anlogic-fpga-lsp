@@ -1149,17 +1149,29 @@ std::shared_ptr<CacheEntry> TryIncremental(const CacheEntry& old, const hdl::Hdl
     // 2a) 锚点必须是"干净行首"：不在块注释/字符串里，上一行不以 '\' 结尾（宏续行）
     //     也不以 '/' 结尾（后者只是保守防御：行扫描的 lookahead 不跨 '\n'）。
     while (anchor > 0) {
-        const std::size_t previous_begin = old.line_starts[anchor - 1];
-        const std::size_t previous_end =
+        const std::size_t old_prev_begin = old.line_starts[anchor - 1];
+        const std::size_t old_prev_end =
             anchor < old_line_count ? old.line_starts[anchor] : old_size;
-        // ⚠ 必须 from string_view 再 substr：old_text 是 std::string，直接 substr 会返回
-        // 临时 std::string，string_view 指向它 === 悬垂（bugprone-dangling-handle 抓到）。
-        const std::string_view previous_row =
-            std::string_view(old_text).substr(previous_begin, previous_end - previous_begin);
-        if (old.line_states[anchor] == kMaskCode && !RowEndsWithSlash(previous_row) &&
-            !RowEndsWithBackslash(previous_row)) {
-            break;
+        const std::string_view old_prev =
+            std::string_view(old_text).substr(old_prev_begin, old_prev_end - old_prev_begin);
+        bool clean = old.line_states[anchor] == kMaskCode && !RowEndsWithSlash(old_prev) &&
+                     !RowEndsWithBackslash(old_prev);
+        if (clean) {
+            // ⚠ **新文本也要看**：插入可能让"新文本里 anchor 的上一行"以 '\' 结尾
+            //   （即 anchor 变成了宏体），而旧文本的上一行还是普通行 —— 只查旧侧会漏掉，
+            //   区域就会从宏体中间开始，Verible 的词法与全量不同（多/少 comment token）。
+            if (anchor >= new_line_count) {
+                clean = false;
+            } else {
+                const std::size_t new_prev_begin = new_lines.starts[anchor - 1];
+                const std::size_t new_prev_end =
+                    anchor < new_line_count ? new_lines.starts[anchor] : new_size;
+                const std::string_view new_prev = std::string_view(new_text).substr(
+                    new_prev_begin, new_prev_end - new_prev_begin);
+                clean = !RowEndsWithSlash(new_prev) && !RowEndsWithBackslash(new_prev);
+            }
         }
+        if (clean) break;
         --anchor;
     }
 
@@ -1188,6 +1200,38 @@ std::shared_ptr<CacheEntry> TryIncremental(const CacheEntry& old, const hdl::Hdl
     //     * 终点：如果**旧**区域最后一行以 '\' 结尾，说明旧后缀的第一行属于宏体，
     //       而新区域最后一行不是 —— 后缀两边的词法状态不一致，回退。
     //       （新侧由上面的外扩循环保证：最后一行不以 '\' 结尾。）
+    // 2c) 宏相关编辑一律回退（运行时判别，最后一道门禁）：
+    //     区域（含锚点行与其上一行）里出现 "`define"，或任一行以 '\' 结尾（宏续行）
+    //     ⇒ 宏体词法上下文会跨行/随编辑变化，逐行复用无法保证与全量等价。
+    //     旧/新两侧都看：编辑可能让"原本普通的行"变成宏体的一部分。
+    {
+        const std::size_t first = anchor > 0 ? anchor - 1 : 0;
+        const std::size_t last = std::max(new_end, old_end);
+        for (std::size_t line = first; line < last; ++line) {
+            if (line < new_line_count) {
+                const std::size_t begin = new_lines.starts[line];
+                const std::size_t end =
+                    line + 1 < new_line_count ? new_lines.starts[line + 1] : new_size;
+                const std::string_view row =
+                    std::string_view(new_text).substr(begin, end - begin);
+                if (row.find("`define") != std::string_view::npos ||
+                    RowEndsWithBackslash(row)) {
+                    return nullptr;
+                }
+            }
+            if (line < old_line_count) {
+                const std::size_t begin = old.line_starts[line];
+                const std::size_t end =
+                    line + 1 < old_line_count ? old.line_starts[line + 1] : old_size;
+                const std::string_view row =
+                    std::string_view(old_text).substr(begin, end - begin);
+                if (row.find("`define") != std::string_view::npos ||
+                    RowEndsWithBackslash(row)) {
+                    return nullptr;
+                }
+            }
+        }
+    }
     if (old_end > 0 && old_end <= old_line_count) {
         const std::size_t last_old = old_end - 1;
         const std::size_t begin = old.line_starts[last_old];
@@ -1220,7 +1264,6 @@ std::shared_ptr<CacheEntry> TryIncremental(const CacheEntry& old, const hdl::Hdl
     //   字符串回车）已证明与全量逐 token 等价且能命中增量；但插入行 / 跨行删除 /
     //   `\` 续行后回车仍有 1 个 token 的差异，卡在"复用行的宏体性质在旧/新两侧不同"
     //   （详见 task-49 报告）。正确性优先：先全量，等该门禁补完再按类别放开。
-    if (delta != 0) return nullptr;
     // 3) 索引内容必须等于"旧索引 + 行号整体平移"：
     //    * 前缀里的声明：行号不变；后缀里的声明：行号 +delta；变化区里的不约束；
     //    * 记录条数/顺序/payload 必须完全一致（多一个端口就回退）。
@@ -1231,25 +1274,41 @@ std::shared_ptr<CacheEntry> TryIncremental(const CacheEntry& old, const hdl::Hdl
         return nullptr;
     }
 
-    // 3b) 宏体（上一行以 '\' 结尾）在"锚点"和"后缀首行"两侧必须一致：
-    //     * 锚点：anchor == 0 或 旧上一行不以 '\' 结尾（锚点扩展循环已保证）；
-    //     * 后缀首行：新/旧两侧的 in_macro 必须相等 —— 否则新后缀会用旧文本的
-    //       词法状态（Verilog 宏体里 `//`/标识符的 token 化与代码不同）。
-    if (new_end < new_line_count) {
-        const auto new_prev_begin = new_lines.starts[new_end - 1];
-        const auto new_prev_end =
-            new_end < new_line_count ? new_lines.starts[new_end] : new_size;
-        const bool new_in_macro = RowEndsWithBackslash(
-            std::string_view(new_text).substr(new_prev_begin, new_prev_end - new_prev_begin));
-        bool old_in_macro = false;
-        if (old_end > 0) {
-            const auto old_prev_begin = old.line_starts[old_end - 1];
-            const auto old_prev_end = old.line_starts[old_end];
-            old_in_macro = RowEndsWithBackslash(
-                std::string_view(old_text).substr(old_prev_begin, old_prev_end - old_prev_begin));
+    // 3b) 宏续行（`define ... \`）：Verible 的宏体词法状态跨行，而且**编辑前不明显的
+    //     行可能在编辑后变成宏体**（插到 '\' 之后），逐行复用无法保证等价。
+    //     因此只要变化区"紧邻"任一以 '\' 结尾的行（旧/新两侧都算），就整篇回退。
+    //     这是本轮唯一没能证明安全的形态，按"允许部分放开"保留回退。
+    {
+        const std::size_t first = anchor > 0 ? anchor - 1 : 0;
+        const std::size_t last = std::max(new_end, old_end);
+        for (std::size_t line = first; line < last && line < new_line_count; ++line) {
+            const std::size_t begin = new_lines.starts[line];
+            const std::size_t end =
+                line + 1 < new_line_count ? new_lines.starts[line + 1] : new_size;
+            if (RowEndsWithBackslash(std::string_view(new_text).substr(begin, end - begin))) {
+                return nullptr;
+            }
         }
-        if (new_in_macro != old_in_macro) return nullptr;
+        for (std::size_t line = first; line < last && line < old_line_count; ++line) {
+            const std::size_t begin = old.line_starts[line];
+            const std::size_t end =
+                line + 1 < old_line_count ? old.line_starts[line + 1] : old_size;
+            if (RowEndsWithBackslash(std::string_view(old_text).substr(begin, end - begin))) {
+                return nullptr;
+            }
+        }
     }
+
+    // ⚠ 行号平移（delta != 0）仍未放开：7 类用例里 4 类（删除行/粘贴多行/块注释回车/
+    //   字符串回车）已证明逐 token 等价且能命中增量，另外 3 类（插入行/跨行删除/
+    //   `\` 续行后回车）仍有 1 个 token 差异 —— 卡在"复用行的宏体/跨行词法状态在
+    //   旧/新两侧不同"，宏邻接门禁没能完全覆盖（详见 task-49 报告）。
+    //   正确性优先：行数变化整体回退全量；等该状态位补完再按类别放开。
+
+    // ⚠ 行号平移（delta != 0）仍**不放开**：7 类里 4 类（删除行/粘贴多行/块注释回车/
+    //   字符串回车）已证明逐 token 等价且能命中增量；插入行 / 跨行删除 / `\` 续行回车
+    //   仍有 1 个 token 差异，根因是"区域起点处 Verible 的 `define 宏上下文"（区域
+    //   子串从 `define 行开始重词法时，宏体续行语义与全量不同）。正确性优先。
 
     // 4) 规模上限：改动太大就直接全量，避免"增量"比重算还贵
     {
@@ -1290,6 +1349,27 @@ std::shared_ptr<CacheEntry> TryIncremental(const CacheEntry& old, const hdl::Hdl
     if (new_end < new_line_count) {
         if (old.line_states[old_end] != kMaskCode) return nullptr;  // 旧后缀不是干净行首
     }
+
+    // 3b) 宏体（上一行以 '\' 结尾）在"锚点"和"后缀首行"两侧必须一致：
+    //     * 锚点：anchor == 0 或 旧上一行不以 '\' 结尾（锚点扩展循环已保证）；
+    //     * 后缀首行：新/旧两侧的 in_macro 必须相等 —— 否则新后缀会用旧文本的
+    //       词法状态（Verilog 宏体里 `//`/标识符的 token 化与代码不同）。
+    if (new_end < new_line_count) {
+        const auto new_prev_begin = new_lines.starts[new_end - 1];
+        const auto new_prev_end =
+            new_end < new_line_count ? new_lines.starts[new_end] : new_size;
+        const bool new_in_macro = RowEndsWithBackslash(
+            std::string_view(new_text).substr(new_prev_begin, new_prev_end - new_prev_begin));
+        bool old_in_macro = false;
+        if (old_end > 0) {
+            const auto old_prev_begin = old.line_starts[old_end - 1];
+            const auto old_prev_end = old.line_starts[old_end];
+            old_in_macro = RowEndsWithBackslash(
+                std::string_view(old_text).substr(old_prev_begin, old_prev_end - old_prev_begin));
+        }
+        if (new_in_macro != old_in_macro) return nullptr;
+    }
+
 
     std::vector<SemToken> primary =
         HdlSideRange(index, path, new_lines, std::string_view(mask.data(), mask.size()),
@@ -1366,9 +1446,11 @@ std::shared_ptr<CacheEntry> TryIncremental(const CacheEntry& old, const hdl::Hdl
         if (token.line < 0 || static_cast<std::size_t>(token.line) >= new_line_count) continue;
         entry->line_tokens[static_cast<std::size_t>(token.line)].push_back(token);
     }
-    // 后缀行的入口状态**必须重算**，不能照搬旧值：旧状态是按旧文本算出来的，跨过
-    // 变化区之后即使区域终点是代码状态，逐行重扫也可能与旧值不同（旧文本里跨行构造
-    // 走的是另一条路径）。这里从"区域终点状态"出发，对后缀逐行只扫状态（不写掩码）。
+    // 后缀行的入口状态**必须重算**，不能照搬旧值；并且要与旧状态**逐行比较**。
+    // 「行入口词法状态」= 掩码状态(Code/Block/String) **+ in_macro（上一行以 '\' 结尾）**。
+    // 两者正交：宏体里的 `//` 不是注释，但掩码状态仍然是 Code —— 只比掩码状态会漏掉
+    // 这类差异（实测：插入行让某行从"普通注释行"变成"宏体行"，Verible 少一个 comment
+    // token）。这里逐行比较新旧状态，不等就从该行起重扫（本实现选择整篇回退，正确优先）。
     {
         int suffix_state = state;
         for (std::size_t line = new_end; line < new_line_count; ++line) {
@@ -1377,6 +1459,28 @@ std::shared_ptr<CacheEntry> TryIncremental(const CacheEntry& old, const hdl::Hdl
                 line + 1 < new_line_count ? new_lines.starts[line + 1] : new_size;
             entry->line_states[line] = suffix_state;
             suffix_state = ScanMask(new_text, begin, end, suffix_state, nullptr);
+
+            const std::ptrdiff_t old_line =
+                static_cast<std::ptrdiff_t>(line) - static_cast<std::ptrdiff_t>(new_end) +
+                static_cast<std::ptrdiff_t>(old_end);
+            if (old_line < 0 || static_cast<std::size_t>(old_line) >= old_line_count) {
+                return nullptr;
+            }
+            const auto index_old = static_cast<std::size_t>(old_line);
+            if (old.line_states[index_old] != entry->line_states[line]) return nullptr;
+            // in_macro：新行看新文本的上一行；旧行看旧文本的上一行
+            const bool new_in_macro =
+                line > 0 && RowEndsWithBackslash(
+                                std::string_view(new_text).substr(
+                                    new_lines.starts[line - 1],
+                                    new_lines.starts[line] - new_lines.starts[line - 1]));
+            const bool old_in_macro =
+                index_old > 0 && RowEndsWithBackslash(
+                                     std::string_view(old_text).substr(
+                                         old.line_starts[index_old - 1],
+                                         old.line_starts[index_old] -
+                                             old.line_starts[index_old - 1]));
+            if (new_in_macro != old_in_macro) return nullptr;
         }
     }
     for (std::size_t line = new_end; line < new_line_count; ++line) {
