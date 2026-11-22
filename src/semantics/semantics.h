@@ -113,12 +113,18 @@ std::vector<SemToken> SemanticTokens(const hdl::HdlIndex* index, std::string_vie
 //
 //  线程安全：内部互斥 + 不可变快照（shared_ptr），可在多 worker 上并发调用。
 //  返回 shared_ptr 便于服务端零拷贝缓存/响应。
+//
+//  `index_matches_text`：调用方是否**保证**这份 index 就是按这份 text 构建的
+//  （"索引-文本同源"契约）。false（默认）= 由 semantics 自行校验（逐条比对索引里
+//  声明的位置与文本，O(索引记录数)）；true = 跳过该校验。行号平移只在该契约成立时
+//  才放开，否则回退全量。
 std::shared_ptr<const std::vector<SemToken>> SemanticTokensCached(
     const hdl::HdlIndex* index, std::string_view path, std::string_view text,
-    std::uint64_t index_generation);
+    std::uint64_t index_generation, bool index_matches_text = false);
 std::shared_ptr<const std::vector<SemToken>> SemanticTokensCached(
     const hdl::HdlIndex* index, std::string_view path,
-    const std::shared_ptr<const std::string>& text, std::uint64_t index_generation);
+    const std::shared_ptr<const std::string>& text, std::uint64_t index_generation,
+    bool index_matches_text = false);
 
 // 测试/诊断：命中计数（用来证明"增量确实跑了"，而不是每次都全量回退）。
 struct SemanticTokenCacheStats {

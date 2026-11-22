@@ -125,12 +125,26 @@ bool DryRunRequested(const Json& arguments) {
 
 // Python project.rel(path)：相对工程目录、正斜杠
 std::string RelativeTo(const std::string& path, const std::string& base) {
+    if (path.empty() || base.empty()) return {};
+    // ⚠ 这里**不能**用 fs::relative：它每次都碰文件系统（canonical/stat），而
+    // workspace_symbols / references / definition 等工具是"每条符号一个 location"。
+    // 实测（0.31.0）workspace_symbols query="e"：limit=50 → 4.37 ms、200 → 13.3 ms，
+    // 而"只扫名字不建 JSON"只要 0.1 ms —— 成本全在每条约 65 µs 的 relpath 上。
+    // 两条路径都是本进程使用的绝对规范化路径、同一个根，纯词法的
+    // lexically_relative 与 fs::relative 结果一致，且零系统调用。
+    const fs::path absolute_path = AsPath(path).lexically_normal();
+    const fs::path absolute_base = AsPath(base).lexically_normal();
+    if (const fs::path lexical = absolute_path.lexically_relative(absolute_base);
+        !lexical.empty()) {
+        std::string text = lexical.generic_string();
+        return text == "." ? std::string() : text;  // Python os.path.relpath 的 ../ 形式一致
+    }
+    // 兜底：不同盘符 / 相对路径等罕见情况，保留旧语义（慢但正确）。
     std::error_code ec;
-    const fs::path relative = fs::relative(AsPath(path), AsPath(base), ec);
+    const fs::path relative = fs::relative(absolute_path, absolute_base, ec);
     if (ec || relative.empty()) return {};
     std::string text = relative.generic_string();
     if (text == ".") return {};
-    // Python os.path.relpath 会给出 ../ 形式；fs::relative 同语义
     return text;
 }
 

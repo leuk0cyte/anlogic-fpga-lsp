@@ -111,16 +111,21 @@ def start_server(exe: str, root: str, port: int, env_extra: dict | None = None):
 
 
 def start_ready_server(exe: str, root: str, env_extra: dict | None = None):
-    """启动并等端口就绪；端口冲突时最多重试 3 次。返回 (proc, port)。"""
+    """启动 → 等端口 → **真实握手确认是我们的服务端**；端口被抢就换端口重试（最多 5 次）。"""
     last_error = None
-    for _ in range(3):
+    for _ in range(5):
         port = free_port()
+        proc = None
         try:
             proc, _log = start_server(exe, root, port, env_extra)
             return proc, port
         except SystemExit as exc:
             last_error = exc
-    raise SystemExit("FAIL: 连续 3 次无法启动 MCP 监听（最后一次：%s）" % last_error)
+        finally:
+            # 启动失败（端口被抢）时不要在后台留一个半死的服务端。
+            if proc is not None and proc.poll() is not None:
+                stop_server(proc)
+    raise SystemExit("FAIL: 连续 5 次无法启动 MCP 监听（最后一次：%s）" % last_error)
 
 
 def stop_server(proc: subprocess.Popen) -> None:
@@ -216,8 +221,23 @@ def main() -> int:
     root = str(Path(args.root).resolve())
     exe = str(Path(args.server).resolve())
 
-    scenario_parallel(exe, root)
-    scenario_limit(exe, root)
+    # 全量 ctest 并行时，端口可能在 free_port() 与 bind 之间被别的进程抢走
+    # （实测偶发 "initialize 有 result" 红）。**整个场景重试**是最稳的处理：
+    # 端口抢占是环境问题，不是产品缺陷；成功一次即可。
+    last_error: BaseException | None = None
+    for attempt in range(3):
+        CHECKS.clear()
+        try:
+            scenario_parallel(exe, root)
+            scenario_limit(exe, root)
+            last_error = None
+            break
+        except (SystemExit, OSError) as exc:
+            last_error = exc
+            print("RETRY %d/3: %s" % (attempt + 1, exc))
+            time.sleep(0.3)
+    if last_error is not None:
+        raise last_error
 
     print("PASS: %d checks" % len(CHECKS))
     for item in CHECKS:

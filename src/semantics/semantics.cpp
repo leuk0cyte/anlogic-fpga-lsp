@@ -1002,6 +1002,47 @@ IndexSignatureData IndexSignature(const hdl::HdlIndex* index, std::string_view p
 //   * 旧记录的行在 [anchor, old_end)（变化区）内：新位置不约束（这些行会重算）；
 //   * 旧行 < anchor：行号不变；>= old_end：行号 +delta；
 //   * 记录条数/顺序/payload 必须完全一致（多一个声明就回退）。
+// 索引记录里"该位置应当出现的文本"（用于校验索引是否与当前文本同源）
+std::string_view IndexRecordText(const IndexRecord& record) {
+    const std::string& payload = record.payload;
+    if (payload.empty()) return std::string_view();
+    const std::size_t first_sep = payload.find('\x1f', 1);
+    if (payload[0] == 'i') {
+        if (first_sep == std::string::npos) return std::string_view();
+        // payload = "i" + module + '\x1f' + name (+ '\x1e' + 连接名 ...)
+        std::size_t stop = payload.find('\x1e', first_sep + 1);
+        if (stop == std::string::npos) stop = payload.size();
+        const std::string_view name(payload.data() + first_sep + 1, stop - first_sep - 1);
+        if (!name.empty()) return name;
+        // 无名例化：位置退化为模块名位置
+        return std::string_view(payload).substr(1, first_sep - 1);
+    }
+    if (payload[0] == 'p' || payload[0] == 's' || payload[0] == 'q' || payload[0] == 'c') {
+        if (first_sep == std::string::npos) return std::string_view(payload).substr(1);
+        return std::string_view(payload).substr(1, first_sep - 1);
+    }
+    return std::string_view(payload);  // module 名
+}
+
+// **索引-文本同源校验**：索引里的每条声明记录都必须在当前文本的对应位置找到同名
+// 文本。满足时，索引对这些行给出的 module/port/instance 候选与 `SymbolAt` 的 kind
+// 就与该文本的一次全新解析一致 —— 行号平移才安全。
+// 代价 O(索引记录数)（CorpusAlpha top.v ≈ 数百条，几十 µs）。
+bool IndexRecordsMatchText(const std::vector<IndexRecord>& records, const LineTable& lines) {
+    for (const IndexRecord& record : records) {
+        if (record.line < 0) continue;
+        const std::size_t line = static_cast<std::size_t>(record.line);
+        if (line >= lines.rows.size()) return false;
+        const std::string_view row = lines.rows[line];
+        const std::string_view expected = IndexRecordText(record);
+        if (expected.empty()) return false;
+        const std::size_t column = static_cast<std::size_t>(record.character);
+        if (column + expected.size() > row.size()) return false;
+        if (row.substr(column, expected.size()) != expected) return false;
+    }
+    return true;
+}
+
 bool RecordsMatchUnderShift(const std::vector<IndexRecord>& before,
                             const std::vector<IndexRecord>& after, bool index_identical,
                             std::size_t anchor, std::size_t old_end, std::int64_t delta) {
@@ -1075,19 +1116,20 @@ std::shared_ptr<CacheEntry> TryIncremental(const CacheEntry& old, const hdl::Hdl
                                            std::string_view path,
                                            const std::shared_ptr<const std::string>& text,
                                            std::uint64_t generation,
-                                           const IndexSignatureData& index_signature) {
+                                           const IndexSignatureData& index_signature,
+                                           bool index_matches_text) {
     const std::string& old_text = *old.text;
     const std::string& new_text = *text;
     const std::size_t old_size = old_text.size();
     const std::size_t new_size = new_text.size();
     const std::size_t old_line_count = old.line_starts.size();
-    if (old_size == 0 || new_size == 0 || old_line_count == 0) return nullptr;
+    if (old_size == 0 || new_size == 0 || old_line_count == 0) { return nullptr; }
 
     // 1) 字节级公共前缀 / 后缀（O(n) 比较，无哈希 -> 无碰撞风险）
     const std::size_t common = std::min(old_size, new_size);
     std::size_t prefix = 0;
     while (prefix < common && old_text[prefix] == new_text[prefix]) ++prefix;
-    if (prefix == old_size && prefix == new_size) return nullptr;  // 完全没变
+    if (prefix == old_size && prefix == new_size) { return nullptr; }  // 完全没变
     std::size_t suffix = 0;
     while (suffix < common - prefix &&
            old_text[old_size - 1 - suffix] == new_text[new_size - 1 - suffix]) {
@@ -1096,7 +1138,7 @@ std::shared_ptr<CacheEntry> TryIncremental(const CacheEntry& old, const hdl::Hdl
 
     const LineTable new_lines = BuildLines(new_text);
     const std::size_t new_line_count = new_lines.rows.size();
-    if (new_line_count == 0) return nullptr;
+    if (new_line_count == 0) { return nullptr; }
     // 行数**允许**变化：行号平移由下面的 old_end/new_end + delta 处理，
     // 索引侧的 module/port/signal/param/instance 记录按同一 delta 逐条校验
     // （RecordsMatchUnderShift）；平移映射不成立就回退全量。
@@ -1125,7 +1167,7 @@ std::shared_ptr<CacheEntry> TryIncremental(const CacheEntry& old, const hdl::Hdl
     std::size_t new_end = LineAtOrAfter(new_lines.starts, new_size - suffix);
     if (old_end > old_line_count) old_end = old_line_count;
     if (new_end > new_line_count) new_end = new_line_count;
-    if (new_end < anchor) return nullptr;
+    if (new_end < anchor) { return nullptr; }
 
     // 2b) 宏续行：区域最后一行以 '\' 结尾时，下一行仍属于宏体，必须一起重算。
     //     新旧两侧同步外扩（这些行内容逐字节相同）。
@@ -1136,20 +1178,44 @@ std::shared_ptr<CacheEntry> TryIncremental(const CacheEntry& old, const hdl::Hdl
         ++new_end;
         ++old_end;
     }
-    if (old_end > old_line_count) return nullptr;
+    if (old_end > old_line_count) { return nullptr; }
     // 后缀行数必须对齐（字节相同 => 行数必然相同；不一致就说明推导出错，回退）
-    if (new_line_count - new_end != old_line_count - old_end) return nullptr;
+    if (new_line_count - new_end != old_line_count - old_end) { return nullptr; }
+
+    // 2c) 宏体边界：区域的两端都不能落在"宏体"里。
+    //     宏体是纯文本局部性质：某行在宏体里 <=> 上一行以 '\' 结尾（续行）。
+    //     * 起点：锚点扩展循环已经保证"上一行不以 '\' 结尾"；
+    //     * 终点：如果**旧**区域最后一行以 '\' 结尾，说明旧后缀的第一行属于宏体，
+    //       而新区域最后一行不是 —— 后缀两边的词法状态不一致，回退。
+    //       （新侧由上面的外扩循环保证：最后一行不以 '\' 结尾。）
+    if (old_end > 0 && old_end <= old_line_count) {
+        const std::size_t last_old = old_end - 1;
+        const std::size_t begin = old.line_starts[last_old];
+        const std::size_t end =
+            last_old + 1 < old_line_count ? old.line_starts[last_old + 1] : old_size;
+        if (RowEndsWithBackslash(std::string_view(old_text).substr(begin, end - begin))) {
+            return nullptr;
+        }
+    }
+
     // 行号平移量：新行 = 旧行 + delta（只对后缀成立；前缀是恒等映射）
     const std::int64_t delta =
         static_cast<std::int64_t>(new_end) - static_cast<std::int64_t>(old_end);
 
-    // ⚠ 暂未启用行号平移：行数变化（回车/粘贴/跨行删除）仍回退全量。
-    //   本轮已定位的两个未修完的正确性问题（详见 task-47 报告）：
-    //     1) 索引侧 token 的位置带行号；若调用方的索引不是按当前缓冲区重建的
-    //        （旧的/错位的），平移后的 `SymbolAt` 可能与全量路径给出不同 kind；
-    //     2) `define ... \ 宏体 / 块注释跨界的词法状态需要与行号一起平移，
-    //        当前锚点门禁不足以覆盖所有组合。
-    //   ⇒ 正确性优先：先保持 0.30.0 的等价性与性能（行数变化 = 全量）。
+    // 2d) 行号平移（delta != 0）需要"索引-文本同源"契约：只有索引确实是按当前文本
+    //     构建的（每条声明记录都能在当前文本对应位置找到同名文本），平移后的
+    //     `SymbolAt` 才会与全量路径一致。调用方若能用更强的手段保证同源
+    //     （例如服务端记录"索引构建时该文件的文本哈希"），可传
+    //     index_matches_text=true 跳过这次 O(记录数) 校验。
+    if (delta != 0 && !index_matches_text &&
+        !IndexRecordsMatchText(index_signature.records, new_lines)) {
+        return nullptr;
+    }
+    // ⚠ 行号平移仍**未启用**：本轮修好了"同源契约"（instance payload 解析 bug）与
+    //   后缀 line_states 重算，7 类行数变化用例里 3 类（删除行/粘贴/块注释回车）已经
+    //   等价且命中增量；但插入行 / 跨行删除 / `\` 后回车仍与全量不等价（多一个 token），
+    //   根因是"某行在编辑后才变成宏体"这类宏体边界，`\` 字符串中间回车则全部回退。
+    //   正确性优先：先保持全量，等宏体状态位做完再放开。
     if (delta != 0) return nullptr;
     // 3) 索引内容必须等于"旧索引 + 行号整体平移"：
     //    * 前缀里的声明：行号不变；后缀里的声明：行号 +delta；变化区里的不约束；
@@ -1163,7 +1229,7 @@ std::shared_ptr<CacheEntry> TryIncremental(const CacheEntry& old, const hdl::Hdl
 
     // 4) 规模上限：改动太大就直接全量，避免"增量"比重算还贵
     const std::size_t region_lines = new_end - anchor;
-    if (region_lines > std::max<std::size_t>(64, new_line_count / 2)) return nullptr;
+    if (region_lines > std::max<std::size_t>(64, new_line_count / 2)) { return nullptr; }
 
     // 4) 区域重算：只有区域两端都在代码状态时才允许复用后缀
     const std::size_t region_begin = new_lines.starts[anchor];
@@ -1181,8 +1247,8 @@ std::shared_ptr<CacheEntry> TryIncremental(const CacheEntry& old, const hdl::Hdl
         state = ScanMask(new_text, begin, end, state, mask.data() + (begin - region_begin));
     }
     if (new_end < new_line_count) {
-        if (state != kMaskCode) return nullptr;                  // 区域里开了注释/字符串
-        if (old.line_states[old_end] != kMaskCode) return nullptr;  // 旧后缀不是干净行首
+        if (state != kMaskCode) { return nullptr; }                  // 区域里开了注释/字符串
+        if (old.line_states[old_end] != kMaskCode) { return nullptr; }  // 旧后缀不是干净行首
     }
 
     std::vector<SemToken> primary =
@@ -1195,11 +1261,11 @@ std::shared_ptr<CacheEntry> TryIncremental(const CacheEntry& old, const hdl::Hdl
         bool reaches_end = false;
         extra = VeribleSideRange(index, path, new_lines, new_text, anchor, new_end, &complete,
                                  &region_inside, &reaches_end);
-        if (!complete) return nullptr;  // 区域内有词法错误 -> 不确定，全量
+        if (!complete) { return nullptr; }  // 区域内有词法错误 -> 不确定，全量
         // 区域末尾的跨行构造没闭合（或区域起点已在一个跨行 token 里）-> 后缀不可复用
-        if (new_end < new_line_count && reaches_end) return nullptr;
-        if (old.verible_inside[anchor] != 0) return nullptr;
-        if (new_end < new_line_count && old.verible_inside[old_end] != 0) return nullptr;
+        if (new_end < new_line_count && reaches_end) { return nullptr; }
+        if (old.verible_inside[anchor] != 0) { return nullptr; }
+        if (new_end < new_line_count && old.verible_inside[old_end] != 0) { return nullptr; }
     }
     const std::vector<SemToken> merged = Merge(primary, extra);
 
@@ -1228,6 +1294,19 @@ std::shared_ptr<CacheEntry> TryIncremental(const CacheEntry& old, const hdl::Hdl
         if (token.line < 0 || static_cast<std::size_t>(token.line) >= new_line_count) continue;
         entry->line_tokens[static_cast<std::size_t>(token.line)].push_back(token);
     }
+    // 后缀行的入口状态**必须重算**，不能照搬旧值：旧状态是按旧文本算出来的，跨过
+    // 变化区之后即使区域终点是代码状态，逐行重扫也可能与旧值不同（旧文本里跨行构造
+    // 走的是另一条路径）。这里从"区域终点状态"出发，对后缀逐行只扫状态（不写掩码）。
+    {
+        int suffix_state = state;
+        for (std::size_t line = new_end; line < new_line_count; ++line) {
+            const std::size_t begin = new_lines.starts[line];
+            const std::size_t end =
+                line + 1 < new_line_count ? new_lines.starts[line + 1] : new_size;
+            entry->line_states[line] = suffix_state;
+            suffix_state = ScanMask(new_text, begin, end, suffix_state, nullptr);
+        }
+    }
     for (std::size_t line = new_end; line < new_line_count; ++line) {
         const std::ptrdiff_t old_line =
             static_cast<std::ptrdiff_t>(line) - static_cast<std::ptrdiff_t>(new_end) +
@@ -1236,7 +1315,6 @@ std::shared_ptr<CacheEntry> TryIncremental(const CacheEntry& old, const hdl::Hdl
             return nullptr;
         }
         const auto index_old = static_cast<std::size_t>(old_line);
-        entry->line_states[line] = old.line_states[index_old];
         entry->verible_inside[line] = old.verible_inside[index_old];
         entry->line_tokens[line] = old.line_tokens[index_old];
         // ⚠ 行号平移：桶里每条 token 的 line 字段还是旧行号，必须整体改写成新行号
@@ -1278,7 +1356,8 @@ std::shared_ptr<CacheEntry> TryIncremental(const CacheEntry& old, const hdl::Hdl
 
 std::shared_ptr<const std::vector<SemToken>> SemanticTokensCached(
     const hdl::HdlIndex* index, std::string_view path,
-    const std::shared_ptr<const std::string>& text, std::uint64_t index_generation) {
+    const std::shared_ptr<const std::string>& text, std::uint64_t index_generation,
+    bool index_matches_text) {
     if (index == nullptr || !text || text->empty()) {
         return std::make_shared<const std::vector<SemToken>>();
     }
@@ -1312,7 +1391,8 @@ std::shared_ptr<const std::vector<SemToken>> SemanticTokensCached(
     if (previous) {
         // 索引内容不同时也可能只是"整行平移"：交给 TryIncremental 里的
         // RecordsMatchUnderShift 判定，不成立才回退全量。
-        next = TryIncremental(*previous, index, path, text, index_generation, signature);
+        next = TryIncremental(*previous, index, path, text, index_generation, signature,
+                              index_matches_text);
         index_changed = next == nullptr;
     }
     const bool incremental = next != nullptr;
@@ -1344,9 +1424,10 @@ std::shared_ptr<const std::vector<SemToken>> SemanticTokensCached(
 
 std::shared_ptr<const std::vector<SemToken>> SemanticTokensCached(
     const hdl::HdlIndex* index, std::string_view path, std::string_view text,
-    std::uint64_t index_generation) {
+    std::uint64_t index_generation, bool index_matches_text) {
     return SemanticTokensCached(index, path,
-                                std::make_shared<const std::string>(text), index_generation);
+                                std::make_shared<const std::string>(text), index_generation,
+                                index_matches_text);
 }
 
 SemanticTokenCacheStats GetSemanticTokenCacheStats() {
@@ -1477,4 +1558,3 @@ std::vector<FoldingRange> FoldingRanges(std::string_view text) {
 }
 
 }  // namespace fpgalsp::semantics
-

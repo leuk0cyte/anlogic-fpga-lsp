@@ -835,6 +835,7 @@ TEST(SemanticsIncremental, EmptyAndNullIndexMatchFullPipeline) {
     EXPECT_TRUE(null_index->empty());
 }
 
+// =============================================================================
 TEST(SemanticsTokens, StaleIndexDoesNotMisplaceTokens) {
     const std::string original =
         "module demo (\n"
