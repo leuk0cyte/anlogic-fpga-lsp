@@ -1,4 +1,4 @@
-# 交付状态（当前：2026-11-23，扩展 0.35.0）
+# 交付状态（当前：2026-11-23，扩展 0.36.0）
 
 ## 构建与测试
 
@@ -1944,3 +1944,21 @@ ReportStore stamp 校验热 5.14 ms / 失效 10–12 ms；TD 会话第二次 `di
 真机 summary 也是 `ok:true, syn.ok:true` —— 需要更精确复现步骤，暂不改代码。
 
 **验证**：dev/release ctest 71/71 + docs_clang_tidy 通过；插件 64/64；四个 python 门禁 PASS。
+
+---
+
+## 第四十九轮（2026-11-23，0.36.0）：flow_log 尾读 + 探针解析缓存 + 插件刷新去重
+
+| 项 | 改前（实测） | 改后（实测） |
+| --- | --- | --- |
+| `fpga_flow_log` 尾读 + 排序去 stat 风暴（136 份候选 ≈ 上千次 stat） | td 13.50 ms / 114 KB；tail=50 12.85 ms / 126 KB | **3.26 ms / 4.8 KB**；tail=50 **3.30 ms / 8.2 KB** |
+| 探针 `chip_debugger/` 解析缓存（真因：`Attr()` 每次构造 RE2 ≈47 µs × ~320 次） | CorpusBeta `probe_status` **15.86 ms** / `probe_clocks` **15.27 ms** | **0.47 / 0.23 ms** |
+| 插件：模块树精确 fire / 状态栏写判等 / flow 诊断 50 ms 微批 | 34–143 节点重建；40 次写；20 次 set/210 条 | 1 节点；2 次写；1 次 set/20 条 |
+
+等价性：216 组 tail/max_chars 组合 0 处不一致；排序快照法 same order=1。
+**唯一有意的输出变化**：`kind=td/both` 每目录最多返回最近 3 份 `td_*.log`（旧 12；更早日志仍在磁盘），
+已写进 `doc/mcp-usage.md`；MCP `description` 受 Python 对等门禁约束不能改。
+
+**撤回**：冷构建 `flow.status` 单次读（收益 ~0.2 ms，但输出不再与无缓存构建逐字节一致）——整文件回滚。
+
+**验证**：dev/release ctest 71/71 + docs_clang_tidy 通过（基线 142 条）；插件 **67/67**；四个 python 门禁 PASS。

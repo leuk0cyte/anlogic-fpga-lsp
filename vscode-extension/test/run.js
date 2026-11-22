@@ -82,6 +82,7 @@ const {
     MAX_CONSECUTIVE_FLOW_ERRORS,
 } = require('../src/flowController');
 const { FALLBACK_POLL_MS } = require('../src/flowController');
+const { FLOW_DIAG_BATCH_MS } = require('../src/flowController');
 const { ReportsService, CancelledError } = require('../src/reportsService');
 const { renderReportsHtml } = require('../src/reportsHtml');
 const { renderTrendHtml } = require('../src/trendHtml');
@@ -121,6 +122,29 @@ function excludes(haystack, needle, what) {
     if (String(haystack).includes(needle)) {
         throw new Error(`${what || 'unexpected text'} ${JSON.stringify(needle)}`);
     }
+}
+
+/**
+ * P3-B (audit §7 #5): count the *real* `statusBarItem.text = ...` assignments. Each one is an
+ * extension-host -> renderer IPC plus a status bar layout in VS Code, so "how many writes" is the
+ * metric that matters -- not how many times the renderer was called.
+ * @param {Array<any>} items status bar items (a single-element array works too)
+ * @returns {string[]} the texts that were actually written, in order
+ */
+function countStatusTextWrites(items) {
+    const writes = [];
+    for (const item of items || []) {
+        let painted = item.text;
+        Object.defineProperty(item, 'text', {
+            configurable: true,
+            get: () => painted,
+            set: (next) => {
+                painted = next;
+                writes.push(String(next));
+            },
+        });
+    }
+    return writes;
 }
 
 // ------------------------------------------------------------------ sample payloads
@@ -868,6 +892,28 @@ test('extension: activation wires views, commands, reports panel and flow events
     ok(projectStatus.text.includes(sampleInfo.device),
         'status bar shows the device (got: ' + projectStatus.text + ')');
 
+    // P3-B (audit §7 #5): during a run, every `flowEvent` wrote *two* status items (the flow
+    // item from FlowController + this project line) unconditionally -- 20 events = 40 writes.
+    // Both sides now compare the text first, so a burst of identical events costs at most one
+    // real `text=` per item.
+    const statusWrites = countStatusTextWrites(mock.__state.statusBarItems);
+    const burstRun = mock.commands.executeCommand('fpgaLsp.runSyn');
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    const writesBeforeBurst = statusWrites.length;
+    for (let i = 0; i < 20; i += 1) {
+        handler({
+            type: 'log', stage: 'syn', elapsed: 1,
+            message: 'RUN-1002 : start command "launch_runs"',
+        });
+    }
+    const burstWrites = statusWrites.length - writesBeforeBurst;
+    ok(burstWrites <= 2,
+        `20 identical flowEvents -> at most one write per status item (got ${burstWrites})`);
+    console.log(`  [statusbar] 20 identical flowEvents (extension path, `
+        + `${mock.__state.statusBarItems.length} items) -> ${burstWrites} real text= writes (was 40)`);
+    handler({ runId: 'r1', type: 'done', ok: true, stage: 'syn' });
+    await burstRun;
+
     await extension.deactivate();
 });
 
@@ -978,6 +1024,73 @@ test('flow diagnostics publish to the Problems collection', () => {
     eq(diagnostics[0].source, 'fpga-flow');
     eq(diagnostics[0].range.start.line, 11);
     controller.dispose();
+});
+
+// P3-B (audit §7 #6): the collection used to be `set()` once per issue, with the *accumulated*
+// array each time: 20 issues on one file = 20 sets / 1+2+…+20 = 210 items (O(N²)). Now the map is
+// updated synchronously (same final Problems set) but published once per window, and only for the
+// URIs that actually changed.
+test('flow diagnostics: one batched set() per window, only for changed files', async () => {
+    const controller = new FlowController({
+        rpc: { request: async () => ({}), execute: async () => ({}) },
+        getProjectInfo: async () => ({ al: 'Y:/p/demo.al', dir: 'Y:/p' }),
+    });
+    controller._projectInfo = { al: 'Y:/p/demo.al', dir: 'Y:/p' };
+    const sets = [];
+    const collection = controller._flowDiagnostics;
+    collection.set = (uri, list) => sets.push({ uri: String(uri), items: list.length });
+    const waitFlush = () => new Promise((resolve) => setTimeout(resolve, FLOW_DIAG_BATCH_MS + 40));
+    try {
+        for (let i = 1; i <= 20; i += 1) {
+            controller.onFlowEvent({
+                type: 'error',
+                message: `HDL-1007 : undeclared symbol 'x${i}', assumed wire in src/top.v(${i})`,
+            });
+        }
+        eq(controller._flowDiagMap.size, 1, 'one file in the logical map, updated synchronously');
+        eq(Array.from(controller._flowDiagMap.values())[0].length, 20, 'all 20 issues are kept');
+        eq(sets.length, 0, 'no set() inside the burst (it is batched)');
+
+        await waitFlush();
+        eq(sets.length, 1, `20 issues -> one set() (got ${sets.length})`);
+        eq(sets[0].items, 20, 'the single set() carries 20 items, not 1+2+…+20 = 210');
+        includes(sets[0].uri, 'top.v', 'the changed file is the one that was set');
+        console.log(`  [diagnostics] 20 issues on one file -> ${sets.length} set() with `
+            + `${sets[0].items} items (was 20 set() / 210 items)`);
+
+        // A second file only sets that file; the first is left untouched (no marker rebuild).
+        controller.onFlowEvent({
+            type: 'error',
+            message: "HDL-1007 : undeclared symbol 'y', assumed wire in src/system/pwm_gen.v(7)",
+        });
+        await waitFlush();
+        eq(sets.length, 2, 'one more set for the newly changed file');
+        eq(sets[1].items, 1, 'the second file carries only its own issue');
+        includes(sets[1].uri, 'pwm_gen.v');
+        eq(controller._flowDiagMap.size, 2, 'two files in Problems');
+
+        // A duplicate issue is still deduplicated (no extra item, no extra set).
+        controller.onFlowEvent({
+            type: 'error',
+            message: "HDL-1007 : undeclared symbol 'y', assumed wire in src/system/pwm_gen.v(7)",
+        });
+        await waitFlush();
+        eq(sets.length, 2, 'duplicate issue -> no extra set()');
+        eq(Array.from(controller._flowDiagMap.values()).reduce((n, list) => n + list.length, 0), 21,
+            'duplicate issue -> still 21 diagnostics in total');
+
+        // Starting the next run clears the collection; a pending batch must not resurrect it.
+        controller.onFlowEvent({
+            type: 'error',
+            message: "HDL-1007 : undeclared symbol 'z', assumed wire in src/top.v(31)",
+        });
+        controller._clearFlowDiagnostics();
+        await waitFlush();
+        eq(sets.length, 2, 'a cleared batch is never published (no stale Problems)');
+        eq(controller._flowDiagMap.size, 0, 'Problems cleared');
+    } finally {
+        controller.dispose();
+    }
 });
 
 const protocol = require('../src/protocol');
@@ -1136,6 +1249,43 @@ test('module tree: indexChanged patches the affected module in place', async () 
     eq(pll.raw.portCount, 7, 'node payload updated');
     eq(requested.length, 1, 'no extra fpgaLsp/moduleTree request');
     eq(provider.stats.inPlace, 1);
+});
+
+test('module tree: single-module indexChanged fires only that node', async () => {
+    const requested = [];
+    const provider = new ModuleTreeProvider({
+        request: async (method, params) => { requested.push({ method, params }); return sampleModuleTree(); },
+    });
+    await provider.refresh();
+    // Collect what the provider invalidates. `undefined` = VS Code re-fetches the whole tree.
+    const fired = [];
+    provider.onDidChangeTreeData((element) => fired.push(element));
+
+    const outcome = provider.applyIndexChanged({
+        al: '%WORKSPACE%/CorpusAlpha/demo_project.al',
+        paths: ['%WORKSPACE%/CorpusAlpha/src/top.v'],
+        modules: [{ module: 'pll_gen', portCount: 9 }],
+    });
+    eq(outcome, 'in-place', 'module-level event patches without a request');
+    eq(fired.length, 1, 'exactly one invalidation for one changed module');
+    ok(fired[0] && fired[0].raw && fired[0].raw.module === 'pll_gen',
+        `only the patched node is invalidated (got ${fired[0] === undefined ? 'undefined = whole tree' : fired[0].raw && fired[0].raw.module})`);
+    eq(provider.stats.precise, 1, 'precise fire counted');
+    eq(provider.stats.wide, 0, 'no whole-tree fire');
+    includes(provider.getTreeItem(fired[0]).tooltip, 'ports: 9', 'the rebuilt TreeItem shows the patched data');
+    eq(requested.length, 1, 'still no extra fpgaLsp/moduleTree request');
+
+    // Several modules in one event: a TreeView fires one element per event, so N events are not
+    // cheaper than one rebuild -- keep the documented whole-tree fallback for that case.
+    fired.length = 0;
+    provider.applyIndexChanged({
+        modules: [{ module: 'pll_gen', portCount: 3 }, { module: 'pwm_gen', portCount: 12 }],
+    });
+    eq(fired.length, 1, 'one invalidation for the multi-module patch');
+    eq(fired[0], undefined, 'multi-module patch falls back to the whole tree');
+    eq(provider.stats.wide, 1, 'whole-tree fallback counted');
+    console.log('  [fire] single module -> 1 fire(node) (1 repainted node); '
+        + 'multi module -> 1 fire(undefined) (whole-tree fallback)');
 });
 
 test('module tree: indexChanged ignores files of another project', async () => {
@@ -1427,6 +1577,46 @@ test('flow controller: right-click Run / Reset run goes through the controller',
     } finally {
         window.window.showInformationMessage = originalInfo;
         window.window.showWarningMessage = originalWarning;
+        controller.dispose();
+    }
+});
+
+// P3-B (audit §7 #5): a `flowEvent` used to write its status item unconditionally, so 20 events
+// while running produced 40 `text=` writes (flow item + the extension's project line). The
+// controller side is checked here; the extension-side line is covered by the activation test.
+test('flow controller: identical flow events do not rewrite the status bar', async () => {
+    const controller = new FlowController({
+        rpc: {
+            request: async () => ({ ok: true, flow: { running: true } }),
+            execute: async () => ({ ok: true }),
+        },
+        getProjectInfo: async () => ({ al: 'Y:/p/demo.al' }),
+    });
+    const writes = countStatusTextWrites([controller.statusBar]);
+    controller.active = {
+        runId: 'r-status', label: 'synthesis', stages: ['syn'], step: undefined,
+        startedAt: Date.now(), sawRunning: true, pollErrors: 0,
+        timeoutMs: 600000, deadline: Date.now() + 600000,
+    };
+    try {
+        for (let i = 0; i < 20; i += 1) {
+            controller.onFlowEvent({
+                runId: 'r-status', type: 'log', stage: 'syn', elapsed: 1,
+                message: 'RUN-1002 : start command "launch_runs"',
+            });
+        }
+        eq(writes.length, 1, `20 identical flowEvents -> one real setText (got ${writes.length})`);
+        includes(writes[0], 'syn', 'the one write is the running status');
+        const burstWrites = writes.length;
+        // Text that really changed must still reach the item -- exactly once.
+        controller.setStatusRunning('syn · 2.0s');
+        eq(writes.length, 2, `a changed text writes once more (got ${writes.length})`);
+        controller.setStatusRunning('syn · 2.0s');
+        eq(writes.length, 2, 'repeating the same text is still a no-op');
+        console.log(`  [statusbar] 20 identical flowEvents -> ${burstWrites} real text= write `
+            + '(was 20 before dedupe); a changed text still writes once');
+    } finally {
+        controller.active = undefined;
         controller.dispose();
     }
 });
@@ -2108,6 +2298,22 @@ test('module tree: lazy children are fetched on expand, exactly once', async () 
     const again = await provider.getChildren(root);
     eq(again.length, 2, 'second expand reuses loaded children');
     eq(calls.filter((c) => c.method === 'fpgaLsp/moduleChildren').length, 1, 'no duplicate request');
+
+    // P3-B (audit §7 #4): an in-place patch of a lazily loaded node fires that node; VS Code
+    // then re-asks for its children, which must come from the cached level -- not a second
+    // `fpgaLsp/moduleChildren` round trip.
+    const countChildrenCalls = () => calls.filter((c) => c.method === 'fpgaLsp/moduleChildren').length;
+    const lazyNode = children.find((node) => node.raw.module === 'b');
+    await provider.getChildren(lazyNode);              // first expansion: one request
+    eq(countChildrenCalls(), 2, 'lazy node "b" loaded on demand');
+    const fired = [];
+    provider.onDidChangeTreeData((element) => fired.push(element));
+    provider.applyIndexChanged({ modules: [{ module: 'b', portCount: 4 }] });
+    eq(fired.length, 1, 'precise fire for the patched lazy node');
+    eq(fired[0], lazyNode, 'the fired element is the visible node (expansion state is kept)');
+    const reloaded = await provider.getChildren(lazyNode);
+    eq(reloaded.length, 2, 'children still available after the precise fire');
+    eq(countChildrenCalls(), 2, 'no duplicate moduleChildren request for the precise fire');
 });
 
 

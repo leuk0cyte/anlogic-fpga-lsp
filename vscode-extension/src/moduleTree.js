@@ -150,8 +150,17 @@ class ModuleTreeProvider {
         this._cancellation = undefined;
         /** P2-C: content digest of the tree currently shown (`''` = nothing painted yet). */
         this._digest = '';
-        /** @type {{requests:number, debounced:number, ignored:number, inPlace:number, skipped:number}} */
-        this.stats = { requests: 0, debounced: 0, ignored: 0, inPlace: 0, skipped: 0 };
+        /**
+         * `precise` / `wide` split the in-place counter by invalidation granularity:
+         * `precise` = one `fire(node)` (1 node repainted), `wide` = the `fire(undefined)` fallback
+         * used when several modules changed at once (P3-B audit #4).
+         * @type {{requests:number, debounced:number, ignored:number, inPlace:number, skipped:number,
+         *         precise:number, wide:number}}
+         */
+        this.stats = {
+            requests: 0, debounced: 0, ignored: 0, inPlace: 0, skipped: 0,
+            precise: 0, wide: 0,
+        };
         this._onDidChangeTreeData = new vscode.EventEmitter();
         this.onDidChangeTreeData = this._onDidChangeTreeData.event;
     }
@@ -222,14 +231,32 @@ class ModuleTreeProvider {
         }
 
         const modules = Array.isArray(event.modules) ? event.modules : [];
-        if (event.full !== true && modules.length && this._applyModuleUpdates(modules)) {
-            this.stats.inPlace += 1;
-            // Keep the digest in sync with what is now painted, so a subsequent full refresh
-            // carrying the same (patched) content is a no-op instead of a rebuild.
-            this._digest = this._treeDigest(this.payload);
-            this._syncMessage();
-            this._onDidChangeTreeData.fire(undefined);
-            return 'in-place';
+        if (event.full !== true && modules.length) {
+            const touched = this._applyModuleUpdates(modules);
+            if (touched.length) {
+                this.stats.inPlace += 1;
+                // Keep the digest in sync with what is now painted, so a subsequent full refresh
+                // carrying the same (patched) content is a no-op instead of a rebuild.
+                this._digest = this._treeDigest(this.payload);
+                this._syncMessage();
+                // P3-B (audit §7 #4): the in-place branch only rewrote one module's fields, yet it
+                // used to `fire(undefined)` -- which makes VS Code re-fetch *every expanded node*
+                // (34 / 143 TreeItems on CorpusAlpha / CorpusBeta, 1.16 / 0.97 ms). `fire(node)` invalidates
+                // just that node's subtree, so exactly one TreeItem is rebuilt. Everything else is
+                // unchanged: the digest was already refreshed above, `getChildren()` still answers
+                // from the cached (or lazily loaded) children, so no expansion state is lost and no
+                // `moduleChildren` request is repeated. Only when several modules moved (or the
+                // node cannot be located) do we fall back to the whole-tree invalidation, because a
+                // TreeView fires one element per event and N events are not cheaper than one.
+                if (touched.length === 1) {
+                    this.stats.precise += 1;
+                    this._onDidChangeTreeData.fire(touched[0]);
+                } else {
+                    this.stats.wide += 1;
+                    this._onDidChangeTreeData.fire(undefined);
+                }
+                return 'in-place';
+            }
         }
 
         // F6/R1: the server only pushes this notification *after* it re-indexed, so waiting for
@@ -240,10 +267,14 @@ class ModuleTreeProvider {
         return 'refresh';
     }
 
-    /** Patch node payloads in place for module-level events; true when at least one matched. */
+    /**
+     * Patch node payloads in place for module-level events.
+     * @returns {Array<any>} the distinct nodes that were matched (empty = nothing to patch)
+     */
     _applyModuleUpdates(modules) {
-        if (!this.rootNode) return false;
-        let changed = false;
+        if (!this.rootNode) return [];
+        /** @type {Set<any>} */
+        const touched = new Set();
         for (const entry of modules) {
             const name = typeof entry === 'string' ? entry : (entry && entry.module ? entry.module : '');
             if (!name) continue;
@@ -255,9 +286,9 @@ class ModuleTreeProvider {
                 if (typeof entry.defined === 'boolean') raw.defined = entry.defined;
                 node.raw = raw;
             }
-            changed = true;
+            touched.add(node);
         }
-        return changed;
+        return Array.from(touched);
     }
 
     _findNodeByName(name) {

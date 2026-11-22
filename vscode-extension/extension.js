@@ -406,15 +406,26 @@ function activate(context) {
     statusItem.show();
     context.subscriptions.push(statusItem);
     const statusState = { project: '', device: '', wns: undefined, flow: '' };
+    // P3-B (audit §7 #5): one `text=` assignment is an extension-host -> renderer IPC plus a
+    // status bar layout. `flowEvent` used to rewrite this line for every event even when the
+    // rendered string was identical (60 events = 60 writes, 20 running events = 20 of the 40).
+    // Remember what is painted; an unchanged text/tooltip (and the initial one counts) is a no-op.
+    let lastStatusText = statusItem.text;
+    let lastStatusTooltip = statusItem.tooltip;
     const renderStatus = () => {
         const parts = [statusState.project || 'no project'];
         if (statusState.device) parts.push(statusState.device);
         if (Number.isFinite(statusState.wns)) parts.push(`WNS ${statusState.wns} ns`);
         if (statusState.flow) parts.push(statusState.flow);
-        statusItem.text = `FPGA: ${parts.join(' · ')}`;
-        statusItem.tooltip = statusState.project
+        const text = `FPGA: ${parts.join(' · ')}`;
+        const tooltip = statusState.project
             ? `Project: ${statusState.project}${statusState.device ? `\nDevice: ${statusState.device}` : ''}`
             : 'No Anlogic .al project found in this workspace';
+        if (text === lastStatusText && tooltip === lastStatusTooltip) return;
+        statusItem.text = text;
+        statusItem.tooltip = tooltip;
+        lastStatusText = text;
+        lastStatusTooltip = tooltip;
     };
     // S7: make agent permissions visible. allowWrite/allowFlow silently become command line
     // flags; the user had no way to see that an agent may now modify the project or start TD.

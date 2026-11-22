@@ -27,6 +27,14 @@ try {
 const FALLBACK_POLL_MS = 10000;
 const FINISH_GRACE_MS = 4000;
 
+// P3-B (audit §7 #6): `_captureFlowIssue()` used to `DiagnosticCollection.set(uri, growingList)`
+// once per issue, so 20 issues on one file cost 20 `set()` calls carrying 1+2+…+20 = 210 items
+// (O(N²)) and made VS Code rebuild that file's markers 20 times. Issues are still accumulated
+// synchronously in `_flowDiagMap` (same final set), but the publish is coalesced per window and
+// only URIs that actually changed are set -- once. Small enough to feel instant, long enough that
+// a burst of log lines in one tick becomes one `set()`.
+const FLOW_DIAG_BATCH_MS = 50;
+
 // Absolute timeout (2026-11-22 audit, major): the 10 s fallback poll had no upper bound. If
 // `fpgaLsp/flowStatus` keeps throwing, or the server never flips `running`, the notification
 // stayed on "busy" forever and `FINISH_GRACE_MS` never applied (it only ran for running=false),
@@ -190,6 +198,13 @@ class FlowController {
             this._flowDiagnostics = undefined;
         }
         this._flowDiagMap = new Map();
+        /** key (uri string) -> vscode.Uri; kept so the batched flush can `set()` without a lookup. */
+        this._flowDiagUris = new Map();
+        /** key -> Set(fingerprint): O(1) duplicate test instead of scanning the whole list. */
+        this._flowDiagKeys = new Map();
+        /** keys changed since the last flush (the only ones that get `set()`). */
+        this._flowDiagPending = new Set();
+        this._flowDiagTimer = undefined;
         this._projectInfo = undefined;
         this.getProjectInfo = typeof opts.getProjectInfo === 'function' ? opts.getProjectInfo : undefined;
         this.statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
@@ -198,6 +213,13 @@ class FlowController {
         this.statusBar.text = '$(cpu) FPGA: idle';
         this.statusBar.tooltip = 'Anlogic FPGA flow — click to open reports';
         if (typeof this.statusBar.show === 'function') this.statusBar.show();
+        // P3-B (audit §7 #5): every write is an extension-host -> renderer IPC + a layout pass, and
+        // `flowEvent` bursts kept rewriting the same text (20 events while running = 40 writes
+        // across the two status items). Remember what is actually painted so an unchanged
+        // text/tooltip is a no-op; the initial pair counts as already shown.
+        this._lastStatusText = this.statusBar.text;
+        this._lastStatusTooltip = this.statusBar.tooltip;
+        this._statusShown = true;
 
         this.active = undefined;
         this.poller = undefined;
@@ -217,6 +239,13 @@ class FlowController {
         this._doneResolve = undefined;
         this.active = undefined;
         if (resolve) resolve({ ok: false, error: 'disposed' });
+        // Drop a pending diagnostic batch: the collection is about to be disposed, so a late
+        // `set()` would only touch a dead object.
+        if (this._flowDiagTimer) {
+            clearTimeout(this._flowDiagTimer);
+            this._flowDiagTimer = undefined;
+        }
+        this._flowDiagPending = new Set();
         try {
             if (this._flowDiagnostics) this._flowDiagnostics.dispose();
         } catch (_) { /* ignore */ }
@@ -236,8 +265,54 @@ class FlowController {
 
     _clearFlowDiagnostics() {
         this._flowDiagMap = new Map();
+        this._flowDiagUris = new Map();
+        this._flowDiagKeys = new Map();
+        // A pending flush must not re-publish entries of the previous run after this clear.
+        this._flowDiagPending = new Set();
+        if (this._flowDiagTimer) {
+            clearTimeout(this._flowDiagTimer);
+            this._flowDiagTimer = undefined;
+        }
         if (this._flowDiagnostics) {
             try { this._flowDiagnostics.clear(); } catch (_) { /* ignore */ }
+        }
+    }
+
+    /**
+     * P3-B (audit §7 #6): mark one URI dirty and publish the whole batch after
+     * `FLOW_DIAG_BATCH_MS`. One `set()` per changed URI per window instead of one per issue.
+     */
+    _scheduleFlowDiagFlush(key) {
+        if (!this._flowDiagnostics) return;
+        this._flowDiagPending.add(key);
+        if (this._flowDiagTimer) return;
+        this._flowDiagTimer = setTimeout(() => {
+            this._flowDiagTimer = undefined;
+            this._flushFlowDiagnostics();
+        }, FLOW_DIAG_BATCH_MS);
+        if (this._flowDiagTimer && typeof this._flowDiagTimer.unref === 'function') {
+            this._flowDiagTimer.unref();
+        }
+    }
+
+    /**
+     * Publish the accumulated diagnostics for the URIs that changed since the last flush.
+     * The collections are replaced wholesale (`set(uri, fullList)`), which is what the Problems
+     * view expects; unchanged URIs are left alone so VS Code does not rebuild their markers.
+     */
+    _flushFlowDiagnostics() {
+        if (this._flowDiagTimer) {
+            clearTimeout(this._flowDiagTimer);
+            this._flowDiagTimer = undefined;
+        }
+        const pending = this._flowDiagPending;
+        this._flowDiagPending = new Set();
+        if (!this._flowDiagnostics || !pending.size) return;
+        for (const key of pending) {
+            const uri = this._flowDiagUris.get(key);
+            const list = this._flowDiagMap.get(key);
+            if (!uri || !list) continue;
+            try { this._flowDiagnostics.set(uri, list); } catch (_) { /* ignore */ }
         }
     }
 
@@ -268,22 +343,43 @@ class FlowController {
             return;
         }
         const list = this._flowDiagMap.get(key) || [];
-        if (list.some((item) => item.code === diagnostic.code
-            && item.message === diagnostic.message
-            && item.range.start.line === line)) return;
+        // O(1) duplicate test (was `list.some(...)`, i.e. O(N) per issue -> O(N²) per file).
+        let seen = this._flowDiagKeys.get(key);
+        if (!seen) {
+            seen = new Set();
+            this._flowDiagKeys.set(key, seen);
+        }
+        const fingerprint = `${diagnostic.code}\u0000${diagnostic.message}\u0000${line}`;
+        if (seen.has(fingerprint)) return;
         if (list.length >= 300) return;
+        seen.add(fingerprint);
         list.push(diagnostic);
         this._flowDiagMap.set(key, list);
-        try { this._flowDiagnostics.set(uri, list); } catch (_) { /* ignore */ }
+        this._flowDiagUris.set(key, uri);
+        // Batched publish: the map is already up to date (readers/tests see the final set
+        // synchronously), only the expensive `DiagnosticCollection.set()` is coalesced.
+        this._scheduleFlowDiagFlush(key);
     }
 
     // ---------------------------------------------------------------- status bar
 
     _setStatus(text, tooltip) {
         if (!this.statusBar) return;
-        this.statusBar.text = text;
-        this.statusBar.tooltip = tooltip;
-        if (typeof this.statusBar.show === 'function') this.statusBar.show();
+        // P3-B (audit §7 #5): skip the IPC when the painted text/tooltip is already this one.
+        // The two `flowEvent` writers per event (this item + the extension's project line) now
+        // cost 0 writes for an event that carries no new text -- and 2 at most, once each, for a
+        // burst where the text really changes.
+        const changed = text !== this._lastStatusText || tooltip !== this._lastStatusTooltip;
+        if (changed) {
+            this.statusBar.text = text;
+            this.statusBar.tooltip = tooltip;
+            this._lastStatusText = text;
+            this._lastStatusTooltip = tooltip;
+        }
+        if (!this._statusShown) {
+            if (typeof this.statusBar.show === 'function') this.statusBar.show();
+            this._statusShown = true;
+        }
     }
 
     setStatusRunning(text) {
@@ -768,6 +864,7 @@ module.exports = {
     shouldAbandonOnErrors,
     FALLBACK_POLL_MS,
     FINISH_GRACE_MS,
+    FLOW_DIAG_BATCH_MS,
     FLOW_TIMEOUT_AUTO_MIN,
     FLOW_TIMEOUT_MAX_SETTING_MIN,
     MAX_CONSECUTIVE_FLOW_ERRORS,

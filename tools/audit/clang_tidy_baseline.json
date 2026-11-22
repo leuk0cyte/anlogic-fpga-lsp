@@ -1,6 +1,6 @@
 {
  "schema": 1,
- "generated": "2026-11-23T03:38:03+0800",
+ "generated": "2026-11-23T04:24:24+0800",
  "tool": "LLVM 23.1.5",
  "config": ".clang-tidy",
  "config_sha1": "d86d7a7e8828850aa915ed1dde75ffc07892a838",
@@ -406,7 +406,7 @@
   },
   {
    "file": "src/flow/probe.cpp",
-   "line": 140,
+   "line": 158,
    "col": 5,
    "check": "cert-err33-c",
    "sev": "warning",
@@ -414,7 +414,7 @@
   },
   {
    "file": "src/flow/probe.cpp",
-   "line": 278,
+   "line": 443,
    "col": 87,
    "check": "performance-no-automatic-move",
    "sev": "warning",
@@ -422,7 +422,7 @@
   },
   {
    "file": "src/flow/probe.cpp",
-   "line": 281,
+   "line": 446,
    "col": 31,
    "check": "performance-no-automatic-move",
    "sev": "warning",
@@ -430,7 +430,7 @@
   },
   {
    "file": "src/flow/probe.cpp",
-   "line": 283,
+   "line": 448,
    "col": 40,
    "check": "performance-no-automatic-move",
    "sev": "warning",
@@ -438,7 +438,7 @@
   },
   {
    "file": "src/flow/probe.cpp",
-   "line": 287,
+   "line": 452,
    "col": 27,
    "check": "performance-no-automatic-move",
    "sev": "warning",
@@ -446,7 +446,7 @@
   },
   {
    "file": "src/flow/probe.cpp",
-   "line": 2765,
+   "line": 2948,
    "col": 12,
    "check": "performance-no-automatic-move",
    "sev": "warning",
@@ -454,7 +454,7 @@
   },
   {
    "file": "src/flow/probe.cpp",
-   "line": 2844,
+   "line": 3028,
    "col": 39,
    "check": "bugprone-branch-clone",
    "sev": "warning",
@@ -462,7 +462,7 @@
   },
   {
    "file": "src/flow/probe.cpp",
-   "line": 3654,
+   "line": 3838,
    "col": 46,
    "check": "bugprone-signed-bitwise",
    "sev": "warning",
@@ -470,7 +470,7 @@
   },
   {
    "file": "src/flow/probe.h",
-   "line": 110,
+   "line": 111,
    "col": 8,
    "check": "bugprone-exception-escape",
    "sev": "warning",
@@ -654,7 +654,7 @@
   },
   {
    "file": "src/mcp/bridge.cpp",
-   "line": 412,
+   "line": 414,
    "col": 41,
    "check": "bugprone-throwing-static-initialization",
    "sev": "warning",
@@ -662,7 +662,7 @@
   },
   {
    "file": "src/mcp/bridge.cpp",
-   "line": 547,
+   "line": 549,
    "col": 43,
    "check": "bugprone-throwing-static-initialization",
    "sev": "warning",
@@ -670,7 +670,7 @@
   },
   {
    "file": "src/mcp/bridge.cpp",
-   "line": 565,
+   "line": 567,
    "col": 36,
    "check": "bugprone-throwing-static-initialization",
    "sev": "warning",
@@ -678,7 +678,7 @@
   },
   {
    "file": "src/mcp/bridge.cpp",
-   "line": 865,
+   "line": 867,
    "col": 16,
    "check": "performance-no-automatic-move",
    "sev": "warning",
@@ -686,7 +686,7 @@
   },
   {
    "file": "src/mcp/bridge.cpp",
-   "line": 977,
+   "line": 979,
    "col": 37,
    "check": "bugprone-branch-clone",
    "sev": "warning",
@@ -694,7 +694,7 @@
   },
   {
    "file": "src/mcp/bridge.cpp",
-   "line": 1110,
+   "line": 1112,
    "col": 80,
    "check": "bugprone-unchecked-optional-access",
    "sev": "warning",
@@ -702,7 +702,7 @@
   },
   {
    "file": "src/mcp/bridge.cpp",
-   "line": 1160,
+   "line": 1162,
    "col": 15,
    "check": "modernize-avoid-c-arrays",
    "sev": "warning",
@@ -710,7 +710,7 @@
   },
   {
    "file": "src/mcp/bridge.cpp",
-   "line": 3133,
+   "line": 3135,
    "col": 23,
    "check": "modernize-avoid-c-arrays",
    "sev": "warning",
@@ -718,7 +718,7 @@
   },
   {
    "file": "src/mcp/bridge.cpp",
-   "line": 4157,
+   "line": 4243,
    "col": 11,
    "check": "bugprone-empty-catch",
    "sev": "warning",
@@ -726,7 +726,7 @@
   },
   {
    "file": "src/mcp/bridge.cpp",
-   "line": 4742,
+   "line": 4828,
    "col": 19,
    "check": "modernize-avoid-c-arrays",
    "sev": "warning",
@@ -734,7 +734,7 @@
   },
   {
    "file": "src/mcp/bridge.cpp",
-   "line": 4779,
+   "line": 4865,
    "col": 19,
    "check": "modernize-avoid-c-arrays",
    "sev": "warning",

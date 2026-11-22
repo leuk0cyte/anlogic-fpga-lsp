@@ -109,6 +109,15 @@ GUI 的 Flow 视图是**恰好 6 步**：`read_design` / `opt_rtl` / `opt_gate`�
    ⚠ 客户端务必在 `exit` 之后**关闭 stdin**（或直接 kill）。phy 仍要 5–15 分钟，
    长跑任务必须留在同一个会话里。
 
+### `fpga_flow_log` 的读取范围
+
+为了让 `tail` 真的省 IO（旧实现会把每份 `td_*.log` 整读一遍），服务端现在：
+
+* 每份日志**从文件尾部读**（先 stat 大小，只读末尾 `max_chars` 字节；小文件/非法 UTF-8 回落整读），
+  返回文本与旧实现逐字节一致；
+* **每个目录最多返回最近 3 份 `td_*.log`**（按 mtime；更早的日志仍在磁盘上，需要时用 `fpga_read_file`）；
+* `kind=run` 只读 `<run>/run.log`，不受此限制。
+
 ## 五、写工具的 dry-run（预览）
 
 四个会**改工程**的工具有 `dry_run:true`：`fpga_project_add_source`、`fpga_project_rename`、

@@ -37,6 +37,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <cstdint>
 #include <string_view>
 #include <vector>
 
@@ -192,6 +193,25 @@ struct CwcSnapshot {
 
 CwcSnapshot ParseCwc(std::string_view text);
 CwcSnapshot ReadCwc(const std::string& path);
+
+// -----------------------------------------------------------------------------
+// chip_debugger/ 解析结果的进程内缓存（perf3 audit #4）—— 诊断 / 测试接口
+// -----------------------------------------------------------------------------
+//  `ReadMdn` / `ReadCwc` 的解析结果按 (path, size, mtime) 缓存在进程内：
+//    * 命中只做一次 stat（**不读正文**，stat 也不产生 read I/O），
+//      所以 `probe_status` / `probe_clocks` 稳态不再付 10.6 KB cwc 的读+解析；
+//    * 文件被任何方式改动（编辑器 / TD / 本后端）→ size 或 mtime 变 → 立刻失效；
+//    * probe 自己的写路径（user.mdn、compiled.cwc、user.cfg、实例 cwc、capture）
+//      写成功后**显式**整表失效，不依赖文件系统的 mtime 精度。
+//  下面的接口只用于测试/诊断（计数"命中/未命中"，断言第二次读没碰正文）。
+struct ParseCacheStats {
+    std::uint64_t hits = 0;
+    std::uint64_t misses = 0;
+};
+ParseCacheStats ChipDebuggerCacheStats();
+void ResetChipDebuggerCacheStats();
+// 丢弃全部已缓存的解析结果（正常路径不需要：写盘会自动/显式失效）。
+void InvalidateChipDebuggerCache();
 
 // -----------------------------------------------------------------------------
 // write_hw_cw_data 的输出 CSV

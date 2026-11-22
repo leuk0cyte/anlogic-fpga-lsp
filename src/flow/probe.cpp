@@ -15,6 +15,7 @@
 #include <format>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <string>
 #include <utility>
@@ -111,11 +112,28 @@ std::string ReadText(const std::string& path) {
 }
 
 // 从一段 XML 里取属性值：`name="..."` / `name='...'`
-std::string Attr(std::string_view tag, std::string_view name) {
+//
+// ⚠ 这里必须复用已编译的 RE2（perf3 audit #4 的真正热点）：`RE2` 的构造要解析
+// 正则（本机 ≈47 µs/次），而 `ParseCwc` 对每个属性都调一次 —— CorpusBeta 的
+// compiled.cwc（10.6 KB / 7 bus / 92 net）一次解析 ~320 次构造 ≈ 15 ms，
+// 正好是 `probe_status` 15.8 ms / `probe_clocks` 15.4 ms 的全部来源（输出仅 238 B）。
+// 属性名集合很小（name/clock/inst/… 十来种），缓存后单次解析降到 0.2 ms 级。
+// RE2 匹配本身线程安全；std::map 的节点地址稳定，返回的指针在插入新项后依然有效。
+const RE2* CompiledAttrPattern(std::string_view name) {
+    static std::mutex mutex;
+    static std::map<std::string, std::shared_ptr<const RE2>, std::less<>> cache;
+    std::scoped_lock lock(mutex);
+    const auto it = cache.find(name);
+    if (it != cache.end()) return it->second.get();
     const std::string pattern = "\\b" + std::string(name) + R"(\s*=\s*["']([^"']*)["'])";
-    const RE2 re(pattern);
+    auto compiled = std::make_shared<const RE2>(pattern);
+    cache.emplace(std::string(name), compiled);
+    return compiled.get();
+}
+
+std::string Attr(std::string_view tag, std::string_view name) {
     std::string value;
-    if (RE2::PartialMatch(tag, re, &value)) return value;
+    if (RE2::PartialMatch(tag, *CompiledAttrPattern(name), &value)) return value;
     return {};
 }
 
@@ -183,6 +201,153 @@ std::string JsonStringList(const std::vector<std::string>& items) {
 }
 
 }  // namespace
+
+// -----------------------------------------------------------------------------
+// chip_debugger/ 解析结果缓存（perf3 audit #4）
+// -----------------------------------------------------------------------------
+//  `probe_status` / `probe_clocks` 以前每次调用都把 `chip_debugger/user.mdn`
+//  （0.9 KB）与 `phy_1/cw/compiled.cwc`（10.6 KB，92 个 net）重新读 + 重新解析；
+//  CorpusBeta 实测 15.8 / 15.4 ms，而输出只有 238 B。UI 一旦打开探针面板就会连续轮询，
+//  于是这两份文件的解析被反复付钱。
+//
+//  缓存什么：`ReadMdn` / `ReadCwc` 的**解析结果**（只在这两个入口生效）。
+//  键：归一化后的文件路径 —— 换工程 / 换目录 / 换 run 都是不同路径，天然不共享。
+//  有效性：每次命中前比对一次 (size, mtime)（只 stat、**不读正文**）。
+//      stat 在本机 ≈4 µs，而且不算 read op（psutil 的 read_count/read_bytes 只看
+//      ReadFile，不看元数据）—— 所以稳态是"0 次正文读"，不是"少一点"。
+//      这样陈旧窗口 = 0，比要求的"不超过 1 s"更严：文件被编辑器/TD/我们自己
+//      改动（mtime 或 size 变）立刻失效。
+//  另外：probe 自己的写路径（WriteMdn、写 compiled.cwc / user.cfg / 实例 cwc /
+//      capture）在写成功后**显式**整表失效，保证"刚写完马上读"一定读到新内容，
+//      不依赖文件系统 mtime 的精度（网络盘/FAT 只有 1–2 s 粒度）。
+//  上界：每条 entry 只存一个解析结果；entry 数超过 kMaxCachedFiles 就整表清空。
+//      实际只会同时有 user.mdn + compiled.cwc（+ 少量临时副本）两三条。
+namespace {
+
+constexpr std::size_t kMaxCachedFiles = 64;
+
+struct FileStamp {
+    bool ok = false;
+    std::uintmax_t size = 0;
+    std::int64_t mtime_ns = 0;
+};
+
+// 一次 stat 拿 (size, mtime)。文件不存在 / 是目录 / 无权限 -> ok=false（不缓存）。
+FileStamp StampOfFile(const std::string& path) {
+    FileStamp stamp;
+    if (path.empty()) return stamp;
+    std::error_code ec;
+    const std::filesystem::path native(path);
+    // file_size 对"不存在 / 目录"都会失败，所以不必再单独 is_regular_file
+    const std::uintmax_t size = std::filesystem::file_size(native, ec);
+    if (ec) return stamp;
+    const std::filesystem::file_time_type write_time =
+        std::filesystem::last_write_time(native, ec);
+    if (ec) return stamp;
+    stamp.size = size;
+    stamp.mtime_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                         write_time.time_since_epoch())
+                         .count();
+    stamp.ok = true;
+    return stamp;
+}
+
+template <typename T>
+class FileParseCache {
+  public:
+    std::shared_ptr<const T> Get(const std::string& key, const FileStamp& stamp) {
+        if (key.empty() || !stamp.ok) return nullptr;
+        std::scoped_lock lock(mutex_);
+        const auto it = entries_.find(key);
+        if (it == entries_.end()) {
+            ++misses_;
+            return nullptr;
+        }
+        if (it->second.size != stamp.size || it->second.mtime_ns != stamp.mtime_ns) {
+            entries_.erase(it);  // 文件变了：旧结果立刻丢弃
+            ++misses_;
+            return nullptr;
+        }
+        ++hits_;
+        return it->second.value;
+    }
+
+    void Put(const std::string& key, const FileStamp& stamp, std::shared_ptr<const T> value) {
+        if (key.empty() || !stamp.ok || value == nullptr) return;
+        std::scoped_lock lock(mutex_);
+        if (entries_.size() >= kMaxCachedFiles && entries_.find(key) == entries_.end()) {
+            entries_.clear();
+        }
+        Entry& entry = entries_[key];
+        entry.size = stamp.size;
+        entry.mtime_ns = stamp.mtime_ns;
+        entry.value = std::move(value);
+    }
+
+    void Clear() {
+        std::scoped_lock lock(mutex_);
+        entries_.clear();
+    }
+
+    ParseCacheStats Stats() const {
+        std::scoped_lock lock(mutex_);
+        ParseCacheStats stats;
+        stats.hits = hits_;
+        stats.misses = misses_;
+        return stats;
+    }
+
+    void ResetStats() {
+        std::scoped_lock lock(mutex_);
+        hits_ = 0;
+        misses_ = 0;
+    }
+
+  private:
+    struct Entry {
+        std::uintmax_t size = 0;
+        std::int64_t mtime_ns = 0;
+        std::shared_ptr<const T> value;
+    };
+    mutable std::mutex mutex_;
+    std::map<std::string, Entry> entries_;
+    std::uint64_t hits_ = 0;
+    std::uint64_t misses_ = 0;
+};
+
+FileParseCache<MdnConfig>& MdnCache() {
+    static FileParseCache<MdnConfig> cache;
+    return cache;
+}
+
+FileParseCache<CwcSnapshot>& CwcCache() {
+    static FileParseCache<CwcSnapshot> cache;
+    return cache;
+}
+
+// probe 写盘之后调用：整表失效（只有两三条，清空比逐条精确失效更不容易漏）。
+void InvalidateParsedFileCaches() {
+    MdnCache().Clear();
+    CwcCache().Clear();
+}
+
+}  // namespace
+
+ParseCacheStats ChipDebuggerCacheStats() {
+    const ParseCacheStats mdn = MdnCache().Stats();
+    const ParseCacheStats cwc = CwcCache().Stats();
+    ParseCacheStats stats;
+    stats.hits = mdn.hits + cwc.hits;
+    stats.misses = mdn.misses + cwc.misses;
+    return stats;
+}
+
+void ResetChipDebuggerCacheStats() {
+    MdnCache().ResetStats();
+    CwcCache().ResetStats();
+}
+
+void InvalidateChipDebuggerCache() { InvalidateParsedFileCaches(); }
 
 // -----------------------------------------------------------------------------
 // user.mdn
@@ -439,9 +604,13 @@ DisabledPlan ResolveDisabled(const std::vector<std::string>& signals,
 }
 
 MdnConfig ReadMdn(const std::string& path) {
+    // 命中缓存只花一次 stat（不读正文）；键是路径，换工程/换目录天然 miss。
+    const std::string key = Slashes(path);
+    const FileStamp stamp = StampOfFile(path);
+    if (std::shared_ptr<const MdnConfig> cached = MdnCache().Get(key, stamp)) return *cached;
     MdnConfig out;
-    out.path = Slashes(path);
-    if (!IsFile(path)) {
+    out.path = key;
+    if (!stamp.ok) {  // 不存在 / 读不了（stamp 失败 == 旧实现的 !IsFile）
         out.error = "no chip_debugger/user.mdn at " + out.path;
         return out;
     }
@@ -454,6 +623,7 @@ MdnConfig ReadMdn(const std::string& path) {
         // 读路径不写盘，所以这里只是把问题如实暴露给上层（Status 会把它放进 error 字段）。
         out.ok = false;
         out.error = signal_error + " (in " + out.path + ")";
+        MdnCache().Put(key, stamp, std::make_shared<const MdnConfig>(out));
         return out;
     }
     for (const std::string& line : Lines(text)) {
@@ -461,6 +631,7 @@ MdnConfig ReadMdn(const std::string& path) {
         out.other_lines.push_back(line);
     }
     out.ok = true;
+    MdnCache().Put(key, stamp, std::make_shared<const MdnConfig>(out));
     return out;
 }
 
@@ -554,6 +725,9 @@ bool WriteMdn(const std::string& project_dir, const std::string& path,
         if (error) *error = "cannot write " + Slashes(path) + ": " + written.error;
         return false;
     }
+    // 写路径显式失效：刚改过的 user.mdn 必须让下一次 ReadMdn 看到新内容
+    //（不依赖 mtime 精度；网络盘/FAT 只有 1–2 s 粒度）。
+    InvalidateParsedFileCaches();
     return true;
 }
 
@@ -680,8 +854,13 @@ CwcSnapshot ParseCwc(std::string_view text) {
 }
 
 CwcSnapshot ReadCwc(const std::string& path) {
+    // 与 ReadMdn 同一套缓存策略：(path, size, mtime) 命中就不读盘、不解析。
+    const std::string key = Slashes(path);
+    const FileStamp stamp = StampOfFile(path);
+    if (std::shared_ptr<const CwcSnapshot> cached = CwcCache().Get(key, stamp)) return *cached;
     CwcSnapshot out = ParseCwc(ReadText(path));
-    out.path = Slashes(path);
+    out.path = key;
+    CwcCache().Put(key, stamp, std::make_shared<const CwcSnapshot>(out));
     return out;
 }
 
@@ -2022,6 +2201,7 @@ jsonrpc::Json WriteCompiledCwcFromGate(const project::Project& project,
         out["reason"] = "cannot write " + CompiledCwc(project);
         return out;
     }
+    InvalidateParsedFileCaches();  // 刚写的 cwc 要能被下面的 ReadCwc 看到
     // bit 侧 sidecar 同步（disabled 位流同样需要）
     if (!IsFile(CompiledBit(project))) {
         const std::string run_bit =
@@ -2197,6 +2377,7 @@ bool WriteUserCfgFromMdn(const project::Project& project, std::string* error) {
         if (error != nullptr) *error = "cannot write " + user_cfg;
         return false;
     }
+    InvalidateParsedFileCaches();  // user.cfg 也是 cwc 模板（ReadCwc 会读它）
     return true;
 }
 
@@ -2292,6 +2473,7 @@ jsonrpc::Json WriteCompiledCwcAfterPhy(const project::Project& project) {
         out["reason"] = "cannot write " + CompiledCwc(project);
         return out;
     }
+    InvalidateParsedFileCaches();  // 刚写的 cwc 要能被下面的 ReadCwc 看到
     // bit 侧 sidecar 也补上
     if (!IsFile(CompiledBit(project))) {
         const std::string run_bit =
@@ -2761,6 +2943,7 @@ std::string EnsureCwcForInstance(const td::TdChoice& td, const project::Project&
              .ok) {
         return fail("cannot write " + path);
     }
+    InvalidateParsedFileCaches();  // 实例 cwc 也走 ReadCwc（见 Capture）
     if (info != nullptr) *info = impl_info;
     return path;
 }
@@ -2828,6 +3011,7 @@ jsonrpc::Json EnsureCompiledCwc(const project::Project& project,
         out["reason"] = "cannot write " + CompiledCwc(project);
         return out;
     }
+    InvalidateParsedFileCaches();  // 刚写的 cwc 要能被下面的 ReadCwc 看到
     const CwcSnapshot written = ReadCwc(CompiledCwc(project));
     out["ok"] = written.ok && written.net_count > 0;
     out["written"] = true;
@@ -3681,6 +3865,9 @@ jsonrpc::Json Capture(const td::TdChoice& td, const project::Project& project,
     jsonrpc::Json out = jsonrpc::Json::object();
     out["ok"] = false;
     out["stage"] = "precheck";
+    // 写路径先失效解析缓存：capture 会（重新）生成实例 cwc / 触发条件 cwc，
+    // 后面所有 mdn/cwc 的读都必须看到当前磁盘状态，不能拿到旧解析结果。
+    InvalidateParsedFileCaches();
 
     // ---- 多实例（多时钟域）----
     // TD 按时钟域把一个 mdn 拆成多个 watcher，`config_chatcher` 一次只能导入一个实例：

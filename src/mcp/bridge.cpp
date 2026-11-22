@@ -17,6 +17,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <sstream>
 #include <string>
@@ -41,6 +42,7 @@
 #include "platform/encoding.h"
 #include "platform/log.h"
 #include "platform/path.h"
+#include "platform/utf16.h"
 #include "platform/write_service.h"
 #include "project/al_project.h"
 #include "reports/reports_aggregate.h"
@@ -3246,21 +3248,67 @@ std::vector<std::string> RunLogPaths(const project::Project& proj) {
     return paths;
 }
 
-Json TailText(const std::string& path, int max_chars) {
+// ---- 尾读（perf3 audit R4）---------------------------------------------------
+//  `tail`/`max_chars` 以前只是"读完整个文件再 substr"：真实工程里 TD 日志是
+//  MB 级（本次语料 12 份 156 KB），实测 `tail=50` 与 `tail=200` 都付 65 ops /
+//  169 KB / 13.5 ms —— 裁的是输出，读盘一字节没省。
+//  这里先 stat 大小，只从末尾读 max_chars 需要的字节（+3 B 的 BOM 余量）。
+//  逐字节等价的三个理由：
+//    · size ≤ max_chars+3 → 旧实现根本不会截断（content 至多比 size 少 3 B 的
+//      BOM），走整读，与旧路径完全一样；
+//    · size > max_chars+3 → 旧实现保留的就是 **content 的最后 max_chars 字节**，
+//      而 content 只有开头的 BOM 会被去掉，截断点在文件尾部 → 与
+//      `data()+size-max_chars` 起的窗口逐字节相同；
+//    · 窗口必须是合法 UTF-8 才采用：`read_file_utf8` 会把非法字节替换成 U+FFFD
+//      （长度会变），那种情况下"最后 max_chars 字节"在原文里的位置会错位，
+//      只有整读才能与旧输出一致 → 返回 false 让调用方整读。
+//  返回 false = 需要整读（小文件 / 非法 UTF-8 / 读取失败）。
+bool ReadTailWindow(const std::string& path, std::uintmax_t size, int max_chars,
+                    std::string* text) {
+    if (max_chars <= 0) return false;
+    const std::uintmax_t keep = static_cast<std::uintmax_t>(max_chars);
+    // +3：UTF-8 BOM。带 BOM 时 content.size() = size-3，所以 size ≤ max_chars+3
+    // 时旧实现不会截断，必须整读才能拿到"去 BOM + 可能被 sanitize"的正文。
+    if (size <= keep + 3) return false;
+    std::ifstream in(AsPath(path), std::ios::binary);
+    if (!in) return false;
+    in.seekg(static_cast<std::streamoff>(size - keep), std::ios::beg);
+    if (!in) return false;
+    std::string window(static_cast<std::size_t>(keep), '\0');
+    in.read(window.data(), static_cast<std::streamsize>(keep));
+    if (in.gcount() != static_cast<std::streamsize>(keep)) return false;
+    if (!platform::is_valid_utf8(window)) return false;
+    *text = std::move(window);
+    return true;
+}
+
+// `known_size` 由目录枚举顺带给出（省掉每份日志的一次 stat；stat 在本机
+// Defender 下 ~40–90 µs，12 份就是 1 ms 级）。传 nullopt 时自己 stat。
+Json TailText(const std::string& path, int max_chars,
+              std::optional<std::uintmax_t> known_size = std::nullopt) {
     Json out = Json::object();
     out["path"] = path;
     std::error_code ec;
-    const auto size = fs::file_size(AsPath(path), ec);
-    if (ec) {
-        out["error"] = "cannot stat file";
-        out["text"] = "";
-        out["truncated"] = false;
-        out["size"] = 0;
-        return out;
+    std::uintmax_t size = known_size.value_or(0);
+    if (!known_size.has_value()) {
+        size = fs::file_size(AsPath(path), ec);
+        if (ec) {
+            out["error"] = "cannot stat file";
+            out["text"] = "";
+            out["truncated"] = false;
+            out["size"] = 0;
+            return out;
+        }
     }
-    std::string text = ReadTextFile(path);
-    const bool truncated = static_cast<int>(text.size()) > max_chars;
-    if (truncated) text = text.substr(text.size() - static_cast<size_t>(max_chars));
+    std::string text;
+    bool truncated = false;
+    if (ReadTailWindow(path, size, max_chars, &text)) {
+        truncated = true;
+    } else {
+        text = ReadTextFile(path);
+        truncated = static_cast<int>(text.size()) > max_chars;
+        if (truncated) text = text.substr(text.size() - static_cast<size_t>(max_chars));
+    }
     out["text"] = text;
     out["truncated"] = truncated;
     out["size"] = static_cast<long long>(size);
@@ -3607,31 +3655,69 @@ Json Bridge::FlowLog(const Json& arguments) {
     Json files = Json::array();
     // TD 会话日志现在会被归位到 `<al>/log/`（与 TD GUI 一致），所以两处都要看：
     // ① 状态目录里的 flow run 目录（旧版本/某些会话的落点）；② 工程的 log/ 目录。
+    //
+    // 每个目录只看最近 kRecentTdLogs 份（perf3 audit #4）。12 份 × 10 KB 已经是
+    // 12 次打开 + 12 份正文；排障时真正有用的是"这一次 / 上一次"的收尾，再往前
+    // 翻收益极低而成本线性增长（CorpusAlpha 实测 kind=td 13.5 ms / 114 KB 读）。
+    // 调大这个常量即回到旧行为（份数越多越慢），不需要改其它逻辑。
+    constexpr std::size_t kRecentTdLogs = 3;
     const auto append_td_logs = [&](const std::string& dir, const char* source) {
         std::error_code ec;
         if (!std::filesystem::is_directory(std::filesystem::path(dir), ec)) return;
-        std::vector<std::string> names;
-        for (const std::string& name : ListFiles(dir)) {
+        // 一次目录枚举就带出 (size, mtime)：以前在 sort 的比较器里现查
+        // `last_write_time`，136 份候选 ≈ 上千次 stat，光排序就 7.5 ms
+        // （本机 Defender 下每次 stat 要 2 次 open）。枚举本身 0.2 ms。
+        struct TdLog {
+            std::string name;
+            std::uintmax_t size = 0;
+            std::int64_t mtime_ns = 0;
+            bool has_stamp = false;  // stat 失败 → 与旧实现一样回落名字降序
+        };
+        std::vector<TdLog> logs;
+        std::filesystem::directory_iterator iterator(AsPath(dir), ec);
+        if (ec) return;
+        for (const std::filesystem::directory_entry& entry : iterator) {
+            const std::string name = ToUtf8(entry.path().filename());
             if (!name.starts_with("td_")) continue;
-            if (name.size() < 4 ||
-                  (!name.ends_with(".log") &&
-                   !name.ends_with(".logw"))) {
+            if (name.size() < 4 || (!name.ends_with(".log") && !name.ends_with(".logw"))) {
                 continue;
             }
-            names.push_back(name);
+            std::error_code entry_ec;
+            if (!entry.is_regular_file(entry_ec) || entry_ec) continue;  // 旧 ListFiles 只取普通文件
+            TdLog log;
+            log.name = name;
+            log.size = entry.file_size(entry_ec);
+            if (entry_ec) {
+                logs.push_back(std::move(log));
+                continue;
+            }
+            const auto write_time = entry.last_write_time(entry_ec);
+            if (entry_ec) {
+                logs.push_back(std::move(log));
+                continue;
+            }
+            log.mtime_ns =
+                std::chrono::duration_cast<std::chrono::nanoseconds>(write_time.time_since_epoch())
+                    .count();
+            log.has_stamp = true;
+            logs.push_back(std::move(log));
         }
-        // 只回最近 12 个（工程的 log/ 目录里可能堆着几十份历史会话）
-        std::ranges::sort(names, [&dir](const std::string& a, const std::string& b) {
-            std::error_code a_ec;
-            std::error_code b_ec;
-            const auto a_time = std::filesystem::last_write_time(std::filesystem::path(dir) / a, a_ec);
-            const auto b_time = std::filesystem::last_write_time(std::filesystem::path(dir) / b, b_ec);
-            if (a_ec || b_ec) return a > b;
-            return a_time > b_time;
+        // 先把名字按升序排一次 —— 旧实现走的是 ListFiles（它返回名字升序），
+        // 而 std::sort 不稳定：mtime 相同的两份日志（同一个会话的 .log/.logw
+        // 常见）最终顺序取决于输入顺序。这里复刻旧输入顺序，保证连"并列"
+        // 的相对次序都与改前逐字节一致。
+        std::ranges::sort(logs, [](const TdLog& a, const TdLog& b) { return a.name < b.name; });
+        // 排序语义与旧实现一致：mtime 降序；stat 失败时名字降序
+        std::ranges::sort(logs, [](const TdLog& a, const TdLog& b) {
+            if (!a.has_stamp || !b.has_stamp) return a.name > b.name;
+            return a.mtime_ns > b.mtime_ns;
         });
-        if (names.size() > 12) names.resize(12);
-        for (const std::string& name : names) {
-            Json data = TailText(path_join(dir, name), max_chars);
+        if (logs.size() > kRecentTdLogs) logs.resize(kRecentTdLogs);
+        for (const TdLog& log : logs) {
+            // size 由枚举给出：TailText 不必再 stat 一次
+            Json data = TailText(path_join(dir, log.name), max_chars,
+                                 log.has_stamp ? std::optional<std::uintmax_t>(log.size)
+                                               : std::nullopt);
             data["text"] = TailLines(data["text"].get<std::string>(), tail);
             data["kind"] = "td";
             data["source"] = source;

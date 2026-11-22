@@ -511,6 +511,121 @@ TEST(ProbeStatus, ReportsStaleWhenMdnNoLongerMatchesTheBit) {
     EXPECT_NE(status.value("reason", std::string()).find("incremental route"), std::string::npos);
 }
 
+// -----------------------------------------------------------------------------
+// chip_debugger/ 解析缓存（perf3 audit #4）
+//   CorpusBeta 有 user.mdn(0.9 KB)+compiled.cwc(10.6 KB) 时 probe_status 15.8 ms /
+//   probe_clocks 15.4 ms 全部花在"每次重读+重解析"，输出只有 238 B。
+//   这里钉住三件事：① 第二次读**命中缓存**（不读正文）；② 文件一变立刻失效；
+//   ③ 写路径（WriteMdn）之后立刻看到新内容（不依赖 mtime 精度）。
+// -----------------------------------------------------------------------------
+TEST(ProbeCache, SecondReadMdnHitsTheParseCache) {
+    ScopedTempDir temp("cache_mdn_hit");
+    const std::string path = temp.path() + "/chip_debugger/user.mdn";
+    Write(path, kRealMdn);
+    fpgalsp::probe::InvalidateChipDebuggerCache();
+    fpgalsp::probe::ResetChipDebuggerCacheStats();
+
+    const MdnConfig first = fpgalsp::probe::ReadMdn(path);
+    ASSERT_TRUE(first.exists);
+    const fpgalsp::probe::ParseCacheStats after_first =
+        fpgalsp::probe::ChipDebuggerCacheStats();
+
+    const MdnConfig second = fpgalsp::probe::ReadMdn(path);
+    const fpgalsp::probe::ParseCacheStats after_second =
+        fpgalsp::probe::ChipDebuggerCacheStats();
+
+    EXPECT_EQ(second.signals, first.signals);
+    EXPECT_EQ(second.ok, first.ok);
+    EXPECT_GE(after_second.hits, after_first.hits + 1) << "第二次必须命中（只 stat，不读正文）";
+    EXPECT_EQ(after_second.misses, after_first.misses) << "命中时不应再解析";
+}
+
+TEST(ProbeCache, MdnCacheInvalidatesWhenTheFileChanges) {
+    ScopedTempDir temp("cache_mdn_change");
+    const std::string path = temp.path() + "/chip_debugger/user.mdn";
+    Write(path, kRealMdn);
+    fpgalsp::probe::InvalidateChipDebuggerCache();
+    const MdnConfig before = fpgalsp::probe::ReadMdn(path);
+    ASSERT_FALSE(before.signals.empty());
+
+    // 内容与长度都变（也保证 stamp 一定不同，不依赖 mtime 粒度）
+    Write(path, "mark_debug { WHG/other_bus[0] WHG/other_bus[1] WHG/other_bus[2] }\n");
+    const MdnConfig after = fpgalsp::probe::ReadMdn(path);
+    EXPECT_EQ(after.signals,
+              (std::vector<std::string>{"WHG/other_bus[0]", "WHG/other_bus[1]",
+                                        "WHG/other_bus[2]"}));
+
+    // 删掉文件：exists=false 且带 error（缓存不能把"已删除"当成旧内容）
+    std::error_code ec;
+    fs::remove(fs::path(path), ec);
+    const MdnConfig gone = fpgalsp::probe::ReadMdn(path);
+    EXPECT_FALSE(gone.exists);
+    EXPECT_FALSE(gone.error.empty());
+}
+
+TEST(ProbeCache, WriteMdnInvalidatesTheCacheExplicitly) {
+    ScopedTempDir temp("cache_mdn_write");
+    const std::string path = temp.path() + "/chip_debugger/user.mdn";
+    Write(path, kRealMdn);
+    fpgalsp::probe::InvalidateChipDebuggerCache();
+    (void)fpgalsp::probe::ReadMdn(path);  // 先把它塞进缓存
+
+    std::string error;
+    ASSERT_TRUE(fpgalsp::probe::WriteMdn(temp.path(), path, {"WHG/x[1]"}, &error)) << error;
+    const MdnConfig after = fpgalsp::probe::ReadMdn(path);
+    EXPECT_EQ(after.signals, (std::vector<std::string>{"WHG/x[1]"}))
+        << "写路径必须先失效缓存（不依赖文件系统 mtime 精度）";
+}
+
+TEST(ProbeCache, SecondReadCwcHitsTheParseCache) {
+    ScopedTempDir temp("cache_cwc_hit");
+    const std::string path = temp.path() + "/compiled.cwc";
+    Write(path, kRealCwc);
+    fpgalsp::probe::InvalidateChipDebuggerCache();
+    fpgalsp::probe::ResetChipDebuggerCacheStats();
+
+    const CwcSnapshot first = fpgalsp::probe::ReadCwc(path);
+    ASSERT_TRUE(first.ok);
+    const fpgalsp::probe::ParseCacheStats after_first =
+        fpgalsp::probe::ChipDebuggerCacheStats();
+    const CwcSnapshot second = fpgalsp::probe::ReadCwc(path);
+    const fpgalsp::probe::ParseCacheStats after_second =
+        fpgalsp::probe::ChipDebuggerCacheStats();
+
+    EXPECT_EQ(second.net_count, first.net_count);
+    EXPECT_EQ(second.clock, first.clock);
+    EXPECT_EQ(second.buses.size(), first.buses.size());
+    EXPECT_GE(after_second.hits, after_first.hits + 1);
+
+    // 内容一变（bus/net 数不同）必须重新解析，不能返回旧快照
+    Write(path, R"(<chipwatcher version="3" project_name="p" chip_name="c">
+	<watcher_nodes>
+		<bus name="only[3:0]" clock="clk" inst="cwc1" type="MARK_DEBUG_PROBE" is_enabled="yes">
+			<net name="only[3]" const="false" data="enable" trig="enable"/>
+		</bus>
+	</watcher_nodes>
+</chipwatcher>
+)");
+    const CwcSnapshot changed = fpgalsp::probe::ReadCwc(path);
+    EXPECT_EQ(changed.net_count, 1);
+    EXPECT_EQ(changed.buses.size(), 1u);
+}
+
+// 缓存不得改变任何输出字段：连续两次 Status 的 JSON 必须逐字节相同。
+TEST(ProbeStatus, RepeatedStatusIsIdenticalWithTheParseCache) {
+    ScopedTempDir temp("status_cache_stable");
+    const fpgalsp::project::Project project = MakeProject(temp.path());
+    Write(fpgalsp::probe::MdnPath(project), MarkDebugLine(MatchingSignals()));
+    Write(fpgalsp::probe::CompiledCwc(project), kRealCwc);
+    Write(fpgalsp::probe::CompiledBit(project), "bit");
+    fpgalsp::probe::InvalidateChipDebuggerCache();
+
+    const fpgalsp::jsonrpc::Json first = fpgalsp::probe::Status(project);
+    const fpgalsp::jsonrpc::Json second = fpgalsp::probe::Status(project);
+    EXPECT_TRUE(first.value("ready", false)) << first.dump();
+    EXPECT_EQ(first.dump(), second.dump()) << "缓存命中不能改变任何字段";
+}
+
 TEST(ProbeConfigure, DryRunDoesNotTouchTheFile) {
     ScopedTempDir temp("config_dry");
     const fpgalsp::project::Project project = MakeProject(temp.path());
