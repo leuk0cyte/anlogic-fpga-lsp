@@ -80,3 +80,7 @@ doc/audit/2026-11-19/fix/results/*/mcp-raw*.json
 # ---- 审计原始工具输出（体积大且可用 tools/audit/run_audit.ps1 重跑生成；只提交报告本身）----
 doc/audit/**/clang-tidy.json
 doc/audit/**/clang-tidy.txt
+
+# ---- VS Code 集成测试的临时 profile（run-vscode-test.ps1 每次重建）----
+vscode-extension/.vsc_test/
+

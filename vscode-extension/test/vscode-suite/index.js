@@ -262,7 +262,9 @@ exports.run = async function () {
         try {
             await vscode.commands.executeCommand('fpgaLsp.highlightDiagnostics');
             await sleep(1200);
-            const reportPath = path.join(folder.uri.fsPath, '.fpgalsp', 'logs', 'highlight.txt');
+            const stateDirModule = require(path.join(ext.extensionPath, 'src', 'stateDir'));
+            const stateDir = stateDirModule.resolveStateDir(folder.uri.fsPath);
+            const reportPath = path.join(stateDir, 'logs', 'highlight.txt');
             const report = fs.existsSync(reportPath) ? fs.readFileSync(reportPath, 'utf8') : '';
             const tokenMatch = /semantic tokens\s*:\s*(\d+)/.exec(report);
             check('highlight diagnostics report written', report.length > 0, reportPath);
@@ -434,7 +436,9 @@ exports.run = async function () {
 
         // MCP: the extension should register its definition provider on VS Code versions that support it.
         try {
-            const extLogPath = path.join(folder.uri.fsPath, '.fpgalsp', 'logs', 'extension.log');
+            const extLogPath = path.join(
+            require(path.join(ext.extensionPath, 'src', 'stateDir')).resolveStateDir(folder.uri.fsPath),
+            'logs', 'extension.log');
             const extLog = fs.existsSync(extLogPath) ? fs.readFileSync(extLogPath, 'utf8') : '';
             const api = !!(vscode.lm && typeof vscode.lm.registerMcpServerDefinitionProvider === 'function');
             const dynamicDefault = ext.packageJSON
@@ -497,6 +501,77 @@ exports.run = async function () {
             check('reports panel command works', true, '');
         } catch (err) {
             check('reports panel command works', false, (err && err.message) || String(err));
+        }
+
+        // ---- 0.21.4 回归：Flow 六步右键 "Reset and Run This Flow Step" ----
+        // 用户反馈过的症状：点了之后 FPGA Flow 没有任何输出、下游两步还是"已完成"。
+        // 这里用真实 extension host + 真实后端 + 真实 TD 检查四件事：
+        //   1) 命令返回的是"flow 跑完"的结果（说明 controller 一直在跟踪，而不是发完就返回）；
+        //   2) FlowController 的输出通道收到 "▶ reset run ..." 与每步进度行；
+        //   3) syn 三步的 .end.f 标记全部被重写（reset run 语义 = 整条 run 重跑）；
+        //   4) 结束后 controller 回到空闲，状态栏显示 done。
+        try {
+            const api = await ext.activate();
+            const controller = api && api.flowController;
+            check('flow controller exposed for tests', !!controller);
+            const outputLines = [];
+            if (controller && controller.output) {
+                const original = controller.output.appendLine.bind(controller.output);
+                controller.output.appendLine = (text) => {
+                    outputLines.push(String(text));
+                    original(text);
+                };
+            }
+            const projectRoot = folder && folder.uri.fsPath;
+            let synRun = '';
+            if (projectRoot) {
+                for (const name of fs.readdirSync(projectRoot)) {
+                    if (!name.endsWith('_Runs')) continue;
+                    const candidate = path.join(projectRoot, name, 'syn_1');
+                    if (fs.existsSync(candidate)) { synRun = candidate; break; }
+                }
+            }
+            check('syn run directory found', !!synRun, synRun);
+            const markerTime = (name) => {
+                try { return fs.statSync(path.join(synRun, name)).mtimeMs; } catch (_) { return 0; }
+            };
+            const before = {
+                read_design: markerTime('.read_design.end.f'),
+                opt_rtl: markerTime('.opt_rtl.end.f'),
+                opt_gate: markerTime('.opt_gate.end.f'),
+            };
+            const item = { flowStep: 'read_design', flowStepName: 'Read Design' };
+            const startedAt = Date.now();
+            const result = await vscode.commands.executeCommand('fpgaLsp.flowStepReset', item);
+            const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
+            check('Reset and Run resolves after the flow finished', !!(result && result.ok === true),
+                JSON.stringify(result).slice(0, 160));
+            const after = {
+                read_design: markerTime('.read_design.end.f'),
+                opt_rtl: markerTime('.opt_rtl.end.f'),
+                opt_gate: markerTime('.opt_gate.end.f'),
+            };
+            check('reset run re-ran the whole syn run (all three step marks rewritten)',
+                after.read_design > before.read_design
+                && after.opt_rtl > before.opt_rtl
+                && after.opt_gate > before.opt_gate,
+                `${elapsed}s  opt_gate ${before.opt_gate} -> ${after.opt_gate}`);
+            check('FPGA Flow output shows the step run header',
+                outputLines.some((line) => /reset run Read Design/.test(line)),
+                outputLines.filter((line) => /reset run|Read Design/.test(line)).slice(0, 2).join(' | '));
+            check('FPGA Flow output names the running extension version',
+                outputLines.some((line) => /fpga-lsp \d+\.\d+\.\d+/.test(line)),
+                outputLines.find((line) => /fpga-lsp \d+\.\d+\.\d+/.test(line)) || 'no version tag');
+            check('FPGA Flow output shows per-step progress',
+                outputLines.some((line) => /Completed steps|Optimize Gate/.test(line)),
+                outputLines.slice(-3).join(' | '));
+            check('flow controller returns to idle after the run',
+                !!controller && controller.active === undefined, '');
+            check('status bar reports done/idle',
+                !!controller && /done|idle/.test(String((controller.statusBar && controller.statusBar.text) || '')),
+                String((controller && controller.statusBar && controller.statusBar.text) || ''));
+        } catch (err) {
+            check('reset and run flow step works', false, (err && err.message) || String(err));
         }
     } catch (err) {
         check('suite completed without fatal error', false, (err && err.stack ? err.stack.split('\n')[0] : String(err)));

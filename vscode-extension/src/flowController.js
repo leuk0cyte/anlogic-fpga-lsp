@@ -14,6 +14,15 @@ const vscode = require('vscode');
 const { METHODS, COMMANDS } = require('./protocol');
 const { parseFlowIssue, resolveFlowFile } = require('./flowDiagnostics');
 
+// 输出通道里的版本号：装的是哪个版本能一眼看出来（"改了没生效"最常见的原因就是
+// 窗口还跑着旧 extension host —— 旧代码根本不会写这行）。
+let extensionVersion = '';
+try {
+    extensionVersion = String(require('../package.json').version || '');
+} catch (_) {
+    extensionVersion = '';
+}
+
 // Only a safety net: the primary signal is `fpgaLsp/flowEvent`.
 const FALLBACK_POLL_MS = 10000;
 const FINISH_GRACE_MS = 4000;
@@ -268,7 +277,8 @@ class FlowController {
         }
 
         this.output.show(true);
-        this.output.appendLine(`[${nowText()}] ${header}`);
+        const versionTag = extensionVersion ? ` · fpga-lsp ${extensionVersion}` : '';
+        this.output.appendLine(`[${nowText()}] ${header}${versionTag}`);
         if (note) this.output.appendLine(`[${nowText()}] ${note}`);
         this.setStatusRunning(`${label} starting…`);
 

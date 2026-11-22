@@ -1377,6 +1377,8 @@ test('flow controller: right-click Run / Reset run goes through the controller',
         eq(Boolean(controller.active && controller.active.step === 'read_design'), true, 'controller tracks the step run');
         ok(controller.output.lines.some((line) => /reset run Read Design/.test(line)),
             'FPGA Flow output shows the step run (was silent before)');
+        ok(controller.output.lines.some((line) => /fpga-lsp \d+\.\d+\.\d+/.test(line)),
+            'FPGA Flow output names the running extension version (stale host is visible)');
         // 结束（服务端 done）后要收尾 + 刷树
         controller.onFlowEvent({ runId: 'r-step', type: 'done', ok: true, stage: 'syn' });
         await reset;

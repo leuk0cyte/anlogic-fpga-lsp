@@ -1289,3 +1289,41 @@ with download:true confirm:true, or re-run stages:[\"all\"]"}`。
   `corpus_delta.al.bak_e2e` -> `<state>/legacy/`。
 
 `ctest` 64/64、插件 45/45。
+
+### 第三十轮：在**真实 VS Code**里验证六步右键（用户："还是没修复"）
+
+用户反馈 0.21.4 之后仍然"点了没输出、下游两步还是已完成"。这次不再靠单测，直接把
+`scripts/run-vscode-test.ps1` 扩成真实 extension-host 集成测试：真 VS Code 窗口 +
+真扩展代码 + 真后端 + 真 TD（工程 CorpusAlpha，syn 15 s）。
+
+新增断言（`test/vscode-suite/index.js`）：
+
+```
+[PASS] flow controller exposed for tests
+[PASS] Reset and Run resolves after the flow finished                 {"ok":true}
+[PASS] reset run re-ran the whole syn run (all three step marks rewritten)   16.0s
+[PASS] FPGA Flow output shows the step run header
+       [12:35:16] ▶ reset run Read Design (read_design, force, jobs=6) · fpga-lsp 0.21.5
+[PASS] FPGA Flow output shows per-step progress                       13:20 Collecting reports ✓ done
+[PASS] flow controller returns to idle after the run
+[PASS] status bar reports done/idle                                   $(check) FPGA: Read Design done
+```
+
+结论：**代码路径本身是通的**（0.21.4 的修法有效）。用户看到"没反应"最可能是窗口还跑着
+旧 extension host —— 证据：那台机器上的 `%WORKSPACE%\CorpusDelta` 窗口最后一次激活是
+**2026-11-21 18:16 UTC（= 11-22 02:16）的 0.20.6**，而 0.20.6 里根本没有
+`FlowController.runStep`，点右键只会发一条 RPC 然后什么都不显示。
+
+为了让"装了新版但窗口还是旧代码"这种现象**一眼可见**：
+
+- 输出通道的每一条 flow 头都带上版本号：`▶ reset run Read Design (…) · fpga-lsp 0.21.6`；
+  看不到这一行 = 窗口跑的不是这份代码；
+- `activate()` 返回 `{flowController, flowProvider, moduleProvider, reportsTreeProvider, probeTree}`
+  供集成测试/调试观察（只读暴露）。
+
+顺带修掉集成测试里两处**过期的状态目录断言**（还在读 `<project>/.fpgalsp/logs/*`，
+第二十四轮起状态目录已经移到系统 temp）：现在用扩展自己的 `stateDir.resolveStateDir()`。
+改完后该套件从 7 个失败降到 3 个（`completion` 标签数 / `copy symbol path` / `doctor`
+三个是历史遗留问题，与本轮无关，已记录）。
+
+`ctest` 64/64（后端未改）、插件 45/45、集成套件新增 7 条断言全 PASS。

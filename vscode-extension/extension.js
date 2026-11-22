@@ -2027,6 +2027,16 @@ function activate(context) {
     });
 
     context.subscriptions.push({ dispose: () => client && client.stop() });
+
+    // 测试/调试用 API：extension-host 集成测试用它观察 FlowController 的输出行、状态栏
+    // 与 flow 树刷新（这些在 VS Code 的公开 API 里都读不到）。只读暴露，不影响正常行为。
+    return {
+        flowController,
+        flowProvider,
+        moduleProvider,
+        reportsTreeProvider,
+        probeTree,
+    };
 }
 
 function deactivate() {

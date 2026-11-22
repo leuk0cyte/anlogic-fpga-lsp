@@ -3,9 +3,9 @@ workspaceFolders: ["y:\\CorpusAlpha"]
   [PASS] a workspace folder is open  y:\CorpusAlpha
   [PASS] extension found
 extensionPath: Y:\fpga-lsp-cpp\vscode-extension
-version: 0.19.6
+version: 0.21.5
   [PASS] extension activates
-  [PASS] commands registered  74 commands
+  [PASS] commands registered  78 commands
   [PASS] v3 commands registered  all present
   [PASS] probe commands registered  all present
   [PASS] duplicate probe command removed (fpgaLsp.probeConfig)
@@ -29,9 +29,9 @@ version: 0.19.6
   [PASS] top.v languageId is verilog  verilog
   [PASS] .vhd languageId is vhdl  vhdl
   [PASS] .sv languageId is systemverilog  systemverilog
-  [PASS] highlight diagnostics report written  y:\CorpusAlpha\.fpgalsp\logs\highlight.txt
+  [PASS] highlight diagnostics report written  %USERPROFILE%\AppData\Local\Temp\fpgalsp\CorpusAlpha-a06a6d60\logs\highlight.txt
   [PASS] report sees verilog language  verilog
-  [FAIL] server returns semantic tokens for the project file  0
+  [PASS] server returns semantic tokens for the project file  2094
   code actions raw: [{"title":"Insert instantiation of pwm_gen","kind":{"value":"refactor"},"edit":[[{"$mid":1,"fsPath":"y:\\CorpusAlpha\\src\\top.v","_sep":1,"external":"file:///y%3A/CorpusAlpha/src/top.v","path":"/y:/CorpusAlpha/src/top.v","scheme":"file"},[{"range":[{"line":415,"character":0},{"line":415,"character":0}],"newText":"pwm_gen #(\n    .DEADTIME (DEADTIME)\n) u_pwm_gen (\n    .clk (clk),\n    .rst_n (rst_n),\n    .cnt_period (cnt_period),\n    .cnt_init (cnt_init),\n    .rise_init (rise_init),\n    .pwm_reset (pwm_reset),\n    .mod_a (mod_a),\n    .mod_b (mod_b),\n    .mod_c (mod_c),\n    .pwmlock (pwm
   [PASS] quick-instantiate code action available  Insert instantiation of pwm_gen | Verible: apply lint autofixes | Modify
   [PASS] rename provider returns edits  size=2
@@ -52,5 +52,14 @@ version: 0.19.6
   [PASS] MCP stdio server definition constructor accepts our options
   [FAIL] doctor command opens a status report  module fmt_check;
   [PASS] reports panel command works
-elapsed ms: 7027
-SUITE: FAIL (4)
+  [PASS] flow controller exposed for tests
+  [PASS] syn run directory found  y:\CorpusAlpha\demo_project_Runs\syn_1
+  [PASS] Reset and Run resolves after the flow finished  {"ok":true}
+  [PASS] reset run re-ran the whole syn run (all three step marks rewritten)  16.0s  opt_gate 1795322000160.8687 -> 1795322131114.3982
+  [PASS] FPGA Flow output shows the step run header  [12:35:16] ▶ reset run Read Design (read_design, force, jobs=6) · fpga-lsp 0.21.5 | [12:35:16] Read Design: syn_1 is reset as a whole - the step marks are cleared first and light up again as each step finishes.
+  [PASS] FPGA Flow output names the running extension version  [12:35:16] ▶ reset run Read Design (read_design, force, jobs=6) · fpga-lsp 0.21.5
+  [PASS] FPGA Flow output shows per-step progress  [12:35:32] Collecting reports | [done] ✓ done | [12:35:32] ✓ Read Design finished after 16.0s
+  [PASS] flow controller returns to idle after the run
+  [PASS] status bar reports done/idle  $(check) FPGA: Read Design done
+elapsed ms: 22820
+SUITE: FAIL (3)
