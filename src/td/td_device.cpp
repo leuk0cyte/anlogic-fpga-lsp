@@ -6,16 +6,23 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstddef>
 #include <filesystem>
 #include <regex>
 #include <set>
 #include <string>
 #include <vector>
 
+#include <nlohmann/json.hpp>
+
 #include "td/td_output.h"
 #include "td/tcl_quote.h"
 
+#include "platform/encoding.h"
+#include "platform/never_throw.h"
+#include "platform/path.h"
 #include "platform/text.h"
+#include "platform/write_service.h"
 #include <format>
 namespace fpgalsp::td {
 namespace {
@@ -371,6 +378,239 @@ std::string DeviceCacheKey(std::string_view device, std::string_view family,
         }
     }
     return "device_" + safe + ".json";
+}
+
+// -----------------------------------------------------------------------------
+//  P2-B⑤：设备摘要落盘缓存（跨进程）
+// -----------------------------------------------------------------------------
+//  为什么：`import_device + 4×query_current_package` 实测 ≈ 350 ms（MCP-TD.md），
+//  而设备表只在 Bridge 的内存里，每次新进程都重来。缓存只存摘要字段，
+//  不存 TD 原始输出（原始输出体积大，且解析逻辑变化后无法复用）。
+namespace {
+
+using Json = nlohmann::json;
+
+constexpr int kDeviceSummaryCacheVersion = 1;
+constexpr std::size_t kDeviceSummaryCacheMaxEntries = 8;
+
+// Pin 在 JSON 数组里的字段顺序（压缩成数组：200 个引脚时比对象形式小一半、解析更快）
+constexpr std::size_t kPinFieldCount = 11;
+
+bool ReadString(const Json& value, std::string* out) {
+    if (!value.is_string()) return false;
+    *out = value.get<std::string>();
+    return true;
+}
+
+bool ReadOptionalString(const Json& value, std::optional<std::string>* out) {
+    if (value.is_null()) {
+        out->reset();
+        return true;
+    }
+    if (!value.is_string()) return false;
+    *out = value.get<std::string>();
+    return true;
+}
+
+bool ReadOptionalInt(const Json& value, std::optional<int>* out) {
+    if (value.is_null()) {
+        out->reset();
+        return true;
+    }
+    if (!value.is_number_integer()) return false;
+    *out = value.get<int>();
+    return true;
+}
+
+bool ReadBool(const Json& value, bool* out) {
+    if (!value.is_boolean()) return false;
+    *out = value.get<bool>();
+    return true;
+}
+
+Json NullableString(const std::optional<std::string>& value) {
+    return value.has_value() ? Json(*value) : Json(nullptr);
+}
+
+Json NullableInt(const std::optional<int>& value) {
+    return value.has_value() ? Json(*value) : Json(nullptr);
+}
+
+std::string DumpCacheFile(const Json& entries) {
+    Json root = Json::object();
+    root["v"] = kDeviceSummaryCacheVersion;
+    root["entries"] = entries;
+    return root.dump();
+}
+
+// 文件里现有条目（损坏 / 版本不符 -> 空表，按重建处理）
+Json ReadExistingEntries(const std::string& path) {
+    const std::optional<std::string> text = platform::try_read_file_utf8(path);
+    if (!text.has_value()) return Json::object();
+    try {
+        const Json parsed = Json::parse(*text);
+        if (!parsed.is_object()) return Json::object();
+        if (parsed.value("v", 0) != kDeviceSummaryCacheVersion) return Json::object();
+        const auto entries = parsed.find("entries");
+        if (entries == parsed.end() || !entries->is_object()) return Json::object();
+        return *entries;
+    } catch (...) {
+        return Json::object();  // 损坏：当空表重建
+    }
+}
+
+}  // namespace
+
+std::string DeviceSummaryCacheKey(std::string_view td_root, std::string_view td_version,
+                                  std::string_view device, std::string_view family,
+                                  std::string_view speed) {
+    // td_root + td_version 让"换安装 / TD 升级"自动失效；
+    // device/family/speed 让".al 里器件变了"自动失效。
+    std::string key(td_root);
+    key += '|';
+    key += td_version;
+    key += '|';
+    key += device;
+    key += '|';
+    key += family;
+    key += '|';
+    key += speed.empty() ? std::string("-") : std::string(speed);
+    return key;
+}
+
+std::string DeviceSummaryCachePath(std::string_view state_dir) {
+    if (state_dir.empty()) return {};
+    return platform::path_join(state_dir, "cache/td_device_summary.json");
+}
+
+std::string EncodeDeviceSummary(const DeviceInfo& info) {
+    Json pins = Json::array();
+    for (const auto& [key, pin] : info.pins) {
+        Json item = Json::array();
+        item.push_back(key);
+        item.push_back(pin.pe);
+        item.push_back(pin.pe_raw);
+        item.push_back(pin.location);
+        item.push_back(pin.type);
+        item.push_back(NullableInt(pin.int_bank));
+        item.push_back(NullableInt(pin.ext_bank));
+        item.push_back(pin.clock_capable);
+        item.push_back(pin.lvds);
+        item.push_back(NullableString(pin.clock_kind));
+        item.push_back(NullableString(pin.lvds_type));
+        pins.push_back(std::move(item));
+    }
+    Json dedicated = Json::array();
+    for (const DedicatedPin& pin : info.dedicated) {
+        dedicated.push_back(Json::array({pin.role, pin.pe}));
+    }
+    Json entry = Json::object();
+    entry["device"] = info.device;
+    entry["family"] = info.family;
+    entry["package"] = info.package;
+    entry["db"] = info.db;
+    entry["pins"] = std::move(pins);
+    entry["dedicated"] = std::move(dedicated);
+    return entry.dump();
+}
+
+std::optional<DeviceInfo> DecodeDeviceSummary(std::string_view json_text) {
+    try {
+        const Json parsed = Json::parse(json_text.begin(), json_text.end());
+        if (!parsed.is_object()) return std::nullopt;
+        DeviceInfo info;
+        if (!ReadString(parsed.at("device"), &info.device)) return std::nullopt;
+        if (!ReadString(parsed.at("family"), &info.family)) return std::nullopt;
+        if (!ReadString(parsed.at("package"), &info.package)) return std::nullopt;
+        if (!ReadString(parsed.at("db"), &info.db)) return std::nullopt;
+
+        const Json& pins = parsed.at("pins");
+        if (!pins.is_array()) return std::nullopt;
+        for (const Json& item : pins) {
+            if (!item.is_array() || item.size() != kPinFieldCount) return std::nullopt;
+            std::string key;
+            Pin pin;
+            if (!ReadString(item.at(0), &key)) return std::nullopt;
+            if (!ReadString(item.at(1), &pin.pe)) return std::nullopt;
+            if (!ReadString(item.at(2), &pin.pe_raw)) return std::nullopt;
+            if (!ReadString(item.at(3), &pin.location)) return std::nullopt;
+            if (!ReadString(item.at(4), &pin.type)) return std::nullopt;
+            if (!ReadOptionalInt(item.at(5), &pin.int_bank)) return std::nullopt;
+            if (!ReadOptionalInt(item.at(6), &pin.ext_bank)) return std::nullopt;
+            if (!ReadBool(item.at(7), &pin.clock_capable)) return std::nullopt;
+            if (!ReadBool(item.at(8), &pin.lvds)) return std::nullopt;
+            if (!ReadOptionalString(item.at(9), &pin.clock_kind)) return std::nullopt;
+            if (!ReadOptionalString(item.at(10), &pin.lvds_type)) return std::nullopt;
+            info.pins[key] = std::move(pin);
+        }
+        const Json& dedicated = parsed.at("dedicated");
+        if (!dedicated.is_array()) return std::nullopt;
+        for (const Json& item : dedicated) {
+            if (!item.is_array() || item.size() != 2) return std::nullopt;
+            DedicatedPin pin;
+            if (!ReadString(item.at(0), &pin.role)) return std::nullopt;
+            if (!ReadString(item.at(1), &pin.pe)) return std::nullopt;
+            info.dedicated.push_back(std::move(pin));
+        }
+        // 与现查一致：没有引脚 = 无效设备表（现查路径此时会抛错，缓存不能更"宽容"）
+        if (info.pins.empty()) return std::nullopt;
+        return info;
+    } catch (...) {
+        return std::nullopt;  // 损坏 = 未命中
+    }
+}
+
+std::string DeviceSummaryCacheFileText(std::string_view key, const DeviceInfo& info) {
+    Json entries = Json::object();
+    entries[std::string(key)] = Json::parse(EncodeDeviceSummary(info));
+    return DumpCacheFile(entries);
+}
+
+std::optional<DeviceInfo> LoadDeviceSummaryCache(std::string_view state_dir,
+                                                 std::string_view key) {
+    if (state_dir.empty() || key.empty()) return std::nullopt;
+    const std::string path = DeviceSummaryCachePath(state_dir);
+    const std::optional<std::string> text = platform::try_read_file_utf8(path);
+    if (!text.has_value()) return std::nullopt;
+    try {
+        const Json parsed = Json::parse(*text);
+        if (!parsed.is_object()) return std::nullopt;
+        if (parsed.value("v", 0) != kDeviceSummaryCacheVersion) return std::nullopt;
+        const auto entries = parsed.find("entries");
+        if (entries == parsed.end() || !entries->is_object()) return std::nullopt;
+        const auto entry = entries->find(std::string(key));
+        if (entry == entries->end()) return std::nullopt;
+        return DecodeDeviceSummary(entry->dump());
+    } catch (...) {
+        return std::nullopt;  // 损坏 = 未命中（调用方会回落现查并重写）
+    }
+}
+
+bool StoreDeviceSummaryCache(std::string_view project_dir, std::string_view state_dir,
+                             std::string_view key, const DeviceInfo& info) {
+    if (state_dir.empty() || key.empty()) return false;
+    const std::string path = DeviceSummaryCachePath(state_dir);
+    try {
+        Json entries = ReadExistingEntries(path);
+        entries[std::string(key)] = Json::parse(EncodeDeviceSummary(info));
+        if (entries.size() > kDeviceSummaryCacheMaxEntries) {
+            entries = Json::object();
+            entries[std::string(key)] = Json::parse(EncodeDeviceSummary(info));
+        }
+        // 统一写服务：state_dir + 原子写 + 审计（门禁要求，不得自己写文件）。
+        const platform::writes::Result result = platform::writes::Write(
+            project_dir, path, DumpCacheFile(entries),
+            platform::writes::Options{.caller = "mcp.device_summary"});
+        if (!result.ok) {
+            // 缓存是纯优化：失败只留 debug 日志，绝不阻断调用方主流程。
+            platform::IgnoreResult(result);
+            return false;
+        }
+        return true;
+    } catch (...) {
+        // 序列化 / 内存分配都失败：保持"绝不抛"契约（写盘失败本身已由 IgnoreResult 记日志）。
+        return false;
+    }
 }
 
 }  // namespace fpgalsp::td

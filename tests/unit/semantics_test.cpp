@@ -481,8 +481,359 @@ TEST(SemanticsCorpus, CrlfTextProducesSameTokens) {
 }
 }  // namespace
 
-// 索引比缓冲区旧时（典型：格式化把行号整体挪动），从索引拿的 module/port/instance
-// token 必须被丢弃，而不是画到错误的位置上。用户现象：格式化后高亮全乱，切走再回来又好了。
+// =============================================================================
+// 11. P2-A：semanticTokens 行级增量 —— 随机等价性（固定种子）
+// =============================================================================
+// 断言：对任意编辑序列，`SemanticTokensCached` 与全量 `SemanticTokens` 的
+// 输出**逐 token 完全相同**（line/start/length/type + 顺序）。固定种子 -> 可复现。
+// 覆盖：插入/删除/替换、插入 `/* */`、多行块注释、`"` 字符串、整行增删（跨行删除）。
+// =============================================================================
+namespace {
+
+using fpgalsp::semantics::GetSemanticTokenCacheStats;
+using fpgalsp::semantics::ResetSemanticTokenCache;
+using fpgalsp::semantics::SemanticTokensCached;
+
+// 固定种子的"编辑生成器"（xorshift32，避免 <random> 在 MSVC/ libc++ 上的差异）
+class RandomEdits {
+public:
+    explicit RandomEdits(std::uint32_t seed) : state_(seed | 1u) {}
+
+    std::uint32_t Next() {
+        state_ ^= state_ << 13;
+        state_ ^= state_ >> 17;
+        state_ ^= state_ << 5;
+        return state_;
+    }
+    std::size_t Pick(std::size_t count) {
+        if (count == 0) return 0;
+        return static_cast<std::size_t>(Next() % static_cast<std::uint32_t>(count));
+    }
+    std::size_t PickRange(std::size_t low, std::size_t high) {  // [low, high)
+        if (high <= low) return low;
+        return low + Pick(high - low);
+    }
+
+    // 单行内随机位置（按 '\n' 切）
+    void LineAndColumn(const std::string& text, std::size_t* line, std::size_t* column,
+                       std::size_t* line_count) {
+        std::size_t rows = 1;
+        for (const char c : text) {
+            if (c == '\n') ++rows;
+        }
+        *line_count = rows;
+        *line = Pick(rows);
+        std::size_t begin = 0;
+        for (std::size_t i = 0; i < *line; ++i) {
+            const std::size_t newline = text.find('\n', begin);
+            if (newline == std::string::npos) break;
+            begin = newline + 1;
+        }
+        std::size_t end = text.find('\n', begin);
+        if (end == std::string::npos) end = text.size();
+        *column = begin + PickRange(0, end - begin + 1);
+    }
+
+    // 返回一次随机编辑后的文本
+    std::string Apply(const std::string& text) {
+        static const char* kWords[] = {
+            "wire", "reg", "logic", "assign", "always", "module", "sig_new", "42",
+            "8'hFF", "endmodule", "begin", "end",
+        };
+        std::string next = text;
+        std::size_t line = 0;
+        std::size_t column = 0;
+        std::size_t rows = 0;
+        LineAndColumn(next, &line, &column, &rows);
+        switch (Next() % 8) {
+            case 0: {  // 插入一个词/数字
+                constexpr std::size_t kWordCount = sizeof(kWords) / sizeof(kWords[0]);
+                next.insert(column, kWords[Pick(kWordCount)]);
+                break;
+            }
+            case 1: {  // 行内删除一小段
+                const std::size_t count = PickRange(1, 6);
+                if (column + count <= next.size()) next.erase(column, count);
+                break;
+            }
+            case 2: {  // 行内替换一小段
+                const std::size_t count = PickRange(1, 4);
+                if (column + count <= next.size()) {
+                    next.replace(column, count, Next() % 2 == 0 ? "x" : "/*c*/");
+                }
+                break;
+            }
+            case 3: {  // 插入单行块注释
+                next.insert(column, " /* note */ ");
+                break;
+            }
+            case 4: {  // 插入跨行块注释（行数会变 -> 必须回退全量）
+                next.insert(column, "/* multi\n   line\n   comment */");
+                break;
+            }
+            case 5: {  // 插入字符串（可能带转义）
+                next.insert(column, Next() % 2 == 0 ? "\"str // not comment\"" : "\"a\\\"b\"");
+                break;
+            }
+            case 6: {  // 删除整行（跨行删除）
+                std::size_t begin = 0;
+                for (std::size_t i = 0; i < line; ++i) {
+                    const std::size_t newline = next.find('\n', begin);
+                    if (newline == std::string::npos) break;
+                    begin = newline + 1;
+                }
+                const std::size_t newline = next.find('\n', begin);
+                if (newline != std::string::npos) {
+                    next.erase(begin, newline - begin + 1);
+                }
+                break;
+            }
+            default: {  // 在行尾插入换行 + 复制当前行（行数会变）
+                std::size_t begin = 0;
+                for (std::size_t i = 0; i < line; ++i) {
+                    const std::size_t newline = next.find('\n', begin);
+                    if (newline == std::string::npos) break;
+                    begin = newline + 1;
+                }
+                std::size_t end = next.find('\n', begin);
+                if (end == std::string::npos) end = next.size();
+                next.insert(end, "\n" + next.substr(begin, end - begin));
+                break;
+            }
+        }
+        return next;
+    }
+
+private:
+    std::uint32_t state_;
+};
+
+std::string BigGeneratedVerilog(int blocks) {
+    std::string text;
+    for (int block = 0; block < blocks; ++block) {
+        const std::string name = std::to_string(block);
+        text += "module big_" + name + " #(parameter W" + name + " = 8) (\n";
+        text += "  input  wire clk,\n";
+        text += "  output reg  [W" + name + "-1:0] q\n";
+        text += ");\n";
+        text += "  // block " + name + "\n";
+        text += "  logic [7:0] sig_" + name + ";\n";
+        text += "  assign sig_" + name + " = 8'h00;  /* init */\n";
+        text += "  always @(posedge clk) begin\n";
+        text += "    q <= sig_" + name + ";\n";
+        text += "  end\n";
+        text += "endmodule\n";
+    }
+    return text;
+}
+
+void ExpectSameTokens(const std::vector<SemToken>& incremental,
+                      const std::vector<SemToken>& full, const std::string& label,
+                      int iteration) {
+    const auto context = [&]() {
+        return label + " iter " + std::to_string(iteration) + ": ";
+    };
+    ASSERT_EQ(incremental.size(), full.size()) << context() << "token 数量不同";
+    for (std::size_t i = 0; i < full.size(); ++i) {
+        ASSERT_EQ(incremental[i].line, full[i].line) << context() << "token #" << i << " line";
+        ASSERT_EQ(incremental[i].start, full[i].start) << context() << "token #" << i << " start";
+        ASSERT_EQ(incremental[i].length, full[i].length) << context() << "token #" << i << " length";
+        ASSERT_EQ(incremental[i].type, full[i].type) << context() << "token #" << i << " type";
+    }
+}
+
+// 跑 200 次随机编辑，逐次比对增量与全量
+void RunRandomEquivalence(const std::string& path, const std::string& initial,
+                          std::uint32_t seed, std::uint64_t minimum_incremental) {
+    ResetSemanticTokenCache();
+    HdlIndex index = IndexFor(path, initial);
+    std::string text = initial;
+    RandomEdits random(seed);
+
+    // 首次请求（建立缓存基线）
+    const auto seeded = SemanticTokensCached(&index, path, text, 7);
+    ASSERT_NE(seeded, nullptr);
+    ExpectSameTokens(*seeded, SemanticTokens(&index, path, text), path, -1);
+
+    for (int iteration = 0; iteration < 200; ++iteration) {
+        text = random.Apply(text);
+        const std::shared_ptr<const std::vector<SemToken>> incremental =
+            SemanticTokensCached(&index, path, text, 7);
+        ASSERT_NE(incremental, nullptr);
+        const std::vector<SemToken> full = SemanticTokens(&index, path, text);
+        if (incremental->size() != full.size()) {
+            std::fprintf(stderr, "[DIAG] %s iter %d size %zu vs %zu\n--- text ---\n%s\n--- end ---\n",
+                         path.c_str(), iteration, incremental->size(), full.size(),
+                         text.c_str());
+            const std::size_t limit = std::min(incremental->size(), full.size());
+            for (std::size_t i = 0; i < limit; ++i) {
+                const SemToken& a = (*incremental)[i];
+                const SemToken& b = full[i];
+                if (a.line != b.line || a.start != b.start || a.length != b.length ||
+                    a.type != b.type) {
+                    std::fprintf(stderr,
+                                 "[DIAG] first diff at #%zu inc=(%d,%d,%d,%d) full=(%d,%d,%d,%d)\n",
+                                 i, a.line, a.start, a.length, a.type, b.line, b.start,
+                                 b.length, b.type);
+                    break;
+                }
+            }
+        }
+        ExpectSameTokens(*incremental, full, path, iteration);
+        // 编码后也必须逐字节相同（LSP 输出契约）
+        ASSERT_EQ(EncodeTokens(*incremental), EncodeTokens(full))
+            << path << " iter " << iteration << ": EncodeTokens 不同";
+    }
+
+    const auto stats = GetSemanticTokenCacheStats();
+    // 证明"增量真的跑过"，而不是每次都全量回退
+    ASSERT_GE(stats.incremental, minimum_incremental)
+        << path << ": 增量命中太少（incremental=" << stats.incremental
+        << " full=" << stats.full << "）";
+    // 不变量：每次请求要么命中增量，要么全量，要么文本没变
+    EXPECT_EQ(stats.full + stats.incremental + stats.unchanged, 201u)
+        << path << ": 统计计数与请求次数不符";
+}
+
+const char kSmallFixture[] =
+    "// 头部注释：module 关键字不应上色\n"
+    "module fixture #(parameter WIDTH = 8) (\n"
+    "  input  wire clk,\n"
+    "  input  wire rst_n,\n"
+    "  output reg  [WIDTH-1:0] q\n"
+    ");\n"
+    "  localparam DEPTH = 4;\n"
+    "  logic [7:0] counter;\n"
+    "  /* 多行块注释\n"
+    "     wire 不应在这里上色 */\n"
+    "  assign counter = \"wire clk\";  // 字符串里的不算\n"
+    "  always @(posedge clk) begin\n"
+    "    if (!rst_n) q <= 8'h00;\n"
+    "    else q <= counter;\n"
+    "  end\n"
+    "endmodule\n";
+
+}  // namespace
+
+TEST(SemanticsIncremental, RandomEditsOnSmallFixtureMatchFull) {
+    RunRandomEquivalence("incremental_fixture.v", kSmallFixture, 0x1234567u, 20u);
+}
+
+TEST(SemanticsIncremental, RandomEditsOnGeneratedLargeFileMatchFull) {
+    RunRandomEquivalence("incremental_big.v", BigGeneratedVerilog(20), 0x9e3779b9u, 20u);
+}
+
+TEST(SemanticsIncremental, UnchangedTextReusesSnapshot) {
+    ResetSemanticTokenCache();
+    const std::string path = "incremental_reuse.v";
+    const std::string text = kSmallFixture;
+    HdlIndex index = IndexFor(path, text);
+    const auto first = SemanticTokensCached(&index, path, text, 3);
+    const auto second = SemanticTokensCached(&index, path, text, 3);
+    ASSERT_NE(first, nullptr);
+    // 文本没变 -> 返回同一份不可变快照（零重算、零拷贝）
+    EXPECT_EQ(first.get(), second.get());
+    const auto stats = GetSemanticTokenCacheStats();
+    EXPECT_EQ(stats.full, 1u);
+    EXPECT_EQ(stats.unchanged, 1u);
+    EXPECT_EQ(stats.incremental, 0u);
+}
+
+// 回归（P2-A 第二次）：IndexService 每次 didChange 都会重装索引快照并让 generation
+// +1。缓存**不能**把 generation 当键，否则真实链路上永远不命中。这里模拟"同一份索引
+// 内容、generation 递增"，要求仍然走增量（且与全量逐 token 相同）。
+TEST(SemanticsIncremental, GenerationChurnAloneKeepsCacheWarm) {
+    ResetSemanticTokenCache();
+    const std::string path = "incremental_genchurn.v";
+    const std::string text = kSmallFixture;
+    HdlIndex index = IndexFor(path, text);
+    const auto first = SemanticTokensCached(&index, path, text, 1);
+    ASSERT_NE(first, nullptr);
+    ExpectSameTokens(*first, SemanticTokens(&index, path, text), path, 0);
+
+    std::string edited = text;
+    const std::size_t at = edited.find("DEPTH = 4");
+    ASSERT_NE(at, std::string::npos);
+    edited.replace(at, 9, "DEPTH = 5");
+    // 索引内容没变，只是 generation 从 1 -> 2
+    const auto second = SemanticTokensCached(&index, path, edited, 2);
+    ExpectSameTokens(*second, SemanticTokens(&index, path, edited), path, 1);
+
+    const auto stats = GetSemanticTokenCacheStats();
+    EXPECT_EQ(stats.incremental, 1u) << "generation 抖动不应让缓存失效";
+    EXPECT_EQ(stats.full, 1u);
+    EXPECT_EQ(stats.full_index_changed, 0u);
+}
+
+// 索引**内容**真的变了（例如端口改名/增删）-> 必须全量，且输出仍等于全量。
+TEST(SemanticsIncremental, ChangedIndexContentFallsBackToFull) {
+    ResetSemanticTokenCache();
+    const std::string path = "incremental_indexchanged.v";
+    const std::string initial =
+        "module demo (\n"
+        "  input  wire clk,\n"
+        "  output wire q\n"
+        ");\n"
+        "endmodule\n";
+    std::string text = initial;
+    HdlIndex index = IndexFor(path, text);
+    (void)SemanticTokensCached(&index, path, text, 1);
+
+    // 同行字符编辑 + 索引语义变化：端口 q 改名成 r
+    const std::size_t at = text.find("q\n");
+    ASSERT_NE(at, std::string::npos);
+    text.replace(at, 1, "r");
+    HdlIndex renamed = IndexFor(path, text);
+    const auto after = SemanticTokensCached(&renamed, path, text, 2);
+    ExpectSameTokens(*after, SemanticTokens(&renamed, path, text), path, 0);
+
+    const auto stats = GetSemanticTokenCacheStats();
+    EXPECT_GE(stats.full_index_changed, 1u) << "索引语义变化必须走全量";
+    EXPECT_EQ(stats.incremental, 0u);
+}
+
+// ⚠ 这次漏掉的那类场景：**每次编辑后都用新索引 + 推进过的 generation**（真实服务端
+// 行为：didChange -> IndexService 按新缓冲区重解析 -> generation +1）。
+TEST(SemanticsIncremental, IndexRebuiltFromNewTextEveryEditMatchesFull) {
+    ResetSemanticTokenCache();
+    const std::string path = "incremental_reindex.v";
+    std::string text = kSmallFixture;
+    RandomEdits random(0x5eed1234u);
+    HdlIndex index = IndexFor(path, text);
+    std::uint64_t generation = 100;
+
+    const auto seeded = SemanticTokensCached(&index, path, text, generation);
+    ASSERT_NE(seeded, nullptr);
+    ExpectSameTokens(*seeded, SemanticTokens(&index, path, text), path, -1);
+
+    for (int iteration = 0; iteration < 80; ++iteration) {
+        text = random.Apply(text);
+        // 服务端：索引按**新文本**重建，generation 推进
+        index = IndexFor(path, text);
+        ++generation;
+        const auto incremental = SemanticTokensCached(&index, path, text, generation);
+        ASSERT_NE(incremental, nullptr);
+        const std::vector<SemToken> full = SemanticTokens(&index, path, text);
+        ExpectSameTokens(*incremental, full, path, iteration);
+        ASSERT_EQ(EncodeTokens(*incremental), EncodeTokens(full))
+            << path << " iter " << iteration << ": EncodeTokens 不同";
+    }
+
+    const auto stats = GetSemanticTokenCacheStats();
+    // 同页字符编辑（行数不变、索引内容不变）应命中增量；不允许"每次全量"
+    EXPECT_GT(stats.incremental, 0u) << "索引重建不应导致每次都全量（incremental=0）";
+}
+
+TEST(SemanticsIncremental, EmptyAndNullIndexMatchFullPipeline) {
+    ResetSemanticTokenCache();
+    HdlIndex index;
+    const auto empty = SemanticTokensCached(&index, "incremental_empty.v", "", 1);
+    ASSERT_NE(empty, nullptr);
+    EXPECT_TRUE(empty->empty());
+    const auto null_index = SemanticTokensCached(nullptr, "incremental_empty.v", "module m;\n", 1);
+    ASSERT_NE(null_index, nullptr);
+    EXPECT_TRUE(null_index->empty());
+}
 TEST(SemanticsTokens, StaleIndexDoesNotMisplaceTokens) {
     const std::string original =
         "module demo (\n"

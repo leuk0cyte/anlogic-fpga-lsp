@@ -37,7 +37,9 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <map>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -87,6 +89,43 @@ struct SemToken {
 // 完整流水线（index 可以为 nullptr —— 此时与 Python 一样返回空）。
 std::vector<SemToken> SemanticTokens(const hdl::HdlIndex* index, std::string_view path,
                                      std::string_view text);
+
+// -----------------------------------------------------------------------------
+//  P2-A：行级增量的有状态入口
+// -----------------------------------------------------------------------------
+// 语义：**输出与 `SemanticTokens(index, path, text)` 逐 token 相同**（line/start/
+// length/type 全等，顺序相同），只是复用上一次请求里未变化行的 token。
+//
+//   * 缓存键 = (path, **索引内容指纹**)。注意不是 index 指针、也不是 generation：
+//     IndexService 每处理一次 didChange 都会重装快照（generation +1），用 generation
+//     当键会导致永远不命中。指纹逐字段覆盖 SymbolAt / 索引候选真正会读的字段
+//     （本文件的 modules/ports/signals/params/instances 位置与名字 + 全局模块/端口名），
+//     只有索引**语义内容**变了才失效。
+//   * 文本不变 + 索引内容不变 -> 直接返回上次数组（零重算）。
+//   * 文本变了（索引内容不变）-> 字节级公共前缀/后缀定出变化行；只有锚点条件是
+//     "干净行首"、区域重扫仍以代码状态收尾时才增量，否则全量。
+//   * 索引内容变了 -> 全量（Hdl 候选与重分类都可能变）。
+//   `index_generation` 只用于诊断/统计，不参与命中判定。
+//
+//  线程安全：内部互斥 + 不可变快照（shared_ptr），可在多 worker 上并发调用。
+//  返回 shared_ptr 便于服务端零拷贝缓存/响应。
+std::shared_ptr<const std::vector<SemToken>> SemanticTokensCached(
+    const hdl::HdlIndex* index, std::string_view path, std::string_view text,
+    std::uint64_t index_generation);
+std::shared_ptr<const std::vector<SemToken>> SemanticTokensCached(
+    const hdl::HdlIndex* index, std::string_view path,
+    const std::shared_ptr<const std::string>& text, std::uint64_t index_generation);
+
+// 测试/诊断：命中计数（用来证明"增量确实跑了"，而不是每次都全量回退）。
+struct SemanticTokenCacheStats {
+    std::uint64_t unchanged = 0;    // 文本与索引内容都没变 -> 直接复用
+    std::uint64_t incremental = 0;  // 行级增量命中
+    std::uint64_t full = 0;         // 全量重算（首次 + 所有回退情形）
+    std::uint64_t full_index_changed = 0;  // 其中因"索引内容真的变了"而全量
+};
+SemanticTokenCacheStats GetSemanticTokenCacheStats();
+// 清空缓存与计数（单测用；服务端不需要）。
+void ResetSemanticTokenCache();
 
 // LSP delta 编码（每组 5 个整数：deltaLine, deltaStart, length, type, 0）
 std::vector<int> EncodeTokens(const std::vector<SemToken>& tokens);

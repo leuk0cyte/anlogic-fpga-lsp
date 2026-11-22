@@ -1,6 +1,6 @@
 {
  "schema": 1,
- "generated": "2026-11-22T22:35:59+0800",
+ "generated": "2026-11-23T00:56:40+0800",
  "tool": "LLVM 23.1.5",
  "config": ".clang-tidy",
  "config_sha1": "d86d7a7e8828850aa915ed1dde75ffc07892a838",
@@ -694,15 +694,15 @@
   },
   {
    "file": "src/mcp/bridge.cpp",
-   "line": 1042,
-   "col": 76,
+   "line": 1096,
+   "col": 80,
    "check": "bugprone-unchecked-optional-access",
    "sev": "warning",
    "msg": "unchecked access to optional value"
   },
   {
    "file": "src/mcp/bridge.cpp",
-   "line": 1087,
+   "line": 1146,
    "col": 15,
    "check": "modernize-avoid-c-arrays",
    "sev": "warning",
@@ -710,7 +710,7 @@
   },
   {
    "file": "src/mcp/bridge.cpp",
-   "line": 2992,
+   "line": 3099,
    "col": 23,
    "check": "modernize-avoid-c-arrays",
    "sev": "warning",
@@ -718,7 +718,7 @@
   },
   {
    "file": "src/mcp/bridge.cpp",
-   "line": 4000,
+   "line": 4123,
    "col": 11,
    "check": "bugprone-empty-catch",
    "sev": "warning",
@@ -726,7 +726,7 @@
   },
   {
    "file": "src/mcp/bridge.cpp",
-   "line": 4585,
+   "line": 4708,
    "col": 19,
    "check": "modernize-avoid-c-arrays",
    "sev": "warning",
@@ -734,7 +734,7 @@
   },
   {
    "file": "src/mcp/bridge.cpp",
-   "line": 4622,
+   "line": 4745,
    "col": 19,
    "check": "modernize-avoid-c-arrays",
    "sev": "warning",
@@ -758,11 +758,11 @@
   },
   {
    "file": "src/mcp/mcp_server.cpp",
-   "line": 675,
+   "line": 685,
    "col": 44,
    "check": "bugprone-exception-escape",
    "sev": "warning",
-   "msg": "an exception may be thrown in function '(lambda at Y:\\fpga-lsp-cpp\\src\\mcp\\mcp_server.cpp:675:44)' which should not throw exceptions"
+   "msg": "an exception may be thrown in function '(lambda at Y:\\fpga-lsp-cpp\\src\\mcp\\mcp_server.cpp:685:44)' which should not throw exceptions"
   },
   {
    "file": "src/platform/encoding.cpp",
@@ -974,7 +974,7 @@
   },
   {
    "file": "src/semantics/semantics.h",
-   "line": 95,
+   "line": 134,
    "col": 8,
    "check": "bugprone-exception-escape",
    "sev": "warning",
@@ -1022,7 +1022,7 @@
   },
   {
    "file": "src/server/features.cpp",
-   "line": 656,
+   "line": 693,
    "col": 22,
    "check": "bugprone-use-after-move",
    "sev": "warning",
@@ -1062,11 +1062,11 @@
   },
   {
    "file": "src/server/lsp_server.cpp",
-   "line": 2297,
+   "line": 2322,
    "col": 9,
    "check": "bugprone-exception-escape",
    "sev": "warning",
-   "msg": "an exception may be thrown in function '(lambda at Y:\\fpga-lsp-cpp\\src\\server\\lsp_server.cpp:2297:9)' which should not throw exceptions"
+   "msg": "an exception may be thrown in function '(lambda at Y:\\fpga-lsp-cpp\\src\\server\\lsp_server.cpp:2322:9)' which should not throw exceptions"
   },
   {
    "file": "src/td/td_device.h",

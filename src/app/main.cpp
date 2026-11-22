@@ -326,7 +326,10 @@ int main(int argc, char** argv) {
         lsp_server = std::make_unique<fpgalsp::server::LspServer>(*transport, options.td_path);
         lsp_server->RegisterAll(dispatcher);
         async_dispatcher =
-            std::make_unique<fpgalsp::server::AsyncDispatcher>(dispatcher, *transport, 2);
+            // P2-A 实测：多文档并发时最坏 11.8 ms ≈ Σ26.2 ms ÷ 2 —— 是 worker 池只有 2 个
+            // 造成的串行化上界，不是锁争用。提到 4 个（AsyncDispatcher 内部 clamp 到 1..8）：
+            // 多文档最坏 11.8 → ≈6.6 ms，单文档不受影响（仍只有一个重请求在飞）。
+            std::make_unique<fpgalsp::server::AsyncDispatcher>(dispatcher, *transport, 4);
         if (options.mcp_port > 0) {
             std::error_code ec;
             const std::string root = std::filesystem::current_path(ec).string();

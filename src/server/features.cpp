@@ -350,9 +350,52 @@ Json InlayHints(const HdlIndex& index, std::string_view path) {
     return out;
 }
 
+namespace {
+
+// 745 器件原语 + 48 Verilog 关键字的候选 JSON **是常量**，但旧实现每请求都重新构造
+// 一遍（P2-A 实测：每键 completion 1.8–2.0 ms，空前缀时会造 793 个 Json 对象）。
+// 这里在建表时一次性造好，请求期只做"按前缀挑 + 拷贝命中的那几项"。
+struct StaticCandidates {
+    Json primitives;
+    Json keywords;
+};
+
+const StaticCandidates& StaticCandidateTables() {
+    static const StaticCandidates tables = [] {
+        StaticCandidates result;
+        result.primitives = Json::array();
+        auto& primitive_items = result.primitives.get_ref<Json::array_t&>();
+        const auto& primitives = hdl::DevicePrimitives();
+        primitive_items.reserve(primitives.size());
+        for (const std::string& primitive : primitives) {
+            Json item = Json::object();
+            item["label"] = primitive;
+            item["kind"] = 3;  // Method/Function
+            item["detail"] = "Device primitive";
+            primitive_items.push_back(std::move(item));
+        }
+        result.keywords = Json::array();
+        auto& keyword_items = result.keywords.get_ref<Json::array_t&>();
+        const auto& keywords = hdl::VerilogKeywords();
+        keyword_items.reserve(keywords.size());
+        for (const std::string& keyword : keywords) {
+            Json item = Json::object();
+            item["label"] = keyword;
+            item["kind"] = 14;  // Keyword
+            keyword_items.push_back(std::move(item));
+        }
+        return result;
+    }();
+    return tables;
+}
+
+}  // namespace
+
 Json Completion(const HdlIndex& index, std::string_view path, std::string_view text, int line,
                 int character) {
     Json items = Json::array();
+    // 812 项上限（21 模块 + 745 原语 + 48 关键字）：预留后不再反复 realloc 复制数组元素。
+    items.get_ref<Json::array_t&>().reserve(900);
     const std::string path_string(path);
 
     const std::string_view line_text = LineOf(text, line);
@@ -410,20 +453,14 @@ Json Completion(const HdlIndex& index, std::string_view path, std::string_view t
     //   Python `_complete_verilog` 的尾部两个循环，**紧跟在模块候选之后**、顺序一致。
     //   放在 features 层（而不是某个 handler 里）是必须的：LSP 的
     //   textDocument/completion 与 MCP 的 fpga_completion 都调这一个函数，谁都不能少。
-    for (const std::string& primitive : hdl::DevicePrimitives()) {
-        if (!matches(primitive)) continue;
-        Json item = Json::object();
-        item["label"] = primitive;
-        item["kind"] = 3;  // Method/Function
-        item["detail"] = "Device primitive";
-        items.push_back(std::move(item));
+    const StaticCandidates& tables = StaticCandidateTables();
+    for (const Json& item : tables.primitives) {
+        if (!matches(item["label"].get_ref<const std::string&>())) continue;
+        items.push_back(item);  // 拷贝常量项（只拷命中的那几项）
     }
-    for (const std::string& keyword : hdl::VerilogKeywords()) {
-        if (!matches(keyword)) continue;
-        Json item = Json::object();
-        item["label"] = keyword;
-        item["kind"] = 14;  // Keyword
-        items.push_back(std::move(item));
+    for (const Json& item : tables.keywords) {
+        if (!matches(item["label"].get_ref<const std::string&>())) continue;
+        items.push_back(item);
     }
     result["items"] = std::move(items);
     return result;

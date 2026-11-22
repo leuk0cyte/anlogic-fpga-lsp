@@ -1013,7 +1013,7 @@ Json Bridge::TdSummary() const {
 
 td::TdSession& Bridge::EnsureSession(const project::Project& project) {
     if (session_) return *session_;
-    std::optional<td::TdChoice> choice = td::FindTd(options_.td_path);
+    std::optional<td::TdChoice> choice = TdChoiceOrFind();
     if (!choice.has_value()) throw ToolError("No TangDynasty installation found");
     td_choice_ = *choice;
     td::TdSessionOptions session_options;
@@ -1029,6 +1029,11 @@ td::TdSession& Bridge::EnsureSession(const project::Project& project) {
     return *session_;
 }
 
+std::optional<td::TdChoice> Bridge::TdChoiceOrFind() const {
+    if (td_choice_.has_value()) return td_choice_;
+    return td::FindTd(options_.td_path);
+}
+
 const td::DeviceInfo& Bridge::EnsureDeviceInfo(const project::Project& proj, bool refresh) {
     const std::string key =
         proj.device + "|" + proj.family + "|" + proj.speed.value_or("") + "|" + root_;
@@ -1038,28 +1043,82 @@ const td::DeviceInfo& Bridge::EnsureDeviceInfo(const project::Project& proj, boo
     }
     if (proj.device.empty()) throw ToolError("Project has no device in the .al");
 
-    td::TdSession& session = EnsureSession(proj);
-    const td::EnsureDeviceResult ensured = td::EnsureDevice(proj, session, td_choice_->root);
-    if (!ensured.ok) {
-        throw ToolError("No device library supports " + proj.device +
-                        (ensured.error.empty() ? std::string() : (": " + ensured.error)));
+    // ---- P2-B⑤：跨进程的设备摘要缓存 ------------------------------------------
+    // 实测（perf2/MCP-TD.md）：MCP 冷调用 510–760 ms，其中 import_device +
+    // 4×query_current_package ≈ 350 ms 是**我们的重复工作** —— 设备表以前只存在
+    // devices_ 内存里，每个新进程都要重来。这里把摘要落到 <state_dir>/cache/ 下。
+    //
+    // 键 = TD 根 + TD 版本 + device + family + speed：
+    //   * 换 TD 安装 / TD 升级 -> 版本或根变化 -> 未命中；
+    //   * .al 里器件 / 速度 / family 变了 -> 未命中；
+    //   * 文件缺失 / JSON 损坏 / 没有引脚 -> 未命中。
+    // 命中时**不建 TD 会话**（连进程都不起），只做一次文件读 + JSON 解析。
+    std::string cache_key;
+    if (options_.device_probe.has_value()) {
+        // 测试注入：TD 身份由 probe 提供（不必装了 TD，也不会碰真实 TD）。
+        cache_key = td::DeviceSummaryCacheKey(options_.device_probe->td_root,
+                                              options_.device_probe->td_version, proj.device,
+                                              proj.family, proj.speed.value_or(""));
+    } else if (const std::optional<td::TdChoice> choice = TdChoiceOrFind();
+               choice.has_value()) {
+        cache_key = td::DeviceSummaryCacheKey(choice->root, choice->version, proj.device,
+                                              proj.family, proj.speed.value_or(""));
     }
-    // 对应 Python load_device_info 的四次 query_current_package
-    const std::string fio = session.Run("query_current_package -fio");
-    const std::string clock = session.Run("query_current_package -clock_io");
-    const std::string lvds = session.Run("query_current_package -lvds");
-    const std::string cfg = session.Run("query_current_package -cfg_io");
+    const std::string state = proj.dir.empty() ? std::string() : platform::state_dir(proj.dir);
+    if (!refresh && !cache_key.empty()) {
+        if (std::optional<td::DeviceInfo> cached = td::LoadDeviceSummaryCache(state, cache_key);
+            cached.has_value()) {
+            auto info = std::make_unique<td::DeviceInfo>(std::move(*cached));
+            // 与现查路径保持一致：device/family 以 .al 为准，package 兜底小写器件名。
+            info->device = proj.device;
+            info->family = proj.family;
+            if (info->package.empty()) info->package = LowerAscii(proj.device);
+            auto& slot = devices_[key];
+            slot = std::move(info);
+            return *slot;
+        }
+    }
 
-    auto info = std::make_unique<td::DeviceInfo>(td::BuildDeviceInfo(fio, clock, lvds, cfg));
-    info->device = proj.device;
-    info->family = proj.family;
-    if (info->db.empty()) info->db = ensured.db;
-    if (info->package.empty()) info->package = LowerAscii(proj.device);
-    if (info->pins.empty()) {
+    // ---- 现查（未命中 / refresh / 缓存损坏）----
+    td::DeviceInfo fresh;
+    if (options_.device_probe.has_value()) {
+        // 测试注入：完全不走 TD。
+        std::optional<td::DeviceInfo> probed = options_.device_probe->load(proj);
+        if (!probed.has_value()) {
+            throw ToolError("No device library supports " + proj.device);
+        }
+        fresh = std::move(*probed);
+        fresh.device = proj.device;
+        fresh.family = proj.family;
+        if (fresh.package.empty()) fresh.package = LowerAscii(proj.device);
+    } else {
+        td::TdSession& session = EnsureSession(proj);
+        const td::EnsureDeviceResult ensured = td::EnsureDevice(proj, session, td_choice_->root);
+        if (!ensured.ok) {
+            throw ToolError("No device library supports " + proj.device +
+                            (ensured.error.empty() ? std::string() : (": " + ensured.error)));
+        }
+        // 对应 Python load_device_info 的四次 query_current_package
+        const std::string fio = session.Run("query_current_package -fio");
+        const std::string clock = session.Run("query_current_package -clock_io");
+        const std::string lvds = session.Run("query_current_package -lvds");
+        const std::string cfg = session.Run("query_current_package -cfg_io");
+
+        fresh = td::BuildDeviceInfo(fio, clock, lvds, cfg);
+        fresh.device = proj.device;
+        fresh.family = proj.family;
+        if (fresh.db.empty()) fresh.db = ensured.db;
+        if (fresh.package.empty()) fresh.package = LowerAscii(proj.device);
+    }
+    if (fresh.pins.empty()) {
         throw ToolError("query_current_package -fio returned no pins (device " + proj.device + ")");
     }
+    // 落盘：纯优化，失败只记 debug（Write 的 Result 由 IgnoreResult 吞掉），不阻断主流程。
+    if (!cache_key.empty()) {
+        static_cast<void>(td::StoreDeviceSummaryCache(proj.dir, state, cache_key, fresh));
+    }
     auto& slot = devices_[key];
-    slot = std::move(info);
+    slot = std::make_unique<td::DeviceInfo>(std::move(fresh));
     return *slot;
 }
 
@@ -3828,9 +3887,11 @@ Json Bridge::FlowStatus(const Json& arguments) {
     // 失效语义：ReportStore 自己按 (path, mtime, size) 逐文件 stamp + runs 目录 stamp
     // 校验，变了就丢解析结果并重发快照 —— 与 project_reports / LSP 的 fpgaLsp/reports
     // 共用同一套语义，所以新跑完一次 flow 后这里立刻能看到新产物。
-    const auto snapshot = Reports().Get(proj, reports::sections::kArtifacts);
-    const Json empty_data = Json::object();
-    const Json& data = snapshot != nullptr ? snapshot->data : empty_data;
+    const std::shared_ptr<const server::ReportsSnapshot> snapshot =
+        Reports().Get(proj, reports::sections::kArtifacts);
+    // 静态空对象：避免把"临时 Json + 引用绑定"交给分析器（它会报 NullDereference 误判）。
+    static const Json kEmptyReports = Json::object();
+    const Json& data = snapshot.get() != nullptr ? snapshot->data : kEmptyReports;
 
     Json out = Json::object();
     out["ok"] = true;

@@ -60,8 +60,13 @@ LspServer::SemanticTokenContext LspServer::SemanticTokenContextFor(std::string_v
 std::shared_ptr<const std::vector<int>> LspServer::ComputeSemanticTokens(
     const SemanticTokenContext& context, const std::shared_ptr<const std::string>& text) {
     if (!context.index || !text) return nullptr;
-    return std::make_shared<const std::vector<int>>(
-        semantics::EncodeTokens(semantics::SemanticTokens(context.index.get(), context.path, *text)));
+    // P2-A：行级增量。缓存键是"索引内容指纹"（不是 generation —— 每次 didChange
+    // IndexService 都会重装快照并让 generation +1，拿它当键永远不会命中）。
+    // 索引内容真变了时 semantics 内部会自动全量，所以这里无条件走缓存入口。
+    const std::shared_ptr<const std::vector<semantics::SemToken>> tokens =
+        semantics::SemanticTokensCached(context.index.get(), context.path, text,
+                                        context.index_generation);
+    return std::make_shared<const std::vector<int>>(semantics::EncodeTokens(*tokens));
 }
 
 // =============================================================================

@@ -15,16 +15,20 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
 #include "mcp/bridge.h"
 #include "platform/encoding.h"
 #include "project/al_project.h"
+#include "td/td_device.h"
 #include <filesystem>
 #include <fstream>
 #include <process.h>
@@ -1295,4 +1299,264 @@ TEST_F(BridgeTest, ReferencesCacheIsGenerationKeyed) {
     const Json refreshed = bridge.Call("references", arguments);
     EXPECT_GT(refreshed.at("references").size(), cold_count)
         << "文件变了以后 references 必须重算，不能命中旧 generation 的缓存";
+}
+// =============================================================================
+//  P2-B⑤：TD 设备摘要**跨进程**落盘缓存
+// =============================================================================
+//  实测依据 doc/audit/2026-11-22/perf2/MCP-TD.md：MCP 冷调用 510–760 ms，其中
+//  `import_device + 4×query_current_package ≈ 350 ms` 是"每个新进程都重来"的重复工作。
+//
+//  这里用 BridgeOptions::device_probe（测试注入，生产为空）替掉真实 TD 往返：
+//  probe 的调用次数就是"是否走了 TD"的计数器，所以三条契约都能在没装 TD 的机器上跑：
+//    1) 缓存命中 -> 一次 probe 都不调（等价于不 import_device / 不 query）；
+//    2) 缓存损坏 / 键不匹配 -> 回落 probe 一次，并把结果重写回盘（下一个进程能命中）；
+//    3) state_dir 不可写（写服务拒绝/目录建不出来）-> 不崩，仍返回 probe 的结果。
+namespace {
+
+using fpgalsp::td::DedicatedPin;
+using fpgalsp::td::DeviceInfo;
+using fpgalsp::td::Pin;
+
+constexpr const char* kProbeTdRoot = "C:/FakeTd/TD_Release_2099.1";
+constexpr const char* kProbeTdVersion = "2099.1";
+
+std::string UniqueDeviceCacheStateDir(const char* tag) {
+    static int counter = 0;
+    ++counter;
+    std::error_code ec;
+    const fs::path dir = fs::temp_directory_path(ec) /
+                         ("fpgalsp-mcp-devicecache-" + std::string(tag) + "-" +
+                          std::to_string(static_cast<long long>(_getpid())) + "-" +
+                          std::to_string(counter));
+    return dir.generic_string();
+}
+
+// FPGALSP_STATE_DIR 的作用域守卫（写缓存只允许落 state_dir；用完恢复环境变量）。
+//   create=false 时**只设环境变量**，不建目录 —— 用来模拟"state_dir 不可写"。
+class DeviceCacheStateDir {
+  public:
+    DeviceCacheStateDir(std::string dir, bool create) : dir_(std::move(dir)) {
+        const char* previous = std::getenv("FPGALSP_STATE_DIR");
+        saved_ = previous == nullptr ? std::string() : std::string(previous);
+        std::error_code ec;
+        if (create) {
+            fs::remove_all(fs::path(dir_), ec);
+            fs::create_directories(fs::path(dir_), ec);
+        }
+        _putenv_s("FPGALSP_STATE_DIR", dir_.c_str());
+    }
+    ~DeviceCacheStateDir() {
+        _putenv_s("FPGALSP_STATE_DIR", saved_.c_str());
+        std::error_code ec;
+        fs::remove_all(fs::path(dir_), ec);
+    }
+    DeviceCacheStateDir(const DeviceCacheStateDir&) = delete;
+    DeviceCacheStateDir& operator=(const DeviceCacheStateDir&) = delete;
+
+    const std::string& dir() const { return dir_; }
+
+  private:
+    std::string dir_;
+    std::string saved_;
+};
+
+void WriteRawTextFile(const std::string& path, std::string_view text) {
+    std::error_code ec;
+    fs::create_directories(fs::path(path).parent_path(), ec);
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    out.write(text.data(), static_cast<std::streamsize>(text.size()));
+}
+
+// 设备摘要样本：两个引脚（覆盖 intBank / extBank+lvds）与一条专用引脚。
+// 值本身是假的（不会拿去碰 TD），用来验证"命中路径与现查路径逐字段一致"。
+DeviceInfo FakeDeviceSummary(const std::string& package) {
+    DeviceInfo info;
+    info.device = "EF2L45LG144B";
+    info.family = "EF2";
+    info.package = package;
+    info.db = "ef2_fake.db";
+    Pin p1;
+    p1.pe = "P1";
+    p1.pe_raw = "p1";
+    p1.location = "pb1a";
+    p1.type = "fio";
+    p1.int_bank = 1;
+    p1.clock_capable = true;
+    p1.clock_kind = "dpclkio_1";
+    info.pins["p1"] = p1;
+    Pin p2;
+    p2.pe = "P2";
+    p2.pe_raw = "p2";
+    p2.location = "pb1b";
+    p2.type = "fio";
+    p2.ext_bank = 3;
+    p2.lvds = true;
+    p2.lvds_type = "LVDS";
+    info.pins["p2"] = p2;
+    info.dedicated.push_back(DedicatedPin{"programn", "P119"});
+    return info;
+}
+
+std::string CorrelationKey() {
+    return fpgalsp::td::DeviceSummaryCacheKey(kProbeTdRoot, kProbeTdVersion, "EF2L45LG144B",
+                                              "EF2", "");
+}
+
+struct ProbeSetup {
+    fpgalsp::mcp::BridgeOptions options;
+    int* calls = nullptr;
+
+    explicit ProbeSetup(int* counter, const char* td_version = kProbeTdVersion,
+                        const std::string& live_package = "live_pkg") : calls(counter) {
+        options.root = kCorpusRoot;
+        fpgalsp::mcp::BridgeOptions::DeviceProbe probe;
+        probe.td_root = kProbeTdRoot;
+        probe.td_version = td_version;
+        probe.load = [counter, live_package](const fpgalsp::project::Project&)
+            -> std::optional<DeviceInfo> {
+            ++(*counter);
+            return FakeDeviceSummary(live_package);
+        };
+        options.device_probe = probe;
+    }
+};
+
+}  // namespace
+
+// (1) 命中：一次 probe 都不调 = 不 import_device、不 query_current_package。
+TEST_F(BridgeTest, DeviceSummaryCacheHitSkipsTdProbe) {
+    DeviceCacheStateDir state(UniqueDeviceCacheStateDir("hit"), /*create=*/true);
+    const std::string key = CorrelationKey();
+    const DeviceInfo cached = FakeDeviceSummary("cached_pkg");
+    WriteRawTextFile(fpgalsp::td::DeviceSummaryCachePath(state.dir()),
+                     fpgalsp::td::DeviceSummaryCacheFileText(key, cached));
+
+    int probe_calls = 0;
+    const ProbeSetup setup(&probe_calls);
+    fpgalsp::mcp::Bridge bridge(setup.options);
+
+    Json arguments = Json::object();
+    arguments["include_pins"] = true;
+    arguments["limit"] = 5000;
+    const Json result = bridge.Call("device_info", arguments);
+    ASSERT_TRUE(result.at("ok").get<bool>()) << result.dump(1);
+    EXPECT_EQ(probe_calls, 0)
+        << "缓存命中不能走 TD（import_device / query_current_package）";
+
+    // 与现查逐字段一致：device/family 取 .al，package/db/pinCount/引脚字段取摘要缓存。
+    EXPECT_EQ(result.at("device").get<std::string>(), "EF2L45LG144B");
+    EXPECT_EQ(result.at("family").get<std::string>(), "EF2");
+    EXPECT_EQ(result.at("package").get<std::string>(), "cached_pkg");
+    EXPECT_EQ(result.at("db").get<std::string>(), "ef2_fake.db");
+    EXPECT_EQ(result.at("pinCount").get<int>(), 2);
+    bool saw_p1 = false;
+    bool saw_p2 = false;
+    for (const Json& pin : result.at("pins")) {
+        const std::string name = pin.at("pin").get<std::string>();
+        if (name == "P1") {
+            saw_p1 = true;
+            EXPECT_EQ(pin.at("location").get<std::string>(), "pb1a");
+            EXPECT_EQ(pin.at("intBank").get<int>(), 1);
+            EXPECT_TRUE(pin.at("clockCapable").get<bool>());
+            EXPECT_FALSE(pin.at("lvds").get<bool>());
+        } else if (name == "P2") {
+            saw_p2 = true;
+            EXPECT_EQ(pin.at("location").get<std::string>(), "pb1b");
+            ASSERT_TRUE(pin.at("extBank").is_number());
+            EXPECT_EQ(pin.at("extBank").get<int>(), 3);
+            EXPECT_FALSE(pin.at("clockCapable").get<bool>());
+            EXPECT_TRUE(pin.at("lvds").get<bool>());
+        }
+    }
+    EXPECT_TRUE(saw_p1);
+    EXPECT_TRUE(saw_p2);
+}
+
+// (2) 缓存损坏：回落现查一次，并把结果重写回盘（下一个"进程"能直接命中）。
+TEST_F(BridgeTest, DeviceSummaryCacheCorruptFallsBackAndRewrites) {
+    DeviceCacheStateDir state(UniqueDeviceCacheStateDir("corrupt"), /*create=*/true);
+    const std::string key = CorrelationKey();
+    WriteRawTextFile(fpgalsp::td::DeviceSummaryCachePath(state.dir()),
+                     "{ this is not valid json !!!");
+
+    int probe_calls = 0;
+    const ProbeSetup first(&probe_calls);
+    fpgalsp::mcp::Bridge bridge(first.options);
+    Json arguments = Json::object();
+    arguments["include_pins"] = true;
+    arguments["limit"] = 5000;
+    const Json result = bridge.Call("device_info", arguments);
+    ASSERT_TRUE(result.at("ok").get<bool>()) << result.dump(1);
+    EXPECT_EQ(probe_calls, 1) << "损坏 = 未命中，必须回落现查";
+    EXPECT_EQ(result.at("package").get<std::string>(), "live_pkg");
+    EXPECT_EQ(result.at("pinCount").get<int>(), 2);
+
+    // 重写：盘上现在能读回同一份摘要（含引脚与专用引脚）
+    const std::optional<DeviceInfo> stored =
+        fpgalsp::td::LoadDeviceSummaryCache(state.dir(), key);
+    ASSERT_TRUE(stored.has_value()) << "现查之后必须重写缓存";
+    EXPECT_EQ(stored->package, "live_pkg");
+    EXPECT_EQ(stored->pins.size(), 2u);
+    ASSERT_EQ(stored->dedicated.size(), 1u);
+    EXPECT_EQ(stored->dedicated.front().role, "programn");
+
+    // 模拟"进程重启"：新 Bridge + 同一个 state_dir，必须命中且不再调 probe。
+    int second_calls = 0;
+    const ProbeSetup second(&second_calls, kProbeTdVersion, "should_not_be_used");
+    fpgalsp::mcp::Bridge bridge2(second.options);
+    const Json hit = bridge2.Call("device_info", arguments);
+    ASSERT_TRUE(hit.at("ok").get<bool>()) << hit.dump(1);
+    EXPECT_EQ(second_calls, 0);
+    EXPECT_EQ(hit.at("package").get<std::string>(), "live_pkg");
+}
+
+// (3) state_dir 不可写：写缓存失败被 IgnoreResult 吞掉，调用不崩、结果照常。
+TEST_F(BridgeTest, DeviceSummaryCacheUnwritableStateDirStillReturns) {
+    // 把 state_dir 指到一个**文件**上：<state>/cache 目录建不出来，写必失败。
+    const fs::path blocker =
+        fs::temp_directory_path() /
+        ("fpgalsp-mcp-devicecache-blocker-" +
+         std::to_string(static_cast<long long>(_getpid())));
+    std::error_code ec;
+    fs::remove_all(blocker, ec);
+    {
+        std::ofstream out(blocker, std::ios::binary | std::ios::trunc);
+        out << "not a directory";
+    }
+    DeviceCacheStateDir state(blocker.generic_string(), /*create=*/false);
+
+    int probe_calls = 0;
+    const ProbeSetup setup(&probe_calls);
+    fpgalsp::mcp::Bridge bridge(setup.options);
+    Json arguments = Json::object();
+    arguments["include_pins"] = true;
+    arguments["limit"] = 5000;
+    const Json result = bridge.Call("device_info", arguments);
+    ASSERT_TRUE(result.at("ok").get<bool>()) << result.dump(1);
+    EXPECT_EQ(probe_calls, 1);
+    EXPECT_EQ(result.at("package").get<std::string>(), "live_pkg");
+    EXPECT_EQ(result.at("pinCount").get<int>(), 2);
+
+    // 直接钉住"写失败"的语义：返回 false 且不抛、不留残文件。
+    EXPECT_FALSE(fpgalsp::td::StoreDeviceSummaryCache(kCorpusRoot, state.dir(), CorrelationKey(),
+                                                      FakeDeviceSummary("x")));
+    EXPECT_FALSE(fs::exists(fs::path(fpgalsp::td::DeviceSummaryCachePath(state.dir()))));
+}
+
+// (4) 键覆盖 TD 身份：TD 升级（版本变化）后旧缓存不能命中。
+TEST_F(BridgeTest, DeviceSummaryCacheMissesWhenTdVersionChanges) {
+    DeviceCacheStateDir state(UniqueDeviceCacheStateDir("version"), /*create=*/true);
+    const DeviceInfo cached = FakeDeviceSummary("old_td_pkg");
+    WriteRawTextFile(fpgalsp::td::DeviceSummaryCachePath(state.dir()),
+                     fpgalsp::td::DeviceSummaryCacheFileText(CorrelationKey(), cached));
+
+    int probe_calls = 0;
+    const ProbeSetup setup(&probe_calls, "2099.2", "new_td_pkg");
+    fpgalsp::mcp::Bridge bridge(setup.options);
+    Json arguments = Json::object();
+    arguments["include_pins"] = true;
+    const Json result = bridge.Call("device_info", arguments);
+    ASSERT_TRUE(result.at("ok").get<bool>()) << result.dump(1);
+    EXPECT_EQ(probe_calls, 1) << "TD 版本变了 -> 旧条目必须失效";
+    EXPECT_EQ(result.at("package").get<std::string>(), "new_td_pkg");
 }

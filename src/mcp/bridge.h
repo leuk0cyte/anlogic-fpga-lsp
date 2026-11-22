@@ -53,13 +53,14 @@
 //     文本扫描，那时标注 `"portsSource": "text-scan"` —— 这个字段是给调用方的
 //     "数据可信度提示"，不要删。
 //  2. device 缓存：Python 写 `<project>/.fpgalsp/cache/*.json`。本实现**不写工程
-//     目录**（PYTHON-BUGS.md P-4 的修复方向），只在进程内缓存 —— 同一进程内
-//     重复调用不会重复 import_device。
+//     目录**（PYTHON-BUGS.md P-4 的修复方向），落盘位置是 `platform::state_dir`
+//     下的 `cache/td_device_summary.json`（P2-B⑤），进程内另有一份 devices_ 缓存。
 // =============================================================================
 
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <list>
 #include <map>
 #include <memory>
@@ -73,6 +74,7 @@
 #include "mcp/mcp_server.h"
 #include "mcp/tools.h"
 #include "server/index_service.h"  // D5：HDL 索引改由 IndexService 持有（增量 + TTL）
+#include "td/td_device.h"          // P2-B⑤：BridgeOptions::DeviceProbe 需要完整 DeviceInfo
 #include "td/td_install.h"
 
 namespace fpgalsp::project {
@@ -120,6 +122,23 @@ struct BridgeOptions {
     // Phase 2 / B1：非空时直接复用宿主 LSP 进程的 Engine（单 Engine 多 transport）；
     // 为空时保持旧行为（懒构造 NullTransport LspServer）。
     server::LspServer* shared_server = nullptr;
+
+    // -------------------------------------------------------------------------
+    // 测试注入点（生产保持空）：替代"真实 TD 往返"获取设备摘要。
+    // -------------------------------------------------------------------------
+    //  非空时 Bridge **不发任何 TD 命令**（不 import_device / 不 query_current_package），
+    //  也不需要机器上装了 TD；td_root/td_version 只用于构造磁盘缓存键。
+    //  这样单测可以在任意机器上稳定验证三条契约（见 mcp_bridge_test.cpp）：
+    //    * 命中缓存 -> 根本不调用 load（= 不走 TD）；
+    //    * 缓存损坏 / 键不匹配 -> 调用一次 load 并重写缓存；
+    //    * state_dir 不可写 -> 仍然返回 load 的结果，不崩。
+    struct DeviceProbe {
+        std::string td_root;     // 缓存键里的 TD 身份（生产由 TdChoice 提供）
+        std::string td_version;  // 同上
+        // 现查设备摘要；返回 nullopt = "没有器件库支持这个器件"（与 TD 路径同义）。
+        std::function<std::optional<td::DeviceInfo>(const project::Project&)> load;
+    };
+    std::optional<DeviceProbe> device_probe;
 };
 
 class Bridge : public ToolDispatcher {
@@ -158,6 +177,9 @@ class Bridge : public ToolDispatcher {
     // ---- 器件 ----
     const td::DeviceInfo& EnsureDeviceInfo(const project::Project& proj, bool refresh);
     td::TdSession& EnsureSession(const project::Project& project);
+    // P2-B⑤：取 TD 身份（root + version，磁盘缓存键的一部分）。
+    //   已有结果（session 建过）就直接复用，避免一次多余的安装发现/缓存文件读。
+    [[nodiscard]] std::optional<td::TdChoice> TdChoiceOrFind() const;
 
     // ---- 报错工具 ----
     [[noreturn]] static void Fail(const std::string& message) { throw ToolError(message); }

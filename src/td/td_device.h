@@ -102,4 +102,49 @@ std::string MakeImportDeviceCommand(std::string_view db_file, std::string_view p
 std::string DeviceCacheKey(std::string_view device, std::string_view family,
                            const std::optional<std::string>& speed);
 
+// -----------------------------------------------------------------------------
+// P2-B⑤：设备摘要**跨进程**落盘缓存
+// -----------------------------------------------------------------------------
+//  实测（doc/audit/2026-11-22/perf2/MCP-TD.md）：MCP 冷调用里的
+//  `import_device + 4×query_current_package` ≈ 350 ms，而设备表在我们这边只存在
+//  `Bridge::devices_` 内存里 —— 每个新进程都要重付一次。
+//
+//  这里只存**设备摘要字段**（DeviceInfo 的各字段值），**不存 TD 的原始输出**。
+//  文件：<state_dir>/cache/td_device_summary.json
+//      { "v": 1, "entries": { "<key>": { "device","family","package","db",
+//                                      "pins": [[k,pe,pe_raw,location,type,
+//                                                intBank,extBank,clock,lvds,
+//                                                clockKind,lvdsType], ...],
+//                                      "dedicated": [[role,pe], ...] } } }
+//  失效语义（任一即未命中，回落现查并重写）：
+//    * key 里含 td_root + td_version -> 换安装 / TD 升级自动失效；
+//    * key 里含 device/family/speed -> .al 里器件变了自动失效；
+//    * 文件缺失 / JSON 损坏 / 字段类型不对 / 没有引脚 -> 未命中；
+//    * "v" 不匹配 -> 未命中（日后改格式不必写迁移）。
+std::string DeviceSummaryCacheKey(std::string_view td_root, std::string_view td_version,
+                                  std::string_view device, std::string_view family,
+                                  std::string_view speed);
+
+// <state_dir>/cache/td_device_summary.json（state_dir 为空 -> 空串）
+std::string DeviceSummaryCachePath(std::string_view state_dir);
+
+// 单条摘要的 JSON 文本（纯函数，便于测试/诊断；不含 key 与文件外壳）。
+std::string EncodeDeviceSummary(const DeviceInfo& info);
+
+// 反序列化单条摘要；任何异常/字段缺失/类型不符都返回 nullopt（= 缓存未命中）。
+std::optional<DeviceInfo> DecodeDeviceSummary(std::string_view json_text);
+
+// 只含一条 entry 的整份缓存文件文本（测试种缓存用；生产写盘走 StoreDeviceSummaryCache）。
+std::string DeviceSummaryCacheFileText(std::string_view key, const DeviceInfo& info);
+
+// 读缓存：文件/条目缺失、损坏、版本不符都返回 nullopt，**从不抛**。
+std::optional<DeviceInfo> LoadDeviceSummaryCache(std::string_view state_dir,
+                                                 std::string_view key);
+
+// 写缓存（保留文件里其它条目，最多 8 条）。
+//   只写 state_dir（经 platform::writes::Write，受写服务门禁约束）；
+//   失败返回 false 并留 debug 日志，**绝不抛** —— 缓存是纯优化，不能变成新的失败点。
+bool StoreDeviceSummaryCache(std::string_view project_dir, std::string_view state_dir,
+                             std::string_view key, const DeviceInfo& info);
+
 }  // namespace fpgalsp::td

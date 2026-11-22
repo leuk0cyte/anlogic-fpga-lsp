@@ -60,7 +60,7 @@ LSP Engine），进程在 stdin 关闭时退出 —— 要当常驻服务用时�
 ## VS Code 扩展
 
 ```powershell
-code --install-extension vscode-extension\fpga-lsp-anlogic-0.29.0.vsix
+code --install-extension vscode-extension\fpga-lsp-anlogic-0.30.0.vsix
 ```
 
 扩展会优先使用随包内置的服务端。开发、测试与打包见

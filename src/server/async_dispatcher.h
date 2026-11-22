@@ -10,7 +10,7 @@
 //  线程模型：
 //    * IO 线程：ReadMessage -> Dispatch()。通知（didOpen/didChange/...）永远同步执行，
 //      保证文档状态顺序；快请求也同步（它们本身就是亚毫秒级）。
-//    * Worker 池（2–4）：只执行 IsHeavyMethod() 白名单里的请求；响应直接写 transport
+//    * Worker 池（默认 4，clamp 1..8）：只执行 IsHeavyMethod() 白名单里的请求；响应直接写 transport
 //      （TransportBaseCommon::WriteMessage 内部持锁，线程安全）。
 //    * 取消：$/cancelRequest 只置 token；worker 在调用前检查；已经开始的请求在
 //      返回后若已取消，则回 -32800 而不是结果。

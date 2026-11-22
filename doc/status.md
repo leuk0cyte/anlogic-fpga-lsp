@@ -1,12 +1,12 @@
-# 交付状态（当前：2026-11-23，扩展 0.29.0）
+# 交付状态（当前：2026-11-23，扩展 0.30.0）
 
 ## 构建与测试
 
 | 项目 | 数据 |
 | --- | --- |
 | **全新目录干净构建** | configure 29 s → build 3.3 min → **844 个目标全部成功**（Release + 全量 LTO）；无 LTO 的 `windows-msvc-dev` 全新目录 **56 s**（2026-11-20 实测；增量构建见 build.md） |
-| **`ctest` 全量** | **71/71 通过**（其中 `unit` 46、`e2e` 5、`td` 5，其余为 `formatgate`/`lintgate`/`gate`/`generator`/`mcp`/`docs`/`parity` 门禁）；`docs_clang_tidy` **默认不注册**（`-DFPGA_LSP_ENABLE_TIDY_GATE=ON` 才加入，约 +145 s）；preset 默认 **8 路并行**，实测约 **90 s** |
-| **原生产物** | `build/bin/fpgalsp-native.exe`（0.29.0，**7,073,792 B**，全量 LTCG；SHA256 `51A2DB65…02C53B`） |
+| **`ctest` 全量** | **72/72 通过**（其中 `unit` 46、`e2e` 5、`td` 5，其余为 `formatgate`/`lintgate`/`gate`/`generator`/`mcp`/`docs`/`parity` 门禁 + `docs_clang_tidy`）；**clang-tidy 门禁默认注册**（约 +145 s；跳过用 `ctest -E docs_clang_tidy`，约 90 s）|
+| **原生产物** | `build/bin/fpgalsp-native.exe`（0.30.0，**7,137,792 B**，全量 LTCG；SHA256 `7DE79211…5CA68F`） |
 | **单元测试规模** | 46 个 gtest target |
 
 > 构建/测试的并行度分析（为什么 192 线程帮不上忙、时间精确花在哪、日常该用哪个 preset）见
@@ -1823,3 +1823,30 @@ completion 候选缓存、TD 设备表落盘（冷调用 574 → ~170 ms）、�
 新测试：`BridgeTest.FlowStatusArtifactsSurviveTheReportStorePath`、
 `WorkspaceSymbolsWindowMatchesFullList`、`ReferencesCacheIsGenerationKeyed`、
 `McpResultRepresentationTest.DefaultTierTruncatesLargeArrayPayload / StructuredTierKeepsFullPayloadUnchanged`。
+
+---
+
+## 第四十三轮（2026-11-23，0.30.0）：性能优化第二轮 + clang-tidy 门禁改回默认开启
+
+**性能（团队模式，子 agent 实现 + lead 实测验收；详见 [perf2/README.md](audit/2026-11-22/perf2/README.md)）**
+
+| 项 | 改前 | 改后 |
+| --- | --- | --- |
+| semanticTokens 行级增量（缓存键 = path + **索引内容指纹**） | per-key full 5.51 ms / delta 5.43 ms | **1.95 / 1.88 ms**（-65%） |
+| TD 设备摘要落盘缓存（`<state>/cache/td_device_summary.json`） | `fpga_constraint_audit` cold **558 ms** | **14.1 ms**（-97.5%，命中不建 TD 会话） |
+| completion 常量候选预建 + reserve | 2.04 ms/键 | **1.81 ms** |
+| LSP worker 池 2 → 4 | 多文档并发最坏 11.8 ms | 预期 ≈6.6 ms |
+
+语义增量的正确性：2 个文件 × 200 次随机编辑逐 token 等价（含块注释/字符串/跨行删除），外加
+"generation 抖动但索引内容不变必须继续命中""索引内容真变必须回退全量"两个专项用例（20/20 绿）。
+第一版实现因为把 `generation` 放进缓存键而**一次都没命中**（每键都变），实测发现后改为索引内容指纹。
+
+**顺带修掉 3 条静态分析真问题**：`old_text.substr()` 临时 `std::string` 绑到 `string_view`（悬垂）、
+语义缓存全局 `std::map` 静态初始化期可抛（改函数内 static）、一处 `ReportsSnapshot` 命名空间写错。
+
+**clang-tidy 门禁改回默认开启**：`FPGA_LSP_ENABLE_TIDY_GATE` 默认 `ON`，`ctest` 回到 **72 项**
+（含 `docs_clang_tidy`，约 +145 s；想跑快的用 `ctest -E docs_clang_tidy`，约 90 s）。
+基线重新生成：**142 条 / 67 TU**（与 0.28.0 持平 —— 本轮新增代码净新增 0 条，且修掉 3 条）。
+
+**验证**：dev/release `ctest` **72/72**；插件 `node test/run.js` **64/64**；
+`check_versions` / `check_raw_file_writes` / `check_project_state_paths` / `check_tcl_invariant` 全 PASS。
