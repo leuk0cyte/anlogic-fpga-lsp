@@ -260,6 +260,9 @@ public:
     TdFlowSession(const td::TdChoice& td, const std::string& work_dir) {
         td::TdSessionOptions options;
         options.work_dir = work_dir;
+        // TD 的会话日志写在 cwd（= .al 目录）里；GUI 自己把它们放进 <al>/log/，
+        // 这里会话结束时做同样的归位，工程根目录保持干净。
+        options.log_dir = work_dir + "/log";
         session_ = std::make_unique<td::TdSession>(td, options);  // 启动失败抛 TdError
     }
 

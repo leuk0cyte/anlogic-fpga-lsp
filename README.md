@@ -54,7 +54,7 @@ fpgalsp-native.exe --help
 ## VS Code 扩展
 
 ```powershell
-code --install-extension vscode-extension\fpga-lsp-anlogic-0.21.4.vsix
+code --install-extension vscode-extension\fpga-lsp-anlogic-0.21.5.vsix
 ```
 
 扩展会优先使用随包内置的服务端。开发、测试与打包见

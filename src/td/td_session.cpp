@@ -12,10 +12,13 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <set>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <thread>
 #include <vector>
@@ -81,6 +84,24 @@ std::string MakeScratchWorkDir() {
 
 }  // namespace
 
+namespace {
+
+// TD 在会话 cwd 里留下的"一次性"文件：
+//   * `td_<YYYYMMDD_HHMMSS>.log` / `.logw`  —— 每个短会话一份（GUI 的日志在 `<al>/log/`）
+//   * `minidump-*.dmp`                      —— TD 崩溃时写的转储
+// 会话结束后由 Impl::RelocateSessionFiles() 挪到 options.log_dir。
+bool IsTransientSessionArtifact(std::string_view name) {
+    const auto ends_with = [name](std::string_view suffix) {
+        return name.size() >= suffix.size() &&
+               name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0;
+    };
+    if (name.rfind("td_", 0) == 0 && (ends_with(".log") || ends_with(".logw"))) return true;
+    if (name.rfind("minidump-", 0) == 0 && ends_with(".dmp")) return true;
+    return false;
+}
+
+}  // namespace
+
 struct TdSession::Impl {
 #ifdef _WIN32
     HANDLE process = nullptr;
@@ -96,6 +117,59 @@ struct TdSession::Impl {
     std::string work_dir;  // D-3：本会话实际使用的 cwd（空 = 未能创建）
     std::mutex io_mutex;
     unsigned long pid = 0;
+    // 会话日志外移：目标目录 + 会话开始前 cwd 里已有的那些文件名（那些不是本次产生的）
+    std::string log_dir;
+    std::set<std::string> preexisting;
+    bool relocated = false;
+
+    // 把本次会话新产生的 td_*.log/.logw、minidump-*.dmp 从 cwd 挪到 log_dir。
+    // 只用"文件是否在会话开始时就存在"做判据（不做时间比较：TD 的日志名带的是它自己的
+    // 启动时间，不是我们的会话时间；而且同一目录可能被多个会话共用）。
+    void RelocateSessionFiles() {
+        if (relocated || log_dir.empty() || work_dir.empty()) return;
+        relocated = true;
+#ifdef _WIN32
+        // TerminateProcess 是异步的：先等进程真的死掉，否则文件可能还被它占着
+        if (process != nullptr) WaitForSingleObject(process, 5000);
+#endif
+        std::vector<std::string> names;
+        {
+            std::error_code ec;
+            for (std::filesystem::directory_iterator it(std::filesystem::path(work_dir), ec);
+                 !ec && it != std::filesystem::directory_iterator(); it.increment(ec)) {
+                const std::string name = it->path().filename().string();
+                if (!IsTransientSessionArtifact(name)) continue;
+                if (preexisting.find(name) != preexisting.end()) continue;
+                names.push_back(name);
+            }
+        }
+        if (names.empty()) return;
+        std::error_code ec;
+        std::filesystem::create_directories(std::filesystem::path(log_dir), ec);
+        for (const std::string& name : names) {
+            const std::filesystem::path from = std::filesystem::path(work_dir) / name;
+            const std::filesystem::path to = std::filesystem::path(log_dir) / name;
+            bool moved = false;
+            for (int attempt = 0; attempt < 3 && !moved; ++attempt) {
+                if (attempt > 0) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                std::error_code move_ec;
+                std::filesystem::rename(from, to, move_ec);
+                if (!move_ec) {
+                    moved = true;
+                    break;
+                }
+                // 跨卷（state 目录在 C:）时 rename 会失败，退回复制 + 删除
+                move_ec.clear();
+                std::filesystem::copy_file(from, to,
+                                           std::filesystem::copy_options::overwrite_existing,
+                                           move_ec);
+                if (!move_ec) {
+                    std::filesystem::remove(from, move_ec);
+                    moved = true;
+                }
+            }
+        }
+    }
 
     ~Impl() { Cleanup(); }
 
@@ -233,6 +307,18 @@ TdSession::TdSession(const TdChoice& td, const TdSessionOptions& options) : td_(
     // 对应 Python: os.makedirs(cwd, exist_ok=True)
     if (!work_dir.empty()) {
         plat::ensure_directory(work_dir);
+    }
+
+    // 会话日志外移（见 TdSessionOptions::log_dir 的注释）：先记下 cwd 里**已经存在**的
+    // td_*/minidump-*，结束时只挪这次会话新产生的那些，绝不碰用户自己启动的 TD 日志。
+    impl_->log_dir = options.log_dir;
+    if (!impl_->log_dir.empty() && !work_dir.empty()) {
+        std::error_code ec;
+        for (std::filesystem::directory_iterator it(std::filesystem::path(work_dir), ec);
+             !ec && it != std::filesystem::directory_iterator(); it.increment(ec)) {
+            const std::string name = it->path().filename().string();
+            if (IsTransientSessionArtifact(name)) impl_->preexisting.insert(name);
+        }
     }
 
 #ifdef _WIN32
@@ -429,6 +515,9 @@ void TdSession::Kill() {
     }
 #endif
     impl_->alive = false;
+    // 会话结束：把这次新产生的 td_*.log/.logw、minidump-*.dmp 从 cwd 挪到
+    // options.log_dir（通常是 `<al>/log`，和 TD GUI 的日志放一起）。
+    impl_->RelocateSessionFiles();
 }
 
 void TdSession::Close() {

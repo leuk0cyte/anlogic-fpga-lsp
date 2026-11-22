@@ -44,6 +44,13 @@ struct TdSessionOptions {
     // 需要"产物落在工程里"的调用方（bridge / flow）应显式传
     // <project>/.fpgalsp/run，而不是依赖继承。
     std::string work_dir;
+    // TD 把每个会话的日志写成 `<cwd>/td_<YYYYMMDD_HHMMSS>.log`（还有 `.logw`），崩溃时
+    // 还会在 cwd 里丢一个 `minidump-*.dmp`。而会话 cwd 必须是 `.al` 所在目录（与 GUI
+    // 一致，相对路径才解析得对），于是这些"短会话日志"就落到了**工程根目录**。
+    // GUI 自己把它们放在 `<al>/log/` 下，所以这里传 `<al>/log` 即可：
+    // 会话结束（Kill/Close/Destroy）时，**只把本次会话新产生的**这些文件挪过去
+    //（挪不动就复制+删除；跨卷也成立）。空 = 不挪（scratch cwd 的会话不需要）。
+    std::string log_dir;
 };
 
 class TdSession {

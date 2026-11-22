@@ -2335,6 +2335,9 @@ bool QueryWatcherMap(const td::TdChoice& td, const project::Project& project, Wa
     if (dbs.empty()) return fail("no device database (arch/*.db) under " + td.root);
     td::TdSessionOptions options;
     options.work_dir = project.dir;
+    // 短会话的 td_*.log/.logw（以及崩溃时的 minidump）挪到 <al>/log/，
+    // 别散落在工程根目录 —— 那里是 TD GUI 放自己日志的地方。
+    options.log_dir = project.dir + "/log";
     (void)fpgalsp::platform::ensure_directory(options.work_dir);
     const std::string al = Slashes(project.al_path);
     std::string out_text;
@@ -2485,6 +2488,7 @@ std::string QuerySampleClockFromGateDb(const td::TdChoice& td, const project::Pr
     td::TdSessionOptions options;
     // cwd = .al 所在目录（与 TD GUI 一致）：TD 的会话日志与相对路径解析都依赖它。
     options.work_dir = project.dir;
+    options.log_dir = project.dir + "/log";  // 会话日志统一进 <al>/log/（同 GUI）
     (void)fpgalsp::platform::ensure_directory(options.work_dir);
     std::unique_ptr<td::TdSession> session;
     const std::string al = Slashes(project.al_path);
@@ -3721,6 +3725,9 @@ jsonrpc::Json Capture(const td::TdChoice& td, const project::Project& project,
 
     td::TdSessionOptions session_options;
     session_options.work_dir = effective.cwd;
+    // 会话结束后把 td_*.log/.logw、minidump-*.dmp 从 cwd 挪到 <al>/log/
+    //（否则每次抓取都会在工程根目录留一份短会话日志）。
+    session_options.log_dir = project.dir + "/log";
     std::unique_ptr<td::TdSession> session;
     try {
         session = std::make_unique<td::TdSession>(td, session_options);

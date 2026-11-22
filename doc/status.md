@@ -1254,3 +1254,38 @@ with download:true confirm:true, or re-run stages:[\"all\"]"}`。
 
 即：插件的 "Run Full Flow" → "Capture" 两步，全程不需要 TD GUI、不需要 `generate_cwc`
 开关，也不需要手动 download。
+
+### 第二十九轮：TD 短会话日志不再落在工程根目录
+
+用户反馈：TD 短会话日志散落在工程根目录。根因是两件"正确行为"叠在一起：
+
+1. 会话 cwd 必须是 `.al` 所在目录（第二十一轮：否则 `.al` 里的相对路径解析失败，
+   `HDL-8007` / `PRJ-8806`），而 TD 把每个会话的日志写在 `<cwd>/td_<YYYYMMDD_HHMMSS>.log`
+   （崩溃时还有 `minidump-*.dmp`）——于是每一次 capture / 时钟查询 / watcher 查询
+   都在工程根目录留一对文件；
+2. TD GUI 自己也是这么写的，但它把日志放进 `<al>/log/`（GUI 会话日志带横线：
+   `log/td_2026-11-22_11-01-30.log`）。我们之前没有跟着归位。
+
+**修法：`td::TdSessionOptions::log_dir`**
+
+- 会话开始前记下 cwd 里已有的 `td_*.log/.logw`、`minidump-*.dmp`；
+- 会话结束（`Kill()`，也就是 `Close()`/析构/fail 路径）时，**只把本次会话新产生的**那些
+  挪到 `log_dir`（先 `rename`，跨卷失败退回复制+删除，重试 3 次等 TD 释放句柄）；
+- 传递：flow 会话 / capture / 时钟查询 / watcher 查询 / bridge 的 TD 服务会话
+  都指向 `<al>/log`；cwd 本来就在 temp 或 state dir 里的会话（analysis、strategy、
+  lsp_server）不需要挪，保持空。
+
+`fpga_flow_log` 相应改成两处都读：状态目录里的 flow run 目录（老落点）+ `<al>/log`，
+按 mtime 取最近 12 份，并在每份上标 `source`（`run-dir` / `project-log`）。
+
+**实测**（corpus_delta）：capture 一次后工程根目录零新增，`log/` 下出现
+`td_20261122_121901.log` + `.logw`；capture 本身照旧 `ok / 1024 采样`。
+
+**顺手清干净历史遗留**（移动到 state 目录后删除）：
+
+- corpus_delta 工作区根 + `.al` 目录：`td_*.log/.logw` 60 个 -> `<al>/log/`；
+- CorpusAlpha 根：`td_*.log/.logw` + `minidump-*.dmp` 131 个 -> `log/`；
+- 旧版本留下的 `<workspace>/.fpgalsp/`（corpus_delta、CorpusAlpha）和 e2e 备份
+  `corpus_delta.al.bak_e2e` -> `<state>/legacy/`。
+
+`ctest` 64/64、插件 45/45。

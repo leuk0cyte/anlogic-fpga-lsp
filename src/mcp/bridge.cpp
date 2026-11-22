@@ -945,6 +945,9 @@ td::TdSession& Bridge::EnsureSession(const project::Project& project) {
     // `<project>/.fpgalsp/run/`（与 Python 的 `_run_dir()` 同一位置，便于两侧对照排障）。
     // cwd = .al 所在目录（与 TD GUI 一致）；状态目录只放**我们自己的**文件。
     session_options.work_dir = project.dir;
+    // 这个会话是长期存在的 TD 服务会话，日志会一直追加；结束时挪到 <al>/log/
+    //（GUI 的日志也在那儿），别让工程根目录冒出一堆 td_YYYYMMDD_HHMMSS.log。
+    session_options.log_dir = project.dir + "/log";
     session_ = std::make_unique<td::TdSession>(*td_choice_, session_options);
     return *session_;
 }
@@ -3384,19 +3387,42 @@ Json Bridge::FlowLog(const Json& arguments) {
     }
 
     Json files = Json::array();
-    if (kind == "td" || kind == "both") {
-        for (const std::string& name : ListFiles(run_dir)) {
+    // TD 会话日志现在会被归位到 `<al>/log/`（与 TD GUI 一致），所以两处都要看：
+    // ① 状态目录里的 flow run 目录（旧版本/某些会话的落点）；② 工程的 log/ 目录。
+    const auto append_td_logs = [&](const std::string& dir, const char* source) {
+        std::error_code ec;
+        if (!std::filesystem::is_directory(std::filesystem::path(dir), ec)) return;
+        std::vector<std::string> names;
+        for (const std::string& name : ListFiles(dir)) {
             if (name.rfind("td_", 0) != 0) continue;
             if (!(name.size() >= 4 &&
                   (name.compare(name.size() - 4, 4, ".log") == 0 ||
                    name.compare(name.size() - 5, 5, ".logw") == 0))) {
                 continue;
             }
-            Json data = TailText(path_join(run_dir, name), max_chars);
+            names.push_back(name);
+        }
+        // 只回最近 12 个（工程的 log/ 目录里可能堆着几十份历史会话）
+        std::sort(names.begin(), names.end(), [&dir](const std::string& a, const std::string& b) {
+            std::error_code a_ec;
+            std::error_code b_ec;
+            const auto a_time = std::filesystem::last_write_time(std::filesystem::path(dir) / a, a_ec);
+            const auto b_time = std::filesystem::last_write_time(std::filesystem::path(dir) / b, b_ec);
+            if (a_ec || b_ec) return a > b;
+            return a_time > b_time;
+        });
+        if (names.size() > 12) names.resize(12);
+        for (const std::string& name : names) {
+            Json data = TailText(path_join(dir, name), max_chars);
             data["text"] = TailLines(data["text"].get<std::string>(), tail);
             data["kind"] = "td";
+            data["source"] = source;
             files.push_back(std::move(data));
         }
+    };
+    if (kind == "td" || kind == "both") {
+        append_td_logs(run_dir, "run-dir");
+        append_td_logs(path_join(proj.dir, "log"), "project-log");
     }
     if (kind == "run" || kind == "both") {
         for (const std::string& path : RunLogPaths(proj)) {
