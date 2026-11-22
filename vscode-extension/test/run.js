@@ -1367,12 +1367,14 @@ test('flow controller: right-click Run / Reset run goes through the controller',
     window.window.showInformationMessage = (text) => { notices.push(String(text)); };
     window.window.showWarningMessage = (text) => { notices.push(String(text)); };
     try {
-        const item = { flowStep: 'read_design', flowStepName: 'Read Design' };
+        // view/item/context 的真实参数是**树节点**（getChildren 的 element）：
+        // {kind:'stage', step:'read_design', stepName:'Read Design', label:'Read Design · 105 MB'}
+        const item = { kind: 'stage', step: 'read_design', stepName: 'Read Design', label: 'Read Design · 105 MB' };
         const reset = controller.runStep(item, true);
         await new Promise((resolve) => setTimeout(resolve, 30));
         eq(calls.length, 1, 'one server call');
         eq(calls[0][0], 'fpgalsp.runFlowStep', 'uses runFlowStep');
-        eq(calls[0][1][0].step, 'read_design', 'step passed through');
+        eq(calls[0][1][0].step, 'read_design', 'step passed through (tree element shape)');
         eq(calls[0][1][0].force, true, 'Reset run sends force:true');
         eq(Boolean(controller.active && controller.active.step === 'read_design'), true, 'controller tracks the step run');
         ok(controller.output.lines.some((line) => /reset run Read Design/.test(line)),
@@ -1395,6 +1397,12 @@ test('flow controller: right-click Run / Reset run goes through the controller',
         eq(skipped.skipped, true, 'skipped result returned');
         ok(notices.some((text) => /already completed/.test(text)), 'user told to use Reset run');
         eq(controller.active, undefined, 'nothing tracked for a skipped run');
+
+        // 既没有 step 也没有 flowStep（点到了非步骤行）：给一句可执行的提示，别静默
+        const bogus = await controller.runStep({ kind: 'stage', label: 'No flow message yet' }, true);
+        eq(bogus.ok, false, 'unknown shape is refused');
+        ok(notices.some((text) => /right-click one of the six flow steps/.test(text)),
+            'user told how to use it');
     } finally {
         window.window.showInformationMessage = originalInfo;
         window.window.showWarningMessage = originalWarning;

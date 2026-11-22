@@ -540,7 +540,9 @@ exports.run = async function () {
                 opt_rtl: markerTime('.opt_rtl.end.f'),
                 opt_gate: markerTime('.opt_gate.end.f'),
             };
-            const item = { flowStep: 'read_design', flowStepName: 'Read Design' };
+            // 真实的 view/item/context 参数是**树节点**（getChildren 的 element），不是 TreeItem：
+            // 只认 TreeItem 形状时右键永远拿到空 step（用户 2026-11-22 实测）。
+            const item = { kind: 'stage', step: 'read_design', stepName: 'Read Design', label: 'Read Design · 1s' };
             const startedAt = Date.now();
             const result = await vscode.commands.executeCommand('fpgaLsp.flowStepReset', item);
             const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);

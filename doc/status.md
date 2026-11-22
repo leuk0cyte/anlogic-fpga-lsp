@@ -1327,3 +1327,41 @@ with download:true confirm:true, or re-run stages:[\"all\"]"}`。
 三个是历史遗留问题，与本轮无关，已记录）。
 
 `ctest` 64/64（后端未改）、插件 45/45、集成套件新增 7 条断言全 PASS。
+
+### 第三十一轮：右键菜单参数形状错了 —— 真正的根因（用户截图定位）
+
+用户截图里的提示是 `FPGA: right-click one of the six flow steps.` —— 这句话正是
+`runStep` 在 `step` 为空时的早退提示。也就是说：**命令收到了参数，但 `item.flowStep` 是空的**。
+
+原因：`view/item/context` 的命令参数是**树的数据节点**（`getChildren()` 返回的 element），
+不是 `getTreeItem()` 造出来的 `TreeItem`：
+
+| 形状 | `step`/`stepName` | `flowStep`/`flowStepName` |
+| --- | --- | --- |
+| 树节点（`stageNode()`，命令实际收到的） | ✔ `step: 'read_design'` | ✘ 没有 |
+| TreeItem（`getTreeItem()` 返回的） | ✘ 没有 | ✔ `flowStep: 'read_design'` |
+
+0.21.4 的修法只读了 `item.flowStep`，所以从菜单点进来永远是空字符串 → 早退 →
+"没输出、下游步骤没变"。之前那条集成测试之所以 PASS，是因为测试自己手搓了一个
+**TreeItem 形状**的参数（`{flowStep:'read_design'}`），把真实现场的形状写错了 —— 这是本轮
+最该记的教训：集成测试的入参必须用真实来源的形状。
+
+修法（`FlowController.runStep`）：两种形状都认
+（`step | node.step | flowStep | node.flowStep`，名字同理），并且只接受六个合法 id；
+不合法时提示里写明"没有传 step"还是"传了不认识的 step"。
+
+测试也一并改正：单测/集成测试都用**树节点形状**
+（`{kind:'stage', step:'read_design', stepName:'Read Design', label:'Read Design · 1s'}`），
+并补一条"点到了非步骤行"的用例。
+
+真 VS Code 集成套件（节点形状参数，CorpusAlpha，15.9 s）：
+
+```
+[PASS] Reset and Run resolves after the flow finished                 {"ok":true}
+[PASS] reset run re-ran the whole syn run (all three step marks rewritten)  15.9s
+[PASS] FPGA Flow output shows the step run header   ▶ reset run Read Design (…) · fpga-lsp 0.21.7
+[PASS] flow controller returns to idle after the run
+[PASS] status bar reports done/idle
+```
+
+插件 45/45、集成套件除 3 条历史遗留（completion 标签数 / copy symbol path / doctor）外全 PASS。

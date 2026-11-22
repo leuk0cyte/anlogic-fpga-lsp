@@ -232,12 +232,29 @@ class FlowController {
      */
     async runStep(argument, force) {
         const item = Array.isArray(argument) ? argument[0] : argument;
-        const step = String((item && item.flowStep) || (typeof item === 'string' ? item : '') || '');
-        if (!step) {
-            vscode.window.showInformationMessage('FPGA: right-click one of the six flow steps.');
+        // ⚠ `view/item/context` 的命令参数是**树的数据节点**（getChildren 返回的 element），
+        //   不是 getTreeItem 造出来的 TreeItem。所以节点的 `step`/`stepName` 才是真相；
+        //   TreeItem 上的 `flowStep`/`flowStepName` 只在客户端直接传 TreeItem 时才有。
+        //   两种形状都认 —— 只认 TreeItem 形状时，右键永远拿到空 step，只会弹一句
+        //   "right-click one of the six flow steps"（2026-11-22 用户实测）。
+        const shape = item && typeof item === 'object' ? item : {};
+        const nested = shape.node && typeof shape.node === 'object' ? shape.node : {};
+        const step = String(
+            shape.step || nested.step || shape.flowStep || nested.flowStep ||
+            (typeof item === 'string' ? item : '') || ''
+        );
+        const name = String(
+            shape.stepName || nested.stepName || shape.flowStepName || nested.flowStepName ||
+            step
+        );
+        const knownSteps = ['read_design', 'opt_rtl', 'opt_gate', 'opt_place', 'opt_route', 'bitgen'];
+        if (!knownSteps.includes(step)) {
+            vscode.window.showInformationMessage(
+                'FPGA: right-click one of the six flow steps.' +
+                (step ? ` (unsupported step "${step}")` : ' (no flow step was passed)')
+            );
             return { ok: false, error: 'no-step' };
         }
-        const name = (item && item.flowStepName) || step;
         const mode = force ? 'reset run' : 'run step';
         const jobs = readFlowJobs();
         const runName = ['read_design', 'opt_rtl', 'opt_gate'].includes(step) ? 'syn_1' : 'phy_1';
