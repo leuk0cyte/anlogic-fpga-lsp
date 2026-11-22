@@ -72,11 +72,11 @@ struct FlowOptions {
     // 为什么要留宽限：TD 的 Tcl 读取是阻塞的，强杀会让 td::TdSession 在
     // 无 /EHsc 展开语义下抛异常 -> std::terminate（见 PYTHON-BUGS P-16）。
     double cancel_kill_grace_seconds = 10.0;
-    // 运行日志根目录，默认 <project>/.fpgalsp/flow/<runId>/
+    // 运行日志根目录，默认 <state_dir>/flow/<runId>/（<state_dir> = %TEMP%\fpgalsp\<工程名>-<hash8>）
     // ⚠ 默认值**与 Python 一致**（会写进工程目录，见 PYTHON-BUGS P-4），
     //   但这里是可配置项：把它指到别处即可完全不污染工程。
     std::string flow_root;
-    // 缓存目录，默认 <project>/.fpgalsp/cache
+    // 缓存目录，默认 <state_dir>/cache
     std::string cache_root;
     // 是否落盘日志；false 时只走回调（不写工程目录）
     bool write_run_logs = true;
@@ -169,7 +169,7 @@ private:
 // 便捷构造：从环境变量取 stall 秒数（对应 Python os.environ["FPGALSP_FLOW_STALL_SECONDS"]）
 double StallSecondsFromEnv(double fallback = 600.0);
 
-// 工作目录：<project>/.fpgalsp/flow（可被 FlowOptions::flow_root 覆盖）
+// 工作目录：<state_dir>/flow（可被 FlowOptions::flow_root 覆盖）
 std::string DefaultFlowRoot(const project::Project& project);
 std::string DefaultCacheRoot(const project::Project& project);
 

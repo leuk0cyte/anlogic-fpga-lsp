@@ -355,3 +355,59 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/check_versions.py")
         message(STATUS "文档门禁: 已注册 docs_version_consistency")
     endif()
 endif()
+
+# =============================================================================
+#  工程状态目录门禁（ctest -L docs）：src/ 里不允许再写工程目录 `.fpgalsp`
+# =============================================================================
+#  背景：2026-11-22 用户反复在工程根看到 .fpgalsp；根因是 td_service 里一处硬编码
+#  `<project>/.fpgalsp/run`（每次 LSP 保存触发 TD 检查就重建）。症状修了还会再犯，
+#  所以加机械门禁：状态一律走 platform::state_dir()。
+if(EXISTS "${CMAKE_SOURCE_DIR}/tools/audit/check_project_state_paths.py")
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(Python3_Interpreter_FOUND)
+        add_test(
+            NAME docs_no_project_state
+            COMMAND "${Python3_EXECUTABLE}"
+                    "${CMAKE_SOURCE_DIR}/tools/audit/check_project_state_paths.py"
+                    --root "${CMAKE_SOURCE_DIR}"
+        )
+        set_tests_properties(docs_no_project_state PROPERTIES
+            LABELS "docs" TIMEOUT 60)
+        message(STATUS "文档门禁: 已注册 docs_no_project_state")
+    endif()
+endif()
+
+# =============================================================================
+#  报表/约束 对等门禁（ctest -L parity）
+# =============================================================================
+#  审计 2026-11-22 发现：这两条数据通路（报告解析、ADC/SDC 约束解析）本来就有
+#  逐字段对比脚本，但**从未注册进 CTest** —— 只有"人记得跑"的时候才会跑。
+#  现在补上：compare_reports.py 直接比；compare_constraints.py 需要先由
+#  unit_adc/unit_sdc 导出 JSON，所以走 run_constraints_parity.py 包装。
+if(EXISTS "Y:/fpga-lsp/fpgalsp/reports.py")
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(Python3_Interpreter_FOUND)
+        add_test(
+            NAME parity.reports
+            COMMAND "${CMAKE_COMMAND}" -E env
+                    "FPGALSP_REPORTS_DUMP_EXE=${CMAKE_BINARY_DIR}/bin/unit_reports_parity.exe"
+                    "${Python3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/compare_reports.py"
+        )
+        set_tests_properties(parity.reports PROPERTIES
+            LABELS "parity" TIMEOUT 300)
+
+        add_test(
+            NAME parity.constraints
+            COMMAND "${Python3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/run_constraints_parity.py"
+                    --bin-dir "${CMAKE_BINARY_DIR}/bin"
+        )
+        set_tests_properties(parity.constraints PROPERTIES
+            LABELS "parity" TIMEOUT 300)
+
+        message(STATUS "对等门禁: 已注册 parity.reports / parity.constraints")
+    endif()
+else()
+    message(STATUS "对等门禁: 跳过注册（未找到 Python 参考实现 Y:/fpga-lsp）")
+endif()

@@ -56,6 +56,13 @@
 
 ## 2. A 部分：LSP 合规缺口
 
+> **状态（2026-11-22，0.23.0）：A 部分 12 条全部落地。** A1（`workspace/didChangeWorkspaceFolders`）、
+> A2（`executeCommandProvider`）、A3（`willRenameFiles`/`didRenameFiles`）早先已修；A4–A12
+> （signatureHelp / documentLink / codeLens / documentHighlight / selectionRange / pull diagnostics /
+> willSave / `$/setTrace` / `completionItem.resolve` / `semanticTokens.range`）在 0.23.0 实现并声明，
+> 实现与单测见 `src/server/features_optional.{h,cpp}`、`tests/unit/features_optional_test.cpp`。
+> 下面的条目保留为**问题记录**（修复前的证据），不再是待办。
+
 ### A.0 声明 vs 注册对照
 
 | 能力（`lsp_server.cpp:336-396`） | 声明位置 | 对应 handler |

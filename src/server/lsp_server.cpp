@@ -68,8 +68,8 @@ std::string ReadEnv(std::string_view name) {
 #endif
 }
 
-// 对应 Python 的 `os.path.join(project.dir, ".fpgalsp", "run")`；
-// 没有工程目录时回落到临时目录（Python 用 ~/.fpgalsp/run）。
+// 会话 cwd：工程目录（TD 用 cwd 解析 .al 里的相对路径），没有工程目录时用系统临时目录。
+// ⚠ 不要写成 `<project>/.fpgalsp/run`：那是旧位置，已废弃（状态目录统一走 state_dir()；
 std::string RunDir(const project::Project& project) {
     if (!project.dir.empty()) {
         return project.dir;
@@ -167,7 +167,7 @@ LspServer::LspServer(jsonrpc::TransportBaseCommon& transport, std::string td_exp
     //   以前是 lsp_server 里手写的"跑着不取消、只排队一次"循环（TdCheckLoop），
     //   A5（task-25）做好的 TdService 一直没接线 —— 这里把它接上。
     //   * 工厂：每一轮新建 TdSessionRunner（read_hdl 之后会话不可复用，见 td_session.h）；
-    //   * use_project_work_dir=true：cwd = <project>/.fpgalsp/run，与旧 CreateSession 一致
+    //   * use_project_work_dir=true：cwd = state_dir(project.dir)/run（系统临时目录；不写工程目录）
     //     （state-dir 外移由 platform 层负责，这里不比旧路径更"脏"）；
     //   * TdServiceOptions{}：debounce 300 ms / 取消在跑的一轮 / 取消后不再等（默认值，
     //     实测结论见 doc/audit/2026-11-18/phase2/A5-REPORT.md §2）。
@@ -317,6 +317,42 @@ void LspServer::RegisterAll(jsonrpc::Dispatcher& dispatcher) {
     dispatcher.Register("textDocument/foldingRange",
                         [this](const Json& params) { return HandleFoldingRange(params); });
 
+    // ---- A4–A12：LSP 3.17/3.18 可选合规项（features_optional.cpp）----
+    dispatcher.Register("textDocument/signatureHelp",
+                        [this](const Json& params) { return HandleSignatureHelp(params); });
+    dispatcher.Register("textDocument/documentLink",
+                        [this](const Json& params) { return HandleDocumentLink(params); });
+    dispatcher.Register("textDocument/codeLens",
+                        [this](const Json& params) { return HandleCodeLens(params); });
+    dispatcher.Register("textDocument/documentHighlight", [this](const Json& params) {
+        return HandleDocumentHighlight(params);
+    });
+    dispatcher.Register("textDocument/selectionRange",
+                        [this](const Json& params) { return HandleSelectionRange(params); });
+    dispatcher.Register("textDocument/semanticTokens/range", [this](const Json& params) {
+        return HandleSemanticTokensRange(params);
+    });
+    dispatcher.Register("completionItem/resolve",
+                        [this](const Json& params) { return HandleCompletionResolve(params); });
+    // A9：pull diagnostics（与 push 共存；数据源是最近一次 push 的缓存）
+    dispatcher.Register("textDocument/diagnostic", [this](const Json& params) {
+        return HandleDocumentDiagnostic(params);
+    });
+    dispatcher.Register("workspace/diagnostic", [this](const Json& params) {
+        return HandleWorkspaceDiagnostic(params);
+    });
+    // A10：willSave（通知，no-op）/ willSaveWaitUntil（请求，立即返回 []）
+    dispatcher.Register("textDocument/willSave",
+                        [this](const Json& params) { return HandleWillSave(params); });
+    dispatcher.Register("textDocument/willSaveWaitUntil", [this](const Json& params) {
+        return HandleWillSaveWaitUntil(params);
+    });
+    // A11：`$/` 前缀默认被 dispatcher 静默丢弃；这两个是显式注册的例外。
+    dispatcher.Register("$/setTrace",
+                        [this](const Json& params) { return HandleSetTrace(params); });
+    dispatcher.Register("$/logTrace",
+                        [this](const Json& params) { return HandleLogTrace(params); });
+
     // ---- 自定义 v2 方法（PROTOCOL-V2.md）----
     dispatcher.Register("workspace/willRenameFiles",
                         [this](const Json& params) { return HandleWillRenameFiles(params); });
@@ -387,13 +423,38 @@ Json LspServer::FeatureInitialize(const Json& params) {
     Json save = Json::object();
     save["includeText"] = true;
     sync["save"] = std::move(save);
+    // A10：willSave 只收通知；willSaveWaitUntil 允许保存前请求编辑（必须立即返回）。
+    sync["willSave"] = true;
+    sync["willSaveWaitUntil"] = true;
     capabilities["textDocumentSync"] = std::move(sync);
 
     // 与 Python 的 completionProvider 逐字对齐（集合相同、顺序不参与契约）
     Json completion = Json::object();
     completion["triggerCharacters"] =
         Json::array({"{", "=", " ", "[", "\t", "|"});
+    // A12：轻量 item 先下发，documentation/detail 在 completionItem/resolve 补齐。
+    completion["resolveProvider"] = true;
     capabilities["completionProvider"] = std::move(completion);
+
+    // A4：例化/端口列表里的签名帮助（`(` 与 `,` 触发；`,` 重新触发）。
+    Json signature_help = Json::object();
+    signature_help["triggerCharacters"] = Json::array({"(", ","});
+    signature_help["retriggerCharacters"] = Json::array({","});
+    capabilities["signatureHelpProvider"] = std::move(signature_help);
+
+    // A5：`.al` 的 `<File Path>` -> 可点击链接；resolve 阶段无需再查。
+    Json document_link = Json::object();
+    document_link["resolveProvider"] = false;
+    capabilities["documentLinkProvider"] = std::move(document_link);
+
+    // A6：每个 module 定义一条 "N instantiations" lens（command 已完整）。
+    Json code_lens = Json::object();
+    code_lens["resolveProvider"] = false;
+    capabilities["codeLensProvider"] = std::move(code_lens);
+
+    // A7 / A8：布尔能力（无参数）
+    capabilities["documentHighlightProvider"] = true;
+    capabilities["selectionRangeProvider"] = true;
 
     // 多根工作区：Python 声明 supported + changeNotifications
     Json folders = Json::object();
@@ -455,10 +516,21 @@ Json LspServer::FeatureInitialize(const Json& params) {
     Json semantic = Json::object();
     semantic["legend"] = std::move(legend);
     semantic["full"] = Json::object({{"delta", true}});
+    // A12：`textDocument/semanticTokens/range`（按 range 过滤后重新编码）。
+    semantic["range"] = true;
     capabilities["semanticTokensProvider"] = std::move(semantic);
 
     capabilities["foldingRangeProvider"] = true;
     capabilities["inlayHintProvider"] = true;
+
+    // A9：pull diagnostics 能力声明。identifier 让客户端能区分多个诊断来源；
+    // interFileDependencies=false：单文件报告不依赖别的文件（诊断表按文件维护）；
+    // workspaceDiagnostics=true：支持 workspace/diagnostic。
+    Json diagnostic = Json::object();
+    diagnostic["identifier"] = "fpga-lsp";
+    diagnostic["interFileDependencies"] = false;
+    diagnostic["workspaceDiagnostics"] = true;
+    capabilities["diagnosticProvider"] = std::move(diagnostic);
 
     // LSP 3.17：本项目的位置换算全部按 UTF-16 码元（document_store / utf16 层）
     capabilities["positionEncoding"] = "utf-16";
@@ -1327,6 +1399,13 @@ void LspServer::PublishDiagnostics(std::string_view path,
         lsp::Diagnostic copy = lsp::Sanitize(diag, "fpga-lsp");
         if (copy.data.is_object()) copy.data.erase("path");
         wire.push_back(lsp::ToJson(copy));
+    }
+
+    // A9：把**这次真正发出去的**数组同步进 pull 缓存（push 行为一行未改）。
+    // 空数组也要存：pull 必须能反映"诊断已被清空"，而不是继续返回上次的旧条目。
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        latest_diagnostics_[uri] = wire;
     }
 
     Json params = Json::object();

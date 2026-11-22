@@ -6,6 +6,8 @@
 
 #include <utility>
 
+#include "platform/path.h"
+
 namespace fpgalsp::td {
 
 // -----------------------------------------------------------------------------
@@ -18,11 +20,13 @@ TdSessionRunner::TdSessionRunner(TdChoice td, TdSessionOptions options, bool use
 TdCheckResult TdSessionRunner::Run(const project::Project& project, const CancelToken& cancel) {
     TdCheckResult result;
 
-    // 与 lsp_server 的 CreateSession 保持一致（RunDir(project) = <dir>/.fpgalsp/run）。
-    // 注意这里在 Run 里算而不是构造时：工厂拿不到 project。
+    // 会话 cwd 用**状态目录**（`%TEMP%\fpgalsp\<工程名>-<hash8>\run`）。
+    // ⚠ 这里曾经硬编码 `<project>/.fpgalsp/run`：每次 LSP 保存触发 TD 检查都会在工程根
+    //   重新长出 `.fpgalsp`（2026-11-22 实测复现：删掉后一次 didSave 立刻重建 `run/`）。
+    //   工程目录里的 `.fpgalsp` 已废弃（Wave 3），状态一律走 platform::state_dir()。
     TdSessionOptions options = options_;
     if (use_project_work_dir_ && project.dir.empty() == false) {
-        options.work_dir = project.dir + "/.fpgalsp/run";
+        options.work_dir = platform::path_join(platform::state_dir(project.dir), "run");
     }
 
     // 会话启动（CreateProcessW + 读横幅）单独计时：它是"预热"唯一能省掉的一段。

@@ -203,6 +203,27 @@ public:
     Json FeatureAddSourceFile(const Json& params);
     Json FeatureSetProjectName(const Json& params);
 
+    // ---- A4–A12：LSP 3.17/3.18 可选合规项（实现在 features_optional.cpp）----
+    //  与下面的 handler 是**同一实现**：handler 只解包 params。
+    //  A4 textDocument/signatureHelp
+    Json FeatureSignatureHelp(std::string_view path, int line, int character);
+    //  A5 textDocument/documentLink（只在 .al 生效）
+    Json FeatureDocumentLinks(std::string_view path);
+    //  A6 textDocument/codeLens（"N instantiations" + searchHierarchy 命令）
+    Json FeatureCodeLenses(std::string_view path);
+    //  A7 textDocument/documentHighlight（同文档同名 token）
+    Json FeatureDocumentHighlights(std::string_view path, int line, int character);
+    //  A8 textDocument/selectionRange（positions = [{line,character}, ...]）
+    Json FeatureSelectionRanges(std::string_view path, const Json& positions);
+    //  A12 textDocument/semanticTokens/range（按 range 过滤后重新做 5 元组编码）
+    Json FeatureSemanticTokensRange(std::string_view path, const Json& range);
+    //  A12 completionItem/resolve（模块项补 documentation/detail）
+    Json FeatureCompletionResolve(const Json& item);
+    //  A9 pull diagnostics：文本 = 最近一次 push publishDiagnostics 的缓存。
+    //  previous_result_id 命中时返回 {kind:"unchanged", resultId}。
+    Json FeatureDocumentDiagnostic(std::string_view uri, std::string_view previous_result_id);
+    Json FeatureWorkspaceDiagnostic();
+
     // ---- 供调试/测试查询（不参与协议）----
     const Settings& settings() const { return settings_; }
     std::size_t OpenDocumentCount() const { return docs_.Size(); }
@@ -277,6 +298,21 @@ private:
     HandlerResult HandleIncomingCalls(const Json& params);
     HandlerResult HandleOutgoingCalls(const Json& params);
     HandlerResult HandleFoldingRange(const Json& params);
+
+    // ---- A4–A12：可选合规项的 handler（features_optional.cpp）----
+    HandlerResult HandleSignatureHelp(const Json& params);
+    HandlerResult HandleDocumentLink(const Json& params);
+    HandlerResult HandleCodeLens(const Json& params);
+    HandlerResult HandleDocumentHighlight(const Json& params);
+    HandlerResult HandleSelectionRange(const Json& params);
+    HandlerResult HandleSemanticTokensRange(const Json& params);
+    HandlerResult HandleCompletionResolve(const Json& params);
+    HandlerResult HandleDocumentDiagnostic(const Json& params);
+    HandlerResult HandleWorkspaceDiagnostic(const Json& params);
+    HandlerResult HandleWillSave(const Json& params);
+    HandlerResult HandleWillSaveWaitUntil(const Json& params);
+    HandlerResult HandleSetTrace(const Json& params);
+    HandlerResult HandleLogTrace(const Json& params);
 
     // =========================================================================
     //  handler（自定义 v2 方法 / executeCommand）—— 定义在 commands.cpp
@@ -433,6 +469,12 @@ private:
     std::map<std::string, std::map<std::string, lsp::DiagnosticList>> diag_analysis_;
     std::map<std::string, lsp::DiagnosticList> diag_lint_;
     std::map<std::string, std::set<std::string>> published_;
+    // A9：pull diagnostics 的数据源 —— 服务端**最近一次 push publishDiagnostics**
+    // 发出的 wire 形状数组（uri -> diagnostics[]）。在 PublishDiagnostics 里同步写，
+    // textDocument/diagnostic / workspace/diagnostic 只读它（push 行为一行未改）。
+    std::map<std::string, Json> latest_diagnostics_;
+    // A11：$/setTrace 记录的级别（"off"/"messages"/"verbose"），与诊断表共用 state_mutex_。
+    std::string trace_level_ = "off";
     bool shutting_down_ = false;
     // T1：lint 的后台调度（每文件去抖 + single-flight + 结果作废）。Shutdown 里 join。
     std::unique_ptr<LintService> lint_service_;

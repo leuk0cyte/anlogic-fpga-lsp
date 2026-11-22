@@ -27,6 +27,18 @@ try {
 const FALLBACK_POLL_MS = 10000;
 const FINISH_GRACE_MS = 4000;
 
+// Absolute timeout (2026-11-22 audit, major): the 10 s fallback poll had no upper bound. If
+// `fpgaLsp/flowStatus` keeps throwing, or the server never flips `running`, the notification
+// stayed on "busy" forever and `FINISH_GRACE_MS` never applied (it only ran for running=false),
+// so the flow could not even be cancelled reliably. Every flow now gets a hard deadline.
+//
+// settingMinutes = 0 -> automatic per stage (the TD experience values below). A run that covers
+// several stages uses the largest tier; an unknown stage never times out before a full flow.
+const FLOW_TIMEOUT_AUTO_MIN = { syn: 30, phy: 90, all: 120 };
+const FLOW_TIMEOUT_MAX_SETTING_MIN = 600;
+// 12 consecutive failures x 10 s fallback poll ~= 2 minutes: the server is gone, stop pretending.
+const MAX_CONSECUTIVE_FLOW_ERRORS = 12;
+
 function nowText() {
     return new Date().toLocaleTimeString();
 }
@@ -35,6 +47,13 @@ function fmtElapsed(seconds) {
     const n = Number(seconds);
     if (!Number.isFinite(n) || n < 0) return '';
     return n < 100 ? `${n.toFixed(1)}s` : `${Math.round(n)}s`;
+}
+
+/** "30" / "1.5": how many minutes a timeout stands for, for the log line. */
+function fmtTimeoutMinutes(ms) {
+    const minutes = Number(ms) / 60000;
+    if (!Number.isFinite(minutes) || minutes <= 0) return '0';
+    return Number.isInteger(minutes) ? String(minutes) : minutes.toFixed(1);
 }
 
 function flowLabel(stages) {
@@ -56,6 +75,90 @@ function readFlowJobs() {
     }
     const jobs = parseInt(raw, 10);
     return Math.max(1, Math.min(6, Number.isFinite(jobs) ? jobs : 6));
+}
+
+/** `fpgaLsp.flowTimeoutMinutes`: 0 = automatic (per stage), otherwise a fixed minute count. */
+function readFlowTimeoutMinutes() {
+    let raw = 0;
+    try {
+        raw = vscode.workspace.getConfiguration('fpgaLsp').get('flowTimeoutMinutes', 0);
+    } catch (_) {
+        raw = 0;
+    }
+    const minutes = Number(raw);
+    if (!Number.isFinite(minutes) || minutes < 0) return 0;
+    return Math.min(minutes, FLOW_TIMEOUT_MAX_SETTING_MIN);
+}
+
+// ------------------------------------------------- absolute timeout (pure helpers)
+
+/**
+ * Automatic (setting = 0) timeout in minutes for the given stages: syn 30 / phy 90 / all 120,
+ * a combination of stages uses the largest tier. A single-step run (`["opt_route"]`) maps to
+ * the stage it belongs to; an unknown name falls back to the full-flow cap (never too early).
+ *
+ * @param {string[]|string} stages
+ * @returns {number} minutes
+ */
+function flowTimeoutAutoMinutes(stages) {
+    const wanted = (Array.isArray(stages) ? stages : [stages])
+        .map((stage) => (stage === undefined || stage === null ? '' : String(stage).toLowerCase()))
+        .filter(Boolean);
+    if (!wanted.length) return FLOW_TIMEOUT_AUTO_MIN.all;
+    let minutes = 0;
+    for (const stage of wanted) {
+        if (stage === 'all') {
+            minutes = Math.max(minutes, FLOW_TIMEOUT_AUTO_MIN.all);
+        } else if (stage === 'syn' || stage === 'read_design' || stage === 'opt_rtl'
+            || stage === 'opt_gate') {
+            minutes = Math.max(minutes, FLOW_TIMEOUT_AUTO_MIN.syn);
+        } else if (stage === 'phy' || stage === 'route' || stage === 'opt_place'
+            || stage === 'opt_route' || stage === 'bitgen') {
+            minutes = Math.max(minutes, FLOW_TIMEOUT_AUTO_MIN.phy);
+        } else {
+            minutes = Math.max(minutes, FLOW_TIMEOUT_AUTO_MIN.all);
+        }
+    }
+    return minutes || FLOW_TIMEOUT_AUTO_MIN.all;
+}
+
+/**
+ * Absolute timeout for one flow, in milliseconds.
+ * @param {string[]|string} stages        ["syn"] | ["phy"] | ["all"] | ["opt_route"] ...
+ * @param {number} settingMinutes         `fpgaLsp.flowTimeoutMinutes`; 0/absent/invalid = auto.
+ * @returns {number} ms
+ */
+function resolveFlowTimeoutMs(stages, settingMinutes) {
+    const minutes = Number(settingMinutes);
+    if (Number.isFinite(minutes) && minutes > 0) {
+        return Math.min(minutes, FLOW_TIMEOUT_MAX_SETTING_MIN) * 60000;
+    }
+    return flowTimeoutAutoMinutes(stages) * 60000;
+}
+
+/** Absolute deadline for a flow that started at `now` (default: Date.now()). */
+function resolveFlowDeadline(stages, settingMinutes, now) {
+    const startedAt = Number.isFinite(Number(now)) ? Number(now) : Date.now();
+    return startedAt + resolveFlowTimeoutMs(stages, settingMinutes);
+}
+
+/**
+ * True once the absolute deadline has passed. Strictly after, so `now === deadline` is not yet
+ * a timeout; a missing/invalid deadline (older code paths, tests) never times out.
+ * @param {{deadline?: number, now?: number}} [options]
+ */
+function isFlowTimedOut(options) {
+    const opts = options || {};
+    const deadline = Number(opts.deadline);
+    if (!Number.isFinite(deadline) || deadline <= 0) return false;
+    const now = Number.isFinite(Number(opts.now)) ? Number(opts.now) : Date.now();
+    return now > deadline;
+}
+
+/** True once `count` consecutive flowStatus failures reached the give-up threshold. */
+function shouldAbandonOnErrors(count) {
+    const n = Number(count);
+    return Number.isFinite(n) && n >= MAX_CONSECUTIVE_FLOW_ERRORS;
 }
 
 class FlowController {
@@ -354,13 +457,24 @@ class FlowController {
                     return result;
                 }
 
+                // Absolute timeout: the clock starts when the flow actually starts on the server
+                // (runFlow may have waited on a lock), and the deadline is checked by both the
+                // fallback poll and the pushed-event callback.
+                const startedAt = Date.now();
+                const timeoutSetting = readFlowTimeoutMinutes();
+                const flowStages = result.stages || stages;
+                const timeoutMs = resolveFlowTimeoutMs(flowStages, timeoutSetting);
                 this.active = {
                     runId: result.runId,
-                    stages: result.stages || stages,
+                    stages: flowStages,
                     step,
                     label,
-                    startedAt: Date.now(),
+                    startedAt,
                     sawRunning: false,
+                    // Consecutive flowStatus failures; one success resets it (see pollOnce()).
+                    pollErrors: 0,
+                    timeoutMs,
+                    deadline: startedAt + timeoutMs,
                 };
                 this.output.appendLine(`[${nowText()}] runId ${result.runId || '(none)'}`);
                 const done = new Promise((resolve) => {
@@ -385,17 +499,67 @@ class FlowController {
         return { ok: true };
     }
 
-    async requestCancel() {
+    /**
+     * Ask the server to cancel the running flow exactly once. Never throws: a dead server must
+     * not break the local wrap-up (that is precisely the case this path exists for).
+     * @returns {Promise<void>}
+     */
+    _cancelFlowOnServer() {
+        let pending;
+        try {
+            pending = this.rpc.execute(COMMANDS.cancelFlow, []);
+        } catch (err) {
+            this._logCancelFailure(err);
+            return Promise.resolve();
+        }
+        return Promise.resolve(pending).catch((err) => {
+            this._logCancelFailure(err);
+        });
+    }
+
+    _logCancelFailure(err) {
+        this.output.appendLine(`[${nowText()}] cancel request failed: ${err && err.message ? err.message : err}`);
+    }
+
+    /**
+     * Abort an active flow from inside the controller (absolute timeout / dead language server).
+     * Order: stop the poll, write one explicit line, ask the server to cancel once (a failure is
+     * only logged), then finish as failed. `finish()` sets the failed status, shows the warning
+     * once, resolves the `run()` promise and calls `refreshAll()` -- so a hopeless flow can never
+     * remain "busy forever".
+     */
+    _abandonFlow(reason, detail) {
+        if (!this.active) return;
+        this.output.appendLine(`[${nowText()}] ✖ ${detail}`);
+        this.stopPolling();
+        // One abandon per flow: requestCancel()/cancel() see this flag and do not send again.
+        this._cancelRequested = true;
+        this._cancelFlowOnServer();
+        this.finish(false, reason);
+    }
+
+    /**
+     * Absolute-timeout check shared by the fallback poll and the pushed-event callback.
+     * @returns {boolean} true when the active flow was just abandoned.
+     */
+    _checkFlowTimeout() {
+        if (!this.active) return false;
+        if (!isFlowTimedOut({ deadline: this.active.deadline, now: Date.now() })) return false;
+        const minutes = fmtTimeoutMinutes(this.active.timeoutMs);
+        this._abandonFlow(`timed out after ${minutes} min`,
+            `flow timed out after ${minutes} min - cancelling`);
+        return true;
+    }
+
+    async requestCancel(reason) {
         if (!this.active || this._cancelRequested) return;
         this._cancelRequested = true;
+        // User cancel: stop polling at once, do not wait for the cancel RPC to come back.
+        this.stopPolling();
         this.output.appendLine(`[${nowText()}] cancel requested`);
         this.setStatusRunning('cancelling…');
-        try {
-            await this.rpc.execute(COMMANDS.cancelFlow, []);
-        } catch (err) {
-            this.output.appendLine(`[${nowText()}] cancel request failed: ${err && err.message ? err.message : err}`);
-        }
-        this.finish(false, 'cancelled');
+        await this._cancelFlowOnServer();
+        this.finish(false, reason || 'cancelled');
     }
 
     finish(ok, reason) {
@@ -445,6 +609,12 @@ class FlowController {
 
     async pollOnce() {
         if (!this.active) return;
+        // A cancel is already in flight: the flow is being finished by requestCancel(), do not
+        // keep hitting the server (and never let the timeout path add a second prompt).
+        if (this._cancelRequested) return;
+        // The absolute deadline wins over everything: stop polling and cancel instead of
+        // polling forever.
+        if (this._checkFlowTimeout()) return;
         let payload;
         try {
             // P-C4: ask only for lines we have not seen. The server answers with a monotonic
@@ -453,9 +623,20 @@ class FlowController {
             const params = this._logSeq === undefined ? {} : { sinceSeq: this._logSeq };
             payload = await this.rpc.request(METHODS.flowStatus, params);
         } catch (_) {
+            // The server may be gone. That must be bounded too: after
+            // MAX_CONSECUTIVE_FLOW_ERRORS in a row (~2 min of 10 s polls) give up, cancel and
+            // report the failure instead of polling a dead server forever.
+            if (!this.active) return;
+            this.active.pollErrors = (Number(this.active.pollErrors) || 0) + 1;
+            const errors = this.active.pollErrors;
+            if (shouldAbandonOnErrors(errors)) {
+                this._abandonFlow('language server is not responding',
+                    `flow status failed ${errors} times in a row - language server is not responding; cancelling`);
+            }
             return; // transient failure: keep polling
         }
         if (!this.active) return;
+        this.active.pollErrors = 0; // one success is enough to clear the error streak
         const flow = payload && payload.flow;
         if (!flow || typeof flow !== 'object') return;
         const logSeq = Number(flow.logSeq);
@@ -518,12 +699,17 @@ class FlowController {
         if (!this.active) return;
         if (event.runId && this.active.runId && event.runId !== this.active.runId) return;
 
+        const type = String(event.type);
+        // Absolute timeout: the pushed event may arrive before the next 10 s fallback poll, so it
+        // must check the deadline too. `done` is the exception -- a finished flow is not stuck on
+        // "busy", so it goes through the normal wrap-up.
+        if (type !== 'done' && this._checkFlowTimeout()) return;
+
         if (this.flowTree && typeof this.flowTree.applyFlowEvent === 'function') {
             this.flowTree.applyFlowEvent(event);
         }
 
         const stage = event.stage ? `[${event.stage}] ` : '';
-        const type = String(event.type);
         if (type === 'done') {
             this.output.appendLine(`${stage}✓ done`);
             this.finish(event.ok !== false, event.ok === false ? 'reported failure' : undefined);
@@ -572,8 +758,19 @@ module.exports = {
     FlowController,
     flowLabel,
     readFlowJobs,
+    readFlowTimeoutMinutes,
     fmtElapsed,
+    fmtTimeoutMinutes,
+    flowTimeoutAutoMinutes,
+    resolveFlowTimeoutMs,
+    resolveFlowDeadline,
+    isFlowTimedOut,
+    shouldAbandonOnErrors,
     FALLBACK_POLL_MS,
+    FINISH_GRACE_MS,
+    FLOW_TIMEOUT_AUTO_MIN,
+    FLOW_TIMEOUT_MAX_SETTING_MIN,
+    MAX_CONSECUTIVE_FLOW_ERRORS,
     // Kept for older callers/tests: the value now is the 10 s fallback interval.
     POLL_INTERVAL_MS: FALLBACK_POLL_MS,
 };

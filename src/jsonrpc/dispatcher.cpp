@@ -55,9 +55,19 @@ bool Dispatcher::Dispatch(const Json& message) {
         return false;
     }
 
-    // "$/" 前缀（LSP 自定义方法）静默忽略
+    // "$/" 前缀（LSP 自定义方法）默认静默忽略。
+    // A11 / LSP 3.17：`$/setTrace`、`$/logTrace` 是**客户端可以发给服务端**的
+    // 通知；它们必须能被显式注册的 handler 处理（否则 trace 级别永远收不到）。
+    // 其余 `$/`（未知扩展）仍按规范静默忽略、不回错误。
     if (method.rfind("$/", 0) == 0) {
-        return false;
+        bool registered = false;
+        for (const auto& [name, _] : handlers_) {
+            if (name == method) {
+                registered = true;
+                break;
+            }
+        }
+        if (!registered) return false;
     }
 
     const Json params = GetObject(message, "params");

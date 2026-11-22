@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "lsp/diagnostic.h"
+#include "platform/path.h"
 #include "project/al_project.h"
 #include "td/td_diagnostics.h"
 #include "td/td_install.h"
@@ -276,7 +277,9 @@ TEST_F(TdDiagnosticsIntegrationTest, CheckResultCarriesTimingsAndPerFileSplit) {
 }
 
 TEST_F(TdDiagnosticsIntegrationTest, SessionRunnerUsesProjectWorkDirAndFillsStartup) {
-    // use_project_work_dir=true（默认）= 与 lsp_server::CreateSession 的 RunDir(project) 一致
+    // use_project_work_dir=true（默认）：cwd = 状态目录的 run 子目录（系统临时目录）。
+    // 2026-11-22 之前这里是 `<project>/.fpgalsp/run` —— 每次 LSP 保存都往工程根重建
+    // `.fpgalsp`（用户反复看到它）。所以本用例同时断言"不在工程目录里"。
     TdSessionRunner runner(td_, Options(), /*use_project_work_dir=*/true);
     const CancelToken no_cancel;
     const TdCheckResult result = runner.Run(project_, no_cancel);
@@ -284,8 +287,13 @@ TEST_F(TdDiagnosticsIntegrationTest, SessionRunnerUsesProjectWorkDirAndFillsStar
     ASSERT_FALSE(result.failed) << result.error;
     EXPECT_GT(result.timings.startup_ms, 0.0) << "startup 必须由 runner 记下来";
     EXPECT_GT(result.timings.total_ms, result.timings.startup_ms);
-    EXPECT_NE(runner.last_work_dir().find("/.fpgalsp/run"), std::string::npos)
-        << runner.last_work_dir();
+    const std::string work_dir = runner.last_work_dir();
+    EXPECT_EQ(work_dir.find("/.fpgalsp/"), std::string::npos)
+        << "工程目录里的 .fpgalsp 已废弃，实际 cwd: " << work_dir;
+    const std::string expected_root = platform::state_dir(project_.dir);
+    EXPECT_NE(work_dir.find(expected_root), std::string::npos)
+        << "cwd 必须在状态目录 `" << expected_root << "` 之下，实际: " << work_dir;
+    EXPECT_NE(work_dir.find("/run"), std::string::npos) << work_dir;
 }
 
 TEST_F(TdDiagnosticsIntegrationTest, SessionRunnerCanUseScratchWorkDir) {

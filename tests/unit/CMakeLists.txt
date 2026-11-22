@@ -117,3 +117,8 @@ fpgalsp_add_unit_test(lint_service fpga_lsp::server fpga_lsp::hdl fpga_lsp::veri
 # 0.15.1：formatter / lint 的 style flag（与旧 Python 插件默认值一致：160 列 / 4 空格）
 #   同时覆盖 Settings::Update 对 veribleArgs / veribleLintArgs 的两种写法（数组 / 旧字符串）
 fpgalsp_add_unit_test(verible_style fpga_lsp::verible_bridge fpga_lsp::server)
+
+# A4–A12：LSP 3.17/3.18 可选合规项（signatureHelp / documentLink / codeLens /
+# documentHighlight / selectionRange / pull diagnostics / willSave / $setTrace /
+# completionItem.resolve / semanticTokens.range）
+fpgalsp_add_unit_test(features_optional fpga_lsp::server fpga_lsp::hdl)

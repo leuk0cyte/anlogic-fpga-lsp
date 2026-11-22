@@ -29,7 +29,7 @@
 //      所以一个会话里顺序执行 import_db / report_drc / check_cdc 是安全的。
 //    * never-throw：所有公开函数失败时返回 `{ok:false, error}`（唯一例外：TdSession 构造
 //      异常，也在 Run/UpdateProject 内部兜底）。
-//    * 缓存写 <project>/.fpgalsp/cache/analysis.json（P-4 行为保持；不新增配置项）。
+//    * 缓存写 <state_dir>/cache/analysis.json（<state_dir> = %TEMP%\fpgalsp\<工程名>-<hash8>；
 // =============================================================================
 
 #pragma once
@@ -60,7 +60,7 @@ using LogFn = std::function<void(std::string_view)>;
 // 找不到返回空串（never-throw）。
 std::string NewestRoutedDb(const project::Project& project);
 
-// <project>/.fpgalsp/cache
+// <state_dir>/cache
 std::string CacheDir(const project::Project& project);
 
 // 读 <project>/.fpgalsp/cache/analysis.json；不存在/损坏返回 nullopt。

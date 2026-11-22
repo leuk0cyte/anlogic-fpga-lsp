@@ -226,13 +226,25 @@ src/server/lsp_server.cpp     LSP 传输/线程/缓存；handler 只解包 param
 早期版本有一批能力"声明了但只返回空值"（`references` / `codeAction` / `formatting` / `rename` /
 `callHierarchy` / `semanticTokens` / `foldingRange` / `inlayHint`）。**Phase B 之后它们全部是
 真实现**（见 `doc/status.md` 与 `doc/audit/2026-11-22/02-backend-health.md` 的逐项核查），
-上面的对照表只描述"声明了什么"，不再有"空实现"这一档。
+下面的对照表只描述"声明了什么"，不再有"空实现"这一档。
 
-仍未实现、**也未声明**的 LSP 3.17/3.18 可选能力（客户端会按 capability 跳过，不影响使用）：
-`textDocument/signatureHelp`、`documentLink`、`codeLens`、`documentHighlight`、
-`selectionRange`、pull diagnostics（`textDocument/diagnostic`、`workspace/diagnostic`）、
-`willSave`/`willSaveWaitUntil`、`$/setTrace`、`completionItem/resolve`、
-`semanticTokens/range`。清单与优先级见 `doc/design/backend-features.md` 的 A 部分。
+**0.23.0 起，LSP 3.17/3.18 的可选能力也补齐了**（审计 A4–A12）：
+
+| 能力 | 方法 | 语义 |
+| --- | --- | --- |
+| `signatureHelpProvider` | `textDocument/signatureHelp` | 例化括号内给模块端口签名 + `activeParameter`（顶层逗号计数，命名端口内层括号不会算错） |
+| `documentLinkProvider` | `textDocument/documentLink` | `.al` 的 `<File Path="…">` → 可跳转 `file://` 链接（**不**链接 `<Project Path>`；缺失文件给 tooltip） |
+| `codeLensProvider` | `textDocument/codeLens` | 每个 module 定义上方 `"N instantiations"`，命令 `fpgalsp.searchHierarchy` |
+| `documentHighlightProvider` | `textDocument/documentHighlight` | 同文档同名标识符全部高亮（token 流匹配，注释/字符串不误命中） |
+| `selectionRangeProvider` | `textDocument/selectionRange` | 单词 → 行 → `begin/end` 或 `{}` 块 → module 体 → 整篇 |
+| `diagnosticProvider` | `textDocument/diagnostic`、`workspace/diagnostic` | pull 诊断：返回**最近一次 push 的同源 items**（`previousResultId` 命中回 `unchanged`）；push 行为不变 |
+| `textDocumentSync.willSave` / `willSaveWaitUntil` | 同名通知/请求 | 通知 no-op；请求立即返回 `[]`（不阻塞保存） |
+| `$/setTrace` / `$/logTrace` | 同名通知 | 记录 trace level；未知 `$/` 方法仍按规范静默忽略 |
+| `completionProvider.resolveProvider` | `completionItem/resolve` | 模块补全项补 `detail`/markdown `documentation`（端口表 + 定义位置） |
+| `semanticTokensProvider.range` | `textDocument/semanticTokens/range` | 全量 token 按 range 过滤后**重新编码** 5 元组 |
+
+仍未声明、也**不做**的：`implementationProvider`、`typeDefinitionProvider`、`inlineValue`、
+`inlineCompletion`、`typeHierarchy`（见 `doc/design/backend-features.md` §9「明确不做」）。
 
 ---
 
@@ -241,7 +253,7 @@ src/server/lsp_server.cpp     LSP 传输/线程/缓存；handler 只解包 param
 | capability | 值 | 协议出处 |
 | --- | --- | --- |
 | `textDocumentSync` | `{openClose:true, change:2, save:{includeText:true}}` | v7（Incremental）+ Phase B 与 Python 对齐 |
-| `completionProvider` | `{triggerCharacters:["{","="," ","[","\t","|"]}` | Phase B 与 Python 集合一致 |
+| `completionProvider` | `{triggerCharacters:["{","="," ","[","\t","|"], resolveProvider:true}` | Phase B 与 Python 集合一致；0.23.0 起支持 `completionItem/resolve` |
 | `workspace.workspaceFolders` | `{supported:true, changeNotifications:true}` | Phase B；**A1 起同时注册 `workspace/didChangeWorkspaceFolders` handler**（切根 + 失效工程/报告缓存） |
 | `hoverProvider` | `true` | v1 |
 | `definitionProvider` | `true` | v1 |
@@ -253,13 +265,19 @@ src/server/lsp_server.cpp     LSP 传输/线程/缓存；handler 只解包 param
 | `documentRangeFormattingProvider` | `true` | v5 |
 | `renameProvider` | `{prepareProvider:true}` | v5 |
 | `callHierarchyProvider` | `true` | v5 |
-| `semanticTokensProvider` | `{legend:{tokenTypes:[keyword,type,class,property,variable,parameter,function,number,comment,string,operator,macro], tokenModifiers:[]}, full:true}` | v7 + task-14 |
+| `semanticTokensProvider` | `{legend:{tokenTypes:[…12 类…], tokenModifiers:[]}, full:{delta:true}, range:true}` | v7 + task-14；0.23.0 起支持 `semanticTokens/range` |
 | `foldingRangeProvider` | `true` | v5 |
 | `inlayHintProvider` | `true` | v5 |
 | `positionEncoding` | `"utf-16"` | LSP 3.17（本项目位置换算口径） |
 | `executeCommandProvider` | `{commands:[…31 条…]}` | **B-A2 起声明**（见下） |
 | `workspace.fileOperations` | `{willRename,didRename}`（`**/*.{v,sv,vh,svh,vhd,vhdl}`） | **B-A3 起声明** |
-| `serverInfo` | `{name:"fpga-lsp", version:"0.22.0"}`（`src/platform/version.h`，与扩展一致） | — |
+| `signatureHelpProvider` | `{triggerCharacters:["(",","], retriggerCharacters:[","]}` | 0.23.0（A4） |
+| `documentLinkProvider` | `{resolveProvider:false}` | 0.23.0（A5） |
+| `codeLensProvider` | `{resolveProvider:false}` | 0.23.0（A6） |
+| `documentHighlightProvider` | `true` | 0.23.0（A7） |
+| `selectionRangeProvider` | `true` | 0.23.0（A8） |
+| `diagnosticProvider` | `{identifier:"fpga-lsp", interFileDependencies:false, workspaceDiagnostics:true}` | 0.23.0（A9 pull diagnostics；push 不变） |
+| `serverInfo` | `{name:"fpga-lsp", version:"0.23.0"}`（`src/platform/version.h`，与扩展一致） | — |
 
 **`executeCommandProvider` 为什么是"全表减 3 条"**：vscode-languageclient 会把
 `commands` 里的**每一条**都注册成 VS Code 命令；扩展的 `contributes.commands` 已经

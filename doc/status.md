@@ -1,13 +1,13 @@
-# 交付状态（当前：2026-11-22，扩展 0.22.0）
+# 交付状态（当前：2026-11-22，扩展 0.23.0）
 
 ## 构建与测试
 
 | 项目 | 数据 |
 | --- | --- |
 | **全新目录干净构建** | configure 29 s → build 3.3 min → **844 个目标全部成功**（Release + 全量 LTO）；无 LTO 的 `windows-msvc-dev` 全新目录 **56 s**（2026-11-20 实测；增量构建见 build.md） |
-| **`ctest` 全量** | **65/65 通过**（其中 `unit` 44、`e2e` 5、`td` 5，其余为 `formatgate`/`lintgate`/`gate`/`generator`/`mcp`/`docs` 门禁）；preset 默认 **8 路并行**，实测 **61–75 s**（串行 92–104 s） |
-| **原生产物** | `build/bin/fpgalsp-native.exe`（0.22.0，**6,909,952 B**，全量 LTCG；SHA256 `7F8C5F25…DDA16B`） |
-| **单元测试规模** | 44 个 gtest target |
+| **`ctest` 全量** | **69/69 通过**（其中 `unit` 45、`e2e` 5、`td` 5，其余为 `formatgate`/`lintgate`/`gate`/`generator`/`mcp`/`docs`/`parity` 门禁）；preset 默认 **8 路并行**，实测约 **60–75 s**（串行 92–104 s） |
+| **原生产物** | `build/bin/fpgalsp-native.exe`（0.23.0，**6,980,608 B**，全量 LTCG；SHA256 `E26EF489…C7BFAC`） |
+| **单元测试规模** | 45 个 gtest target |
 
 > 构建/测试的并行度分析（为什么 192 线程帮不上忙、时间精确花在哪、日常该用哪个 preset）见
 > [doc/build.md](build.md) 的「并行度：192 线程用在了哪里」。
@@ -16,9 +16,9 @@
 
 | 项目 | 数据 |
 | --- | --- |
-| LSP | **33 个注册 handler**（标准 LSP + `fpgaLsp/*` 自定义 + `workspace/executeCommand`；后者实现 **34 条**命令、广播 **31 条**） |
+| LSP | **47 个注册 handler**（标准 LSP 3.18 + `fpgaLsp/*` 自定义 + `workspace/executeCommand`；后者实现 **34 条**命令、广播 **31 条**；可选能力 A4–A12 已全部声明：signatureHelp/documentLink/codeLens/documentHighlight/selectionRange/pull diagnostics/willSave/`$/setTrace`/completionItem.resolve/semanticTokens.range） |
 | MCP | **50 个工具全部真实实现（0 占位）**（Python 对齐 39 + 11 个扩展；`--allow-flow` 可见 46、只读 38、`--allow-write` 再加 3）；服务端默认只读，flow / 写操作需显式开启；4 个只读 resources + `fpga_guide` 7 topic + 4 个 prompt |
-| VS Code 扩展 | **58 条命令**（声明 = 注册 = 实现）、4 个视图、5 个 `vscode.lm` 工具、17 个设置项 |
+| VS Code 扩展 | **58 条命令**（声明 = 注册 = 实现）、4 个视图、5 个 `vscode.lm` 工具、18 个设置项（含 flow 绝对超时） |
 | TD 集成 | 会话与诊断、Flow（含 6 步单步 Run / Reset and Run）+ BitWizard、报告解析、ADC + SDC 符号、HDL 索引、ChipWatcher 采样 |
 
 ## M1 协议层减法（已落地，2026-11-19）
@@ -1526,3 +1526,62 @@ CPU 核数决定（run.log 里的 `TMR-1041 : Net delay calculation accelerates 
 diagnostics/`willSave`/`$/setTrace`/`completionItem/resolve`/`semanticTokens/range` —— 均未声明，
 客户端按 capability 跳过）；`compare_reports.py` / `compare_constraints.py` 未进 CTest；插件 flow
 无绝对超时；7 个 MCP 工具无人工 UI 入口；`fpgaLsp.mcp.allowFlow` 默认值是否改 `false` 待产品决定。
+
+---
+
+## 第三十五轮（2026-11-22，0.23.0）：LSP 可选合规 + 报表/约束门禁 + flow 超时 + 工程目录 .fpgalsp 收尾
+
+本轮把第三十四轮审计留下的 backlog 全部做完，并单独根治了"工程目录反复长出 `.fpgalsp`"。
+
+**1) LSP 3.17/3.18 可选合规项 A4–A12（10 项，全部真实语义）**
+
+| 能力 | 方法 | 实现要点 |
+| --- | --- | --- |
+| signatureHelp | `textDocument/signatureHelp` | 例化括号内给模块端口签名 + `activeParameter`（顶层逗号；命名端口内层括号向外层升级） |
+| documentLink | `textDocument/documentLink` | 仅 `.al` 的 `<File Path>`（`<Project Path>` 不链接），存在给 `file://`，缺失给 tooltip |
+| codeLens | `textDocument/codeLens` | 每个 module 一条 `"N instantiations"` + `fpgalsp.searchHierarchy` |
+| documentHighlight | `textDocument/documentHighlight` | 同文档 token 流匹配，注释/字符串不误命中 |
+| selectionRange | `textDocument/selectionRange` | 单词 → 行 → `begin/end`/`{}` 块 → module → 整篇 |
+| pull diagnostics | `textDocument/diagnostic` / `workspace/diagnostic` | 与 push 同源缓存（`latest_diagnostics_`），`previousResultId` 命中回 `unchanged`；push 行为不变 |
+| willSave | `textDocument/willSave`(通知) / `willSaveWaitUntil`(请求) | 通知 no-op，请求立即 `[]` |
+| `$/setTrace` | `$/setTrace` / `$/logTrace` | 记录 level；dispatcher 只对**已注册**的 `$/` 放行，未知仍静默忽略 |
+| completionItem/resolve | `completionItem/resolve` | 模块项补 `detail` + markdown 文档（端口表 + 定义位置） |
+| semanticTokens/range | `textDocument/semanticTokens/range` | 全量流水线 → 区间过滤 → **重新 5 元组编码** |
+
+实现：`src/server/features_optional.{h,cpp}`（10 个纯函数 + handler 薄包装），
+`lsp_server.cpp` 注册 13 个方法、能力声明补齐；`jsonrpc/dispatcher.cpp` 只放行已注册的 `$/`。
+原生产物现在注册 **47 个 LSP handler**。单测 `tests/unit/features_optional_test.cpp` 10/10。
+
+**2) 报表/约束对等门禁进 CTest**：`parity.reports`（`tests/compare_reports.py`，18 份真实报告）、
+`parity.constraints`（`tests/run_constraints_parity.py` 先跑 `unit_adc/unit_sdc` 的 Parity 用例导出
+JSON，再跑 `tests/compare_constraints.py`，93 个结构）。以前这两条数据通路只有"人记得跑"才跑。
+
+**3) 插件 flow 绝对超时**：新增 `fpgaLsp.flowTimeoutMinutes`（默认 0 = syn 30 / phy 90 / all 120 分钟，
+多阶段取最大；1–600 = 固定）；到点或 `flowStatus` 连续失败 12 次 → 停轮询、自动 cancel 一次、标记
+失败（输出 `flow timed out after N min - cancelling` / `language server is not responding`），
+不会永久 busy。新增纯函数 + 4 条单测，插件 **49/49**。
+
+**4) `<工程>/.fpgalsp` 反复出现的根治**
+
+* **根因**：不是"状态目录没做"，而是**一处硬编码**：`src/td/td_service.cpp` 的
+  `options.work_dir = project.dir + "/.fpgalsp/run"` —— 每次 LSP 保存触发 TD 检查就重建
+  `<project>/.fpgalsp/run`。真机复现：删掉 `.fpgalsp` → 一次 `didSave` → 立刻重建。
+* **修复**：改为 `platform::state_dir(project.dir) + "/run"`；`state_dir()` 的 TEMP 不可用兜底也不再
+  回落到工程目录（改 %LOCALAPPDATA%/%USERPROFILE%）。
+* **防复发**：新增机械门禁 `docs_no_project_state`（`tools/audit/check_project_state_paths.py` 扫
+  `src/` 的**代码**（剥注释）里写工程目录 `.fpgalsp` 的路径；白名单仅允许"扫描时跳过该目录/临时后缀"），
+  已注册进 CTest；单测 `PathStateDir.NeverReturnsProjectLocalFpgalsp`、TD 集成测试断言 cwd 在状态目录下。
+* **清理**：工程/仓库里的历史空 `.fpgalsp` 已删除；以后不会再生成。
+
+**5) 真实 VS Code 集成测试重跑：SUITE PASS（全绿）** —— 顺手修掉 3 个长期红的真/假问题：
+`doctor` 里 `${vSettings.args}` 引用了**不存在的变量**（ReferenceError 被 catch 吞掉 → 报告永远打不开）；
+`completion returns project modules` 的测试位置在单词中间（服务端按前缀过滤，`top` 本就不该出现）；
+`copy symbol path` 断言要的是叶子名，而命令语义是完整层次路径 `top/oc_chk_lock`。
+
+**验证**：`ctest --preset windows-msvc-release` **69/69**（75 s）、插件 `node test/run.js` **49/49**、
+真实 VS Code 集成套件 **PASS**、MCP schema 门禁 39 工具 × 2 可见性一致。
+真机 CorpusAlpha：`textDocument/{signatureHelp,documentLink,codeLens,documentHighlight,selectionRange,
+semanticTokens/range}`、`completionItem/resolve`、`willSaveWaitUntil`、`$/setTrace`、pull diagnostics
+全部返回真实数据；`documentLink` 23 条无"假缺失"；删 `.fpgalsp` 后 `didSave` 不再重建。
+
+**仍未做**：7 个 MCP 工具无人工 UI 入口；`fpgaLsp.mcp.allowFlow` 默认值是否改 `false` 待产品决定。

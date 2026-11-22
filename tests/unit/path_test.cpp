@@ -251,3 +251,32 @@ TEST(PlatformPathCanonical, LexicalContainmentIsNotPhysical) {
 }
 
 }  // namespace
+// -----------------------------------------------------------------------------
+// state_dir（Wave 3 / W1）：状态目录必须在系统临时目录里，**绝不能**落回工程目录。
+// 2026-11-22 审计的真实现象：每次 LSP 保存触发 TD 检查，工程根就重新长出
+// `.fpgalsp/run` —— 根因是 td_service 里一处硬编码 `<project>/.fpgalsp/run`。
+// 这个用例钉住"默认路径不含 .fpgalsp、且不落在工程目录下"。
+// -----------------------------------------------------------------------------
+TEST(PathStateDir, NeverReturnsProjectLocalFpgalsp) {
+    const std::string project = "Y:/_fpgalsp_state_dir_unit_test_project";
+    const std::string dir = state_dir(project);
+    ASSERT_FALSE(dir.empty());
+    // 1) 不带 `.fpgalsp` 这个名字（临时目录布局是 <tmp>/fpgalsp/<name>-<hash8>）
+    EXPECT_EQ(dir.find(".fpgalsp"), std::string::npos) << dir;
+    // 2) 不在工程目录之下
+    EXPECT_EQ(dir.find(project), std::string::npos) << dir;
+    // 3) 仍然是按工程唯一化的目录（name-hash8）
+    EXPECT_NE(dir.find("fpgalsp"), std::string::npos) << dir;
+}
+
+TEST(PathStateDir, HonorsFpgalspStateDirEnv) {
+#ifdef _WIN32
+    const char* previous = std::getenv("FPGALSP_STATE_DIR");
+    const std::string saved = previous == nullptr ? std::string() : std::string(previous);
+    ASSERT_EQ(_putenv_s("FPGALSP_STATE_DIR", "Y:/_fpgalsp_state_dir_env_test"), 0);
+    EXPECT_EQ(state_dir("Y:/some/project"), "Y:/_fpgalsp_state_dir_env_test");
+    ASSERT_EQ(_putenv_s("FPGALSP_STATE_DIR", saved.c_str()), 0);
+#else
+    GTEST_SKIP() << "setenv-based override is Windows-only in this test";
+#endif
+}

@@ -203,7 +203,7 @@ std::string ChipDebuggerDir(const project::Project& project);
 // `insert_debugger <dir> -cwc <file>` 的参数传进去，TD 会按它重建 watcher ——
 // 深度 2048 传进去后新的 `*_watcherInst.sv` 里 `RAM_DATA_DEPTH = 2048`。
 // 所以我们用"自己作者化一份 cwc + 落盘参数"的方式把 depth/clock 变成可配置量。
-// 落盘位置：`<project>/.fpgalsp/probe/config.txt`（key=value，见 ProbeConfigPath）。
+// 落盘位置：`<state_dir>/probe/config.txt`（key=value，见 ProbeConfigPath；<state_dir> 同上）。
 struct ProbeBuildConfig {
     bool has_clock = false;
     std::string clock;      // 例如 reg_init/clk
@@ -347,7 +347,7 @@ jsonrpc::Json Configure(const project::Project& project, const std::vector<std::
 // -----------------------------------------------------------------------------
 
 struct CaptureOptions {
-    std::string cwd;             // TD 会话工作目录，空 = <project>/.fpgalsp/probe
+    std::string cwd;             // TD 会话工作目录，空 = <state_dir>/probe
     std::string instance;        // 空 = 从 compiled.cwc 读（通常是 auto_created_cwc1）
     std::string cable = "0";
     double wait_timeout = 30.0;  // wait_on_hw_cw -timeout

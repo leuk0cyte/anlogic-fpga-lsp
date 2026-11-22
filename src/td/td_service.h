@@ -64,7 +64,7 @@ public:
 class TdSessionRunner final : public TdCheckRunner {
 public:
     // use_project_work_dir:
-    //   true （默认，与 lsp_server 现状一致）：cwd = <project.dir>/.fpgalsp/run，
+    //   true （默认）：cwd = platform::state_dir(project.dir)/run（系统临时目录，不写工程目录）；
     //        TD 自己的日志留在工程里，排障时跟工程一起打包；
     //   false：cwd 用 TdSessionOptions 的值；留空则走 B7/D-3 的 %TEMP% scratch，
     //        完全不碰用户工程（A5-REPORT 建议的默认值）。

@@ -63,7 +63,7 @@ struct CompareOptions {
     int jobs = 2;
     double timeout_seconds = 3600.0;
     double command_timeout_seconds = 300.0;
-    std::string work_root;  // 空 = <project>/.fpgalsp/compare
+    std::string work_root;  // 空 = <state_dir>/compare
     std::string explicit_db;
     FlowSessionFactory session_factory;  // 空 = 真实 TD
     int keep_work_dirs = 5;              // 只保留最近 N 次（对应 Python _prune(keep=5)）

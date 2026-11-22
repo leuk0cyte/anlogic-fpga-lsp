@@ -41,8 +41,9 @@ struct TdSessionOptions {
     // cwd（会被创建）。**留空是安全的默认值**（B7 / D-3）：不再让 TD 继承本进程
     // 的 cwd（那会把 TD 的日志/中间文件撒到用户工作目录），而是每个会话一个
     // %TEMP%/fpgalsp-td-<pid>-<n> 的独立 scratch 目录。
-    // 需要"产物落在工程里"的调用方（bridge / flow）应显式传
-    // <project>/.fpgalsp/run，而不是依赖继承。
+    // 需要固定 cwd 的调用方（bridge / flow / td_service）应显式传状态目录
+    // （platform::state_dir(project.dir)/run）；**不要**再传 <project>/.fpgalsp/run，
+    // 工程目录里的 .fpgalsp 已废弃（2026-11-22 审计 + docs_no_project_state 门禁）。
     std::string work_dir;
     // TD 把每个会话的日志写成 `<cwd>/td_<YYYYMMDD_HHMMSS>.log`（还有 `.logw`），崩溃时
     // 还会在 cwd 里丢一个 `minidump-*.dmp`。而会话 cwd 必须是 `.al` 所在目录（与 GUI

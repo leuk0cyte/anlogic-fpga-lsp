@@ -67,7 +67,14 @@ const { FlowTreeProvider } = require('../src/flowTree');
 const { ReportsTreeProvider } = require('../src/reportsTree');
 const mcpConfig = require('../src/mcpConfig');
 const { parseFlowIssue } = require('../src/flowDiagnostics');
-const { FlowController } = require('../src/flowController');
+const {
+    FlowController,
+    resolveFlowTimeoutMs,
+    resolveFlowDeadline,
+    isFlowTimedOut,
+    shouldAbandonOnErrors,
+    MAX_CONSECUTIVE_FLOW_ERRORS,
+} = require('../src/flowController');
 const { FALLBACK_POLL_MS } = require('../src/flowController');
 const { ReportsService, CancelledError } = require('../src/reportsService');
 const { renderReportsHtml } = require('../src/reportsHtml');
@@ -1635,6 +1642,173 @@ test('flow controller: polls flowStatus incrementally (sinceSeq) and merges the 
     eq(requests[1].params.sinceSeq, 2, 'second poll asks only for newer lines');
     eq(controller._recentLog.length, 4, 'local window keeps both batches');
 
+    controller.dispose();
+});
+
+
+// ------------------------------------------------------------------ absolute flow timeout
+
+// 2026-11-22 审计 major：flow 只有"推送事件 + 10 s 兜底轮询"，没有任何上界 —— flowStatus
+// 连续抛错、或服务端永远不翻 running 时，"busy" 会一直挂着且无法取消。下面覆盖超时决策
+// （自动档 / 固定档 / 截止时间 / 连续错误阈值）以及控制器里的收尾行为。
+test('flow timeout: automatic tiers per stage and the fixed override', () => {
+    const MIN = 60000;
+    // 自动档（setting = 0）：syn 30 / phy 90 / all 120
+    eq(resolveFlowTimeoutMs(['syn'], 0), 30 * MIN, 'synthesis -> 30 min');
+    eq(resolveFlowTimeoutMs(['phy'], 0), 90 * MIN, 'place & route -> 90 min');
+    eq(resolveFlowTimeoutMs(['all'], 0), 120 * MIN, 'full flow -> 120 min');
+    eq(resolveFlowTimeoutMs([], 0), 120 * MIN, 'empty stages -> full-flow cap');
+    // 单步 run（["opt_route"] 等）按所属阶段算
+    eq(resolveFlowTimeoutMs(['read_design'], 0), 30 * MIN, 'syn step -> 30 min');
+    eq(resolveFlowTimeoutMs(['opt_route'], 0), 90 * MIN, 'phy step -> 90 min');
+    eq(resolveFlowTimeoutMs(['route'], 0), 90 * MIN, 'incremental route (phy) -> 90 min');
+    // 多阶段 / phase 子集取对应最大值
+    eq(resolveFlowTimeoutMs(['syn', 'phy'], 0), 90 * MIN, 'syn+phy -> the largest tier');
+    eq(resolveFlowTimeoutMs(['opt_rtl', 'bitgen'], 0), 90 * MIN, 'mixed steps -> the largest tier');
+    eq(resolveFlowTimeoutMs(['syn', 'all'], 0), 120 * MIN, 'all wins over syn');
+    eq(resolveFlowTimeoutMs(['vendored_stage'], 0), 120 * MIN, 'unknown stage -> never too early');
+    // 大小写 / 非 0 = 固定分钟（>600 钳住，<=0 回退自动档）
+    eq(resolveFlowTimeoutMs(['SYN'], 0), 30 * MIN, 'stage names are case-insensitive');
+    eq(resolveFlowTimeoutMs(['syn'], 3), 3 * MIN, 'fixed value overrides the tier');
+    eq(resolveFlowTimeoutMs(['all'], 1), 1 * MIN, 'fixed 1 min');
+    eq(resolveFlowTimeoutMs(['syn'], 0.5), 0.5 * MIN, 'fractional minutes are allowed');
+    eq(resolveFlowTimeoutMs(['syn'], '15'), 15 * MIN, 'numeric strings are accepted');
+    eq(resolveFlowTimeoutMs(['syn'], 601), 600 * MIN, 'fixed value is clamped to 600');
+    eq(resolveFlowTimeoutMs(['syn'], -5), 30 * MIN, 'negative -> automatic');
+    eq(resolveFlowTimeoutMs(['syn'], NaN), 30 * MIN, 'NaN -> automatic');
+});
+
+test('flow timeout: deadline comparison and the consecutive-error threshold', () => {
+    eq(resolveFlowDeadline(['syn'], 0, 5000), 5000 + 30 * 60000, 'deadline = now + tier');
+    eq(isFlowTimedOut({ deadline: 1000, now: 1000 }), false, 'exactly at the deadline is not late');
+    eq(isFlowTimedOut({ deadline: 1000, now: 1001 }), true, 'one ms late -> timed out');
+    eq(isFlowTimedOut({ deadline: 1000, now: 999 }), false, 'before the deadline');
+    eq(isFlowTimedOut({ deadline: undefined, now: 9999999 }), false, 'no deadline -> never timed out');
+    eq(isFlowTimedOut({}), false, 'no options -> never timed out');
+
+    eq(shouldAbandonOnErrors(0), false, 'no failures');
+    eq(shouldAbandonOnErrors(MAX_CONSECUTIVE_FLOW_ERRORS - 1), false, 'below the bound keeps polling');
+    eq(shouldAbandonOnErrors(MAX_CONSECUTIVE_FLOW_ERRORS), true, 'the 12th consecutive failure gives up');
+    eq(shouldAbandonOnErrors(MAX_CONSECUTIVE_FLOW_ERRORS + 5), true, 'beyond the bound too');
+    eq(shouldAbandonOnErrors(undefined), false, 'missing counter -> no abandon');
+    eq(shouldAbandonOnErrors(NaN), false, 'broken counter -> no abandon');
+    eq(MAX_CONSECUTIVE_FLOW_ERRORS, 12, '12 x 10 s fallback poll ~= 2 minutes');
+});
+
+test('flow controller: the absolute timeout cancels once and finishes failed', async () => {
+    const executes = [];
+    let requests = 0;
+    const controller = new FlowController({
+        rpc: {
+            request: async () => {
+                requests += 1;
+                return { ok: true, flow: { running: true, stage: 'syn' } };
+            },
+            execute: async (tool) => { executes.push(tool); return { ok: true }; },
+        },
+        getProjectInfo: async () => ({ al: 'Y:/p/demo.al' }),
+    });
+    // 摆一个已经超时的 active（自动档 syn = 30 分钟）
+    const startedAt = Date.now() - 31 * 60 * 1000;
+    controller.active = {
+        runId: 'r1',
+        stages: ['syn'],
+        label: 'synthesis',
+        startedAt,
+        sawRunning: true,
+        pollErrors: 0,
+        timeoutMs: resolveFlowTimeoutMs(['syn'], 0),
+        deadline: resolveFlowDeadline(['syn'], 0, startedAt),
+    };
+    controller.startPolling();
+    controller.setStatusRunning('synthesis');
+
+    await controller.pollOnce();
+    eq(controller.active, undefined, 'a timed-out flow is not left busy');
+    eq(controller.poller, undefined, 'poll timer stopped');
+    eq(requests, 0, 'no flowStatus request after the deadline');
+    eq(executes.filter((tool) => tool === 'fpgalsp.cancelFlow').length, 1, 'cancel sent exactly once');
+    includes(controller.output.lines.join('\n'), 'flow timed out after 30 min - cancelling');
+    ok(controller.statusBar.text.includes('failed'), `status bar failed: ${controller.statusBar.text}`);
+    eq(mock.__state.messages.warning.length, 1, 'exactly one warning');
+    includes(mock.__state.messages.warning[0].message, 'timed out after 30 min');
+
+    // 同一次 flow 只收尾/提示一次：再轮询、再来事件都不会再 cancel 或再提示
+    await controller.pollOnce();
+    controller.onFlowEvent({ runId: 'r1', type: 'progress', message: 'still running' });
+    eq(executes.filter((tool) => tool === 'fpgalsp.cancelFlow').length, 1, 'no second cancel');
+    eq(mock.__state.messages.warning.length, 1, 'no second warning');
+
+    // 推送事件也检查 deadline（它可能比 10 s 兜底轮询更早到）
+    controller._cancelRequested = false;
+    controller.active = {
+        runId: 'r2',
+        stages: ['all'],
+        label: 'full flow',
+        startedAt: Date.now() - 121 * 60 * 1000,
+        sawRunning: true,
+        pollErrors: 0,
+        timeoutMs: resolveFlowTimeoutMs(['all'], 0),
+        deadline: Date.now() - 60000,
+    };
+    controller.onFlowEvent({ runId: 'r2', type: 'start', stage: 'syn' });
+    eq(controller.active, undefined, 'a pushed event after the deadline also aborts');
+    includes(controller.output.lines.join('\n'), 'flow timed out after 120 min - cancelling');
+    controller.dispose();
+});
+
+test('flow controller: consecutive flowStatus failures abandon a dead-server flow', async () => {
+    let requests = 0;
+    const executes = [];
+    const controller = new FlowController({
+        rpc: {
+            request: async () => { requests += 1; throw new Error('ECONNREFUSED'); },
+            execute: async (tool) => { executes.push(tool); throw new Error('hub closed'); },
+        },
+        getProjectInfo: async () => ({ al: 'Y:/p/demo.al' }),
+    });
+    const startedAt = Date.now();
+    controller.active = {
+        runId: 'r3',
+        stages: ['all'],
+        label: 'full flow',
+        startedAt,
+        sawRunning: true,
+        pollErrors: MAX_CONSECUTIVE_FLOW_ERRORS - 1,
+        timeoutMs: resolveFlowTimeoutMs(['all'], 0),
+        deadline: resolveFlowDeadline(['all'], 0, startedAt),
+    };
+
+    await controller.pollOnce(); // 第 12 次连续失败 -> 收尾
+    eq(requests, 1, 'gives up on the 12th consecutive failure');
+    eq(controller.active, undefined, 'dead-server flow is not left busy');
+    includes(controller.output.lines.join('\n'), 'language server is not responding');
+    eq(executes.filter((tool) => tool === 'fpgalsp.cancelFlow').length, 1, 'cancel attempted once');
+    ok(controller.statusBar.text.includes('failed'), `status bar failed: ${controller.statusBar.text}`);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    includes(controller.output.lines.join('\n'), 'cancel request failed', 'a failed cancel is only logged');
+
+    // 成功一次就清零；未到阈值时只是继续轮询，不收尾
+    controller._cancelRequested = false;
+    controller.active = {
+        runId: 'r4',
+        stages: ['syn'],
+        label: 'synthesis',
+        startedAt: Date.now(),
+        sawRunning: true,
+        pollErrors: 5,
+        timeoutMs: resolveFlowTimeoutMs(['syn'], 0),
+        deadline: resolveFlowDeadline(['syn'], 0, Date.now()),
+    };
+    controller.rpc.request = async () => ({ ok: true, flow: { running: true, stage: 'syn' } });
+    await controller.pollOnce();
+    eq(controller.active.pollErrors, 0, 'a successful poll clears the error streak');
+
+    controller.rpc.request = async () => { throw new Error('ECONNREFUSED'); };
+    controller.active.pollErrors = MAX_CONSECUTIVE_FLOW_ERRORS - 2;
+    await controller.pollOnce();
+    ok(controller.active, 'below the bound the flow keeps polling');
+    eq(controller.active.pollErrors, MAX_CONSECUTIVE_FLOW_ERRORS - 1, 'the streak keeps counting');
     controller.dispose();
 });
 

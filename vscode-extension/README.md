@@ -47,7 +47,7 @@
 ### 2. 安装扩展并重载
 
 ```powershell
-code --install-extension Y:\fpga-lsp-cpp\vscode-extension\fpga-lsp-anlogic-0.22.0.vsix
+code --install-extension Y:\fpga-lsp-cpp\vscode-extension\fpga-lsp-anlogic-0.23.0.vsix
 ```
 
 安装后按提示 **Reload**，或执行 `Developer: Reload Window`。
@@ -131,6 +131,7 @@ code --install-extension Y:\fpga-lsp-cpp\vscode-extension\fpga-lsp-anlogic-0.22.
 - Flow 运行过程中会读取 TD 报告的实际 `run.log` 路径（来自 `PRJ-1404`）。
 - 失败时输出会包含失败步骤（例如 `.read_design.error.f`）和 run.log 路径/缺失状态；有 run.log 时会读取最后的 ERROR/WARNING。
 - 所有问题同时进入 **Problems**，source 为 `fpga-flow`；无法定位文件的消息挂到 `.al`。
+- **超时**：每次 flow 都有绝对上限 —— `fpgaLsp.flowTimeoutMinutes` 默认 `0` 表示按阶段自动（综合 30 分钟 / 布局布线 90 分钟 / 全流程 120 分钟，多阶段取最大），非 `0` 为固定分钟数（1~600）；到点或 `flowStatus` 连续失败 12 次（约 2 分钟）都会停止轮询、自动 `cancel` 并把 flow 标记失败（输出 `flow timed out after N min - cancelling` / `language server is not responding`），不会永远停在 busy。
 - 完整日志：本次 flow 的运行目录在 `<状态目录>/flow/<runId>/`（`<状态目录>` = `%TEMP%\fpgalsp\<工程名>-<hash8>`，可用 `FPGALSP_STATE_DIR` 覆盖）；TD **会话**日志在 `<.al 目录>/log/td_*.log`（与 TD GUI 一致，不再落工程根目录）；TD 自己的 run 日志在 `<project>_Runs/<run>/run.log`（TD 不一定生成）。
 
 ### 单步 Flow（Flow 树六步右键）
@@ -206,6 +207,7 @@ FPGA: Install MCP Configuration
 | `fpgaLsp.tdCheckOnSave` | `true` | 保存时运行 TD 权威检查（`read_hdl` + `read_adc`，约 1–2 s） |
 | `fpgaLsp.projectFile` | `""` | 显式指定 `.al`；空 = 用最近的上级工程 |
 | `fpgaLsp.flowJobs` | `6` | TD multirun 的并发 run 数（**1~6**，不是线程数；单步始终用 1）。超出范围会被钳到 6 |
+| `fpgaLsp.flowTimeoutMinutes` | `0` | 单次 flow 的绝对超时（分钟）：`0` = 按阶段自动（综合 30 / 布局布线 90 / 全流程 120，多阶段取最大），非 `0` = 固定值（1~600）。到点停止轮询、自动取消并标记失败 |
 | `fpgaLsp.logFile` | `""` | 服务器日志，空 = `<状态目录>/logs/server.log`（`<状态目录>` = `%TEMP%\fpgalsp\<工程名>-<hash8>`；工程目录下不再有 `.fpgalsp`） |
 | `fpgaLsp.verible.format` | `true` | 用内嵌 Verible 格式化（Format Document） |
 | `fpgaLsp.verible.args` | 160 列 + 4 空格缩进 + 一组对齐参数 | 内嵌 `verible-verilog-format` 的 style 参数；与服务端内置默认逐条一致，非空即**整体替换**，见下 |

@@ -18,6 +18,10 @@ add_library(fpga_lsp_server STATIC
     features_constraints.cpp
     features_analysis.cpp
     features_commands.cpp
+    # A4–A12：LSP 3.17/3.18 可选合规项（signatureHelp/documentLink/codeLens/
+    # documentHighlight/selectionRange/pull diagnostics/willSave/$setTrace/
+    # completionItem.resolve/semanticTokens.range）
+    features_optional.cpp
     ide_features.cpp
     async_dispatcher.cpp
     report_store.cpp

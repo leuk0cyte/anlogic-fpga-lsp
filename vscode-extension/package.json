@@ -2,7 +2,7 @@
     "name": "fpga-lsp-anlogic",
     "displayName": "Anlogic FPGA LSP (TangDynasty)",
     "description": "Language support and IDE views for Anlogic TD FPGA projects: ADC pin constraints, SDC, project .al, Verilog index, TD-backed diagnostics, module hierarchy, syn/phy flow control and QoR/timing/area reports.",
-    "version": "0.22.0",
+    "version": "0.23.0",
     "publisher": "fpga-lsp",
     "license": "AGPL-3.0-or-later",
     "engines": {
@@ -173,6 +173,15 @@
                     "minimum": 1,
                     "maximum": 6,
                     "description": "TD multirun concurrency: how many runs may run in parallel (TD allows 1-6; >6 reports PRJ-8802). Single-run launches are effectively 1 and single-step runs force 1 (PRJ-8803). This is NOT the thread count inside one run - TD sizes that from the CPU cores itself. Default 6 = the TD GUI default."
+                },
+                "fpgaLsp.flowTimeoutMinutes": {
+                    "type": "number",
+                    "default": 0,
+                    "minimum": 0,
+                    "maximum": 600,
+                    "title": "Flow timeout (minutes)",
+                    "description": "Absolute safety timeout for one FPGA flow. 0 = automatic per stage (synthesis 30, place & route 90, full flow 120 minutes; a run covering several stages uses the largest). A non-zero value is that fixed timeout in minutes (1-600). When it expires the extension stops polling, sends one cancel, writes \"flow timed out after N min - cancelling\" to the FPGA Flow output and marks the flow failed - it never stays busy forever.",
+                    "markdownDescription": "Absolute safety timeout for one FPGA flow.\n\n* `0` (default) = automatic per stage: synthesis **30** min, place & route **90** min, full flow **120** min; a run that covers several stages uses the largest tier.\n* `1`-`600` = the same fixed timeout in minutes.\n\nWhen it expires the extension stops polling, sends one `cancel`, writes `flow timed out after N min - cancelling` to the **FPGA Flow** output and marks the flow **failed** instead of staying busy forever."
                 },
                 "fpgaLsp.logFile": {
                     "type": "string",

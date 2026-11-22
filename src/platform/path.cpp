@@ -505,10 +505,22 @@ std::string state_dir(std::string_view project_or_base) {
 
     std::error_code ec;
     const std::filesystem::path tmp = std::filesystem::temp_directory_path(ec);
-    const std::string base = ec ? std::string() : tmp.string();
+    std::string base = ec ? std::string() : tmp.string();
     if (base.empty()) {
-        return path_join(project_or_base.empty() ? std::string(".") : std::string(project_or_base),
-                         ".fpgalsp");
+        // 极端环境（TEMP 不可用）：退到用户本地目录，**绝不回落到工程目录**。
+        // 以前这里返回 `<project>/.fpgalsp`，等于给"工程里重新长出 .fpgalsp"留了后门
+        //（2026-11-22 审计的回归点）。现在宁可写到 %LOCALAPPDATA% / %USERPROFILE%。
+        for (const char* var : {"LOCALAPPDATA", "USERPROFILE", "HOME"}) {
+            const char* value = std::getenv(var);
+            if (value != nullptr && *value != '\0') {
+                base = value;
+                break;
+            }
+        }
+    }
+    if (base.empty()) {
+        // 连用户目录都没有：用当前工作目录下的 `fpgalsp`（不带点前缀，且不属于工程状态目录命名）。
+        base = ".";
     }
     return path_join(path_join(base, "fpgalsp"), name + "-" + suffix);
 }

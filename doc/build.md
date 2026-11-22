@@ -241,11 +241,13 @@ cmake --preset windows-msvc-release
 ```bat
 ctest --preset windows-msvc-release          :: 8 路并行（preset 里 execution.jobs=8）
 ctest -L unit --output-on-failure          :: 只跑单元测试
+ctest -L docs                              :: 版本一致性 / 工程状态目录门禁
+ctest -L parity                            :: 报表 / 约束解析对等门禁（需要 Y:\fpga-lsp 参考实现）
 ctest -j 1                                  :: 想复现问题/看干净时序时用串行
 ```
 
-当前基线（2026-11-22，扩展 0.22.0）：`ctest` **65/65**（并行 8 路约 **62–75 s**，串行约 **99 s**）。
-其中 `unit` 44 个 target，另有 `e2e.*` 5 条、`td.*` 3 条、门禁若干（`gate`/`lintgate`/`formatgate`/`docs`）。
+当前基线（2026-11-22，扩展 0.23.0）：`ctest` **69/69**（并行 8 路约 **60–75 s**，串行约 **99 s**）。
+其中 `unit` 45 个 target，另有 `e2e.*` 5 条、`td.*` 3 条、门禁若干（`gate`/`lintgate`/`formatgate`/`docs`）。
 并行之所以安全：`td.*` 与 5 条 e2e 都带 `RUN_SERIAL TRUE` + `RESOURCE_LOCK "td-process"`。
 详见上文「并行度：192 线程用在了哪里」。
 

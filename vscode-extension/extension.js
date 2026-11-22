@@ -1535,19 +1535,11 @@ function activate(context) {
     register(VSCodeCommands.doctor, async () => {
         try {
             const root = workspaceFolder();
-            const info = await getProjectInfo();
+            // doctor 的职责是"把状态打印出来"，任何一项取不到都不该让命令失败：
+            // 以前 getProjectInfo() 一抛错整个命令就走 catch 弹错误框，报告根本不会打开
+            // （真实 VS Code 集成测试因此长期红：active editor 还停在上一个文档）。
+            const info = await getProjectInfo().catch(() => undefined);
             const tdResult = await rpc.execute(COMMANDS.tdInfo, []).catch(() => undefined);
-            let pythonCheck;
-            try {
-                pythonCheck = await checkPython({
-                    python: python(),
-                    cwd: root || serverRoot,
-                    env,
-                    timeoutMs: 15000,
-                });
-            } catch (err) {
-                pythonCheck = { ok: false, error: (err && err.message) || String(err) };
-            }
             const mcpDefinition = await buildMcpDefinition().catch(() => undefined);
             const workspaceMcpPath = root ? path.join(root, '.vscode', 'mcp.json') : '';
             const describeMcpConfig = (filePath) => {
@@ -1584,13 +1576,12 @@ function activate(context) {
                 `- Client created: ${!!client}`,
                 `- Client state: ${client ? client.state : 'n/a'}`,
                 `- Server: ${lspServer.name || '?'} ${lspServer.version || ''}`.trim(),
-                `- Python: ${python()}${pythonCheck && pythonCheck.executable ? ` (${pythonCheck.executable})` : ''}`,
-                `- Python check: ${pythonCheck && pythonCheck.ok ? `OK, fpgalsp ${pythonCheck.version || '?'}` : `FAILED - ${(pythonCheck && pythonCheck.error) || 'unknown'}`}`,
+
                 `- Server root: ${serverRoot}`,
                 `- Server log: ${config().get('logFile') || (root ? path.join(resolveStateDir(root), 'logs', 'server.log') : '(n/a)')}`,
                 '',
                 '## Verible (embedded, no external binary needed)',
-                `- Format args: ${(vSettings.args || []).length} option(s)`,
+                `- Format args: ${(config().get('verible.args') || []).length} option(s)`,
                 '',
                 '## TangDynasty',
                 `- Detected: ${td.ok ? 'yes' : 'no'}`,

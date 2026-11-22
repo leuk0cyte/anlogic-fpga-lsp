@@ -165,7 +165,22 @@ exports.run = async function () {
             const result = await vscode.commands.executeCommand('vscode.executeCompletionItemProvider', topDoc.uri, position);
             completions = (result && result.items) || [];
         }
-        const labels = new Set(completions.map((item) => (item.label && item.label.label) || item.label));
+        // 冷启动时 HDL 索引可能还没建好，第一次 completion 只回离线候选（实测 <300 条）。
+        // 这是测试时序，不是功能缺失：最多重试 ~10 s，直到能看到工程模块清单。
+        // 注意位置用 `position.translate(0, -1)`：findLine 返回 column=index+1，而在单词内部
+        // 触发补全时服务端会按当前前缀过滤（cursor 在 "pwm_gen" 的 'p' 之后 -> 只剩 p 开头的
+        // 模块/原语，`top` 当然不在里面）。这个词首位置才等价于"列模块清单"。
+        const modulePosition = position ? position.translate(0, -1) : undefined;
+        let labels = new Set();
+        for (let attempt = 0; attempt < 20; attempt += 1) {
+            const retried = modulePosition
+                ? await vscode.commands.executeCommand('vscode.executeCompletionItemProvider', topDoc.uri, modulePosition)
+                : null;
+            completions = (retried && retried.items) || completions;
+            labels = new Set(completions.map((item) => (item.label && item.label.label) || item.label));
+            if (labels.has('top') && labels.has('pwm_gen')) break;
+            await sleep(500);
+        }
         check('completion returns project modules', labels.has('top') && labels.has('pwm_gen'), `${labels.size} labels`);
 
         // v10: line-leading module names offer a full instantiation snippet for Tab-completion
@@ -390,7 +405,8 @@ exports.run = async function () {
                 await vscode.commands.executeCommand('fpgaLsp.copySymbolPath');
                 await sleep(400);
                 const symbolClip = await vscode.env.clipboard.readText();
-                check('copy symbol path uses the hierarchy', symbolClip === 'oc_chk_lock', symbolClip);
+                // 命令标题是 Copy Hierarchical Symbol Path：完整层次路径（top/oc_chk_lock）才是预期；oc_chk_lock 是旧断言。
+                check('copy symbol path uses the hierarchy', symbolClip === 'top/oc_chk_lock', symbolClip);
             }
         } catch (err) {
             check('copy symbol path uses the hierarchy', false, (err && err.message) || String(err));
