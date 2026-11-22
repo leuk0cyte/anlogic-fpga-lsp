@@ -44,15 +44,18 @@ function flowLabel(stages) {
     return 'full flow';
 }
 
+// TD 的 `-jobs` 是 **multirun 的并发 run 数**（合法 1~6，超过报 PRJ-8802）；
+// 单步执行时最大并发只能是 1（PRJ-8803）。它不是单 run 内部的线程数 ——
+// 单 run 的并行度由 TD 按 CPU 核数自己决定（run.log 里的 "TMR-1041 ... N threads"）。
 function readFlowJobs() {
-    let raw = 2;
+    let raw = 6;
     try {
-        raw = vscode.workspace.getConfiguration('fpgaLsp').get('flowJobs', 2);
+        raw = vscode.workspace.getConfiguration('fpgaLsp').get('flowJobs', 6);
     } catch (_) {
-        raw = 2;
+        raw = 6;
     }
     const jobs = parseInt(raw, 10);
-    return Math.max(1, Math.min(64, Number.isFinite(jobs) ? jobs : 2));
+    return Math.max(1, Math.min(6, Number.isFinite(jobs) ? jobs : 6));
 }
 
 class FlowController {

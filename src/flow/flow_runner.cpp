@@ -1059,13 +1059,16 @@ struct FlowRunner::Impl {
         //   （set_param 本身幂等，见 EnsureProbeHook 的短路）。
         EnsureProbeHook(run_name);
 
+        // `-jobs` 是 TD multirun 的**并发 run 数**（1~6，PRJ-8802）；单步执行（-step）时
+        // TD 要求最大并发只能为 1（PRJ-8803），所以单步固定传 1。
+        const int launch_jobs = step.empty() ? std::clamp(jobs, 1, 6) : 1;
         std::string launch = "launch_runs " + td::TclQuoteGrouped(" " + run_name + " ");
         if (!step.empty()) launch += " -step " + step;
-        launch += " -jobs " + std::to_string(jobs);
-        Emit("progress", step.empty()
-                             ? ("launch_runs {" + run_name + "} -jobs " + std::to_string(jobs))
-                             : ("launch_runs {" + run_name + "} -step " + step + " -jobs " +
-                                std::to_string(jobs)));
+        launch += " -jobs " + std::to_string(launch_jobs);
+        Emit("progress", step.empty() ? ("launch_runs {" + run_name + "} -jobs " +
+                                         std::to_string(launch_jobs))
+                                      : ("launch_runs {" + run_name + "} -step " + step +
+                                         " -jobs 1 (single step)"));
         std::string out = RunCommand(launch, 300.0);
         RememberRunLog(run_name, out);
         // ⚠ 这里只能用 HasFatal（只看 ERROR），不能用 HasError：
@@ -1789,7 +1792,8 @@ jsonrpc::Json FlowRunner::StartInternal(const std::vector<std::string>& stages, 
         impl_->state.error.clear();
         impl_->state.last_message = "Preparing TD job";
         impl_->state.log.clear();
-        impl_->state.jobs = jobs > 0 ? jobs : 6;
+        // 与 launch 实际使用的值一致（TD multirun 并发上限 6，见 PRJ-8802）
+        impl_->state.jobs = std::clamp(jobs > 0 ? jobs : 6, 1, 6);
         impl_->stall_reason.clear();
         impl_->run_dir.clear();
         impl_->stage_run.clear();
@@ -1797,7 +1801,10 @@ jsonrpc::Json FlowRunner::StartInternal(const std::vector<std::string>& stages, 
     }
 
     if (impl_->thread.joinable()) impl_->thread.join();
-    const int effective_jobs = jobs > 0 ? jobs : 6;
+    // TD 手册 PRJ-8802：multirun 的并发上限是 6，`-jobs` 合法范围 1~6。它是"同时并行跑的
+    // run 数"，不是单 run 内部的线程数（后者由 TD 按 CPU 核数自动开，run.log 里
+    // "TMR-1041 ... N threads"）。我们一次只 launch 一个 run，这个值实际不起作用。
+    const int effective_jobs = std::clamp(jobs > 0 ? jobs : 6, 1, 6);
     impl_->thread = std::thread([this, run_id, normalised, effective_jobs, single_step]() {
         // ⚠⚠ 这个 catch-all 是**强制**的，不是为了"优雅"：
         //   异常一旦逃出 std::thread 的函数体就会 std::terminate()，而 Windows 上

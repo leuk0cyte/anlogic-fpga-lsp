@@ -1419,3 +1419,43 @@ CorpusAlpha 真 VS Code 集成套件：
 
 插件 45/45、`ctest` 64/64；集成套件只剩 3 条历史遗留（completion 标签数 / copy symbol path /
 doctor，与本轮无关）。
+
+### 第三十三轮：`launch_runs -jobs N` 到底是什么 —— 以及 GUI 的默认值
+
+用户问：`-jobs N` 的语义是什么？TD GUI 默认多少？
+
+**TD 手册（`doc/TD_User_Guide_V6.2.pdf` §9.3.14）给的是权威答案**：
+
+| 消息号 | 说明 | 建议 |
+| --- | --- | --- |
+| PRJ-8802 | multirun 最大并发数为 6 | 设置一个 1~6 之间的 jobs 值 |
+| PRJ-8803 | 单步执行时，最大并发数只能为 1 | 设置 jobs 为 1 |
+
+即：`-jobs` 是 **multirun 同时并行跑的 run 数（并发上限）**，合法范围 1~6；
+**单步执行（`-step`）时只能是 1**。它**不是**单个 run 内部的线程数 —— 后者由 TD 自己按
+CPU 核数决定（run.log 里的 `TMR-1041 : Net delay calculation accelerates with 32 threads`、
+`PHY-1001 ... (704.4%)` 都跟 `-jobs` 无关）。
+
+**TD GUI 的默认值**（从 GUI 自己的会话日志实测，不是猜的）：
+
+| GUI 动作 | 日志里的命令 | 默认 jobs |
+| --- | --- | --- |
+| 交互式跑整条/两个 run | `PRJ-1409 : launch_runs syn_1 phy_1 -jobs 6.` | **6** |
+| GUI 单步（Run this step） | `PRJ-1411 : launch_runs syn_1 -step opt_gate.`（不带 `-jobs`） | 等价 **1**（PRJ-8803 要求） |
+| GUI 生成的批处理脚本 `multirun_script.tcl` | `launch_runs { syn_1 phy_1 } -jobs 2` | **2**（模板值） |
+
+**我们这边的三个问题，本轮一起修掉**：
+
+1. 单步模式仍把用户给的 6/8 原样传给 `launch_runs -step`，违反 PRJ-8803（TD 目前容忍，
+   但按手册就是错的）→ 单步固定 `-jobs 1`；
+2. `fpga_flow_run{jobs}` 的 schema 允许 1~64（Python 参考实现也是 64），超出 TD 的 1~6
+   → C++ 与 Python 参考实现都改成 1~6，文案写清楚"并发 run 数，不是线程数"；
+   插件设置 `fpgaLsp.flowJobs` 同步改成 1~6（默认 6 = GUI 默认）；
+3. 顺带修 `fpga_flow_log`：第二十九轮把 TD 会话日志归位到 `<flow 目录>/log/` 之后，
+   它还在只看 flow 目录根 → e2e `mcp_flow_smoke` 的"应该有日志文件"失败。现在
+   `<flow>/log`、`<al>/log`、flow 目录三处都看。
+
+另外把 `flow.jobs` 透出的值改成**实际生效值**（钳到 1~6），不再回显用户请求的 64。
+
+实测：CorpusAlpha `step=read_design,jobs=8` → 日志里 `launch_runs  syn_1  -step read_design -jobs 1`
+→ ok / 2.9 s；`ctest` 64/64、插件 45/45。

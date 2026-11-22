@@ -2,7 +2,7 @@
     "name": "fpga-lsp-anlogic",
     "displayName": "Anlogic FPGA LSP (TangDynasty)",
     "description": "Language support and IDE views for Anlogic TD FPGA projects: ADC pin constraints, SDC, project .al, Verilog index, TD-backed diagnostics, module hierarchy, syn/phy flow control and QoR/timing/area reports.",
-    "version": "0.21.8",
+    "version": "0.21.9",
     "publisher": "fpga-lsp",
     "license": "AGPL-3.0-or-later",
     "engines": {
@@ -171,8 +171,8 @@
                     "type": "number",
                     "default": 6,
                     "minimum": 1,
-                    "maximum": 64,
-                    "description": "Number of parallel jobs passed to launch_runs (TD -jobs). Default 6 matches the TD GUI default."
+                    "maximum": 6,
+                    "description": "TD multirun concurrency: how many runs may run in parallel (TD allows 1-6; >6 reports PRJ-8802). Single-run launches are effectively 1 and single-step runs force 1 (PRJ-8803). This is NOT the thread count inside one run - TD sizes that from the CPU cores itself. Default 6 = the TD GUI default."
                 },
                 "fpgaLsp.logFile": {
                     "type": "string",

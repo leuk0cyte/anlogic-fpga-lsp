@@ -3422,6 +3422,9 @@ Json Bridge::FlowLog(const Json& arguments) {
     };
     if (kind == "td" || kind == "both") {
         append_td_logs(run_dir, "run-dir");
+        // 第二十九轮起，TD 会话结束时自己的日志会被归位到 <flow 目录>/log/
+        //（和 TD GUI 把日志放 <al>/log/ 一样），所以 flow 目录里也要多看一层。
+        append_td_logs(path_join(run_dir, "log"), "run-log-dir");
         append_td_logs(path_join(proj.dir, "log"), "project-log");
     }
     if (kind == "run" || kind == "both") {
