@@ -43,6 +43,7 @@ PATTERNS = (
     re.compile(r"\bremove_all\s*\("),
     re.compile(r"std::filesystem::rename\s*\("),
     re.compile(r"platform::ensure_directory\s*\("),
+    re.compile(r"copy_file\s*\("),
 )
 
 

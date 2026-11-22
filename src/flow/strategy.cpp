@@ -108,9 +108,9 @@ void CopyProjectTree(const std::string& project_dir, const std::string& from,
                 CopyProjectTree(project_dir, it->path().string(), target, ec);
                 if (ec) return;
             } else {
-                std::error_code copy_ec;
-                fs::copy_file(it->path(), fs::path(target),
-                              fs::copy_options::overwrite_existing, copy_ec);
+                (void)platform::writes::Copy(project_dir, it->path().string(), target,
+                                             platform::writes::Options{
+                                                 .caller = "strategy.copy_file"});
             }
         }
         it.increment(ec);

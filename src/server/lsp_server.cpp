@@ -1056,8 +1056,10 @@ HandlerResult LspServer::HandleOutgoingCalls(const Json& params) {
 // =============================================================================
 
 std::optional<std::string> LspServer::LoadText(const std::string& path) {
-    // DocumentStore：已打开 -> 缓冲区内容；否则读盘（UTF-8，非法字节替换）
-    return docs_.GetText(platform::path_to_uri(path));
+    // DocumentStore：按**路径**查（客户端 uri 是 `file:///y%3A/...`，与内部
+    // `path_to_uri()` 的大小写/编码不同，用 uri 直接查表会 miss -> 回落到磁盘 ->
+    // 未保存修改不可见，格式化后语义高亮错位）。未打开时再按 uri 走磁盘缓存。
+    return docs_.GetTextByPath(path);
 }
 
 namespace {

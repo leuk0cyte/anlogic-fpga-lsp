@@ -169,12 +169,16 @@ struct TdSession::Impl {
                     moved = true;
                     break;
                 }
-                // 跨卷（state 目录在 C:）时 rename 会失败，退回复制 + 删除
-                move_ec.clear();
-                std::filesystem::copy_file(from, to,
-                                           std::filesystem::copy_options::overwrite_existing,
-                                           move_ec);
-                if (!move_ec) {
+                // 跨卷（state 目录在 C:）时 rename 会失败，退回复制 + 删除。
+                // 复制走统一写服务（目标 <al>/log/ 是登记过的生成目录）。
+                const std::string project_dir =
+                    fpgalsp::platform::path_dirname(work_dir);
+                const bool copied =
+                    fpgalsp::platform::writes::Copy(
+                        project_dir, from.generic_string(), to.generic_string(),
+                        fpgalsp::platform::writes::Options{.caller = "td.session_log_copy"})
+                        .ok;
+                if (copied) {
                     // fpgalsp-write-exempt: 跨卷退路，删除已复制成功的工程内会话日志
                     std::filesystem::remove(from, move_ec);
                     moved = true;

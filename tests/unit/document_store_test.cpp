@@ -369,4 +369,18 @@ TEST(DocumentStoreJson, Utf16ColumnsFromJsonApplied) {
     EXPECT_EQ(*store.GetText("file:///Y:/a.sv"), std::string("\xE4\xB8\xAD") + "B tail");
 }
 
+// -----------------------------------------------------------------------------
+// 0.26.0：按**路径**取文本（客户端 uri 是 `file:///y%3A/...`，与内部 path_to_uri
+// 的大小写/编码不同；用 uri 查表会 miss -> 回落到磁盘 -> 未保存修改不可见，
+// 表现就是"格式化/编辑后语法高亮错位"）。
+// -----------------------------------------------------------------------------
+TEST(DocumentStore, GetTextByPathFindsBufferForClientStyleUri) {
+    DocumentStore store;
+    const std::string path = "Y:/proj/src/top.v";
+    // 客户端风格：小写盘符 + 百分号编码冒号
+    store.Open("file:///y%3A/proj/src/top.v", "module top;\nendmodule\n", 1, "verilog", path);
+    EXPECT_EQ(store.GetTextByPath(path).value_or(""), "module top;\nendmodule\n");
+    EXPECT_EQ(store.GetTextByPath("y:/proj/src/top.v").value_or(""), "module top;\nendmodule\n");
+    EXPECT_EQ(store.GetTextByPath("Y:\\proj\\src\\top.v").value_or(""), "module top;\nendmodule\n");
+}
 }  // namespace

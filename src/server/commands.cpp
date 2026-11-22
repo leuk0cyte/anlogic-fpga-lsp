@@ -1699,6 +1699,7 @@ HandlerResult LspServer::HandleExecuteCommand(const Json& params) {
             w["dirsCreated"] = writes.dirs_created;
             w["removals"] = writes.removals;
             w["renames"] = writes.renames;
+            w["copies"] = writes.copies;
             w["backups"] = writes.backups;
             Json by_root = Json::object();
             by_root["state"] = writes.by_root[0];

@@ -256,4 +256,32 @@ TEST_F(WriteServiceTest, MemoryBackendKeepsDiskUntouched) {
     EXPECT_EQ(Read(target), "on-disk");
 }
 
+
+TEST_F(WriteServiceTest, CopyAcrossRootsAndIntoRegisteredProjectDirs) {
+    const std::string src = state_ + "/cache/src.txt";
+    ASSERT_TRUE(Write(project_, src, "payload", {.caller = "t"}).ok);
+    const std::string dst = state_ + "/cache/dst.txt";
+    ASSERT_TRUE(fpgalsp::platform::writes::Copy(project_, src, dst, {}).ok);
+    EXPECT_EQ(Read(dst), "payload");
+
+    // 工程 -> 状态（备份语义）
+    fpgalsp::platform::write_file_utf8(project_ + "/chip_debugger/user.cfg", "cfg-data");
+    const std::string backup = state_ + "/probe/user.cfg.bak";
+    ASSERT_TRUE(fpgalsp::platform::writes::Copy(project_,
+                                                project_ + "/chip_debugger/user.cfg", backup, {})
+                    .ok);
+    EXPECT_EQ(Read(backup), "cfg-data");
+
+    // 工程 -> 工程内登记目录（<al>/log/）允许；普通工程目录拒绝
+    fs::create_directories(project_ + "/log");
+    ASSERT_TRUE(fpgalsp::platform::writes::Copy(project_, project_ + "/chip_debugger/user.cfg",
+                                                project_ + "/log/td_x.log", {})
+                    .ok);
+    EXPECT_TRUE(fs::exists(project_ + "/log/td_x.log"));
+    fs::create_directories(project_ + "/whatever");
+    EXPECT_FALSE(fpgalsp::platform::writes::Copy(project_, project_ + "/chip_debugger/user.cfg",
+                                                 project_ + "/whatever/x.log", {})
+                     .ok);
+}
+
 }  // namespace

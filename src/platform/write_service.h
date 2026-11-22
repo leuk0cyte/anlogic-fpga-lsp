@@ -98,6 +98,11 @@ Result Remove(std::string_view project_dir, std::string_view path, bool recursiv
 Result Rename(std::string_view project_dir, std::string_view from, std::string_view to,
               const Options& options = {});
 
+// Copy：源可以是任意 root；目标只允许 state/run/temp，或工程内登记过的生成目录
+// （chip_debugger/、log/）。目标已存在时覆盖（与复制日志/备份的既有语义一致）。
+Result Copy(std::string_view project_dir, std::string_view from, std::string_view to,
+            const Options& options = {});
+
 // -----------------------------------------------------------------------------
 // 写指标（fpgalsp.metrics 用；进程内累计，永不抛）
 // -----------------------------------------------------------------------------
@@ -109,6 +114,7 @@ struct Metrics {
     std::uint64_t dirs_created = 0;
     std::uint64_t removals = 0;
     std::uint64_t renames = 0;
+    std::uint64_t copies = 0;
     std::uint64_t backups = 0;
     std::uint64_t by_root[4] = {0, 0, 0, 0};  // state/project/run/temp
 };
@@ -127,6 +133,7 @@ class Backend {
     virtual bool EnsureDir(const std::string& path) = 0;
     virtual bool Remove(const std::string& path, bool recursive) = 0;
     virtual bool Rename(const std::string& from, const std::string& to) = 0;
+    virtual bool CopyTo(const std::string& from, const std::string& to) = 0;
     virtual bool Exists(const std::string& path) = 0;
 };
 std::unique_ptr<Backend> MakeMemoryBackend();

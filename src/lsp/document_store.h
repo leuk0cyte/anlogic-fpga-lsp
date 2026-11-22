@@ -96,6 +96,12 @@ public:
     // 文件不存在返回 nullopt。
     std::optional<std::string> GetText(std::string_view uri) const;
 
+    // 按**文件系统路径**取当前文本（大小写/分隔符/URI 编码无关）。
+    // 客户端发来的 uri 形如 `file:///y%3A/...`（小写盘符 + 百分号编码），而内部
+    // `path_to_uri()` 产出 `file:///Y:/...`；用 uri 查表会 miss -> 回落到磁盘 ->
+    // 未保存修改不可见（格式化/编辑后语义高亮错位的根因）。
+    std::optional<std::string> GetTextByPath(std::string_view path) const;
+
     // 当前版本号；未打开或没有版本返回 nullopt。
     std::optional<int64_t> GetVersion(std::string_view uri) const;
 

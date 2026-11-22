@@ -244,3 +244,20 @@ const { ok } = writeService.writeProjectFile(root, '.vscode/mcp.json', json, { b
 * **内存 FS + 指标**：见 §3 Phase 4；`unit_write_service` 13 条；`fpgalsp.metrics.writes` 实测返回。
 * **MCP dry-run**：4 个写工具实测 `dry_run:true` 返回预览且 `.al` mtime 不变（CorpusAlpha 真机）。
 * 验证：`ctest` 71/71（release）、插件 58/58、真机 CorpusAlpha 单步 flow 正常、工程目录仍无 `.fpgalsp`。
+
+---
+
+## 9. 0.26.0：Copy 收口 + 一个高亮相关的根因修复
+
+* **`std::filesystem::copy_file` 也统一了**：新增 `writes::Copy`（源任意 root；目标只允许
+  state/run/temp 或工程内登记目录 `chip_debugger/`、`log/`）。迁移 probe 的 4 处位流复制 +
+  1 处 user.cfg 备份、flow_runner 的 user.cfg 备份、strategy 的工程副本、td_session 的跨卷
+  日志复制。门禁 `docs_no_raw_writes` 增加 `copy_file(`。指标新增 `writes.copies`。
+* **语义高亮错位的根因（顺带修掉）**：`DocumentStore` 用 uri 字符串查"打开中的文档"，
+  而客户端 uri 是 `file:///y%3A/...`（小写盘符 + 百分号编码），服务端内部
+  `path_to_uri()` 产出 `file:///Y:/...` —— 查表永远 miss，`LoadText` 回落到**磁盘**，
+  于是"未保存的修改"对语义高亮/格式化不可见；格式化或编辑后 token 仍按旧文本算，
+  颜色错位，切走再切回（重新 didOpen/请求 full）才恢复。
+  修法：`DocumentStore::GetTextByPath()` 按归一化路径查找（大小写/分隔符/编码无关），
+  `LspServer::LoadText` 改用它。单测 `GetTextByPathFindsBufferForClientStyleUri` +
+  真机探针（客户端风格 uri 下 2094 个 token 全部落在标识符上，0 错位）。

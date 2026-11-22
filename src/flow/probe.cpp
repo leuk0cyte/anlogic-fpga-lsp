@@ -1941,10 +1941,10 @@ jsonrpc::Json WriteCompiledCwcFromGate(const project::Project& project,
         const std::string run_bit =
             project.dir + "/" + project.name + "_Runs/phy_1/" + project.name + ".bit";
         if (IsFile(run_bit)) {
-            std::error_code copy_ec;
-            std::filesystem::copy_file(run_bit, CompiledBit(project),
-                                       std::filesystem::copy_options::overwrite_existing, copy_ec);
-            out["bit_copied"] = !copy_ec;
+            out["bit_copied"] = fpgalsp::platform::writes::Copy(
+                                    project.dir, run_bit, CompiledBit(project),
+                                    fpgalsp::platform::writes::Options{.caller = "probe.bit_copy"})
+                                    .ok;
         }
     }
     const CwcSnapshot written = ReadCwc(CompiledCwc(project));
@@ -2100,11 +2100,9 @@ bool WriteUserCfgFromMdn(const project::Project& project, std::string* error) {
         const std::string backup =
             fpgalsp::platform::state_dir(project.dir) + "/probe/user.cfg.bak";
         // 统一写服务：备份目录在状态目录下（kState）；随后 copy_file 的 ec 语义保持不变。
-        (void)fpgalsp::platform::writes::EnsureDir(
-            project.dir, fpgalsp::platform::path_dirname(backup),
+        (void)fpgalsp::platform::writes::Copy(
+            project.dir, user_cfg, backup,
             fpgalsp::platform::writes::Options{.caller = "probe.user_cfg_backup"});
-        std::filesystem::copy_file(user_cfg, backup,
-                                   std::filesystem::copy_options::overwrite_existing, ec);
     }
     if (!fpgalsp::platform::writes::Write(
                 project.dir, user_cfg, text,
@@ -2156,12 +2154,10 @@ jsonrpc::Json WriteCompiledCwcAfterPhy(const project::Project& project) {
         if (!IsFile(run_bit)) return;
         std::error_code copy_ec;
         // 统一写服务：<prj>_Runs/phy_1/cw（kRun）；copy_ec 仍用于下面的 copy_file 结果。
-        (void)fpgalsp::platform::writes::EnsureDir(
-            project.dir, fpgalsp::platform::path_dirname(CompiledBit(project)),
-            fpgalsp::platform::writes::Options{.caller = "probe.bit_dir"});
-        std::filesystem::copy_file(run_bit, CompiledBit(project),
-                                   std::filesystem::copy_options::overwrite_existing, copy_ec);
-        out["bit_copied"] = !copy_ec;
+        out["bit_copied"] = fpgalsp::platform::writes::Copy(
+                                project.dir, run_bit, CompiledBit(project),
+                                fpgalsp::platform::writes::Options{.caller = "probe.bit_copy"})
+                                .ok;
     };
     // 优先用 TD 自己的 `chip_debugger/user.cfg` 当模板：它是 TD 格式的 watcher 配置
     //（总线/时钟/触发都正确），只要把 <logic_eram> 换成当前位流的 ERAM 行就能抓。
@@ -2215,10 +2211,10 @@ jsonrpc::Json WriteCompiledCwcAfterPhy(const project::Project& project) {
         const std::string run_bit =
             project.dir + "/" + project.name + "_Runs/phy_1/" + project.name + ".bit";
         if (IsFile(run_bit)) {
-            std::error_code copy_ec;
-            std::filesystem::copy_file(run_bit, CompiledBit(project),
-                                       std::filesystem::copy_options::overwrite_existing, copy_ec);
-            out["bit_copied"] = !copy_ec;
+            out["bit_copied"] = fpgalsp::platform::writes::Copy(
+                                    project.dir, run_bit, CompiledBit(project),
+                                    fpgalsp::platform::writes::Options{.caller = "probe.bit_copy"})
+                                    .ok;
         }
     }
     const CwcSnapshot written = ReadCwc(CompiledCwc(project));
@@ -2700,12 +2696,10 @@ jsonrpc::Json EnsureCompiledCwc(const project::Project& project,
         if (IsFile(run_bit)) {
             std::error_code copy_ec;
             // 统一写服务：<prj>_Runs/phy_1/cw（kRun）；copy_ec 仍用于下面的 copy_file 结果。
-            (void)fpgalsp::platform::writes::EnsureDir(
-                project.dir, fpgalsp::platform::path_dirname(CompiledBit(project)),
-                fpgalsp::platform::writes::Options{.caller = "probe.bit_dir"});
-            std::filesystem::copy_file(run_bit, CompiledBit(project),
-                                       std::filesystem::copy_options::overwrite_existing, copy_ec);
-            out["bit_copied"] = !copy_ec;
+            out["bit_copied"] = fpgalsp::platform::writes::Copy(
+                                    project.dir, run_bit, CompiledBit(project),
+                                    fpgalsp::platform::writes::Options{.caller = "probe.bit_copy"})
+                                    .ok;
         }
     }
     if (IsFile(CompiledCwc(project))) {

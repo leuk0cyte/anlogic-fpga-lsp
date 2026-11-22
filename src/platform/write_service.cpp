@@ -45,6 +45,7 @@ std::atomic<std::uint64_t> g_bytes_written{0};
 std::atomic<std::uint64_t> g_dirs_created{0};
 std::atomic<std::uint64_t> g_removals{0};
 std::atomic<std::uint64_t> g_renames{0};
+std::atomic<std::uint64_t> g_copies{0};
 std::atomic<std::uint64_t> g_backups{0};
 std::atomic<std::uint64_t> g_by_root[4] = {};
 
@@ -206,6 +207,13 @@ class DiskBackend final : public Backend {
         return false;
 #endif
     }
+    bool CopyTo(const std::string& from, const std::string& to) override {
+        std::error_code ec;
+        std::filesystem::create_directories(std::filesystem::path(DirOf(to)), ec);
+        std::filesystem::copy_file(std::filesystem::path(from), std::filesystem::path(to),
+                                   std::filesystem::copy_options::overwrite_existing, ec);
+        return !ec;
+    }
     bool Exists(const std::string& path) override {
         std::error_code ec;
         return std::filesystem::exists(std::filesystem::path(path), ec);
@@ -270,6 +278,12 @@ class MemoryBackend final : public Backend {
             }
         }
         return moved || true;
+    }
+    bool CopyTo(const std::string& from, const std::string& to) override {
+        const auto it = files_.find(from);
+        if (it == files_.end()) return false;
+        files_[to] = it->second;
+        return true;
     }
     bool Exists(const std::string& path) override {
         return files_.count(path) != 0 || dirs_.count(path) != 0;
@@ -805,6 +819,69 @@ Result Rename(std::string_view project_dir, std::string_view from, std::string_v
     }
 }
 
+Result Copy(std::string_view project_dir, std::string_view from, std::string_view to,
+            const Options& options) {
+    Result result;
+    try {
+        Root from_root = Root::kState;
+        Root to_root = Root::kState;
+        std::string error;
+        if (!Classify(project_dir, from, &from_root, &error)) {
+            g_denied.fetch_add(1);
+            result.ok = false;
+            result.error = error;
+            return result;
+        }
+        // 目标：非工程 root 一律允许；工程内只允许登记过的生成目录（chip_debugger/、log/）。
+        bool project_dest_ok = false;
+        if (!Classify(project_dir, to, &to_root, &error)) {
+            if (!project_dir.empty() &&
+                path_is_within_canonical(normalize_path(to), normalize_path(project_dir))) {
+                const std::string rel = RelativeWithin(normalize_path(to),
+                                                       normalize_path(project_dir));
+                const std::string lower = LowerCopy(rel);
+                project_dest_ok = lower.rfind("chip_debugger/", 0) == 0 ||
+                                  lower.rfind("log/", 0) == 0;
+                to_root = Root::kProject;
+            }
+            if (!project_dest_ok) {
+                g_denied.fetch_add(1);
+                result.ok = false;
+                result.error = error;
+                return result;
+            }
+        } else if (to_root == Root::kProject) {
+            project_dest_ok = true;
+        }
+        std::string from_norm = normalize_path(from);
+        std::string to_norm = normalize_path(to);
+        if (!is_absolute_path(from_norm)) from_norm = path_join(normalize_path(project_dir), from_norm);
+        if (!is_absolute_path(to_norm)) to_norm = path_join(normalize_path(project_dir), to_norm);
+        result.root = to_root;
+        result.path = to_norm;
+        if (options.dry_run) {
+            result.ok = true;
+            return result;
+        }
+        if (!BackendRef().CopyTo(from_norm, to_norm)) {
+            result.ok = false;
+            result.error = "copy failed: " + from_norm + " -> " + to_norm;
+            return result;
+        }
+        g_copies.fetch_add(1);
+        result.ok = true;
+        return result;
+    } catch (const std::exception& exc) {
+        result.ok = false;
+        result.error = std::string("copy failed: ") + exc.what();
+        return result;
+    } catch (...) {
+        result.ok = false;
+        result.error = "copy failed: unknown exception";
+        return result;
+    }
+}
+
 Metrics SnapshotMetrics() {
     Metrics metrics;
     metrics.writes_ok = g_writes_ok.load();
@@ -814,6 +891,7 @@ Metrics SnapshotMetrics() {
     metrics.dirs_created = g_dirs_created.load();
     metrics.removals = g_removals.load();
     metrics.renames = g_renames.load();
+    metrics.copies = g_copies.load();
     metrics.backups = g_backups.load();
     for (int i = 0; i < 4; ++i) metrics.by_root[i] = g_by_root[i].load();
     return metrics;
@@ -822,7 +900,7 @@ Metrics SnapshotMetrics() {
 void ResetMetricsForTest() {
     for (std::atomic<std::uint64_t>* counter :
          {&g_writes_ok, &g_writes_failed, &g_denied, &g_bytes_written, &g_dirs_created,
-          &g_removals, &g_renames, &g_backups}) {
+          &g_removals, &g_renames, &g_backups, &g_copies}) {
         counter->store(0);
     }
     for (std::atomic<std::uint64_t>& counter : g_by_root) counter.store(0);

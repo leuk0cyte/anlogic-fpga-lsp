@@ -1,4 +1,4 @@
-# 交付状态（当前：2026-11-22，扩展 0.25.0）
+# 交付状态（当前：2026-11-22，扩展 0.26.0）
 
 ## 构建与测试
 
@@ -6,7 +6,7 @@
 | --- | --- |
 | **全新目录干净构建** | configure 29 s → build 3.3 min → **844 个目标全部成功**（Release + 全量 LTO）；无 LTO 的 `windows-msvc-dev` 全新目录 **56 s**（2026-11-20 实测；增量构建见 build.md） |
 | **`ctest` 全量** | **71/71 通过**（其中 `unit` 46、`e2e` 5、`td` 5，其余为 `formatgate`/`lintgate`/`gate`/`generator`/`mcp`/`docs`/`parity` 门禁）；preset 默认 **8 路并行**，实测约 **75 s**（串行 92–104 s） |
-| **原生产物** | `build/bin/fpgalsp-native.exe`（0.25.0，**7,035,392 B**，全量 LTCG；SHA256 `2425CDE2…475417`） |
+| **原生产物** | `build/bin/fpgalsp-native.exe`（0.26.0，**7043584 B**，全量 LTCG；SHA256 `CB484B7D…891E86`） |
 | **单元测试规模** | 46 个 gtest target |
 
 > 构建/测试的并行度分析（为什么 192 线程帮不上忙、时间精确花在哪、日常该用哪个 preset）见
@@ -1658,3 +1658,33 @@ Phase 4（内存 FS、写指标、MCP dry-run）。
 **验证**：`ctest --preset windows-msvc-release` **71/71**（75 s）、插件 **58/58**；
 真机 CorpusAlpha 单步 `read_design` 正常（3 s、下游 pending）、`didSave` 后工程目录仍无 `.fpgalsp`、
 `fpgalsp.metrics.writes` 可用；`unit_write_service` 13 条全绿（新增目录/删除/改名/指标/内存后端）。
+
+---
+
+## 第三十八轮（2026-11-22，0.26.0）：语法高亮错位根因 + copy_file 收口
+
+**用户反馈**：右键格式化后语法高亮颜色错乱；编辑（保存与否都一样）也会偶发；切到别的文件再切回恢复。
+用户判断"插件没及时感知未保存的修改"——方向对，但根因在**服务端**。
+
+**根因（实测复现）**：`DocumentStore` 用 **uri 字符串**作为打开文档的键，而客户端发来的 uri
+是 `file:///y%3A/CorpusAlpha/src/top.v`（小写盘符 + 百分号编码冒号），服务端内部
+`platform::path_to_uri()` 产出 `file:///%WORKSPACE%/CorpusAlpha/src/top.v`。两者字符串不相等 →
+`LspServer::LoadText` 查表永远 miss → 回落到**磁盘**。于是：
+* 未保存的缓冲区对语义高亮（以及格式化基线）不可见；
+* 格式化应用后 buffer 变了、磁盘没变 → token 仍按旧文本算 → 颜色错位；
+* 切走再切回触发重新 didOpen/全量请求（此时缓冲区文本被重新发送）才恢复。
+复现脚本 `build/_audit/rt/semantic_probe.py`（客户端风格 uri）：修复前 2094 个 token 有
+**1000 个落在空白/行尾**（错位）；修复后 **0**。
+
+**修法**：新增 `DocumentStore::GetTextByPath()`（按归一化路径查找：大小写/分隔符/URI 编码无关），
+`LspServer::LoadText` 改用它；未打开时仍走磁盘缓存。单测
+`DocumentStore.GetTextByPathFindsBufferForClientStyleUri`。
+
+**顺带把 copy_file 也收进写服务**（0.25.0 唯一已知缺口）：新增 `writes::Copy`
+（源任意 root；目标只允许 state/run/temp 或工程内登记目录 `chip_debugger/`、`log/`），
+迁移 8 处（probe 4 处位流复制 + 1 处 user.cfg 备份、flow_runner user.cfg 备份、
+strategy 工程副本、td_session 跨卷日志复制）；门禁新增 `copy_file(`；指标新增 `writes.copies`。
+
+**验证**：`ctest --preset windows-msvc-release` **71/71**（75 s）、插件 **58/58**、真实 VS Code
+集成套件 PASS；`unit_write_service` 14 条（+Copy）；真机 CorpusAlpha：客户端风格 uri 下 token 0 错位、
+`.fpgalsp` 仍不出现。

@@ -840,16 +840,12 @@ struct FlowRunner::Impl {
                 // mdn 不一致，TD 会按旧配置建 watcher，抓取时判 stale 直接拒绝。
                 const std::string user_cfg = owner->project_.dir + "/chip_debugger/user.cfg";
                 if (IsFile(user_cfg)) {
-                    std::error_code ec;
                     const std::string backup = fpgalsp::platform::state_dir(owner->project_.dir) +
                                                "/probe/user.cfg.stale.bak";
-                    // 统一写服务：备份目录在状态目录下（kState）；随后 copy_file 的 ec 语义不变。
-                    (void)platform::writes::EnsureDir(
-                        owner->project_.dir, fpgalsp::platform::path_dirname(backup),
-                        platform::writes::Options{.caller = "flow.user_cfg_stale_backup"});
-                    std::filesystem::copy_file(user_cfg, backup,
-                                               std::filesystem::copy_options::overwrite_existing,
-                                               ec);
+                    // 统一写服务：Copy（源=工程内生成文件，目标=状态目录 kState；自动建目录）。
+                    (void)platform::writes::Copy(
+                        owner->project_.dir, user_cfg, backup,
+                        platform::writes::Options{.caller = "flow.user_cfg_backup"});
                     // 统一删除：chip_debugger/*.cfg 是登记过的生成文件，writes::Remove 允许；
                     // 用户 .al/.adc/.sdc 仍一律拒绝。
                     (void)platform::writes::Remove(
