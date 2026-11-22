@@ -951,6 +951,13 @@ std::vector<BidEram> ParseBidErams(const std::string& text, const std::string& i
         const std::size_t sub = block.find("<sub_bid_info>");
         const std::string sub_block =
             sub == std::string::npos ? block : block.substr(sub);
+        // ⚠ `<working_mode>` 里也有一套 depth/width（RAM 的工作模式），与 sub_bid 的
+        //   depth/width（采集段）不是一回事：1024x48 的采集里 9 位宽那颗 RAM 的
+        //   sub depth=1024 而 working_mode depth=2048。以前两个都取 sub_bid 的第一个
+        //   <depth>/<width>，于是 working_mode_depth 永远等于采样深度。
+        const std::size_t wm = block.find("<working_mode>");
+        const std::string wm_block = wm == std::string::npos ? std::string() : block.substr(wm);
+        const std::string& wm_source = wm_block.empty() ? sub_block : wm_block;
         eram.width = TagText(sub_block, "width");
         eram.depth = TagText(sub_block, "depth");
         eram.address_offset = TagText(sub_block, "address_offset");
@@ -959,11 +966,11 @@ std::vector<BidEram> ParseBidErams(const std::string& text, const std::string& i
         eram.section_size = TagText(sub_block, "section_size");
         eram.width_per_section = TagText(sub_block, "width_per_section");
         eram.bytes_in_per_section = TagText(sub_block, "bytes_in_per_section");
-        eram.address_step = TagText(sub_block, "address_step");
-        eram.wm_depth = TagText(sub_block, "depth");
-        eram.wm_width = TagText(sub_block, "width");
-        eram.wm_num_byte = TagText(sub_block, "num_byte");
-        eram.wm_ecc = TagText(sub_block, "ecc");
+        eram.address_step = TagText(wm_source, "address_step");
+        eram.wm_depth = TagText(wm_source, "depth");
+        eram.wm_width = TagText(wm_source, "width");
+        eram.wm_num_byte = TagText(wm_source, "num_byte");
+        eram.wm_ecc = TagText(wm_source, "ecc");
         out.push_back(std::move(eram));
     }
     std::sort(out.begin(), out.end(), [](const BidEram& a, const BidEram& b) {
@@ -1534,6 +1541,12 @@ std::string BuildCwcFromConfig(const project::Project& project, const MdnConfig&
     out += "\t\t<logic_eram name=\"" + inst + "/wrapper_cwc_top/U_cwc_ram\" width=\"" +
            std::to_string(enabled_total) + "\" depth=\"" + std::to_string(depth) + "\">\n";
     for (const BidEram& eram : erams) {
+        // ⚠ `working_mode_depth` 是**这颗 RAM 自己的工作模式深度**（bid 里
+        //   `<working_mode><depth>`），不是采样深度：1024x48 的采集里，20 位宽那颗是
+        //   1024 深，9 位宽那颗被拼成 2048 深。写成采样深度时 TD **照样接受**配置
+        //   （Chipwatcher code 与 GUI 一致），但 run_hw_cw 永远等不到触发，30 s 后会话退
+        //   出（2026-11-22 corpus_delta 实测：GUI 的 cwc 是 2048/1024/1024，我们写成 1024/1024/1024）。
+        const std::string wm_depth = eram.wm_depth.empty() ? std::to_string(depth) : eram.wm_depth;
         out += "\t\t\t<phy_eram name=\"" + eram.name + "\" wid=\"" + eram.wid + "\" rid=\"" +
                eram.rid + "\" model_type=\"" + eram.model_type + "\" width_a=\"" + eram.width_a +
                "\" width_b=\"" + eram.width_b + "\" debuggable=\"" +
@@ -1544,7 +1557,7 @@ std::string BuildCwcFromConfig(const project::Project& project, const MdnConfig&
                "\" address_step=\"" + eram.address_step + "\" num_section=\"" + eram.num_section +
                "\" section_size=\"" + eram.section_size + "\" width_per_section=\"" +
                eram.width_per_section + "\" bytes_in_per_section=\"" +
-               eram.bytes_in_per_section + "\" working_mode_depth=\"" + std::to_string(depth) +
+               eram.bytes_in_per_section + "\" working_mode_depth=\"" + wm_depth +
                "\" working_mode_width=\"" + (eram.width_a.empty() ? eram.wm_width : eram.width_a) +
                "\" working_mode_ecc=\"" +
                (eram.wm_ecc == "0" ? "disable" : "enable") + "\" working_mode_num_byte=\"" +

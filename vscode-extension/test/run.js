@@ -1335,11 +1335,69 @@ test('flow controller: 10 s fallback poll only, and it stops when the flow finis
     await new Promise((resolve) => setTimeout(resolve, 30));
     ok(controller.poller, 'fallback timer armed while running');
     eq(controller.poller._idleTimeout, FALLBACK_POLL_MS, 'timer period');
-    eq(polled.filter((method) => method === 'fpgaLsp/flowStatus').length, 0, 'no immediate flowStatus poll');
+    // 起跑后立刻查一次状态（服务端此刻已清掉本 run 的步骤标记，树要马上显示 not run），
+    // 之后仍然只靠 10 s 兜底 + flowEvent 推送，不做 2 s 轮询。
+    eq(polled.filter((method) => method === 'fpgaLsp/flowStatus').length, 1, 'exactly one immediate flowStatus call');
     controller.onFlowEvent({ runId: 'r9', type: 'done', ok: true, stage: 'syn' });
     await running;
     eq(controller.poller, undefined, 'poll stopped after done');
+    eq(polled.filter((method) => method === 'fpgaLsp/flowStatus').length, 1, 'no polling after the immediate one');
     controller.dispose();
+});
+
+test('flow controller: right-click Run / Reset run goes through the controller', async () => {
+    // 回归：六步右键曾经在 extension.js 里直接 rpc.execute(runFlowStep)，
+    // 于是没有输出通道、没有状态栏、没有进度、结束后也不刷树 ——
+    // 表现就是"点了 reset and run，FPGA Flow 没有任何输出，下游步骤还是已完成"。
+    const calls = [];
+    const notices = [];
+    const controller = new FlowController({
+        rpc: {
+            request: async () => ({ ok: true, flow: { running: true, stage: 'syn', steps: [] } }),
+            execute: async (tool, args) => {
+                calls.push([tool, args]);
+                return { ok: true, async: true, runId: 'r-step', stages: ['syn'], step: args && args[0] && args[0].step };
+            },
+        },
+        getProjectInfo: async () => ({ al: 'Y:/p/demo.al' }),
+    });
+    const window = require('./mock-vscode');
+    const originalInfo = window.window.showInformationMessage;
+    const originalWarning = window.window.showWarningMessage;
+    window.window.showInformationMessage = (text) => { notices.push(String(text)); };
+    window.window.showWarningMessage = (text) => { notices.push(String(text)); };
+    try {
+        const item = { flowStep: 'read_design', flowStepName: 'Read Design' };
+        const reset = controller.runStep(item, true);
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        eq(calls.length, 1, 'one server call');
+        eq(calls[0][0], 'fpgalsp.runFlowStep', 'uses runFlowStep');
+        eq(calls[0][1][0].step, 'read_design', 'step passed through');
+        eq(calls[0][1][0].force, true, 'Reset run sends force:true');
+        eq(Boolean(controller.active && controller.active.step === 'read_design'), true, 'controller tracks the step run');
+        ok(controller.output.lines.some((line) => /reset run Read Design/.test(line)),
+            'FPGA Flow output shows the step run (was silent before)');
+        // 结束（服务端 done）后要收尾 + 刷树
+        controller.onFlowEvent({ runId: 'r-step', type: 'done', ok: true, stage: 'syn' });
+        await reset;
+        eq(controller.active, undefined, 'active cleared after done');
+        ok(controller.statusBar.text.includes('done') || controller.statusBar.text.includes('idle'),
+            `status bar settled: ${controller.statusBar.text}`);
+
+        // Run（非 force）遇到 skipped：提示"已完成，用 Reset run"，不再等 flow
+        controller.rpc.execute = async (tool, args) => {
+            calls.push([tool, args]);
+            return { ok: true, skipped: true, step: 'opt_gate', reason: 'step already completed' };
+        };
+        const skipped = await controller.runStep({ flowStep: 'opt_gate', flowStepName: 'Optimize Gate' }, false);
+        eq(skipped.skipped, true, 'skipped result returned');
+        ok(notices.some((text) => /already completed/.test(text)), 'user told to use Reset run');
+        eq(controller.active, undefined, 'nothing tracked for a skipped run');
+    } finally {
+        window.window.showInformationMessage = originalInfo;
+        window.window.showWarningMessage = originalWarning;
+        controller.dispose();
+    }
 });
 
 // ------------------------------------------------------------------ run

@@ -197,15 +197,70 @@ class FlowController {
      */
     async run(stages) {
         const wanted = Array.isArray(stages) && stages.length ? stages.map(String) : ['all'];
+        const jobs = readFlowJobs();
+        const label = flowLabel(wanted);
+        return this._startFlow({
+            label,
+            stages: wanted,
+            tool: COMMANDS.runFlow,
+            callArgs: [{ stages: wanted, jobs }],
+            header: `▶ run ${wanted.join('+')} (jobs=${jobs})`,
+            busyHint: 'An FPGA flow is already running on the server.',
+        });
+    }
+
+    /**
+     * 右键 Flow 六步：Run（已完成则跳过）/ Reset run（= GUI 的 reset run：先清掉该 run 的
+     * 全部步骤标记，再把整条 run 重跑）。
+     *
+     * ⚠ 必须走这里，不要在 extension.js 里直接 `rpc.execute(COMMANDS.runFlowStep)`：
+     *   那样只会拿到一个 runId —— 没有输出通道、没有状态栏、没有进度通知、没有日志轮询，
+     *   结束后也不会刷新 flow 树。表现就是"点了 reset and run，FPGA Flow 没有任何输出，
+     *   下游步骤还停在已完成状态"（2026-11-22 实测反馈）。
+     *
+     * @param {any} argument 树节点（`flowStep` / `flowStepName`）
+     * @param {boolean} force true = Reset run
+     */
+    async runStep(argument, force) {
+        const item = Array.isArray(argument) ? argument[0] : argument;
+        const step = String((item && item.flowStep) || (typeof item === 'string' ? item : '') || '');
+        if (!step) {
+            vscode.window.showInformationMessage('FPGA: right-click one of the six flow steps.');
+            return { ok: false, error: 'no-step' };
+        }
+        const name = (item && item.flowStepName) || step;
+        const mode = force ? 'reset run' : 'run step';
+        const jobs = readFlowJobs();
+        const runName = ['read_design', 'opt_rtl', 'opt_gate'].includes(step) ? 'syn_1' : 'phy_1';
+        return this._startFlow({
+            label: name,
+            stages: [step],
+            step,
+            tool: COMMANDS.runFlowStep,
+            callArgs: [{ step, force: force === true, jobs }],
+            header: `▶ ${mode} ${name} (${step}${force ? ', force' : ''}, jobs=${jobs})`,
+            busyHint: 'An FPGA flow is already running on the server.',
+            // Reset run 的语义是"整条 run 重跑"（GUI 的 reset run 也一样）：
+            // 先清掉本 run 的全部步骤标记，再逐步跑完 —— 所以下游两步会先变 not run，
+            // 完成后再变回 done。把这句话写进输出通道，省得以为"reset 没生效"。
+            note: force
+                ? `${name}: ${runName} is reset as a whole - the step marks are cleared first and light up again as each step finishes.`
+                : undefined,
+        });
+    }
+
+    async _startFlow(config) {
+        const { label, stages, tool, callArgs, header, busyHint, step, note } = config || {};
         if (this.active) {
             vscode.window.showInformationMessage('An FPGA flow is already running.');
             return { ok: false, error: 'busy' };
         }
-        const jobs = readFlowJobs();
-        const label = flowLabel(wanted);
         this.lastMessage = '';
         this._cancelRequested = false;
         this._clearFlowDiagnostics();
+        // 新一轮从 seq 0 开始：不重置的话上一轮的大 seq 会把新日志全过滤掉（"没有新输出"）。
+        this._logSeq = undefined;
+        this._recentLog = [];
         try {
             this._projectInfo = this.getProjectInfo ? await this.getProjectInfo() : undefined;
         } catch (_) {
@@ -213,7 +268,8 @@ class FlowController {
         }
 
         this.output.show(true);
-        this.output.appendLine(`[${nowText()}] ▶ run ${wanted.join('+')} (jobs=${jobs})`);
+        this.output.appendLine(`[${nowText()}] ${header}`);
+        if (note) this.output.appendLine(`[${nowText()}] ${note}`);
         this.setStatusRunning(`${label} starting…`);
 
         return vscode.window.withProgress(
@@ -234,10 +290,10 @@ class FlowController {
 
                 let result;
                 try {
-                    result = await this.rpc.execute(COMMANDS.runFlow, [{ stages: wanted, jobs }]);
+                    result = await this.rpc.execute(tool, callArgs);
                 } catch (err) {
                     const why = err && err.message ? err.message : String(err);
-                    this.output.appendLine(`[${nowText()}] ✖ runFlow failed: ${why}`);
+                    this.output.appendLine(`[${nowText()}] ✖ ${tool} failed: ${why}`);
                     this.setStatusIdle();
                     vscode.window.showErrorMessage(`FPGA flow failed to start: ${why}`);
                     return { ok: false, error: why };
@@ -245,21 +301,33 @@ class FlowController {
 
                 if (!result || !result.ok) {
                     const why = result && result.error ? String(result.error) : 'unknown error';
-                    this.output.appendLine(`[${nowText()}] ✖ runFlow rejected: ${why}`);
+                    this.output.appendLine(`[${nowText()}] ✖ ${tool} rejected: ${why}`);
                     this.setStatusIdle();
                     if (cancelRequested) {
                         vscode.window.showInformationMessage('FPGA flow cancelled.');
                     } else if (why === 'busy') {
-                        vscode.window.showWarningMessage('An FPGA flow is already running on the server.');
+                        vscode.window.showWarningMessage(busyHint || 'An FPGA flow is already running on the server.');
                     } else {
                         vscode.window.showWarningMessage(`FPGA flow did not start: ${why}`);
                     }
                     return result || { ok: false, error: why };
                 }
 
+                // 单步的 Run（非 force）：这一步已完成 -> 服务端直接跳过，没有 runId。
+                if (result.skipped) {
+                    this.output.appendLine(`[${nowText()}] ⏭ ${label} already completed - skipped`);
+                    this.setStatusIdle();
+                    vscode.window.showInformationMessage(
+                        `FPGA: ${label} already completed (use Reset run to force a rerun).`
+                    );
+                    await this.refreshAll();
+                    return result;
+                }
+
                 this.active = {
                     runId: result.runId,
-                    stages: wanted,
+                    stages: result.stages || stages,
+                    step,
                     label,
                     startedAt: Date.now(),
                     sawRunning: false,
@@ -269,6 +337,9 @@ class FlowController {
                     this._doneResolve = resolve;
                 });
                 this.startPolling();
+                // 立刻刷一次：此刻服务端已经清掉本 run 的步骤标记，
+                // 树应马上显示"未完成"，而不是等第一次轮询。
+                this.pollOnce().catch(() => undefined);
                 if (cancelRequested) this.requestCancel();
                 return done;
             }

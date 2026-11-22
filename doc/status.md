@@ -1166,3 +1166,91 @@ config_chipwatcher                                -> TD 在 "start command" 之�
   （工程里只留 capture 的 CSV，那是采集产物本身）。
 
 `ctest` 64/64、插件 44/44。
+
+### 第二十八轮：纯插件路径端到端打通（无 GUI）+ 六步右键的界面反馈
+
+**A. 用户反馈：插件 Flow 里对 Read Design 右键 "Reset and run"，下游两步仍显示已完成、
+FPGA Flow 没有任何输出**
+
+根因在插件侧：`extension.js` 直接 `rpc.execute(COMMANDS.runFlowStep)`，绕过了
+`FlowController` —— 没有输出通道、没有状态栏、没有进度通知、没有日志轮询，
+结束后也不刷树。服务端其实**跑对了**（实测 CorpusAlpha 11:32:55 点击后 syn 三步在
+11:32:56–11:33:10 全部重跑完，`.end.f` 时间戳全变），只是界面完全没反馈。
+
+修法：新增 `FlowController.runStep(argument, force)`，和 `run()` 共用新的
+`_startFlow({label, tool, callArgs, header, note})`：
+- 输出通道里写 `▶ reset run Read Design (read_design, force, jobs=8)` 与
+  "整条 run 会重跑、步骤标记先清后亮"的说明；
+- 起跑后**立刻 poll 一次**（此刻标记已清，树马上显示 not run）；
+- 10 s 兜底轮询 + `fpgaLsp/flowEvent` 推送照旧，结束后 `refreshAll()`；
+- `skipped:true`（Run 已完成步）只提示"已完成，用 Reset run 强制"；
+- 顺手修 `_logSeq` 跨 run 不重置 —— 上一轮的大 seq 会把新一轮日志全过滤掉，
+  这也是"没有新输出"的一个隐蔽来源。
+
+**B. 纯插件路径验证（corpus_delta，PH1A100，全程没有 TD GUI）**
+
+清掉 `phy_1/cw`、步骤标记、`chip_debugger/user.cfg` 后，用 `fpga_flow_run{stages:["all"]}`
+从零跑（= 插件里 Run Full Flow 的同一条路径）：
+
+```
+  2.2s [syn] syn_1: 生成 user.cfg 失败：generated config has no <phy_eram> rows
+                (no phy bid yet) - leaving the watcher to TD (auto-created from user.mdn)
+ 12.8s Read Design done / 56.7s Optimize RTL done / 139.8s Optimize Gate done
+452.6s [phy] phy_1: wrote phy_1/cw/compiled.cwc (depth 1024, 48 nets)
+452.9s flow complete: Setup WNS 292ps, Hold WNS 20ps, bit 5231 KB
+```
+
+即：**没有 user.cfg 模板时，TD 按 user.mdn 自己建 watcher，phy 结束后由后端写 sidecar**
+（`WriteCompiledCwcAfterPhy`）。但第一次 capture 失败：`Error: InternalError: TD session is closed`
+（TD 在 `wait_on_hw_cw` 等不到触发后静默退出）。
+
+**C. 那个失败的根因：`working_mode_depth` 不是采样深度**
+
+对比 GUI 写的 cwc 和我们生成的 cwc，`<phy_eram>` 只有一处不同：
+
+| | mem_syn_11 (20 位) | mem_syn_32 (20 位) | mem_syn_53 (9 位) |
+| --- | --- | --- | --- |
+| TD/GUI 写的 | 1024 | 1024 | **2048** |
+| 我们写的 | 1024 | 1024 | 1024 |
+
+`working_mode_depth` 是**这颗 RAM 自己的工作模式深度**（bid 的
+`<working_mode><depth>`），不是采样深度：1024x48 的采集里，9 位宽那颗 RAM 被拼成
+2048 深。`ParseBidErams` 以前 `wm_depth = TagText(sub_block, "depth")` 取到的是
+sub_bid 的第一个 `<depth>`（=1024），于是永远等于采样深度。
+
+后果很隐蔽：TD **照样接受**配置（`config_chipwatcher` 成功、`Chipwatcher code`
+与 GUI 完全一致 = `0101100101110111`），`run_hw_cw -trigger_now` 也正常启动，
+但 `wait_on_hw_cw` 永远等不到触发，30 s 后 TD 静默退出 —— 就是历史记录里反复出现的
+"cwc 几何对了但抓不到"。
+
+修：`ParseBidErams` 显式解析 `<working_mode>` 子块（depth/width/num_byte/ecc/address_step
+都从这里取），生成器用 `eram.wm_depth`（空则退回采样深度）。
+
+修完同一条路径：
+
+```
+capture{confirm:true, generate_cwc:true} -> ok, 1024 采样, trigger_index 127,
+                                            downloaded:false, cwc_generated:true
+（sidecar 里 mem_syn_53 working_mode_depth=2048，与 GUI 一致）
+```
+
+**D. 顺带**：`fpga_probe_capture` 在 TD 静默退出时不再抛 `InternalError`，改为返回
+`{ok:false, stage:"session", reason:"the TD session died during the capture (...) - the
+bitstream in the device most likely does not match this ChipWatcher configuration: retry
+with download:true confirm:true, or re-run stages:[\"all\"]"}`。
+
+`ctest` 64/64、插件 45/45（新增 runStep 回归）。
+
+**E. 端到端复跑（同一晚上第二次，确认不是偶然）**
+
+再清一次 `phy_1` 后重跑 `stages:["all"]`（452 s，12:02→12:09），这次 flow 在 phy 结束时
+自己写出的 sidecar 已经是修好的几何（`mem_syn_53 working_mode_depth="2048"`），
+随后**按插件的调用**（`probe_capture{confirm:true}`，不开 generate_cwc、不手动下载）：
+
+```
+-> ok, 1024 采样, trigger_index 127, downloaded:false
+   csv: phy_1/cw/capture_20261122_121042.csv
+```
+
+即：插件的 "Run Full Flow" → "Capture" 两步，全程不需要 TD GUI、不需要 `generate_cwc`
+开关，也不需要手动 download。

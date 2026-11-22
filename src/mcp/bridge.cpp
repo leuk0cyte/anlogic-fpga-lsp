@@ -4121,7 +4121,25 @@ Json Bridge::ProbeCaptureTool(const Json& arguments) {
     if (capture_options.download == "false") {
         // 显式只读：不需要确认
     }
-    return probe::Capture(*choice, proj, capture_options);
+    try {
+        return probe::Capture(*choice, proj, capture_options);
+    } catch (const td::TdError& e) {
+        // TD 在 wait_on_hw_cw 等不到触发时会**静默退出**，随后任何一条命令都抛
+        // "TD session is closed"。这不是"工具坏了"，最常见的原因是器件里跑的位流
+        // 不是这份 cwc 对应的那份（重建过 phy、或板子上还是上一版），把话说清楚，
+        // 别让调用方去猜 InternalError。
+        Json out = Json::object();
+        out["ok"] = false;
+        out["stage"] = "session";
+        out["reason"] =
+            std::string("the TD session died during the capture (") + e.what() +
+            ") - the bitstream in the device most likely does not match this ChipWatcher "
+            "configuration (rebuilt phy?): retry with download:true confirm:true to load "
+            "phy_1/cw/compiled.bit, or re-run stages:[\"all\"] so the sidecar is written for "
+            "the new bitstream";
+        out["error"] = e.what();
+        return out;
+    }
 }
 // -----------------------------------------------------------------------------
 //  C 批：补全 / 实例化模板

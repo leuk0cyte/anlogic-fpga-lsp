@@ -1094,29 +1094,11 @@ function activate(context) {
     register(VSCodeCommands.runAll, () => flowController.run(['all']));
     register(VSCodeCommands.cancelFlow, () => flowController.cancel());
     register(VSCodeCommands.refreshFlow, () => flowProvider.refresh());
-    // Flow 六步右键：Run（已完成则跳过）/ Reset run（强制重跑该步及下游）
-    const runFlowStep = async (argument, force) => {
-        const item = Array.isArray(argument) ? argument[0] : argument;
-        const step = String((item && item.flowStep) || (typeof item === 'string' ? item : '') || '');
-        if (!step) {
-            vscode.window.showInformationMessage('FPGA: right-click one of the six flow steps.');
-            return;
-        }
-        const label = (item && item.flowStepName) || step;
-        const result = await runWithProgress(
-            force ? `FPGA: resetting ${label}...` : `FPGA: running ${label}...`,
-            COMMANDS.runFlowStep,
-            [{ step, force: force === true, jobs: readFlowJobs() }],
-        ).catch((err) => ({ ok: false, error: String((err && err.message) || err) }));
-        if (result && result.ok === true && result.skipped === true) {
-            vscode.window.showInformationMessage(`FPGA: ${label} already completed (use Reset run to force).`);
-        } else if (!result || result.ok !== true) {
-            openErrors(`Flow step ${label} failed - ${(result && (result.reason || result.error)) || 'unknown error'}`);
-        }
-        flowProvider.refresh();
-    };
-    register(VSCodeCommands.flowStepRun, (argument) => runFlowStep(argument, false));
-    register(VSCodeCommands.flowStepReset, (argument) => runFlowStep(argument, true));
+    // Flow 六步右键：Run（已完成则跳过）/ Reset run（清该 run 的步骤标记后整条 run 重跑）
+    // 走 FlowController：输出通道、状态栏、进度通知、日志轮询、结束后的树刷新都在那里；
+    // 直接 rpc.execute 只会拿到 runId，界面上什么都看不到（"没有新输出"的根因）。
+    register(VSCodeCommands.flowStepRun, (argument) => flowController.runStep(argument, false));
+    register(VSCodeCommands.flowStepReset, (argument) => flowController.runStep(argument, true));
     register(VSCodeCommands.showFlowLog, () => flowController.showLog());
 
     // Reports

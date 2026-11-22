@@ -856,6 +856,11 @@ TEST(ProbeCwc, GateSidecarKeepsBusListAndSplicesFreshEramRows) {
                "</width_per_section>\n";
         bid += "\t\t\t<bytes_in_per_section>1</bytes_in_per_section>\n";
         bid += "\t\t\t<working_mode>\n\t\t\t\t<address_step>1</address_step>\n";
+        // 实测（corpus_delta 2026-11-22）：9 位宽那颗 RAM 的**工作模式深度是 2048**，20 位宽的是 1024。
+        // 生成 sidecar 时必须照抄这个值：写成采样深度（1024）时 TD 照样接受配置
+        // （Chipwatcher code 与 GUI 一致），但 run_hw_cw 永远等不到触发。
+        bid += "\t\t\t\t<depth>" + std::to_string(widths[i] == 9 ? 2048 : 1024) +
+               "</depth>\n\t\t\t\t<mode_type>2</mode_type>\n";
         bid += "\t\t\t\t<depth>1024</depth>\n\t\t\t\t<mode_type>2</mode_type>\n";
         bid += "\t\t\t\t<width>20</width>\n\t\t\t\t<num_byte>2</num_byte>\n";
         bid += "\t\t\t\t<ecc>0</ecc>\n\t\t\t</working_mode>\n\t\t</sub_bid_info>\n\t</INST_" +
@@ -917,6 +922,10 @@ TEST(ProbeCwc, GateSidecarKeepsBusListAndSplicesFreshEramRows) {
     EXPECT_NE(written.find("data_offset=\"40\""), std::string::npos);
     EXPECT_NE(written.find("section_size=\"49\""), std::string::npos);
     EXPECT_NE(written.find("mem_syn_53"), std::string::npos);
+    // working_mode_depth 是这颗 RAM 自己的工作模式深度，不是采样深度（回归 2026-11-22：
+    // 写成采样深度时 TD 接受配置但 wait_on_hw_cw 永远等不到触发）。
+    EXPECT_NE(written.find("working_mode_depth=\"2048\""), std::string::npos);
+    EXPECT_NE(written.find("working_mode_depth=\"1024\""), std::string::npos);
     EXPECT_EQ(written.find("</logic_eram>\t</instance>"), std::string::npos)
         << "拼接后必须保留换行结构";
 }
