@@ -1646,15 +1646,22 @@ Json Bridge::WorkspaceSymbolsTool(const Json& arguments) {
     // 建 JSON），并且只把 [offset, offset+limit) 这一段转成 MCP 形状。
     // 契约不变：顺序、字段、以及 `total`/`nextOffset` 的**触发条件**都与全量版本一致
     // （`total` 仍是命中总数而不是本页条数，所以分页语义不会被压成"没有下一页"）。
-    const std::vector<hdl::WorkspaceSymbol> matches = index.SearchSymbols(query);
-    const std::size_t total = matches.size();
+    // P2-B② + 第三轮：`limit` / `offset` **真正**下推到索引层 ——
+    // `SearchSymbols(query, offset, limit, &total)` 只物化窗口内的符号，
+    // 窗口外的命中只计数（`total` 仍是命中总数，分页语义不变）。
+    // 之前这里仍是全量 `SearchSymbols(query)` 再在 bridge 里切窗口：
+    // query="e" 时 2000+ 个 struct（每个带 4 个 string）都要搬一遍。
+    std::size_t total = 0;
+    const std::vector<hdl::WorkspaceSymbol> matches = index.SearchSymbols(
+        query, static_cast<std::size_t>(offset),
+        limit > 0 ? static_cast<std::size_t>(limit) : 0, &total);
 
     Json symbols = Json::array();
     int count = 0;
     // ⚠ 不能写 `if (count++ >= limit) break;`：那会在 break 时也自增，
     // nextOffset 会多 1（分页错位一位）。先判断再自增。
-    for (std::size_t i = static_cast<std::size_t>(offset); i < total && count < limit; ++i) {
-        const hdl::WorkspaceSymbol& symbol = matches[i];
+    for (const hdl::WorkspaceSymbol& symbol : matches) {
+        (void)count;
         // 位置仍然经 features 的 location 形状（uri + 0-based range）交给 LocationJson：
         // uri 编解码走同一条实现，保证 file/relative/range 与老路径逐字节一致。
         Json start = Json::object();

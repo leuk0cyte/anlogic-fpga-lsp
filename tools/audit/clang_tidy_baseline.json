@@ -1,6 +1,6 @@
 {
  "schema": 1,
- "generated": "2026-11-23T00:56:40+0800",
+ "generated": "2026-11-23T01:53:52+0800",
  "tool": "LLVM 23.1.5",
  "config": ".clang-tidy",
  "config_sha1": "d86d7a7e8828850aa915ed1dde75ffc07892a838",
@@ -638,7 +638,7 @@
   },
   {
    "file": "src/hdl/hdl_index.h",
-   "line": 430,
+   "line": 455,
    "col": 8,
    "check": "bugprone-exception-escape",
    "sev": "warning",
@@ -710,7 +710,7 @@
   },
   {
    "file": "src/mcp/bridge.cpp",
-   "line": 3099,
+   "line": 3106,
    "col": 23,
    "check": "modernize-avoid-c-arrays",
    "sev": "warning",
@@ -718,7 +718,7 @@
   },
   {
    "file": "src/mcp/bridge.cpp",
-   "line": 4123,
+   "line": 4130,
    "col": 11,
    "check": "bugprone-empty-catch",
    "sev": "warning",
@@ -726,7 +726,7 @@
   },
   {
    "file": "src/mcp/bridge.cpp",
-   "line": 4708,
+   "line": 4715,
    "col": 19,
    "check": "modernize-avoid-c-arrays",
    "sev": "warning",
@@ -734,7 +734,7 @@
   },
   {
    "file": "src/mcp/bridge.cpp",
-   "line": 4745,
+   "line": 4752,
    "col": 19,
    "check": "modernize-avoid-c-arrays",
    "sev": "warning",
@@ -974,7 +974,7 @@
   },
   {
    "file": "src/semantics/semantics.h",
-   "line": 134,
+   "line": 138,
    "col": 8,
    "check": "bugprone-exception-escape",
    "sev": "warning",
@@ -1022,7 +1022,7 @@
   },
   {
    "file": "src/server/features.cpp",
-   "line": 693,
+   "line": 699,
    "col": 22,
    "check": "bugprone-use-after-move",
    "sev": "warning",

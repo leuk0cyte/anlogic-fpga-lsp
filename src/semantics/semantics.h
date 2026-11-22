@@ -102,9 +102,13 @@ std::vector<SemToken> SemanticTokens(const hdl::HdlIndex* index, std::string_vie
 //     （本文件的 modules/ports/signals/params/instances 位置与名字 + 全局模块/端口名），
 //     只有索引**语义内容**变了才失效。
 //   * 文本不变 + 索引内容不变 -> 直接返回上次数组（零重算）。
-//   * 文本变了（索引内容不变）-> 字节级公共前缀/后缀定出变化行；只有锚点条件是
-//     "干净行首"、区域重扫仍以代码状态收尾时才增量，否则全量。
-//   * 索引内容变了 -> 全量（Hdl 候选与重分类都可能变）。
+//   * 文本变了 -> 用**字节级**公共前缀/后缀定出变化行；只有当变化行两侧的锚点都
+//     落在"干净行首"（不在块注释/字符串里、上一行不以 '\' 或 '/' 结尾）且区域
+//     重新扫描后仍以代码状态收尾时，才做增量；否则**全量重算**（正确性优先）。
+//   * **行数变化也走增量**：未变行的 token 行号整体平移 ±delta；索引侧（module/
+//     port/signal/param/instance 的 `SymbolAt` 位置）按同一 delta 逐条校验
+//     （RecordsMatchUnderShift）—— 平移映射不成立（声明增删、改名、变化区内位移）
+//     才回退全量。
 //   `index_generation` 只用于诊断/统计，不参与命中判定。
 //
 //  线程安全：内部互斥 + 不可变快照（shared_ptr），可在多 worker 上并发调用。

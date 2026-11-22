@@ -17,6 +17,7 @@
 #include "hdl/hdl_index.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -808,6 +809,135 @@ TEST(HdlIndexQuery, SearchSymbolsFiltersByName) {
     // 大小写不敏感
     EXPECT_EQ(project.index.SearchSymbols("CLK").size(), 1u);
     EXPECT_EQ(project.index.SearchSymbols("no_such_symbol_xyz").size(), 0u);
+}
+
+// P2-A：匹配是**子串**（不是前缀）—— 分页索引若按前缀二分会静默漏掉这些名字，
+// 所以这条用例既是语义钉子，也是"为什么不做前缀二分"的回归护栏。
+TEST(HdlIndexQuery, SearchSymbolsMatchesInfixNotJustPrefix) {
+    SampleProject project;
+    const auto lk = project.index.SearchSymbols("lk");  // "clk" 的中缀
+    ASSERT_EQ(lk.size(), 1u);
+    EXPECT_EQ(lk[0].name, "clk");
+    EXPECT_EQ(lk[0].container, "top");
+
+    const auto hild = project.index.SearchSymbols("hild");  // "child" 的中缀
+    ASSERT_EQ(hild.size(), 1u);
+    EXPECT_EQ(hild[0].name, "child");
+    EXPECT_EQ(hild[0].kind, 2);
+
+    // 大小写不敏感对中缀同样成立（ToLower 只折叠 ASCII，与旧实现一致）
+    ASSERT_EQ(project.index.SearchSymbols("LK").size(), 1u);
+
+    // query 为空 = 全部（顺序即全序：文件顺序 → 模块 → 模块/端口/信号/参数）
+    const auto all = project.index.SearchSymbols("");
+    ASSERT_GE(all.size(), 6u);
+    EXPECT_EQ(all[0].name, "child");
+    EXPECT_EQ(all[0].kind, 2);
+    bool has_param = false;
+    for (const fpgalsp::hdl::WorkspaceSymbol& symbol : all) {
+        if (symbol.kind == 14 && symbol.name == "W") has_param = true;
+    }
+    EXPECT_TRUE(has_param) << "参数必须留在 workspace symbol 里（kind 14）";
+}
+
+// P2-A：分页窗口必须与全量结果**逐字段**一致（拼接无重不漏、顺序不变、total 是命中总数）
+TEST(HdlIndexQuery, SearchSymbolsWindowMatchesFullList) {
+    SampleProject project;
+    const std::vector<std::string> queries = {"", "o", "lk", "q", "no_such_symbol_xyz"};
+
+    for (const std::string& query : queries) {
+        const auto full = project.index.SearchSymbols(query);
+
+        std::size_t total = 0;
+        const auto whole = project.index.SearchSymbols(query, 0, 0, &total);
+        EXPECT_EQ(total, full.size()) << "query=" << query;
+        ASSERT_EQ(whole.size(), full.size()) << "query=" << query;
+
+        // 窗口切成 2 条一页，拼起来 == 全量
+        std::vector<fpgalsp::hdl::WorkspaceSymbol> stitched;
+        for (std::size_t offset = 0; offset < full.size() + 2; offset += 2) {
+            std::size_t page_total = 12345;
+            const auto page = project.index.SearchSymbols(query, offset, 2, &page_total);
+            EXPECT_EQ(page_total, full.size()) << "query=" << query << " offset=" << offset;
+            EXPECT_LE(page.size(), 2u) << "query=" << query << " offset=" << offset;
+            stitched.insert(stitched.end(), page.begin(), page.end());
+        }
+        ASSERT_EQ(stitched.size(), full.size()) << "query=" << query;
+        for (std::size_t i = 0; i < full.size(); ++i) {
+            EXPECT_EQ(stitched[i].name, full[i].name) << "query=" << query << " i=" << i;
+            EXPECT_EQ(stitched[i].container, full[i].container) << "query=" << query;
+            EXPECT_EQ(stitched[i].detail, full[i].detail) << "query=" << query;
+            EXPECT_EQ(stitched[i].kind, full[i].kind) << "query=" << query;
+            EXPECT_EQ(stitched[i].path, full[i].path) << "query=" << query;
+            EXPECT_EQ(stitched[i].span.line, full[i].span.line) << "query=" << query;
+            EXPECT_EQ(stitched[i].span.start_character, full[i].span.start_character);
+            EXPECT_EQ(stitched[i].span.end_character, full[i].span.end_character);
+        }
+
+        // offset 越界：空窗口，但 total 仍是命中总数（MCP 的 nextOffset 依赖它）
+        std::size_t beyond = 0;
+        EXPECT_TRUE(project.index.SearchSymbols(query, full.size() + 10, 5, &beyond).empty());
+        EXPECT_EQ(beyond, full.size()) << "query=" << query;
+
+        // limit 恰好等于剩余条数：取到结尾
+        if (!full.empty()) {
+            const auto tail = project.index.SearchSymbols(query, full.size() - 1, 1);
+            ASSERT_EQ(tail.size(), 1u);
+            EXPECT_EQ(tail[0].name, full.back().name);
+        }
+    }
+}
+
+// P2-A in-process 预算（打印实测值，不设阈值：CI 机器差异大；最终数字由 lead 构建后测）。
+// 200 个模块 × (1 模块 + 9 端口 + 6 信号) ≈ 3200 个符号，与 audit/perf2 的 200 文件
+// 工程同量级；query="w" 命中 1200 个（够大，能看出"只物化窗口"的差别）。
+TEST(HdlIndexQuery, SearchSymbolsWindowIsCheap) {
+    HdlIndex index;
+    for (int i = 0; i < 200; ++i) {
+        std::string text = "module m" + std::to_string(i) + " (input clk, ";
+        for (int p = 0; p < 7; ++p) text += "input a" + std::to_string(p) + ", ";
+        text += "output q);\n";
+        for (int s = 0; s < 6; ++s) text += "  wire w" + std::to_string(s) + ";\n";
+        text += "  assign w0 = clk;\nendmodule\n";
+        const std::string path = "Y:/bench/m" + std::to_string(i) + ".v";
+        index.AddFile(Parse(text, path.c_str()));
+    }
+    const auto full = index.SearchSymbols("w");
+    ASSERT_GT(full.size(), 200u);
+
+    // 旧路径的等价成本 = 全量物化；新路径 = 只物化窗口。
+    const auto measure = [&index](const std::string& query, std::size_t offset,
+                                  std::size_t limit) {
+        constexpr int kIters = 50;
+        double best = 1e9;
+        for (int i = 0; i < kIters; ++i) {
+            const auto start = std::chrono::steady_clock::now();
+            const auto window = index.SearchSymbols(query, offset, limit);
+            const double ms = std::chrono::duration<double, std::milli>(
+                                  std::chrono::steady_clock::now() - start)
+                                  .count();
+            best = std::min(best, ms);
+            EXPECT_FALSE(window.empty());
+        }
+        return best;
+    };
+
+    std::size_t total = 0;
+    const auto window = index.SearchSymbols("w", 0, 50, &total);
+    EXPECT_EQ(window.size(), 50u);
+    EXPECT_EQ(total, full.size());
+    const auto window200 = index.SearchSymbols("w", 0, 200, &total);
+    EXPECT_EQ(window200.size(), 200u);
+
+    const double full_ms = measure("w", 0, 0);
+    const double w50_ms = measure("w", 0, 50);
+    const double w200_ms = measure("w", 0, 200);
+    const auto empty_all = index.SearchSymbols("");
+    EXPECT_GT(empty_all.size(), 200u);
+    std::printf(
+        "[bench] SearchSymbols(%zu symbols): full=%.3f ms  (0,50)=%.3f ms  (0,200)=%.3f ms\n"
+        "        budget: limit=50 <= 1.5 ms, limit=200 <= 4 ms\n",
+        full.size(), full_ms, w50_ms, w200_ms);
 }
 
 TEST(HdlIndexQuery, IterateInstances) {

@@ -33,6 +33,7 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <thread>
@@ -547,6 +548,202 @@ TEST(IndexServiceTest, WatcherActiveSkipsStampValidation) {
     const IndexService::Snapshot after = service.Get();
     ASSERT_NE(after, nullptr);
     EXPECT_EQ(service.stats().generation, generation);
+}
+
+// -----------------------------------------------------------------------------
+// P2-A：didSave(无缓冲区文本) / didClose 只校验**被保存/关闭的那一个文件**
+// -----------------------------------------------------------------------------
+//  可观测证据有两条（都不依赖耗时）：
+//    1. 计数 loader：Get() 期间**有没有去读**别的文件（内容哈希缓存不影响计数）；
+//    2. 改掉的 B 文件内容在快照里是否可见（旧行为会在下一次 Get() 的全量 stamp
+//       校验里顺手把 B 重读进来）。
+//  TTL 设成 1 小时，确保只有 force_validation 才可能触发全量校验 —— 这样"没被
+//  重扫"不可能是 TTL 没到期的偶然结果，反过来 control 用例证明机制本身有效。
+
+TEST(IndexServiceTest, DidSaveValidatesOnlyThatFile) {
+    TinyProject tiny("single_file_validate");
+
+    std::mutex reads_mutex;
+    std::map<std::string, int> reads;  // path_key -> loader 被调用次数
+    const auto counting_loader = [&](const std::string& path) -> std::optional<std::string> {
+        {
+            std::scoped_lock lock(reads_mutex);
+            ++reads[fpgalsp::platform::path_key(fpgalsp::platform::normalize_path(path))];
+        }
+        return DiskLoader(path);
+    };
+    const auto reads_of = [&](int index) {
+        std::scoped_lock lock(reads_mutex);
+        const std::string key = fpgalsp::platform::path_key(
+            fpgalsp::platform::normalize_path(tiny.File(index)));
+        const auto it = reads.find(key);
+        return it == reads.end() ? 0 : it->second;
+    };
+    const auto reset_reads = [&]() {
+        std::scoped_lock lock(reads_mutex);
+        reads.clear();
+    };
+
+    IndexService service(counting_loader);
+    service.SetProject(tiny.Parse());
+    service.SetWatcherActive(false);
+    ASSERT_NE(service.Get(), nullptr);  // 冷构建 + 建立 stamp 基线
+    service.SetStampValidationInterval(std::chrono::hours(1));
+    ASSERT_NE(service.Get(), nullptr);  // 消费掉 SetStampValidationInterval 置的 force
+    reset_reads();
+
+    const IndexService::Snapshot before = service.Get();
+    ASSERT_NE(before, nullptr);
+    const std::uint64_t generation = service.stats().generation;
+
+    // 保存 A（磁盘先写新内容，编辑器随后发 didSave —— 这里用 nullopt = "无缓冲区文本"），
+    // 同时外部把 B 也改了（模拟另一个进程/TD 改了别的文件）。
+    const fs::path a_path(tiny.File(0));
+    WriteText(a_path, VerilogModule("m1", "marker_saved"));
+    {
+        std::error_code ec;
+        fs::last_write_time(a_path, fs::file_time_type::clock::now() + std::chrono::seconds(5),
+                            ec);
+        ASSERT_FALSE(ec);
+    }
+    const fs::path b_path(tiny.File(1));
+    WriteText(b_path, VerilogModule("m2", "marker_other"));
+    {
+        std::error_code ec;
+        fs::last_write_time(b_path, fs::file_time_type::clock::now() + std::chrono::seconds(5),
+                            ec);
+        ASSERT_FALSE(ec);
+    }
+
+    service.OnFileChanged(tiny.File(0), std::nullopt);
+    EXPECT_EQ(reads_of(0), 1) << "didSave 必须重载被保存的那个文件";
+    EXPECT_EQ(reads_of(1), 0) << "didSave 不得去读别的文件";
+
+    const IndexService::Snapshot after = service.Get();
+    ASSERT_NE(after, nullptr);
+    reset_reads();
+
+    // A 的改动可见
+    const fpgalsp::hdl::Module* m1 = after->ModuleByName("m1");
+    ASSERT_NE(m1, nullptr);
+    bool has_saved = false;
+    for (const fpgalsp::hdl::Port& port : m1->ports) {
+        if (port.name == "marker_saved") has_saved = true;
+    }
+    EXPECT_TRUE(has_saved) << "保存后的内容必须可见";
+
+    // B 没有被重扫：loader 没被调用、内容仍是旧的、ParsedFile 指针没变
+    EXPECT_EQ(reads_of(1), 0) << "Get() 不得因为 didSave 而对其它文件做 stamp 校验";
+    const fpgalsp::hdl::Module* m2 = after->ModuleByName("m2");
+    ASSERT_NE(m2, nullptr);
+    for (const fpgalsp::hdl::Port& port : m2->ports) {
+        EXPECT_NE(port.name, "marker_other") << "别的文件的外部改动不该在这次 Get() 里被捡到";
+    }
+    EXPECT_EQ(after->File(tiny.File(1)), before->File(tiny.File(1)));
+    EXPECT_EQ(service.stats().generation, generation + 1) << "只该多装一个快照";
+
+    // ---- control：把 TTL 归零（= 允许全量校验）后，B 的改动**必须**能被捡到 ----
+    // 没有这一段，上面"B 没变"就可能是因为机制根本坏了。
+    service.SetStampValidationInterval(std::chrono::milliseconds(0));
+    const IndexService::Snapshot validated = service.Get();
+    ASSERT_NE(validated, nullptr);
+    EXPECT_EQ(reads_of(1), 1) << "全量校验路径必须能重读外部改动过的文件";
+    const fpgalsp::hdl::Module* m2_after = validated->ModuleByName("m2");
+    ASSERT_NE(m2_after, nullptr);
+    bool has_other = false;
+    for (const fpgalsp::hdl::Port& port : m2_after->ports) {
+        if (port.name == "marker_other") has_other = true;
+    }
+    EXPECT_TRUE(has_other) << "全量校验必须捡到别的文件的外部改动";
+}
+
+TEST(IndexServiceTest, DidCloseRevertsBufferToDiskWithoutRescanningOthers) {
+    TinyProject tiny("didclose_single");
+
+    std::mutex reads_mutex;
+    std::map<std::string, int> reads;
+    const auto counting_loader = [&](const std::string& path) -> std::optional<std::string> {
+        {
+            std::scoped_lock lock(reads_mutex);
+            ++reads[fpgalsp::platform::path_key(fpgalsp::platform::normalize_path(path))];
+        }
+        return DiskLoader(path);
+    };
+    const auto reads_of = [&](int index) {
+        std::scoped_lock lock(reads_mutex);
+        const std::string key = fpgalsp::platform::path_key(
+            fpgalsp::platform::normalize_path(tiny.File(index)));
+        const auto it = reads.find(key);
+        return it == reads.end() ? 0 : it->second;
+    };
+
+    IndexService service(counting_loader);
+    service.SetProject(tiny.Parse());
+    service.SetWatcherActive(false);
+    ASSERT_NE(service.Get(), nullptr);
+    service.SetStampValidationInterval(std::chrono::hours(1));
+    ASSERT_NE(service.Get(), nullptr);
+
+    // 未保存的缓冲区改动：索引里是 marker_buffer，磁盘上还是旧内容
+    service.OnFileChanged(tiny.File(0), VerilogModule("m1", "marker_buffer"));
+    ASSERT_NE(service.Get(), nullptr);
+    {
+        std::scoped_lock lock(reads_mutex);
+        reads.clear();
+    }
+
+    // didClose = 丢掉缓冲区、回落到磁盘（mtime 从头到尾没变，所以**不能**用 stamp 短路）
+    service.OnFileChanged(tiny.File(0), std::nullopt);
+    const IndexService::Snapshot after = service.Get();
+    ASSERT_NE(after, nullptr);
+
+    EXPECT_EQ(reads_of(0), 1) << "didClose 必须无条件回落到磁盘";
+    EXPECT_EQ(reads_of(1), 0) << "didClose 不得顺手扫别的文件";
+    EXPECT_EQ(reads_of(2), 0) << "didClose 不得顺手扫别的文件";
+
+    const fpgalsp::hdl::Module* m1 = after->ModuleByName("m1");
+    ASSERT_NE(m1, nullptr);
+    for (const fpgalsp::hdl::Port& port : m1->ports) {
+        EXPECT_NE(port.name, "marker_buffer") << "关闭后必须丢弃未保存的缓冲区内容";
+    }
+    EXPECT_EQ(after->ModuleByName("m2")->ports.size(), 1u) << "别的文件不能被改动";
+}
+
+// watcher 事件必须**保留全量校验语义**（外部改动可能涉及任意文件，watcher 也可能
+// 只说"有变化"而不给具体路径）—— 这是 didSave/didClose 收敛到单文件后唯一的安全网。
+TEST(IndexServiceTest, WatcherEventStillValidatesWholeProject) {
+    TinyProject tiny("watcher_full");
+    IndexService service(DiskLoader);
+    service.SetProject(tiny.Parse());
+    service.SetWatcherActive(false);
+    ASSERT_NE(service.Get(), nullptr);
+    service.SetStampValidationInterval(std::chrono::hours(1));
+    ASSERT_NE(service.Get(), nullptr);
+    const std::uint64_t generation = service.stats().generation;
+
+    // 外部改了 B，但 watcher 事件没带具体路径（changed/deleted 都是空 = "有变化"）
+    const fs::path target(tiny.File(1));
+    WriteText(target, VerilogModule("m2", "marker_watch"));
+    {
+        std::error_code ec;
+        fs::last_write_time(target, fs::file_time_type::clock::now() + std::chrono::seconds(5),
+                            ec);
+        ASSERT_FALSE(ec);
+    }
+    service.OnWatchedFiles({}, {});
+
+    const IndexService::Snapshot after = service.Get();
+    ASSERT_NE(after, nullptr);
+    EXPECT_EQ(service.stats().generation, generation + 1) << "watcher 事件后的 Get 必须做全量校验";
+    EXPECT_EQ(service.stats().file_updates, 1u);
+
+    const fpgalsp::hdl::Module* m2 = after->ModuleByName("m2");
+    ASSERT_NE(m2, nullptr);
+    bool has_watch = false;
+    for (const fpgalsp::hdl::Port& port : m2->ports) {
+        if (port.name == "marker_watch") has_watch = true;
+    }
+    EXPECT_TRUE(has_watch) << "watcher 事件必须能捡到任意文件的外部改动";
 }
 
 // -----------------------------------------------------------------------------

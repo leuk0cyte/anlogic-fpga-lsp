@@ -97,7 +97,9 @@ public:
 
     // didChange（或 didSave）之后的单文件更新。
     //   text.has_value() -> 用这份文本（未保存缓冲区）解析并安装；
-    //   text == nullopt  -> 从磁盘重读；读不到就从索引里移除（等价于删除）。
+    //   text == nullopt  -> **磁盘内容优先**（didClose，以及没带 text 的 didSave）：
+    //                       只重载这**一个**文件（见 ValidateOneLocked），
+    //                       不再把全工程 stamp 校验压到下一次 Get()。
     // 不在工程 HDL 文件集合里的路径直接忽略（不改变快照）。
     void OnFileChanged(const std::string& path, std::optional<std::string> text);
 
@@ -140,8 +142,12 @@ public:
     // R3（F2）：watcher 缺失时 stamp 校验的最小间隔。
     //   0 ms  = 每次 Get() 都校验（旧行为）；
     //   >0 ms = 同一间隔内复用上一次校验结果（外部改动最多晚这么久可见）。
-    // didSave / didClose / didChangeWatchedFiles / InvalidateAll 会强制下一次 Get() 校验，
+    // didClose / didChangeWatchedFiles / InvalidateAll 会强制下一次 Get() 校验，
     // 不受 TTL 影响。默认值见 DefaultStampValidationInterval()。
+    // P2-A：**didSave 不再**置 force（以前 `OnFileChanged(path, nullopt)` 一律置位，
+    // 于是保存/关闭后第一个请求要对整个工程重做 stamp 校验：实测 +1~3 ms、偶发 22 ms）。
+    // 现在 nullopt 只重载那一个文件；"别的进程改了别的文件"仍然由 watcher 全量校验
+    // （OnWatchedFiles）或 TTL 窗口兜底 —— 与 R3 已有的最终一致语义相同。
     void SetStampValidationInterval(std::chrono::milliseconds interval);
     std::chrono::milliseconds stamp_validation_interval() const;
 
@@ -198,6 +204,9 @@ private:
     Snapshot EnsureFreshLocked() const;   // dirty -> 全量；无 watcher -> stamp 校验（TTL 门控）
     void RebuildAllLocked() const;
     void ValidateStampsLocked() const;
+    // P2-A：只校验/重载**这一个** expected 文件（didSave/didClose 走这里）。
+    // 与 ValidateStampsLocked 的关键差别：绝不遍历 state_.expected，也不读别的文件。
+    void ValidateOneLocked(const State::ExpectedFile& file) const;
     void RefreshStampsLocked() const;     // 只记录基线，不做增量更新
     void InstallLocked(std::shared_ptr<const hdl::HdlIndex> next) const;
     void SetExpectedLocked(std::vector<std::string> files);
@@ -209,8 +218,10 @@ private:
 
     // P-C1：把"本次变化的文件 → 受影响模块"记进 state_.last_changes。
     // before_modules = 变化前这些文件定义的模块名（用来判定模块增删 = 拓扑变化）。
+    // const：state_ 是 mutable 的，ValidateOneLocked / ValidateStampsLocked 这些
+    // "读路径里的懒重建"也要能写摘要。
     void RecordChangesLocked(const std::vector<std::string>& paths,
-                             const std::vector<std::string>& before_modules);
+                             const std::vector<std::string>& before_modules) const;
 
     bool IsExpected(std::string_view key) const;
     void RequestValidationLocked() const;  // = force_validation = true（下一次 Get 立刻校验）

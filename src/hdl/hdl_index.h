@@ -359,6 +359,31 @@ public:
     [[nodiscard]] std::vector<DocSymbol> DocumentSymbols(std::string_view path) const;
     [[nodiscard]] std::vector<WorkspaceSymbol> SearchSymbols(std::string_view query) const;
 
+    // workspace/symbol 的**分页**检索（P2-A）。
+    //   窗口作用在"与 SearchSymbols(query) 完全相同的全序结果"上：取
+    //   [offset, offset+limit)，limit == 0 表示"到结尾"（与旧行为等价：offset=0/limit=0
+    //   逐字节等于 SearchSymbols(query)）。
+    //   total 非空时写回**命中总数**（不是窗口长度）—— MCP 的 total/nextOffset 要用它。
+    //   匹配语义不变：大小写不敏感**子串**（不是前缀；见 features.h 的注释与
+    //   unit.hdl_index 的 "lk" 用例），输出顺序 = 文件顺序 → 模块 → (模块, 端口, 信号, 参数)。
+    //
+    //   为什么不是"排序 + 前缀二分"（任务书原设想）：匹配是**子串**，前缀二分会让
+    //   `"lk"`（命中 clk）/`"ounter"` 这类中缀查询静默漏符号，破坏"逐字节不变"；
+    //   能精确支持子串二分的结构是"全部后缀排序"，其后缀数 ≈ Σ 名字长度（200 文件
+    //   工程上万条），构建要毫秒级，而每次编辑都会让快照缓存失效 —— 比重扫一遍名字贵。
+    //   所以这里做的是"**不分配**的匹配 + **只物化窗口**"：
+    //     * 旧实现每个符号都 `ToLower(name)`（一次堆分配）+ 命中后立刻构造
+    //       WorkspaceSymbol（4 个 std::string），成本 ≈ 全量物化；
+    //     * 现在查询期零分配（大小写不敏感子串在原名上原地比较），窗口外的命中
+    //       只计数不构造 —— limit=50 时物化量从 O(全部命中) 降到 50。
+    //   预算口径（任务书）：limit=50 ≤ 1.5 ms、limit=200 ≤ 4 ms；
+    //   `unit.hdl_index` 的 SearchSymbolsWindowIsCheap 会打印 in-process 实测，
+    //   最终端到端数字由 lead 构建后测（本文件不写没量过的数字）。
+    [[nodiscard]] std::vector<WorkspaceSymbol> SearchSymbols(std::string_view query,
+                                                             std::size_t offset,
+                                                             std::size_t limit,
+                                                             std::size_t* total = nullptr) const;
+
     // 引用搜索（对应 server.py on_textDocument_references 的语义，net 上更精确）：
     // 先看光标处 token 的名字，再在已索引文件的 token 里找同名标识符。
     // 用 token 而不是正则，所以注释/字符串里的同名文本天然不会命中。

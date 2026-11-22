@@ -854,6 +854,18 @@ std::vector<SemToken> SemanticTokens(const hdl::HdlIndex* index, std::string_vie
 // =============================================================================
 namespace {
 
+// 索引内容指纹的载体（定义见下方 IndexSignature；行号可平移时逐条比较）
+struct IndexRecord {
+    int line = -1;  // -1 = 不含行号（全局模块/端口名记录）
+    int character = 0;
+    std::string payload;
+};
+
+struct IndexSignatureData {
+    std::string flat;                  // 含行号的逐字段拼接：完全相等可跳过逐条比较
+    std::vector<IndexRecord> records;  // 行号可平移时逐条比较
+};
+
 // 缓存条目（不可变快照；shared_ptr 在缓存与调用方之间共享）
 struct CacheEntry {
     std::string path;
@@ -861,7 +873,7 @@ struct CacheEntry {
     std::uint64_t generation = 0;
     // 索引**内容**指纹（逐字段精确比较，无哈希碰撞）。generation 每次 didChange 都会
     // +1（IndexService 重装快照），不能作为缓存键；这个指纹只变于"索引真的变了"。
-    std::string index_sig;
+    IndexSignatureData index_sig;
     std::shared_ptr<const std::string> text;
     std::vector<std::size_t> line_starts;
     std::vector<int> line_states;                    // 每行开始扫描时的掩码状态
@@ -902,15 +914,17 @@ std::size_t LineAtOrAfter(const std::vector<std::size_t>& starts, std::size_t of
 }
 
 // -----------------------------------------------------------------------------
-//  索引内容指纹
+//  索引内容指纹（**行号平移感知**）
 // -----------------------------------------------------------------------------
 // 语义 token 对索引的依赖只有两处：
 //   * HdlSideRange 的 module/port/instance 候选（位置 + 名字）；
 //   * VeribleSideRange 的标识符重分类（HdlIndex::SymbolAt 的 kind）。
 // SymbolAt 的 kind 判定完全由这些字段决定（见 hdl_index.cpp:2202-2283）：
 // 本文件的 modules/ports/signals/params/instances 位置与名字，加上全局模块名与
-// 它们的端口名（ModuleByName / conn_port_pos 的解析目标）。这里把它们**逐字段**
-// 序列化成一段字符串做精确比较 —— 不用哈希，所以不存在碰撞导致的错误复用。
+// 它们的端口名（ModuleByName / conn_port_pos 的解析目标）。
+//
+// 每条记录都带行号：这样"整行插入/删除"（行号整体 ±delta）可以逐条按映射比较，
+// 而不是一有行号变化就整篇作废。不用哈希 —— 精确比较，不存在碰撞导致的错误复用。
 void AppendInt(std::string* out, std::int64_t value) {
     out->append(reinterpret_cast<const char*>(&value), sizeof(value));
 }
@@ -918,68 +932,102 @@ void AppendText(std::string* out, std::string_view text) {
     AppendInt(out, static_cast<std::int64_t>(text.size()));
     out->append(text.data(), text.size());
 }
-void AppendSpan(std::string* out, int line, int character) {
-    AppendInt(out, line);
-    AppendInt(out, character);
+
+void PushRecord(IndexSignatureData* signature, int line, int character, std::string payload) {
+    AppendInt(&signature->flat, line);
+    AppendInt(&signature->flat, character);
+    AppendText(&signature->flat, payload);
+    signature->records.push_back(
+        IndexRecord{.line=line, .character=character, .payload=std::move(payload)});
 }
 
-std::string IndexSignature(const hdl::HdlIndex* index, std::string_view path) {
-    std::string out;
-    if (index == nullptr) return out;
+IndexSignatureData IndexSignature(const hdl::HdlIndex* index, std::string_view path) {
+    IndexSignatureData signature;
+    if (index == nullptr) return signature;
     const hdl::ParsedFile* file = index->File(path);
     if (file != nullptr) {
-        out.reserve(8192);
+        signature.flat.reserve(8192);
         for (const hdl::ModuleInfo& info : file->modules) {
-            AppendText(&out, info.module.name);
-            AppendSpan(&out, info.module.line, info.module.character);
+            PushRecord(&signature, info.module.line, info.module.character, info.module.name);
             for (const hdl::Port& port : info.module.ports) {
-                AppendText(&out, port.name);
-                AppendText(&out, port.direction);
-                AppendText(&out, port.net);
-                AppendSpan(&out, port.line, port.character);
+                std::string payload = "p";
+                payload += port.name;
+                payload += '\x1f';
+                payload += port.direction;
+                payload += '\x1f';
+                payload += port.net;
+                PushRecord(&signature, port.line, port.character, std::move(payload));
             }
             for (const hdl::Signal& signal : info.signals) {
-                AppendText(&out, signal.name);
-                AppendSpan(&out, signal.line, signal.character);
+                PushRecord(&signature, signal.line, signal.character, "s" + signal.name);
             }
             for (const hdl::Param& param : info.params) {
-                AppendText(&out, param.name);
-                AppendSpan(&out, param.line, param.character);
+                PushRecord(&signature, param.line, param.character, "q" + param.name);
             }
         }
         for (const hdl::Instance& instance : file->instances) {
-            AppendText(&out, instance.module);
-            AppendText(&out, instance.name);
-            AppendSpan(&out, instance.line, instance.character);
-            for (const auto& [name, value] : instance.connections) AppendText(&out, name);
+            std::string payload = "i" + instance.module;
+            payload += '\x1f';
+            payload += instance.name;
+            for (const auto& [name, value] : instance.connections) {
+                payload += '\x1e';
+                payload += name;
+            }
+            PushRecord(&signature, instance.line, instance.character, std::move(payload));
             for (const auto& [position, name] : instance.connection_ports) {
-                AppendSpan(&out, position.first, position.second);
-                AppendText(&out, name);
+                PushRecord(&signature, position.first, position.second, "c" + name);
             }
         }
     }
     // 全局：模块名 + 各自端口名（跨文件解析目标）
     std::vector<std::string> names = index->ModuleNames();
     std::ranges::sort(names);
-    AppendInt(&out, static_cast<std::int64_t>(names.size()));
+    AppendInt(&signature.flat, -1000000);
+    AppendInt(&signature.flat, static_cast<std::int64_t>(names.size()));
     for (const std::string& name : names) {
-        AppendText(&out, name);
+        std::string payload = "g" + name;
         const hdl::Module* module = index->ModuleByName(name);
-        if (module == nullptr) {
-            AppendInt(&out, -1);
+        if (module != nullptr) {
+            for (const hdl::Port& port : module->ports) {
+                payload += '\x1e';
+                payload += port.name;
+            }
+        }
+        PushRecord(&signature, -1, 0, std::move(payload));
+    }
+    return signature;
+}
+
+// 索引记录是否等于"旧记录 + 行号整体平移"。
+//   * 旧记录的行在 [anchor, old_end)（变化区）内：新位置不约束（这些行会重算）；
+//   * 旧行 < anchor：行号不变；>= old_end：行号 +delta；
+//   * 记录条数/顺序/payload 必须完全一致（多一个声明就回退）。
+bool RecordsMatchUnderShift(const std::vector<IndexRecord>& before,
+                            const std::vector<IndexRecord>& after, bool index_identical,
+                            std::size_t anchor, std::size_t old_end, std::int64_t delta) {
+    if (index_identical) return true;  // flat 完全相等（行号也相等）
+    if (before.size() != after.size()) return false;
+    for (std::size_t i = 0; i < before.size(); ++i) {
+        const IndexRecord& a = before[i];
+        const IndexRecord& b = after[i];
+        if (a.payload != b.payload) return false;
+        if (a.line < 0) {
+            if (b.line >= 0) return false;
             continue;
         }
-        AppendInt(&out, static_cast<std::int64_t>(module->ports.size()));
-        for (const hdl::Port& port : module->ports) AppendText(&out, port.name);
+        const auto old_line = static_cast<std::size_t>(a.line);
+        if (old_line >= anchor && old_line < old_end) continue;  // 变化区内：位置不约束
+        const std::int64_t mapped = old_line < anchor ? a.line : a.line + delta;
+        if (b.line != mapped || b.character != a.character) return false;
     }
-    return out;
+    return true;
 }
 
 // 全量计算 + 建条目
 std::shared_ptr<CacheEntry> BuildFullEntry(const hdl::HdlIndex* index, std::string_view path,
                                            const std::shared_ptr<const std::string>& text,
                                            std::uint64_t generation,
-                                           const std::string& index_signature) {
+                                           const IndexSignatureData& index_signature) {
     auto entry = std::make_shared<CacheEntry>();
     entry->path = std::string(path);
     entry->index = index;
@@ -1027,7 +1075,7 @@ std::shared_ptr<CacheEntry> TryIncremental(const CacheEntry& old, const hdl::Hdl
                                            std::string_view path,
                                            const std::shared_ptr<const std::string>& text,
                                            std::uint64_t generation,
-                                           const std::string& index_signature) {
+                                           const IndexSignatureData& index_signature) {
     const std::string& old_text = *old.text;
     const std::string& new_text = *text;
     const std::size_t old_size = old_text.size();
@@ -1049,10 +1097,9 @@ std::shared_ptr<CacheEntry> TryIncremental(const CacheEntry& old, const hdl::Hdl
     const LineTable new_lines = BuildLines(new_text);
     const std::size_t new_line_count = new_lines.rows.size();
     if (new_line_count == 0) return nullptr;
-    // ⚠ 行数必须不变：索引里的 module/port/instance 位置带**行号**，行号一平移，
-    //   全量路径会因"该行文本与索引名字不符"而丢弃这些 token；增量复用旧行的
-    //   token 就无法复现这个丢弃。行数变化（回车/粘贴/跨行删除）一律全量重算。
-    if (new_line_count != old_line_count) return nullptr;
+    // 行数**允许**变化：行号平移由下面的 old_end/new_end + delta 处理，
+    // 索引侧的 module/port/signal/param/instance 记录按同一 delta 逐条校验
+    // （RecordsMatchUnderShift）；平移映射不成立就回退全量。
 
     // 2) 变化区间的行边界
     std::size_t anchor = LineContaining(old.line_starts, std::min(prefix, old_size - 1));
@@ -1082,7 +1129,7 @@ std::shared_ptr<CacheEntry> TryIncremental(const CacheEntry& old, const hdl::Hdl
 
     // 2b) 宏续行：区域最后一行以 '\' 结尾时，下一行仍属于宏体，必须一起重算。
     //     新旧两侧同步外扩（这些行内容逐字节相同）。
-    while (new_end < new_line_count) {
+    while (new_end > 0 && new_end < new_line_count) {
         const std::size_t row_begin = new_lines.starts[new_end - 1];
         const std::size_t row_end = new_lines.starts[new_end];
         if (!RowEndsWithBackslash(new_text.substr(row_begin, row_end - row_begin))) break;
@@ -1092,9 +1139,29 @@ std::shared_ptr<CacheEntry> TryIncremental(const CacheEntry& old, const hdl::Hdl
     if (old_end > old_line_count) return nullptr;
     // 后缀行数必须对齐（字节相同 => 行数必然相同；不一致就说明推导出错，回退）
     if (new_line_count - new_end != old_line_count - old_end) return nullptr;
-    if (new_end != old_end) return nullptr;  // 行数不变 => 后缀行号必须一一对应
+    // 行号平移量：新行 = 旧行 + delta（只对后缀成立；前缀是恒等映射）
+    const std::int64_t delta =
+        static_cast<std::int64_t>(new_end) - static_cast<std::int64_t>(old_end);
 
-    // 3) 规模上限：改动太大就直接全量，避免"增量"比重算还贵
+    // ⚠ 暂未启用行号平移：行数变化（回车/粘贴/跨行删除）仍回退全量。
+    //   本轮已定位的两个未修完的正确性问题（详见 task-47 报告）：
+    //     1) 索引侧 token 的位置带行号；若调用方的索引不是按当前缓冲区重建的
+    //        （旧的/错位的），平移后的 `SymbolAt` 可能与全量路径给出不同 kind；
+    //     2) `define ... \ 宏体 / 块注释跨界的词法状态需要与行号一起平移，
+    //        当前锚点门禁不足以覆盖所有组合。
+    //   ⇒ 正确性优先：先保持 0.30.0 的等价性与性能（行数变化 = 全量）。
+    if (delta != 0) return nullptr;
+    // 3) 索引内容必须等于"旧索引 + 行号整体平移"：
+    //    * 前缀里的声明：行号不变；后缀里的声明：行号 +delta；变化区里的不约束；
+    //    * 记录条数/顺序/payload 必须完全一致（多一个端口就回退）。
+    //    flat 完全相等时（连行号都相同）直接跳过逐条比较。
+    const bool index_identical = old.index_sig.flat == index_signature.flat;
+    if (!RecordsMatchUnderShift(old.index_sig.records, index_signature.records, index_identical,
+                                anchor, old_end, delta)) {
+        return nullptr;
+    }
+
+    // 4) 规模上限：改动太大就直接全量，避免"增量"比重算还贵
     const std::size_t region_lines = new_end - anchor;
     if (region_lines > std::max<std::size_t>(64, new_line_count / 2)) return nullptr;
 
@@ -1172,6 +1239,13 @@ std::shared_ptr<CacheEntry> TryIncremental(const CacheEntry& old, const hdl::Hdl
         entry->line_states[line] = old.line_states[index_old];
         entry->verible_inside[line] = old.verible_inside[index_old];
         entry->line_tokens[line] = old.line_tokens[index_old];
+        // ⚠ 行号平移：桶里每条 token 的 line 字段还是旧行号，必须整体改写成新行号
+        //   （start/length/type 与行内容一起不变）。
+        if (line != index_old) {
+            for (SemToken& token : entry->line_tokens[line]) {
+                token.line = static_cast<int>(line);
+            }
+        }
     }
 
     std::size_t total = 0;
@@ -1212,8 +1286,8 @@ std::shared_ptr<const std::vector<SemToken>> SemanticTokensCached(
     // ⚠ 缓存键**不是** index 指针、也不是 generation：每次 didChange 后
     //   IndexService 都会重装一份索引快照（generation +1），拿 generation 当键等于
     //   永远不命中。这里改用"索引内容指纹"（IndexSignature）：只有索引的语义内容
-    //   真的变了才失效。
-    const std::string signature = IndexSignature(index, path);
+    //   真的变了才失效；行号整体平移不算"变了"（见 RecordsMatchUnderShift）。
+    const IndexSignatureData signature = IndexSignature(index, path);
 
     std::shared_ptr<const CacheEntry> previous;
     {
@@ -1223,7 +1297,7 @@ std::shared_ptr<const std::vector<SemToken>> SemanticTokensCached(
         if (it != cache.entries.end()) previous = it->second;
     }
 
-    const bool same_index = previous && previous->index_sig == signature;
+    const bool same_index = previous && previous->index_sig.flat == signature.flat;
     const bool same_text =
         previous && (previous->text == text || *previous->text == *text);
     if (same_index && same_text) {
@@ -1236,11 +1310,10 @@ std::shared_ptr<const std::vector<SemToken>> SemanticTokensCached(
     std::shared_ptr<CacheEntry> next;
     bool index_changed = false;
     if (previous) {
-        if (!same_index) {
-            index_changed = true;  // 索引语义变了 -> Hdl 候选/重分类都可能变，只能全量
-        } else {
-            next = TryIncremental(*previous, index, path, text, index_generation, signature);
-        }
+        // 索引内容不同时也可能只是"整行平移"：交给 TryIncremental 里的
+        // RecordsMatchUnderShift 判定，不成立才回退全量。
+        next = TryIncremental(*previous, index, path, text, index_generation, signature);
+        index_changed = next == nullptr;
     }
     const bool incremental = next != nullptr;
     if (!next) {
@@ -1404,3 +1477,4 @@ std::vector<FoldingRange> FoldingRanges(std::string_view text) {
 }
 
 }  // namespace fpgalsp::semantics
+

@@ -19,6 +19,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <string>
 #include <string_view>
 
@@ -36,7 +37,11 @@ using Json = nlohmann::json;
 Json DocumentSymbols(const hdl::HdlIndex& index, std::string_view path);
 
 // workspace/symbol（query 为空 = 全部；大小写不敏感子串）
-Json WorkspaceSymbols(const hdl::HdlIndex& index, std::string_view query);
+//   P2-A：可选 `(offset, limit)` 分页 —— 缺省（0, 0）= 全量，与旧行为逐字节相同，
+//   LSP handler（客户端不分页）继续走缺省。limit == 0 表示"到结尾"。
+//   窗口作用在**与全量完全相同的顺序**上，返回的仍是 LSP 形状的数组（只是这一段）。
+Json WorkspaceSymbols(const hdl::HdlIndex& index, std::string_view query,
+                      std::size_t offset = 0, std::size_t limit = 0);
 
 // textDocument/definition（返回 Location 或 null）
 Json Definition(const hdl::HdlIndex& index, std::string_view path, int line, int character);

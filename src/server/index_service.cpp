@@ -160,7 +160,8 @@ IndexService::Snapshot IndexService::EnsureFreshLocked() const {
         RebuildAllLocked();
     } else if (!state_.watcher_active && state_.snapshot != nullptr) {
         // R3（F2）：TTL 门控。didChange 走缓冲区增量，不依赖磁盘 stamp；
-        // 只有 didSave / didClose / watcher 事件 / InvalidateAll 会请求强制校验。
+        // 只有 didClose / watcher 事件 / InvalidateAll 会请求强制校验
+        // （P2-A：didSave 的 nullopt 路径已收敛到"只重载那一个文件"，不再 force）。
         const bool due =
             state_.force_validation ||
             (state_.stamp_ttl <= std::chrono::milliseconds(0)) ||
@@ -204,17 +205,14 @@ void IndexService::OnFileChanged(const std::string& path, std::optional<std::str
         return;
     }
 
-    // P-C1：先记下变化前的模块名（用于判定"模块增删 = 拓扑变化"）。
-    std::vector<std::string> before_modules;
-    if (state_.snapshot != nullptr) {
-        for (const hdl::ModuleInfo* info : state_.snapshot->ModulesOfFile(path)) {
-            before_modules.push_back(info->module.name);
-        }
+    // P2-A：没有缓冲区文本 = didClose（以及没带 text 的 didSave）：磁盘内容优先，
+    // **只重载这一个文件**。旧实现在这里 RequestValidationLocked()，把"全工程 stamp
+    // 校验"压到下一次 Get()（audit/perf2：+1~3 ms、偶发 22 ms）；现在别的文件的外部
+    // 改动由 watcher 事件（全量校验）或 TTL 窗口兜底。
+    if (!text.has_value()) {
+        ValidateOneLocked(*expected);
+        return;
     }
-
-    // 没有缓冲区文本 = didSave / didClose：磁盘可能被别的进程改过（含 TD），
-    // 下一请求强制做一次全量 stamp 校验。
-    if (!text.has_value()) RequestValidationLocked();
 
     // 快照还没建、或者已经脏了（.al 刚变更过）：不做增量。
     // 下一次 Get 的全量重建会通过 loader（集成方传入缓冲区优先的 LoadText）
@@ -227,18 +225,16 @@ void IndexService::OnFileChanged(const std::string& path, std::optional<std::str
         return;
     }
 
-    auto next = std::make_shared<hdl::HdlIndex>(state_.snapshot->Clone());
-    if (text.has_value()) {
-        next->ReplaceFile(ParseOne(path, *text, &state_.cache));
-    } else {
-        // 没有缓冲区文本：从磁盘重读；读不到（删除/不可读）就从索引里移除。
-        const std::optional<std::string> disk_text = LoadSafely(loader_, path);
-        if (disk_text.has_value()) {
-            next->ReplaceFile(ParseOne(path, *disk_text, &state_.cache));
-        } else {
-            next->RemoveFile(path);
+    // P-C1：先记下变化前的模块名（用于判定"模块增删 = 拓扑变化"）。
+    std::vector<std::string> before_modules;
+    if (state_.snapshot != nullptr) {
+        for (const hdl::ModuleInfo* info : state_.snapshot->ModulesOfFile(path)) {
+            before_modules.push_back(info->module.name);
         }
     }
+
+    auto next = std::make_shared<hdl::HdlIndex>(state_.snapshot->Clone());
+    next->ReplaceFile(ParseOne(path, *text, &state_.cache));
     ++state_.stats.file_updates;
     InstallLocked(std::move(next));
     RecordChangesLocked({path}, before_modules);
@@ -254,7 +250,7 @@ void IndexService::OnFileChanged(const std::string& path, std::optional<std::str
 //   * 变化前没有、变化后有  -> 新模块        -> full（否则新节点插不进树）
 //   * 名字没变              -> modules 里带 portCount/defined，客户端就地打补丁
 void IndexService::RecordChangesLocked(const std::vector<std::string>& paths,
-                                       const std::vector<std::string>& before_modules) {
+                                       const std::vector<std::string>& before_modules) const {
     ChangeSet changes;
     changes.paths = paths;
     if (state_.snapshot != nullptr) {
@@ -492,6 +488,41 @@ void IndexService::RebuildAllLocked() const {
     if (!state_.watcher_active) RefreshStampsLocked();
 
     InstallLocked(std::move(next));
+}
+
+void IndexService::ValidateOneLocked(const State::ExpectedFile& file) const {
+    // 快照还没建、或者已经脏了（.al 刚变更过）：下一次 Get() 的全量重建会通过 loader
+    // （集成方传的是"缓冲区优先"的 LoadText）拿到最新内容，这里不做单文件增量。
+    if (state_.snapshot == nullptr || state_.dirty) {
+        state_.last_changes = ChangeSet{};
+        state_.last_changes.paths = {file.path};
+        state_.last_changes.full = true;
+        return;
+    }
+
+    std::vector<std::string> before_modules;
+    for (const hdl::ModuleInfo* info : state_.snapshot->ModulesOfFile(file.path)) {
+        before_modules.push_back(info->module.name);
+    }
+
+    // ⚠ 这里**必须**无条件回落到磁盘，不能"stamp 没变就跳过"：
+    //   didClose 的语义是把未保存的缓冲区改动丢掉、回落到磁盘内容，而磁盘
+    //   size/mtime 从头到尾没变过（用户没保存）。内容真的没变时 ParseOne 会命中
+    //   内容哈希缓存（一次哈希 + 查表，~µs），不会重新跑 Verible。
+    auto next = std::make_shared<hdl::HdlIndex>(state_.snapshot->Clone());
+    const std::optional<std::string> disk_text = LoadSafely(loader_, file.path);
+    if (disk_text.has_value()) {
+        next->ReplaceFile(ParseOne(file.path, *disk_text, &state_.cache));
+    } else {
+        next->RemoveFile(file.path);  // 读不到（删除/不可读）=> 从索引移除
+    }
+    ++state_.stats.file_updates;
+    InstallLocked(std::move(next));
+    RecordChangesLocked({file.path}, before_modules);
+
+    // stamp 基线跟着走到磁盘当前状态：否则下一次 TTL 校验会把这个刚重载过的文件
+    // 再读一遍（结果相同，但白付一次文件枚举 + 解析 + generation 抖动）。
+    SyncStampLocked(file);
 }
 
 void IndexService::ValidateStampsLocked() const {

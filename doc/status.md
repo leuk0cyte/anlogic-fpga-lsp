@@ -1,4 +1,4 @@
-# 交付状态（当前：2026-11-23，扩展 0.30.0）
+# 交付状态（当前：2026-11-23，扩展 0.31.0）
 
 ## 构建与测试
 
@@ -6,7 +6,7 @@
 | --- | --- |
 | **全新目录干净构建** | configure 29 s → build 3.3 min → **844 个目标全部成功**（Release + 全量 LTO）；无 LTO 的 `windows-msvc-dev` 全新目录 **56 s**（2026-11-20 实测；增量构建见 build.md） |
 | **`ctest` 全量** | **72/72 通过**（其中 `unit` 46、`e2e` 5、`td` 5，其余为 `formatgate`/`lintgate`/`gate`/`generator`/`mcp`/`docs`/`parity` 门禁 + `docs_clang_tidy`）；**clang-tidy 门禁默认注册**（约 +145 s；跳过用 `ctest -E docs_clang_tidy`，约 90 s）|
-| **原生产物** | `build/bin/fpgalsp-native.exe`（0.30.0，**7,137,792 B**，全量 LTCG；SHA256 `7DE79211…5CA68F`） |
+| **原生产物** | `build/bin/fpgalsp-native.exe`（0.31.0，**7142400 B**，全量 LTCG；SHA256 `7A1094F0…1C292D`） |
 | **单元测试规模** | 46 个 gtest target |
 
 > 构建/测试的并行度分析（为什么 192 线程帮不上忙、时间精确花在哪、日常该用哪个 preset）见
@@ -1850,3 +1850,24 @@ completion 候选缓存、TD 设备表落盘（冷调用 574 → ~170 ms）、�
 
 **验证**：dev/release `ctest` **72/72**；插件 `node test/run.js` **64/64**；
 `check_versions` / `check_raw_file_writes` / `check_project_state_paths` / `check_tcl_invariant` 全 PASS。
+
+---
+
+## 第四十四轮（2026-11-23，0.31.0）：性能第三轮（符号分页 / 单文件校验 / 语义健壮性）
+
+| 项 | 改前（实测） | 改后（实测） |
+| --- | --- | --- |
+| workspace_symbols 真分页（`SearchSymbols(query,offset,limit,&total)` + MCP 接线） | limit=50 **4.16 ms** | **3.57 ms** |
+| didClose / 无文本 didSave 只校验单文件（`ValidateOneLocked`） | 关闭后首个请求 +1~3 ms（最坏 22 ms） | 只重读该文件；watcher/InvalidateAll 仍全量 |
+| 语义缓存健壮性：索引签名改行号感知记录表 + 修 2 个真 bug | 潜在错位/越界 | 已修；同键 1.95 → 2.07 ms |
+
+**口径更正**：`HandleDidSave` 打开文档时总传缓冲区文本，`OnFileChanged(path,nullopt)` 实际几乎只由
+**didClose** 触发 —— 前两轮"didSave 后 +1~3 ms"应理解为"关闭/无文本保存后"。
+
+**未达成（诚实记录）**：回车/粘贴（行数变化）的 semantic 仍是全量 **5.58 ms**（目标 ≤2.5）。
+第一版"行号整体平移"在等价性测试里撞到两个真问题：① `SymbolAt` 的"模块内同名回退"会枚举到平移后
+错位的声明（kind 从 variable 变 property）；② 普通行插到 `define ... \` 之后会变成宏体，区域词法状态
+必须跟着平移。结论：先建"索引与文本同源"契约（文本版本/哈希），再补宏体边界门禁，两步都做完才敢启用；
+本轮按正确性优先**撤回启用**，只保留签名重构与两个 bug 修复。
+
+**验证**：dev/release `ctest` **72/72**；插件 **64/64**；四个 python 门禁 PASS。

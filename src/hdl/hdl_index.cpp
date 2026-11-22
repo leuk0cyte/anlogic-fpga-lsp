@@ -2404,65 +2404,143 @@ std::vector<DocSymbol> HdlIndex::DocumentSymbols(std::string_view path) const {
     return out;
 }
 
-std::vector<WorkspaceSymbol> HdlIndex::SearchSymbols(std::string_view query) const {
-    std::vector<WorkspaceSymbol> out;
-    const std::string needle = ToLower(query);
+namespace {
 
-    auto matches = [&needle](std::string_view name) {
-        if (needle.empty()) return true;
-        return ToLower(name).contains(needle);
-    };
+// 大小写不敏感的**子串**判定（needle 已小写；hay 原地比较，**零分配**）。
+// 与旧的 `ToLower(name).contains(ToLower(query))` 逐字节等价：两边都只折叠
+// ASCII A-Z（platform::LowerAscii 的语义），>=0x80 的字节按原样比较。
+bool ContainsAsciiLower(std::string_view hay, std::string_view lower_needle) noexcept {
+    if (lower_needle.empty()) return true;
+    if (hay.size() < lower_needle.size()) return false;
+    const std::size_t last = hay.size() - lower_needle.size();
+    const char first = lower_needle.front();
+    for (std::size_t i = 0; i <= last; ++i) {
+        char c = hay[i];
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+        if (c != first) continue;
+        std::size_t j = 1;
+        for (; j < lower_needle.size(); ++j) {
+            char inner = hay[i + j];
+            if (inner >= 'A' && inner <= 'Z') inner = static_cast<char>(inner - 'A' + 'a');
+            if (inner != lower_needle[j]) break;
+        }
+        if (j == lower_needle.size()) return true;
+    }
+    return false;
+}
 
-    for (const auto& file_ptr : files_) {
+// workspace/symbol 的一个命中物化成 WorkspaceSymbol —— **逐字段与旧实现相同**，
+// 所以窗口路径与全量路径的输出可以直接逐字节比较（unit.hdl_index 就是这么钉的）。
+//   type: 0=module 1=port 2=signal 3=param
+WorkspaceSymbol MakeWorkspaceSymbol(const ModuleInfo& info, int type, std::size_t item) {
+    const Module& module = info.module;
+    WorkspaceSymbol symbol;
+    switch (type) {
+        case 0:
+            symbol.name = module.name;
+            symbol.detail = "module";
+            symbol.kind = 2;
+            symbol.path = module.file;
+            symbol.span = SpanOf(module.line, module.character, module.name);
+            break;
+        case 1: {
+            const Port& port = module.ports[item];
+            symbol.name = port.name;
+            symbol.container = module.name;
+            symbol.detail = PortDetail(port);
+            symbol.kind = 8;
+            symbol.path = port.file;
+            symbol.span = SpanOf(port.line, port.character, port.name);
+            break;
+        }
+        case 2: {
+            const Signal& signal = info.signals[item];
+            symbol.name = signal.name;
+            symbol.container = module.name;
+            symbol.detail = SignalDetail(signal);
+            symbol.kind = 13;
+            symbol.path = signal.file;
+            symbol.span = SpanOf(signal.line, signal.character, signal.name);
+            break;
+        }
+        default: {
+            const Param& param = info.params[item];
+            symbol.name = param.name;
+            symbol.container = module.name;
+            symbol.detail = param.local ? "localparam" : "parameter";
+            symbol.kind = 14;
+            symbol.path = param.file;
+            symbol.span = SpanOf(param.line, param.character, param.name);
+            break;
+        }
+    }
+    return symbol;
+}
+
+// 名字里所有符号的匹配 + 只物化窗口。
+//   * 匹配 = 大小写不敏感子串（needle 为空则全匹配）；
+//   * 全序 = 文件顺序 → 模块顺序 → 模块自身 / 端口 / 信号 / 参数（与旧实现完全一致）；
+//   * 只有落在 [offset, offset+limit) 的命中才构造 WorkspaceSymbol，其余只计数。
+//   * limit == 0 && offset == 0 时与旧实现逐字节等价（唯一差别是不再逐符号 ToLower）。
+template <typename Visit>
+void ForEachWorkspaceSymbol(const std::vector<std::shared_ptr<const ParsedFile>>& files,
+                            std::string_view lower_needle, std::size_t offset,
+                            std::size_t limit, std::size_t* matched_out, Visit&& visit) {
+    const bool take_all = (limit == 0);
+    const std::size_t window_end =
+        take_all ? std::numeric_limits<std::size_t>::max()
+                 : (offset > std::numeric_limits<std::size_t>::max() - limit
+                        ? std::numeric_limits<std::size_t>::max()
+                        : offset + limit);
+
+    std::size_t matched = 0;
+    for (const auto& file_ptr : files) {
         if (!file_ptr) continue;
         const ParsedFile& file = *file_ptr;
         for (const ModuleInfo& info : file.modules) {
-            const Module& module = info.module;
-            if (matches(module.name)) {
-                WorkspaceSymbol symbol;
-                symbol.name = module.name;
-                symbol.container.clear();
-                symbol.detail = "module";
-                symbol.kind = 2;
-                symbol.path = module.file;
-                symbol.span = SpanOf(module.line, module.character, module.name);
-                out.push_back(std::move(symbol));
+            // 依次处理该模块的 4 类符号；`item` 是 ports/signals/params 的下标。
+            auto consider = [&](int type, std::size_t item, std::string_view name) {
+                if (!ContainsAsciiLower(name, lower_needle)) return;
+                if (matched >= offset && matched < window_end) {
+                    visit(info, type, item);
+                }
+                ++matched;
+            };
+            consider(0, 0, info.module.name);
+            for (std::size_t i = 0; i < info.module.ports.size(); ++i) {
+                consider(1, i, info.module.ports[i].name);
             }
-            for (const Port& port : module.ports) {
-                if (!matches(port.name)) continue;
-                WorkspaceSymbol symbol;
-                symbol.name = port.name;
-                symbol.container = module.name;
-                symbol.detail = PortDetail(port);
-                symbol.kind = 8;
-                symbol.path = port.file;
-                symbol.span = SpanOf(port.line, port.character, port.name);
-                out.push_back(std::move(symbol));
+            for (std::size_t i = 0; i < info.signals.size(); ++i) {
+                consider(2, i, info.signals[i].name);
             }
-            for (const Signal& signal : info.signals) {
-                if (!matches(signal.name)) continue;
-                WorkspaceSymbol symbol;
-                symbol.name = signal.name;
-                symbol.container = module.name;
-                symbol.detail = SignalDetail(signal);
-                symbol.kind = 13;
-                symbol.path = signal.file;
-                symbol.span = SpanOf(signal.line, signal.character, signal.name);
-                out.push_back(std::move(symbol));
-            }
-            for (const Param& param : info.params) {
-                if (!matches(param.name)) continue;
-                WorkspaceSymbol symbol;
-                symbol.name = param.name;
-                symbol.container = module.name;
-                symbol.detail = param.local ? "localparam" : "parameter";
-                symbol.kind = 14;
-                symbol.path = param.file;
-                symbol.span = SpanOf(param.line, param.character, param.name);
-                out.push_back(std::move(symbol));
+            for (std::size_t i = 0; i < info.params.size(); ++i) {
+                consider(3, i, info.params[i].name);
             }
         }
     }
+    if (matched_out != nullptr) *matched_out = matched;
+}
+
+}  // namespace
+
+std::vector<WorkspaceSymbol> HdlIndex::SearchSymbols(std::string_view query) const {
+    return SearchSymbols(query, 0, 0, nullptr);
+}
+
+std::vector<WorkspaceSymbol> HdlIndex::SearchSymbols(std::string_view query, std::size_t offset,
+                                                     std::size_t limit,
+                                                     std::size_t* total) const {
+    // 旧实现是"每个符号 ToLower 一次"（每次一次堆分配）；现在整次查询只做一次。
+    const std::string lower_needle = ToLower(query);
+
+    std::vector<WorkspaceSymbol> out;
+    if (limit != 0) out.reserve(std::min<std::size_t>(limit, 1024));
+
+    if (total != nullptr) *total = 0;
+    ForEachWorkspaceSymbol(files_, lower_needle, offset, limit, total,
+                           [&out](const ModuleInfo& info, int type, std::size_t item) {
+                               out.push_back(MakeWorkspaceSymbol(info, type, item));
+                           });
     return out;
 }
 

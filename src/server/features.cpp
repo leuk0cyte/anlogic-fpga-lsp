@@ -278,9 +278,15 @@ Json DocumentSymbols(const HdlIndex& index, std::string_view path) {
     return out;
 }
 
-Json WorkspaceSymbols(const HdlIndex& index, std::string_view query) {
+Json WorkspaceSymbols(const HdlIndex& index, std::string_view query, std::size_t offset,
+                      std::size_t limit) {
     Json out = Json::array();
-    for (const WorkspaceSymbol& symbol : index.SearchSymbols(query)) {
+    // P2-A：分页下沉到索引层。命中窗口之外的符号**只计数、不物化**：
+    // 旧实现在这里对**全部**命中各建一棵 LSP 形状的 JSON，MCP/插件再重建/截断
+    // （audit/perf2 实测 limit=50 4.16 ms、limit=200 ≈16 ms，且 limit≥1000 后耗时
+    // 与字节数都不再增长 —— 说明成本在"扫全集 + 物化"，不在"发多少"）。
+    // offset=0/limit=0（LSP 的缺省调用）走同一条路径，输出逐字节不变。
+    for (const WorkspaceSymbol& symbol : index.SearchSymbols(query, offset, limit)) {
         out.push_back(WorkspaceSymbolToJson(symbol));
     }
     return out;
