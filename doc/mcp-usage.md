@@ -2,7 +2,7 @@
 
 > 面向"第一次接触本仓库、手里没有任何背景资料"的 agent（以及替 agent 设计提示词的人）。
 > 目标是：**只看 MCP 本身**就能知道 50 个工具怎么串、哪些坑必踩。
-> 可见性：`--allow-flow` 时 46 个，只读模式 38 个，`--allow-write` 再加 3 个（工程改名/加源文件/改工程）。
+> 可见性：`--allow-flow` 时 46 个，只读模式 38 个，`--allow-write` 再加 4 个（`fpga_project_add_source` / `fpga_project_rename` / `fpga_project_update` / `fpga_probe_config`）。
 
 ## 一、三条发现路径（按客户端能力从强到弱）
 
@@ -115,6 +115,19 @@ GUI 的 Flow 视图是**恰好 6 步**：`read_design` / `opt_rtl` / `opt_gate`�
 `fpga_project_update`、`fpga_probe_config`。dry_run 时只读、返回将要发生的变化
 （`insertAtLine` / `from`,`to` / `note` / `before,after,added,removed`），**不写任何文件、不启动 TD**；
 `.al` 的 mtime 不变可用来验证。需要 `--allow-write`（工具可见性与真实写一致）。
+
+### `fpga_project_update` 的 `ok` 语义（0.28.0 起）
+
+TD 在 `open_project -update` 里会输出设计类告警（`HDL-7225 CRITICAL-WARNING` 之类），
+但末尾仍是 `PRJ-1401 : Successfully analyzed N source files.`。所以：
+
+* `ok` **只**由带 `<CODE> ERROR` 的行判定 —— `CRITICAL-WARNING` / `WARNING` 不算失败；
+* 失败时带可读 `error`（第一条 ERROR 行）；
+* 工程被移动/拷贝过（`.al` 里 `<Project Path="...">` 还指着旧位置）时，TD 会改用会话 cwd
+  解析相对源文件路径；我们固定把 TD 会话 cwd 设为 `.al` 所在目录，因此仍会成功，但会额外
+  返回 `warning`（提示在 TD GUI 里打开并保存一次以重新记录该路径）。
+  这条在 0.26.0 之前的实现里会退化成成片的
+  `HDL-8007 ERROR: cannot open Verilog file '/src/xxx.v'`（实测 `%WORKSPACE%\CorpusBeta`）。
 
 ## 六、和后端实现的关系
 

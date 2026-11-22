@@ -206,5 +206,7 @@ LSP 合规缺口（本文件 §3.2 的 A1–A12）全部关闭。完整清单与
 | [protocol-optimization.md](protocol-optimization.md) | 传输/进程（A）、MCP 协议层（B）、`fpgaLsp/*` 自定义协议（C）、后端链路（D）；含两张链路图与 W1–W12 浪费点、Top 9、两批落地顺序、"明确不做"表 | 32 |
 | [backend-features.md](backend-features.md) | LSP 3.17/3.18 合规缺口（A 12 条，含"声明 vs 注册"逐条对照）+ FPGA 领域功能（B 13 条） | 25 |
 | [extension-features.md](extension-features.md) | 现状地图（16 条操作链路）、体验短板（E 12 条）、新功能（S/B 16 条）、agent 时代 5 条战略判断 | 28 |
+| [on-chip-probe.md](on-chip-probe.md) | 片上探针（ChipWatcher）能力与限制：配置/抓取/校验链路、cwc 与 ERAM 约束 | — |
+| [write-service.md](write-service.md) | **统一写服务（已实现 0.24–0.26）**：`platform::write_service` + 插件 `writeService.js`、四类 root 策略、原子写/审计/dry-run、门禁与迁移清单 | — |
 
-**维护约定**：这三份是"设计提案"，不是"现状描述"；落地后应把对应条目移进 [../status.md](../status.md) 的已完成区，并在本页删掉，避免又一次文档漂移。
+**维护约定**：这些是"设计提案 + 落地状态"，不是"现状描述"；落地后应把对应条目移进 [../status.md](../status.md) 的已完成区，并在本页删掉，避免又一次文档漂移。

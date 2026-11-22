@@ -54,7 +54,7 @@
 | `fpgalsp.runAnalysis` | analysis | DRC / CDC（无布线产物时 `ok:false` + 可读 error） |
 | `fpgalsp.addSourceFile` | ide | 写 `.al` 的 `<Source_Files>`（原子写 + 回滚） |
 | `fpgalsp.setProjectName` | ide | 改 `.al` 的 `<Name>`（原子写 + 回滚） |
-| `fpgalsp.updateProject` | ide + TD | `check_project_version` + `open_project -update` |
+| `fpgalsp.updateProject` | ide + TD | `check_project_version` + `open_project -update`（TD 会话 cwd = `.al` 所在目录；`ok` 只由 `<CODE> ERROR` 判定，`CRITICAL-WARNING` 不算失败；`.al` 记录的 `<Project Path>` 与实际目录不一致时额外返回 `warning`） |
 | `fpgalsp.instantiate` | hdl / ide | 例化文本生成（`BuildInstantiationText`） |
 | `fpgalsp.copyInstantiation` | ide | 当前文件第一个 module 的例化 |
 | `fpgalsp.symbolPath` | ide | 光标处层次路径 |

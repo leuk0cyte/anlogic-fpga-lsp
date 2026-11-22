@@ -186,7 +186,7 @@ FPGA: Install MCP Configuration
 
 - `fpgaLsp.mcp.allowFlow` 默认 `true`；`allowWrite` 默认 `false`。
 - 常用新工具：`fpga_flow_run_step`（单步）、`fpga_flow_log`、`fpga_flow_issues`、`fpga_flow_wait`（带 progress 通知）、`fpga_read_file`、`fpga_search_text`、`fpga_constraint_audit`。
-- 全部 **50 个工具**（`--allow-flow` 可见 46、只读 38、`--allow-write` 再加 3）与安全限制见仓库的
+- 全部 **50 个工具**（`--allow-flow` 可见 46、只读 38、`--allow-write` 再加 4）与安全限制见仓库的
   `src/mcp/tools.cpp`；工具清单文档见 `doc/mcp-usage.md`。
   （`doc/audit/2026-11-18/parity-mcp/tools-diff.md` 是 2026-11-18 的归档快照，不含后来新增的 9 个工具。）
 

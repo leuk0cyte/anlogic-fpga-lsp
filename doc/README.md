@@ -14,10 +14,10 @@
 | [commands.md](commands.md) | `workspace/executeCommand` 34 条命令 + `fpgaLsp/*` 7 个方法的落点索引，及 initialize 能力声明对照 |
 | [mcp-usage.md](mcp-usage.md) | MCP 工具怎么串：三条路线（读工程 / 跑 flow / 上板探针）、jobs 语义、常见坑 —— agent 的主要入口文档 |
 | [quality.md](quality.md) | 静态分析流水线、两个计数陷阱、诊断基线、审计报告索引 |
-| [status.md](status.md) | **按轮记录的工程日志**（当前 34 轮）：每轮改了什么、实测证据、仍未验证项；最新的交付数字以本文件末尾几轮为准 |
+| [status.md](status.md) | **按轮记录的工程日志**（当前 41 轮）：每轮改了什么、实测证据、仍未验证项；最新的交付数字以本文件末尾几轮为准 |
 | [extension-development.md](extension-development.md) | VS Code 扩展的开发、测试与打包 |
 | [design/](design/README.md) | **设计提案 + 落地状态**：端到端协议优化 32 条、后端功能缺口 25 条、插件功能 28 条；大部分已落地，剩余 backlog 见其 §3.5 |
-| [design/write-service.md](design/write-service.md) | **统一写入服务（已实现，0.24.0）**：后端 `platform::write_service` + 插件 `writeService.js`、四类 root 策略、原子写/审计/dry-run、门禁与迁移清单 |
+| [design/write-service.md](design/write-service.md) | **统一写入服务（已实现 0.24.0，0.25 扩到目录/删除/改名 + 内存 FS/指标/dry-run，0.26 补 `Copy`）**：后端 `platform::write_service` + 插件 `writeService.js`、四类 root 策略、原子写/审计/dry-run、门禁与迁移清单 |
 
 ## 审计证据归档（按日期，只增不改）
 

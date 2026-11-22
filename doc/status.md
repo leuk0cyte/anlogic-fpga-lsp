@@ -5,8 +5,8 @@
 | 项目 | 数据 |
 | --- | --- |
 | **全新目录干净构建** | configure 29 s → build 3.3 min → **844 个目标全部成功**（Release + 全量 LTO）；无 LTO 的 `windows-msvc-dev` 全新目录 **56 s**（2026-11-20 实测；增量构建见 build.md） |
-| **`ctest` 全量** | **71/71 通过**（`docs_clang_tidy` 默认不注册，需 `-DFPGA_LSP_ENABLE_TIDY_GATE=ON`）（其中 `unit` 46、`e2e` 5、`td` 5，其余为 `formatgate`/`lintgate`/`gate`/`generator`/`mcp`/`docs`/`parity` 门禁）；preset 默认 **8 路并行**，实测约 **75 s**（串行 92–104 s） |
-| **原生产物** | `build/bin/fpgalsp-native.exe`（0.26.0，**7043584 B**，全量 LTCG；SHA256 `CB484B7D…891E86`） |
+| **`ctest` 全量** | **71/71 通过**（其中 `unit` 46、`e2e` 5、`td` 5，其余为 `formatgate`/`lintgate`/`gate`/`generator`/`mcp`/`docs`/`parity` 门禁）；`docs_clang_tidy` **默认不注册**（`-DFPGA_LSP_ENABLE_TIDY_GATE=ON` 才加入，约 +145 s）；preset 默认 **8 路并行**，实测约 **90 s** |
+| **原生产物** | `build/bin/fpgalsp-native.exe`（0.28.1，**7,066,112 B**，全量 LTCG；SHA256 `9928CD4C…DE66B6`） |
 | **单元测试规模** | 46 个 gtest target |
 
 > 构建/测试的并行度分析（为什么 192 线程帮不上忙、时间精确花在哪、日常该用哪个 preset）见
@@ -1784,7 +1784,7 @@ TD 自己的 `td_*.log/.logw`、`minidump-*.dmp` 仍由 `TdSession` 归位到 `<
 （`bugprone-exception-escape` 把 lambda 位置写进消息，纯漂移会一直被当成新问题）。
 
 **验证**：真机 `%WORKSPACE%\CorpusBeta`：`fpga_project_update` **ok:true**、HDL-8007 **0**、
-收到 warning；`ctest` **72/72**（含门禁，基线 142）；插件 **64/64**（新增 warning 用例）；
+收到 warning；`ctest` **71/71**（**clang-tidy 门禁已改为默认不注册**；打开 `-DFPGA_LSP_ENABLE_TIDY_GATE=ON` 时 72/72）；插件 **64/64**（新增 warning 用例）；
 `td.diagnostics` 集成用例改为断言"cwd = 工程目录 + 工程根无 TD 日志"；`%WORKSPACE%\CorpusBeta` 根目录无
 残留（`log/` 收 TD 日志、无 `.fpgalsp`）。
 

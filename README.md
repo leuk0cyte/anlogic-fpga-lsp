@@ -16,7 +16,7 @@ Python 版为规格对照，等价性证据见 [`doc/audit/`](doc/audit/)。
   codeLens、文档高亮、selectionRange、pull diagnostics（textDocument/workspace）、
   报告视图 —— 注册 **47 个 handler**（标准 LSP 方法 + `fpgaLsp/*` 自定义方法 +
   `workspace/executeCommand`；后者广播 **31 条**命令，共实现 **34 条**）。
-- **MCP**：**50 个工具**（`--allow-flow` 可见 46、只读 38；`--allow-write` 再加 3），覆盖工程结构、符号、诊断、报告、流程控制（含单步 `fpga_flow_run_step`）、约束审计、片上探针；自带面向无上下文 agent 的使用帮助（`initialize.instructions` + `fpga_guide` 工具 + 4 个工作流 prompt，见 [doc/mcp-usage.md](doc/mcp-usage.md)）；
+- **MCP**：**50 个工具**（`--allow-flow` 可见 46、只读 38；`--allow-write` 再加 4：`fpga_project_add_source` / `fpga_project_rename` / `fpga_project_update` / `fpga_probe_config`），覆盖工程结构、符号、诊断、报告、流程控制（含单步 `fpga_flow_run_step`）、约束审计、片上探针；自带面向无上下文 agent 的使用帮助（`initialize.instructions` + `fpga_guide` 工具 + 4 个工作流 prompt，见 [doc/mcp-usage.md](doc/mcp-usage.md)）；
   **服务端默认只读**，`--allow-flow` / `--allow-write` 显式开启副作用；VS Code 扩展默认
   `fpgaLsp.mcp.allowFlow=true`（因此装好扩展即有 flow 能力），写操作仍默认关闭。
 - **TD 集成**：TangDynasty 会话与诊断、Synthesis / Place&Route / BitWizard、
