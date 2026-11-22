@@ -50,14 +50,14 @@ using text::UpperAscii;
 // -----------------------------------------------------------------------------
 
 // Python: KNOWN_COMMANDS = frozenset({"set_pin_assignment"})
-const std::set<std::string> kKnownCommands = {
+constexpr std::array<std::string_view, 1> kKnownCommands = {
     "set_pin_assignment",
 };
 
 // Python: KNOWN_IO_STANDARDS —— **71 项逐字复制**。
 // 不要删减、不要"合并看起来重复的"：LVDS25E 与 LVDS25_E 是 TD 的两个不同取值。
 // 白名单漏项会让用户的正确工程报 warning，是最伤信任的一类误报。
-const std::set<std::string> kKnownIoStandards = {
+constexpr std::array<std::string_view, 71> kKnownIoStandards = {
     "BLVDS25", "DIFF_HSTL15", "DIFF_HSTL18_I", "DIFF_POD12", "DIFF_POD12_PZQ", "DIFF_SSTL12",
     "DIFF_SSTL12_PZQ", "DIFF_SSTL135", "DIFF_SSTL135_PZQ", "DIFF_SSTL15", "DIFF_SSTL15_PZQ",
     "DIFF_SSTL18_I", "HSTL12_I", "HSTL15", "HSTL18", "HSTL18_I", "HSTL18_II", "HSUL12",
@@ -72,12 +72,12 @@ const std::set<std::string> kKnownIoStandards = {
 };
 
 // Python: KNOWN_PULLTYPES（定义了，但 adc.py 从未用它校验 —— 见 PYTHON-BUGS.md）
-const std::set<std::string> kKnownPulltypes = {
+constexpr std::array<std::string_view, 6> kKnownPulltypes = {
     "NONE", "PULLUP", "PULLDOWN", "KEEPER", "WEAKPULLUP", "WEAKPULLDOWN",
 };
 
 // Python: KNOWN_ATTR_KEYS（Python 里 PULLTYPE 写了两次，set 语义下等价）
-const std::set<std::string> kKnownAttrKeys = {
+constexpr std::array<std::string_view, 13> kKnownAttrKeys = {
     "LOCATION", "IOSTANDARD", "PULLTYPE", "DRIVESTRENGTH", "SLEWRATE",
     "VREF", "INTERNAL_VREF", "HYSTERESIS", "DIFFTERM", "IN_TERM",
     "OUT_TERM", "DCI_CASCADE", "CLOCK_DEDICATED_ROUTE",
@@ -506,20 +506,29 @@ OrderedPorts BuildOrderedPorts(const std::vector<Port>& ports) {
 //  常量表访问
 // =============================================================================
 
-const std::set<std::string>& KnownCommands() { return kKnownCommands; }
+// A-5：查表从 `const std::set<std::string>` 改成 `constexpr std::array<std::string_view>`
+// + `std::ranges::find`：
+//   * 消灭 7 处命名空间级静态初始化（分配失败 -> 静态初始化期 throw -> terminate）；
+//   * 顺带修掉 IsKnownCommand 每查一次就 `std::string(command)` 堆分配一次的问题
+//     （该函数在 Diagnostics 的逐行循环里被调用）；
+//   * 表内容逐项不变（kKnownIoStandards 仍是那 71 项，单测逐项比对）。
+std::span<const std::string_view> KnownCommands() { return kKnownCommands; }
 bool IsKnownCommand(std::string_view command) {
-    return kKnownCommands.find(std::string(command)) != kKnownCommands.end();
+    return std::ranges::find(kKnownCommands, command) != kKnownCommands.end();
 }
 
-const std::set<std::string>& KnownIoStandards() { return kKnownIoStandards; }
+std::span<const std::string_view> KnownIoStandards() { return kKnownIoStandards; }
 
-// Python: `standard.upper() not in KNOWN_IO_STANDARDS` —— 大小写不敏感
+// Python: `standard.upper() not in KNOWN_IO_STANDARDS` —— 大小写不敏感。
+// （UpperAscii 的那一次分配是 API 语义本身要求的，与本次改造无关。）
 bool IsKnownIoStandard(std::string_view standard) {
-    return kKnownIoStandards.find(UpperAscii(standard)) != kKnownIoStandards.end();
+    const std::string upper = UpperAscii(standard);
+    return std::ranges::find(kKnownIoStandards, std::string_view(upper)) !=
+           kKnownIoStandards.end();
 }
 
-const std::set<std::string>& KnownPulltypes() { return kKnownPulltypes; }
-const std::set<std::string>& KnownAttrKeys() { return kKnownAttrKeys; }
+std::span<const std::string_view> KnownPulltypes() { return kKnownPulltypes; }
+std::span<const std::string_view> KnownAttrKeys() { return kKnownAttrKeys; }
 
 // =============================================================================
 //  解析
@@ -749,7 +758,8 @@ std::vector<Diagnostic> Diagnostics(const std::vector<Entry>& entries,
 
     for (const Entry& entry : entries) {
         // ---- 未知命令（Python: ADC-CMD，severity 3）----
-        if (kKnownCommands.find(entry.command) == kKnownCommands.end()) {
+        if (std::ranges::find(kKnownCommands, std::string_view(entry.command)) ==
+            kKnownCommands.end()) {
             result.push_back(MakeDiag(
                 "ADC-CMD", kInfo, entry.command_span,
                 "Unknown ADC command " + PyRepr(entry.command) + " (expected set_pin_assignment)"));
@@ -774,7 +784,8 @@ std::vector<Diagnostic> Diagnostics(const std::vector<Entry>& entries,
                                               "; later values override earlier ones"));
             } else {
                 seen.insert(key);
-                if (kKnownAttrKeys.find(key) == kKnownAttrKeys.end()) {
+                if (std::ranges::find(kKnownAttrKeys, std::string_view(key)) ==
+                    kKnownAttrKeys.end()) {
                     result.push_back(MakeDiag("ADC-ATTR", kInfo, item.key_span,
                                               "Unknown ADC attribute " + key));
                 }

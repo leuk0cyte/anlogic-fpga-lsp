@@ -36,7 +36,8 @@
 #include "jsonrpc/json_util.h"
 #include "jsonrpc/transport.h"
 #include "platform/log.h"
-#include "platform/path.h"  // state_dir()（Wave 3 / W1：状态目录可外移）
+#include "platform/number.h"  // A-1：--mcp-port/--attach-port 严格解析（from_chars）
+#include "platform/path.h"    // state_dir()（Wave 3 / W1：状态目录可外移）
 #include "platform/version.h"
 #include "platform/write_service.h"
 #include "mcp/bridge.h"
@@ -106,9 +107,28 @@ bool ParseArgs(int argc, char** argv, Options& out) {
             // 与 Python 的 --verible 兼容：可带值也可不带值；内嵌 formatter 不依赖它。
             if (i + 1 < argc && argv[i + 1][0] != '-') out.verible_path = argv[++i];
         } else if (arg == "--mcp-port" && i + 1 < argc) {
-            out.mcp_port = std::atoi(argv[++i]);
+            // A-1：以前是 std::atoi —— "abc" 静默变 0（= 不启用 TCP 宿主）、
+            // "-1" 变 0、"70000" 被 static_cast 截断成 4464（连到别的端口）。
+            // 端口现在严格解析：非法/越界一律报错并以 2 退出（与其它参数错误一致）。
+            const auto port = fpgalsp::platform::ParseDecimal<int>(argv[++i]);
+            if (!port) {
+                std::fprintf(stderr, "--mcp-port: %s\n", port.error().c_str());
+                return false;
+            }
+            if (*port < 0 || *port > 65535) {
+                std::fprintf(stderr, "--mcp-port: 端口必须在 0..65535: '%s'\n", argv[i]);
+                return false;
+            }
+            out.mcp_port = *port;
         } else if (arg == "--attach-port" && i + 1 < argc) {
-            out.attach_port = static_cast<unsigned short>(std::atoi(argv[++i]));
+            // A-1：unsigned short 的 from_chars 自带范围检查（70000 -> out_of_range），
+            // 不再有 static_cast 静默截断。
+            const auto port = fpgalsp::platform::ParseDecimal<unsigned short>(argv[++i]);
+            if (!port) {
+                std::fprintf(stderr, "--attach-port: %s\n", port.error().c_str());
+                return false;
+            }
+            out.attach_port = *port;
         } else if (arg == "--allow-flow") {
             out.allow_flow = true;
         } else if (arg == "--allow-write") {

@@ -21,6 +21,7 @@
 #include <gtest/gtest.h>
 
 #include "flow/flow_runner.h"
+#include "flow/probe.h"
 #include "platform/encoding.h"
 
 namespace {
@@ -278,6 +279,82 @@ TEST(FlowRunner, AllRunsSynThenPhyThenSaveBestBits) {
         if (command == "save_best_bits") saw_save_best = true;
     }
     EXPECT_TRUE(saw_save_best);
+}
+
+// -----------------------------------------------------------------------------
+// S-02：工程路径进入 Tcl 前必须过 TclQuoteGrouped
+// -----------------------------------------------------------------------------
+// `probe_insert.tcl` 是 TD 的 Tcl 脚本；`insert_debugger {<chip_debugger 目录>}`
+// 里的目录来自工程路径。历史写法 `"insert_debugger {" + dir + "}"` 遇到路径里的
+// `}` 会提前闭合花括号 —— 这里钉住修复：正常路径输出逐字节不变，含 `}` 时退化成
+// 转义引号形态且不再出现裸 `{...}`。
+namespace {
+
+void WriteProbeMdnForHook(const fpgalsp::project::Project& project) {
+    Touch(fpgalsp::probe::MdnPath(project), "mark_debug { WHG/pwm_reg0_i[0] }\n");
+}
+
+std::string ProbeInsertHookText(const Harness& harness, const Json& started) {
+    const std::string run_id = started.value("runId", std::string());
+    if (run_id.empty()) return {};
+    return fpgalsp::platform::try_read_file_utf8(
+               harness.temp.path() + "_state/flow/" + run_id + "/probe_insert.tcl")
+        .value_or(std::string());
+}
+
+}  // namespace
+
+TEST(FlowRunner, ProbeInsertHookKeepsBracedFormForNormalPath) {
+    Harness harness("probe_hook_ok");
+    WriteProbeMdnForHook(harness.project);
+    auto runner = harness.MakeRunner();
+    const Json started = runner->Start({"syn"}, 1);
+    ASSERT_TRUE(started.value("ok", false));
+    ASSERT_TRUE(runner->WaitUntilIdle(5.0));
+    EXPECT_TRUE(runner->Status().ok.value_or(false));
+
+    const std::string hook = ProbeInsertHookText(harness, started);
+    ASSERT_FALSE(hook.empty()) << "配了 user.mdn 时 EnsureProbeHook 必须写出 probe_insert.tcl";
+    const std::string dir = fpgalsp::probe::ChipDebuggerDir(harness.project);
+    // 正常路径（无 Tcl 元字符）：仍是 `insert_debugger {<dir>}`，与旧实现逐字节相同。
+    EXPECT_NE(hook.find("insert_debugger {" + dir + "}"), std::string::npos) << hook;
+
+    // open_project 命令同样是 `{path}` 形态（未被改成裸写/引号形态）。
+    // 注意：流程里 open_project 有两种调用（带/不带 `-single_run`），这里只钉
+    // "路径参数仍是单个 {..} 组、且后缀没有变"，不假设具体是哪一个调用点。
+    bool saw_open_project = false;
+    for (const std::string& command : harness.script->commands) {
+        if (command.rfind("open_project", 0) != 0) continue;
+        saw_open_project = true;
+        const std::string head = "open_project {" + harness.project.al_path + "}";
+        ASSERT_EQ(command.rfind(head, 0), 0u) << command;
+        const std::string suffix = command.substr(head.size());
+        EXPECT_TRUE(suffix.empty() || suffix == " -single_run") << command;
+    }
+    EXPECT_TRUE(saw_open_project);
+}
+
+TEST(FlowRunner, ProbeInsertHookQuotesPathWithCloseBrace) {
+    // 工程目录含 `}`（下载的工程压缩包可以做到；Windows 文件名允许 `}`）。
+    Harness harness("probe_hook_evil}tag");
+    WriteProbeMdnForHook(harness.project);
+    ASSERT_NE(harness.project.dir.find('}'), std::string::npos) << "夹具路径必须含 `}`";
+
+    auto runner = harness.MakeRunner();
+    const Json started = runner->Start({"syn"}, 1);
+    ASSERT_TRUE(started.value("ok", false));
+    ASSERT_TRUE(runner->WaitUntilIdle(5.0));
+
+    const std::string hook = ProbeInsertHookText(harness, started);
+    ASSERT_FALSE(hook.empty()) << "配了 user.mdn 时 EnsureProbeHook 必须写出 probe_insert.tcl";
+    const std::string dir = fpgalsp::probe::ChipDebuggerDir(harness.project);
+    ASSERT_NE(dir.find('}'), std::string::npos);
+
+    // 修复前这里是 `insert_debugger {C:/.../evil}tag/chip_debugger}` —— `}` 提前闭合，
+    // 后面的文本会被 TD 当成新命令。修复后必须是转义引号形态的**单个** Tcl 单词。
+    EXPECT_EQ(hook.find("insert_debugger {" + dir), std::string::npos)
+        << "含 `}` 的路径不能裸拼进 `{...}`: " << hook;
+    EXPECT_NE(hook.find("insert_debugger \"" + dir + "\""), std::string::npos) << hook;
 }
 
 // -----------------------------------------------------------------------------

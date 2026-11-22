@@ -49,7 +49,11 @@ struct Options {
     const char* caller = nullptr;  // 审计标签，例如 "probe.config"
 };
 
-struct Result {
+// A-3：**所有**返回 Result 的写入 API 都不许被静默丢弃 —— [[nodiscard]] 让
+// "新增调用点忘记处理"在编译期就报（这正是 36 处 `(void)` 存在的根因）。
+// 确实要忽略时用 `platform::IgnoreResult(...)`（见 platform/never_throw.h：
+// 显式决策 + 失败留 debug 日志）。
+struct [[nodiscard]] Result {
     bool ok = false;
     Root root = Root::kState;
     std::string path;   // 归一化后的绝对路径（dry_run 时为"将会写"的路径）

@@ -81,7 +81,11 @@ const std::vector<Tool>& AllTools();
 const Tool* FindTool(std::string_view name);
 
 // 对应 Python `McpServer.visible_tools()`
-std::vector<Json> VisibleTools(bool allow_flow, bool allow_write);
+// 与 ShowTool 无关的可见工具表：按 (allow_flow, allow_write) 在进程内**只构建一次**
+// （P2，2026-11-22 性能审计），返回进程生命期稳定的只读引用。
+// 调用方若要把结果放进响应 Json，仍需拷贝一次（HandlerResult 只装 Json）；
+// 但不再每次 tools/list 都重新 ToolToJson 48 份 schema。
+const std::vector<Json>& VisibleTools(bool allow_flow, bool allow_write);
 
 // 单个工具对外的 JSON（剥掉 handler/requires，补 annotations）
 Json ToolToJson(const Tool& tool);

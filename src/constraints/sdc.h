@@ -99,9 +99,10 @@ std::vector<Command> Parse(std::string_view text);
 
 // 命令 / 选项表（Python `CLOCK_COMMANDS` / `DELAY_COMMANDS` /
 // `GET_PORTS_OPTIONS` / `COMMAND_OPTIONS` 逐项复制）
-const std::set<std::string>& ClockCommands();
-const std::set<std::string>& DelayCommands();
-const std::set<std::string>& GetPortsOptions();
+// A-5：三张表都是 `constexpr std::array<std::string_view>`（见 sdc.cpp 的说明）。
+std::span<const std::string_view> ClockCommands();
+std::span<const std::string_view> DelayCommands();
+std::span<const std::string_view> GetPortsOptions();
 // 已建模的 SDC 命令（`COMMAND_OPTIONS` 的键）。补全候选用这一组。
 const std::set<std::string>& KnownCommands();
 // 该命令认识的选项；nullptr = 未建模，不做选项检查（Python 同语义）

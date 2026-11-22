@@ -36,6 +36,7 @@
 
 #include "platform/command_line.h"
 #include "platform/encoding.h"
+#include "platform/number.h"
 #include "platform/utf16.h"
 #include "td/tcl_quote.h"
 
@@ -496,7 +497,7 @@ std::vector<CableInfo> ParseCables(std::string_view text) {
     static const RE2 kEntryLineRe(R"(^\s*([0-9]+)\s*:\s*([A-Za-z][A-Za-z0-9_]+)\s*$)");
     std::vector<CableInfo> cables;
     const auto add = [&cables](const std::string& index, std::string device) {
-        const int value = std::atoi(index.c_str());
+        const int value = platform::DigitsToIntSaturating(index);
         for (const CableInfo& existing : cables) {
             if (existing.index == value && existing.device == device) return;  // 去重
         }

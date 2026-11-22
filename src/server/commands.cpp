@@ -14,10 +14,12 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <mutex>
 #include <optional>
 #include <set>
 #include <string>
@@ -38,6 +40,7 @@
 #include "server/features.h"
 #include "jsonrpc/json_util.h"
 #include "platform/log.h"
+#include "platform/never_throw.h"
 #include "platform/path.h"
 #include "platform/write_service.h"
 #include "constraints/adc.h"
@@ -94,6 +97,34 @@ Json CurrentFlowObject(const std::shared_ptr<flow::FlowRunner>& runner) {
 }
 
 HandlerResult OkObject(Json value) { return HandlerResult::Ok(std::move(value)); }
+
+// P2（2026-11-22 性能审计）：flowStatus 的磁盘侧缓存（steps / runs 目录枚举）。
+// 扩展按 2 s 轮询，1 s TTL 与 flow_runner 的 StepsJson 缓存同节奏：
+//   * 把 directory_iterator + flow.status 解析摊到每秒一次；
+//   * 只缓存 Json 快照（6 步 / 数条 run），返回时拷一份小数组，开销可忽略。
+namespace {
+
+std::mutex g_flow_status_cache_mutex;
+std::map<std::string, std::pair<std::chrono::steady_clock::time_point, Json>> g_flow_status_cache;
+
+bool GetFlowStatusCache(const std::string& runs_dir, const char* kind, Json* out) {
+    if (out == nullptr) return false;
+    const auto now = std::chrono::steady_clock::now();
+    std::lock_guard<std::mutex> lock(g_flow_status_cache_mutex);
+    const auto it = g_flow_status_cache.find(std::string(kind) + "|" + runs_dir);
+    if (it == g_flow_status_cache.end()) return false;
+    if (now - it->second.first >= std::chrono::seconds(1)) return false;
+    *out = it->second.second;
+    return true;
+}
+
+void PutFlowStatusCache(const std::string& runs_dir, const char* kind, const Json& value) {
+    std::lock_guard<std::mutex> lock(g_flow_status_cache_mutex);
+    g_flow_status_cache[std::string(kind) + "|" + runs_dir] = {std::chrono::steady_clock::now(),
+                                                               value};
+}
+
+}  // namespace
 
 HandlerResult Failure(std::string error) {
     Json result = Json::object();
@@ -472,12 +503,16 @@ Json LspServer::FeatureReports(const Json& params) {
         platform::path_join(platform::state_dir(project->dir), "cache"), "analysis.json");
     std::error_code ec;
     if (std::filesystem::is_regular_file(cache, ec)) {
-        try {
-            std::ifstream input(cache, std::ios::binary);
-            if (input) data["analysis"] = Json::parse(input);
-        } catch (...) {
-            // 缓存损坏不影响报告主体
-        }
+        // A-4：缓存损坏**不再完全静默**。以前这里是空 catch，用户永远只看到
+        // "报告缺 analysis 段"，不知道是缓存坏了。NeverThrow 把"故意吞"变成一个
+        // 有名字的边界，并至少留一条 debug 日志（默认日志级别下零成本）。
+        // 注意：这里刻意不向调用方报错 —— 报告主体仍然有效，缓存只是加速用。
+        platform::NeverThrow(
+            [&] {
+                std::ifstream input(cache, std::ios::binary);
+                if (input) data["analysis"] = Json::parse(input);
+            },
+            "commands.analysis_cache");
     }
     return data;
 }
@@ -536,12 +571,22 @@ Json LspServer::FeatureFlowStatus(const Json& params) {
     Json result = Json::object();
     result["ok"] = true;
     Json flow = CurrentFlowObject(runner);
-    // 刚打开窗口时 runner 还不存在（flow 只在本次会话跑过才有），但磁盘上可能有
-    // 上一轮 syn_1/phy_1 的 flow.status —— 直接从磁盘算 6 步，否则 Flow 视图
-    // 永远是空/旧的，用户看到的就不是 TD GUI 那 6 行。
-    if (const auto project = CurrentProject(); project.has_value()) {
-        const std::string runs_dir = reports::RunsDirectory(project->dir, project->name);
-        flow["steps"] = flow::StepsToJson(flow::CollectAllFlowSteps(runs_dir));
+    // P2（2026-11-22 性能审计）：CurrentProject() 只取一次（原来两次），
+    // 且 runner 存在时 flow.steps 已由 Status() -> StepsJson() 提供（1 s 缓存）；
+    // 旧实现无条件用 CollectAllFlowSteps 覆盖它，把设计好的缓存绕过了。
+    const std::optional<project::Project> project = CurrentProject();
+    const std::string runs_dir =
+        project.has_value() ? reports::RunsDirectory(project->dir, project->name) : std::string();
+    if (!runs_dir.empty() && !runner) {
+        // runner 还不存在（刚打开窗口）：磁盘上可能有上一轮 run 的 6 步状态。
+        Json steps;
+        if (GetFlowStatusCache(runs_dir, "steps", &steps)) {
+            flow["steps"] = std::move(steps);
+        } else {
+            steps = flow::StepsToJson(flow::CollectAllFlowSteps(runs_dir));
+            PutFlowStatusCache(runs_dir, "steps", steps);
+            flow["steps"] = std::move(steps);
+        }
     }
     flow::FlowState state;
     bool have_state = false;
@@ -572,17 +617,21 @@ Json LspServer::FeatureFlowStatus(const Json& params) {
     // Python 的 flowStatus 顶层还带 artifacts（runs[]），扩展的 FlowTree 会读
     Json artifacts = Json::object();
     Json runs = Json::array();
-    if (const auto project = CurrentProject(); project.has_value()) {
-        const std::string runs_dir = reports::RunsDirectory(project->dir, project->name);
-        std::error_code ec;
-        for (const auto& entry : std::filesystem::directory_iterator(runs_dir, ec)) {
-            if (ec) break;
-            if (!entry.is_directory(ec)) continue;
-            Json item = Json::object();
-            item["name"] = entry.path().filename().string();
-            item["dir"] = platform::normalize_path(entry.path().string());
-            item["exists"] = true;
-            runs.push_back(std::move(item));
+    if (!runs_dir.empty()) {
+        // P2：runs 目录枚举做 1 s TTL 缓存（扩展 2 s 轮询，TD 忙时目录枚举会被放大）。
+        if (!GetFlowStatusCache(runs_dir, "runs", &runs)) {
+            runs = Json::array();
+            std::error_code ec;
+            for (const auto& entry : std::filesystem::directory_iterator(runs_dir, ec)) {
+                if (ec) break;
+                if (!entry.is_directory(ec)) continue;
+                Json item = Json::object();
+                item["name"] = entry.path().filename().string();
+                item["dir"] = platform::normalize_path(entry.path().string());
+                item["exists"] = true;
+                runs.push_back(std::move(item));
+            }
+            PutFlowStatusCache(runs_dir, "runs", runs);
         }
     }
     artifacts["runs"] = std::move(runs);

@@ -359,14 +359,23 @@ public:
     std::vector<DocSymbol> DocumentSymbols(std::string_view path) const;
     std::vector<WorkspaceSymbol> SearchSymbols(std::string_view query) const;
 
-    // 文本级引用搜索（对应 server.py on_textDocument_references 的语义）：
-    // 先看光标处 token 的名字，再在**所有已索引文件**的 token 里找同名标识符。
+    // 引用搜索（对应 server.py on_textDocument_references 的语义，net 上更精确）：
+    // 先看光标处 token 的名字，再在已索引文件的 token 里找同名标识符。
     // 用 token 而不是正则，所以注释/字符串里的同名文本天然不会命中。
     //
-    // 端口名 / 内部 net/wire/reg 名走的是同一条路径：光标处的 token 是标识符就够了，
-    // **不要求**它是 module/instance（这正是"停在端口/net 上也能拿引用"的原因）。
+    // 两条路径（由 SymbolAt 的 kind 决定）：
+    //   * kind == "signal"（wire/reg/logic 等 net）——**scope-aware**：
+    //       只返回同一文件、同一 module 整块范围（keyword_line..end_line/
+    //       end_character）内的同名 token；并排除"同名但不同符号"的位置：
+    //         命名端口标签（instances[].connection_ports / conn_port_pos 里的
+    //         `.port(` 的 port —— 那是被例化模块的端口名，用户报的误报）、
+    //         端口/参数/实例名/模块名/例化的模块名引用等定义位置。
+    //       `.port(net)` 的**实参**、assign/always 里的 token 仍算引用。
+    //   * 其它 kind（module/port/parameter/instance）——保持文本级（跨文件），
+    //     端口名在例化侧本来就是被例化模块的端口标签，砍掉会丢真引用。
+    //   * SymbolAt 解析失败（隐式网 / 损坏文件）——回退文本级，宁多勿少。
     // include_declaration=false 时按 SymbolAt 给出的声明位置（file + name 起点）过滤掉声明本身；
-    // 符号解析不出来时无法判定声明位置，此时保持"不过滤"（宁多勿少）。
+    // 符号解析不出来时无法判定声明位置，此时保持"不过滤"。
     // 4 参重载放在索引层，是为了让单测能直接覆盖 include_declaration 语义，
     // 而不是只能在 server::features 里间接验证。
     std::vector<Location> References(std::string_view path, int line, int character) const;

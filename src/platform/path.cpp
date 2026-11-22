@@ -321,13 +321,14 @@ std::filesystem::path to_fs_path(std::string_view utf8) {
 }  // namespace
 
 std::string canonical_path(std::string_view path) {
-    const std::string normalized = normalize_path(path);
+    // §2.7：不加 const —— 让 return 走隐式 move（原 const 局部变量会强制整串拷贝）。
+    std::string normalized = normalize_path(path);
     if (normalized.empty()) return {};
     try {
         std::error_code ec;
         const std::filesystem::path resolved =
             std::filesystem::weakly_canonical(to_fs_path(normalized), ec);
-        if (ec || resolved.empty()) return normalized;  // never-throw：退化为词法结果
+        if (ec || resolved.empty()) return std::move(normalized);  // never-throw：退化为词法结果
         const std::u8string utf8 = resolved.u8string();
         std::string out(reinterpret_cast<const char*>(utf8.data()), utf8.size());
         for (char& c : out) {
@@ -340,7 +341,7 @@ std::string canonical_path(std::string_view path) {
         }
         return out;
     } catch (...) {
-        return normalized;
+        return std::move(normalized);
     }
 }
 

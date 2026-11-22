@@ -1,11 +1,11 @@
-# 交付状态（当前：2026-11-22，扩展 0.26.0）
+# 交付状态（当前：2026-11-22，扩展 0.27.0）
 
 ## 构建与测试
 
 | 项目 | 数据 |
 | --- | --- |
 | **全新目录干净构建** | configure 29 s → build 3.3 min → **844 个目标全部成功**（Release + 全量 LTO）；无 LTO 的 `windows-msvc-dev` 全新目录 **56 s**（2026-11-20 实测；增量构建见 build.md） |
-| **`ctest` 全量** | **71/71 通过**（其中 `unit` 46、`e2e` 5、`td` 5，其余为 `formatgate`/`lintgate`/`gate`/`generator`/`mcp`/`docs`/`parity` 门禁）；preset 默认 **8 路并行**，实测约 **75 s**（串行 92–104 s） |
+| **`ctest` 全量** | **72/72 通过**（其中 `unit` 46、`e2e` 5、`td` 5，其余为 `formatgate`/`lintgate`/`gate`/`generator`/`mcp`/`docs`/`parity` 门禁）；preset 默认 **8 路并行**，实测约 **75 s**（串行 92–104 s） |
 | **原生产物** | `build/bin/fpgalsp-native.exe`（0.26.0，**7043584 B**，全量 LTCG；SHA256 `CB484B7D…891E86`） |
 | **单元测试规模** | 46 个 gtest target |
 
@@ -1688,3 +1688,37 @@ strategy 工程副本、td_session 跨卷日志复制）；门禁新增 `copy_fi
 **验证**：`ctest --preset windows-msvc-release` **71/71**（75 s）、插件 **58/58**、真实 VS Code
 集成套件 PASS；`unit_write_service` 14 条（+Copy）；真机 CorpusAlpha：客户端风格 uri 下 token 0 错位、
 `.fpgalsp` 仍不出现。
+
+---
+
+## 第三十九轮（2026-11-22，0.27.0）：审计发现落地（安全 / 性能 / 现代化 / 引用）
+
+按用户指定，修复 2026-11-22 静态审计中发现的问题，并补根 `.clang-tidy` 门禁。
+
+**安全**：S-01 探针信号名白名单（`NormaliseSignals`/`RenderMdn`/`WriteMdn`/`ReadMdn`/`Configure`
+全员校验，非法不落盘、不建目录）；S-02 4 处路径改 `TclQuoteGrouped`（正常路径命令逐字节不变）；
+`check_tcl_invariant.py` 新增 R1/R2 + `--self-test`（9/9）。真机 MCP 注入信号 `a}; exec calc; #`
+不写 user.mdn。S-03（loopback token 默认强制）与 T 类理论项未修，见 `static/FIXES-0.27.0.md`。
+
+**性能**（全部确认项）：semanticTokens cache 改 `shared_ptr`（零深拷贝、resultId 直接 FNV、
+未变时 delta 不 tokenize）；DocumentStore 文本 `shared_ptr` + `path_index_`（O(1) 查找）+
+`LoadTextShared`；MCP `ResolveAlByNameCached`（5s TTL）；write_service `state_dir` memoize +
+长驻审计 ofstream；flowStatus 复用 1s 缓存；tools/list 只构建一次；§2.7 小项。
+**未做**：Classify 的 canonical root 缓存（安全边界，拒绝不安全缓存）。
+
+**现代化**（A 类）：`atoi` 37 处清零（`platform/number.h`：`ParseDecimal`/`DigitsToIntSaturating`；
+CLI 端口非法→退出）；`JoinOnExit`→`std::jthread`；`Result` 加 `[[nodiscard]]` + 36 处
+`IgnoreResult`；2 处空 catch→`NeverThrow`；7 张静态 set→`constexpr array`；DocumentStore 透明
+hash；`DiagnosticsOptions::text` 改 `std::string`。**A-7 巨型函数重构未做**（结构重构、JSON
+契约敏感，单独立项）。
+
+**wire 引用误报**：`HdlIndex::References` 对 signal 改 scope-aware（本文件 + module 范围；过滤
+命名端口标签/端口/参数/实例名/模块名引用；保留 `.port(net)` 实参）。真机 CorpusAlpha `wire clk`
+（多处 `.clk(clk)`）：引用 21 条、`.clk` 标签误报 **0**。
+
+**新门禁**：根 `.clang-tidy`（缺陷优先 check 集）+ `tools/audit/clang_tidy_gate.py` 棘轮
+（`ctest -L tidy`，`docs_clang_tidy`，~135 s）；基线 **281 条 / 67 TU**（修复前 320）。
+
+**验证**：`ctest --preset windows-msvc-release` **72/72**；插件 **58/58**；真实 VS Code 套件
+**PASS**；真机 CorpusAlpha 单步 flow 正常、`.fpgalsp` 不出现、wire 引用 0 误报；`check_tcl_invariant.py`
+PASS（132 文件/45 调用点）。

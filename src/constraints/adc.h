@@ -54,6 +54,7 @@
 #include <map>
 #include <optional>
 #include <set>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -67,20 +68,22 @@ namespace adc {
 // ADC 认识的命令（Python `KNOWN_COMMANDS`）。
 // ⚠ Python 的**补全**列表里还有 `set_ippin_assignment`，但白名单里没有它 ——
 //   用户照着补全写出来会立刻收到 ADC-CMD。忠实复现并登记（PYTHON-BUGS.md）。
-const std::set<std::string>& KnownCommands();
+// A-5：查表是 `constexpr std::array<std::string_view>`（零动态初始化、零分配），
+// 这里返回 span 而不是 `const std::set<std::string>&`；调用方据此只做只读遍历/查找。
+std::span<const std::string_view> KnownCommands();
 bool IsKnownCommand(std::string_view command);
 
 // TD 认可的 IO 标准（Python `KNOWN_IO_STANDARDS`，**71 项逐字复制**）。
 // 白名单漏项会让用户的正确工程报 warning，是最伤信任的一类误报，
 // 所以这里不做"精简"；集合内容有单测逐项比对 Python 的取值。
-const std::set<std::string>& KnownIoStandards();
+std::span<const std::string_view> KnownIoStandards();
 bool IsKnownIoStandard(std::string_view standard);  // 大小写不敏感（同 Python .upper()）
 
 // PULLTYPE 取值（Python `KNOWN_PULLTYPES`）。
 // ⚠ Python 定义了它却**从不校验** PULLTYPE 值：`PULLTYPE = PULLUPX` 静默通过，
 //   直到 bitgen 才报错。忠实复现（不新增诊断），登记见 PYTHON-BUGS.md。
-const std::set<std::string>& KnownPulltypes();
-const std::set<std::string>& KnownAttrKeys();
+std::span<const std::string_view> KnownPulltypes();
+std::span<const std::string_view> KnownAttrKeys();
 
 // 一条 `KEY = VALUE;` 属性（保留原始 key 大小写与两段 span，供 hover 用）
 struct AttrItem {
@@ -170,7 +173,13 @@ std::vector<lsp::Diagnostic> Diagnostics(const std::vector<Entry>& entries,
 
 struct DiagnosticsOptions {
     const Json* device = nullptr;
-    std::string_view text;
+    // A-6：**有所有权**的文档文本。
+    //   以前是 `std::string_view`，而这个结构体又和 `std::string top` 混在一起；
+    //   调用方写 `DiagnosticsOptions{.text = BuildText(), ...}`（对临时串取 view）时
+    //   立刻悬垂，编译器和 review 都拦不住。Python 版本也不用这个字段，它只是
+    //   签名对照的历史残留 —— 但既然要留着，就让"存进去就必须活到用"由类型表达。
+    //   真正需要零拷贝的路径仍走 4 参数重载的 `std::string_view text`（纯函数入参）。
+    std::string text;
     // 打开后追加**一条** info 级 ADC-COVERAGE 摘要（顶层端口全部约束时不加）
     bool include_coverage = false;
     std::string top;  // 只用于覆盖率消息里点出顶层模块名

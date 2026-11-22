@@ -96,14 +96,25 @@ public:
     // 文件不存在返回 nullopt。
     std::optional<std::string> GetText(std::string_view uri) const;
 
+    // P1-2（2026-11-22 性能审计）：返回**共享只读文本**，热路径零整文件拷贝。
+    // 返回的 shared_ptr 指向内部不可变字符串（didChange 是整串替换，从不原地改），
+    // 因此调用方可以在锁外安全持有；缓存淘汰也不会让对象悬垂（引用计数保活）。
+    std::shared_ptr<const std::string> GetShared(std::string_view uri) const;
+
     // 按**文件系统路径**取当前文本（大小写/分隔符/URI 编码无关）。
     // 客户端发来的 uri 形如 `file:///y%3A/...`（小写盘符 + 百分号编码），而内部
     // `path_to_uri()` 产出 `file:///Y:/...`；用 uri 查表会 miss -> 回落到磁盘 ->
     // 未保存修改不可见（格式化/编辑后语义高亮错位的根因）。
     std::optional<std::string> GetTextByPath(std::string_view path) const;
 
+    // 与 GetTextByPath 同一语义，但不拷贝整文件（返回内部共享只读文本）。
+    // 未打开时走磁盘缓存（缓存条目本身也是 shared_ptr，命中零拷贝）。
+    std::shared_ptr<const std::string> GetTextByPathShared(std::string_view path) const;
+
     // 当前版本号；未打开或没有版本返回 nullopt。
     std::optional<int64_t> GetVersion(std::string_view uri) const;
+    // 按文件系统路径取版本号（内部走 path→uri 索引，O(1)）。
+    std::optional<int64_t> GetVersionByPath(std::string_view path) const;
 
     // 取不可变快照（线程安全）。文档未打开返回无效快照。
     DocumentSnapshot Snapshot(std::string_view uri) const;
@@ -137,7 +148,10 @@ public:
 private:
     struct Document {
         std::string path;
-        std::string text;
+        // P1-2：文本存成不可变共享指针。didChange/didSave 总是**整串替换**
+        //（ApplyChanges 返回新串），所以共享出去的旧文本永远有效、不会被原地改。
+        std::shared_ptr<const std::string> text;
+        std::string path_key;  // normalize_path + 小写（Open 时算一次）
         std::optional<int64_t> version;
         std::string language_id;
     };
@@ -165,7 +179,7 @@ private:
         bool operator==(const FileStamp&) const = default;
     };
     struct CachedText {
-        std::string text;
+        std::shared_ptr<const std::string> text;
         FileStamp stamp;
         std::uint64_t last_used = 0;  // 单调递增的 LRU 时间戳
     };
@@ -181,12 +195,29 @@ private:
     // 缓存读写（只碰 cache_mutex_，与 documents_ 的 shared_mutex 分开，
     // 避免缓存命中时还要拿文档表的写锁）。
     bool TryGetCached(const std::string& path, const FileStamp& stamp, std::string* out) const;
-    void PutCached(const std::string& path, const FileStamp& stamp, std::string text) const;
+    bool TryGetCachedShared(const std::string& path, const FileStamp& stamp,
+                            std::shared_ptr<const std::string>* out) const;
+    void PutCached(const std::string& path, const FileStamp& stamp,
+                   std::shared_ptr<const std::string> text) const;
     // 丢弃某个路径的缓存条目（didSave / didClose 时调用，属于防御性失效）。
     void EvictCached(const std::string& path) const;
 
+    // A-6：透明 hash —— documents_ 的键是 uri（std::string），而所有查询入口拿到
+    // 的是 std::string_view。没有 is_transparent 时每次 find 都要构造一次临时
+    // std::string（completion/hover/语义高亮的每次请求都会走到）。
+    // equal_to<>（透明比较）在 C++20 起让 std::string 与 std::string_view 可直接比较。
+    struct UriHash {
+        using is_transparent = void;
+        std::size_t operator()(std::string_view uri) const noexcept {
+            return std::hash<std::string_view>{}(uri);
+        }
+    };
+
     mutable std::shared_mutex mutex_;
-    std::unordered_map<std::string, Document> documents_;
+    std::unordered_map<std::string, Document, UriHash, std::equal_to<>> documents_;
+    // P1-2：path_key -> uri 二级索引。Open/Close 维护；GetTextByPath 退化为
+    // O(1) 查表，不再遍历所有打开文档 + 每文档一次 normalize_path。
+    std::unordered_map<std::string, std::string> path_index_;
     DiskReader disk_reader_;
 
     mutable std::mutex cache_mutex_;

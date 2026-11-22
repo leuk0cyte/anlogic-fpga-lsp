@@ -19,12 +19,14 @@
 #include <utility>
 
 #include "platform/path.h"
+#include "platform/never_throw.h"
 #include <vector>
 
 #include <re2/re2.h>
 
 #include "flow/hardware_lease.h"
 #include "platform/encoding.h"
+#include "platform/number.h"
 #include "platform/write_service.h"
 #include "td/tcl_quote.h"
 #include "td/td_device.h"
@@ -127,7 +129,7 @@ std::string Attr(std::string_view tag, std::string_view name) {
 int AttrInt(std::string_view tag, std::string_view name, int fallback = 0) {
     const std::string raw = Attr(tag, name);
     if (raw.empty()) return fallback;
-    return std::atoi(raw.c_str());
+    return platform::DigitsToIntSaturating(raw);
 }
 
 // 取 `<tag ...>` 到下一个 '>' 之间的属性串（不含尖括号）
@@ -193,6 +195,68 @@ std::string JsonStringList(const std::vector<std::string>& items) {
 // user.mdn
 // -----------------------------------------------------------------------------
 
+// -----------------------------------------------------------------------------
+// S-01：信号名白名单（拒绝任何能改变 `mark_debug { ... }` Tcl 结构的字符）
+// -----------------------------------------------------------------------------
+namespace {
+
+// 层次名/总线索引里真正会出现的字符。**故意不含** `$`（Verilog 标识符合法，但在
+// Tcl 里是变量替换引导符；真实 TD 网名里没见过，白名单外一律拒绝更可审计）。
+bool IsProbeSignalNameChar(char c) {
+    return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+           c == '_' || c == '/' || c == '.' || c == '[' || c == ']' || c == ':' || c == '-';
+}
+
+constexpr std::size_t kMaxProbeSignalNameLength = 1024;
+
+// 给调用方看的错误：哪个信号、哪些字符非法、允许什么。
+// 名字里可能带控制字符，打印时用 `\xNN`（否则错误消息本身会被换行/终端转义污染）。
+std::string IllegalSignalNameMessage(std::string_view name) {
+    std::string bad_chars;
+    for (const char c : name) {
+        if (IsProbeSignalNameChar(c)) continue;
+        const unsigned char uc = static_cast<unsigned char>(c);
+        char escaped[8];
+        if (uc >= 0x20 && uc < 0x7F) {
+            std::snprintf(escaped, sizeof(escaped), "%c", c);
+        } else {
+            std::snprintf(escaped, sizeof(escaped), "\\x%02X", uc);
+        }
+        if (bad_chars.find(escaped) == std::string::npos) bad_chars += escaped;
+    }
+    const std::string shown =
+        name.size() > 80 ? std::string(name.substr(0, 80)) + "..." : std::string(name);
+    std::string message = "illegal probe signal name `" + shown + "`: ";
+    message += bad_chars.empty() ? "empty" : "contains " + bad_chars;
+    message +=
+        "; allowed characters are A-Z a-z 0-9 _ / . [ ] : - (chip_debugger/user.mdn is a "
+        "Tcl script: `{`, `}`, `\\`, whitespace, `$`, `;`, `\"` and `,` would corrupt the "
+        "mark_debug list)";
+    return message;
+}
+
+}  // namespace
+
+bool IsValidProbeSignalName(std::string_view name) {
+    if (name.empty() || name.size() > kMaxProbeSignalNameLength) return false;
+    for (const char c : name) {
+        if (!IsProbeSignalNameChar(c)) return false;
+    }
+    return true;
+}
+
+bool ValidateProbeSignalNames(const std::vector<std::string>& signals, std::string* error) {
+    if (error != nullptr) error->clear();
+    for (const std::string& raw : signals) {
+        const std::string trimmed = Trim(raw);
+        if (trimmed.empty()) continue;  // 与 NormaliseSignals 的"去空"一致
+        if (IsValidProbeSignalName(trimmed)) continue;
+        if (error != nullptr) *error = IllegalSignalNameMessage(trimmed);
+        return false;
+    }
+    return true;
+}
+
 std::vector<std::string> ParseMarkDebug(std::string_view text) {
     const std::size_t marker = text.find(kMarkDebug);
     if (marker == std::string_view::npos) return {};
@@ -233,7 +297,7 @@ std::string NormaliseSignal(std::string_view signal) {
         if (c < '0' || c > '9') return trimmed;
     }
     const int width = static_cast<int>(index.size());
-    const int value = std::atoi(index.c_str());
+    const int value = platform::DigitsToIntSaturating(index);
     if (value < 0) return trimmed;
     // ⚠ 不要用固定大小的 char[]：`WHG/ANPC_init0/ANPC_SVPWM_init/cnt[0]` 这类
     //    层次名有 38 个字符，`char buf[32]` 会被 snprintf 截断，静默把探针名改坏
@@ -258,8 +322,8 @@ std::vector<std::string> ExpandSignalRanges(const std::vector<std::string>& sign
             out.push_back(trimmed);
             continue;
         }
-        const int a = std::atoi(msb.c_str());
-        const int b = std::atoi(lsb.c_str());
+        const int a = platform::DigitsToIntSaturating(msb);
+        const int b = platform::DigitsToIntSaturating(lsb);
         const int lo = std::min(a, b);
         const int hi = std::max(a, b);
         if (hi - lo > 1024) {  // 明显的笔误，别把内存撑爆
@@ -287,7 +351,12 @@ std::optional<std::uint64_t> ParseBitString(std::string_view bits) {
     return BitsToValue(trimmed);
 }
 
-std::vector<std::string> NormaliseSignals(const std::vector<std::string>& signals) {
+std::vector<std::string> NormaliseSignals(const std::vector<std::string>& signals,
+                                          std::string* error) {
+    if (error != nullptr) error->clear();
+    // S-01：先严格校验。非法名字**不能**进入 mark_debug 的 Tcl 列表，也绝不静默
+    // 丢弃（静默丢会让 agent 以为探针配上了）。返回空 vector + error 让调用方失败。
+    if (!ValidateProbeSignalNames(signals, error)) return {};
     std::vector<std::string> out;
     std::set<std::string> seen;
     for (const std::string& raw : ExpandSignalRanges(signals)) {
@@ -303,7 +372,7 @@ std::vector<std::string> NormaliseSignals(const std::vector<std::string>& signal
         const std::string base_b = open_b == std::string::npos ? b : b.substr(0, open_b);
         if (base_a != base_b) return base_a < base_b;
         if (open_a == std::string::npos || open_b == std::string::npos) return a < b;
-        return std::atoi(a.substr(open_a + 1).c_str()) < std::atoi(b.substr(open_b + 1).c_str());
+        return platform::DigitsToIntSaturating(a.substr(open_a + 1)) < platform::DigitsToIntSaturating(b.substr(open_b + 1));
     });
     return out;
 }
@@ -320,7 +389,7 @@ bool SplitBitIndex(std::string_view name, std::string* base, int* bit) {
         if (c < '0' || c > '9') return false;
     }
     *base = std::string(name.substr(0, open));
-    *bit = std::atoi(index.c_str());
+    *bit = platform::DigitsToIntSaturating(index);
     return true;
 }
 
@@ -392,7 +461,15 @@ MdnConfig ReadMdn(const std::string& path) {
     }
     out.exists = true;
     const std::string text = ReadText(path);
-    out.signals = NormaliseSignals(ParseMarkDebug(text));
+    std::string signal_error;
+    out.signals = NormaliseSignals(ParseMarkDebug(text), &signal_error);
+    if (!signal_error.empty()) {
+        // 既有 user.mdn 里有非法名字（被手改坏 / 恶意工程）：明确报错，不静默当"没有探针"。
+        // 读路径不写盘，所以这里只是把问题如实暴露给上层（Status 会把它放进 error 字段）。
+        out.ok = false;
+        out.error = signal_error + " (in " + out.path + ")";
+        return out;
+    }
     for (const std::string& line : Lines(text)) {
         if (line.find(kMarkDebug) != std::string::npos) continue;
         out.other_lines.push_back(line);
@@ -401,12 +478,24 @@ MdnConfig ReadMdn(const std::string& path) {
     return out;
 }
 
-std::string RenderMdn(std::string_view original, const std::vector<std::string>& signals) {
-    const std::vector<std::string> normalised = NormaliseSignals(signals);
+std::string RenderMdn(std::string_view original, const std::vector<std::string>& signals,
+                      std::string* error) {
+    if (error != nullptr) error->clear();
+    // S-01 纵深防御：这里才是真正生成 `mark_debug { ... }` 的汇点。信号名必须过
+    // 白名单校验 —— 校验通过的名字只含 `A-Za-z0-9_/.[\]:-`，不含 `}`/`\`/换行，
+    // 因此在花括号组内不可能改变 Tcl 结构；没通过就返回失败，绝不生成脚本。
+    std::string signal_error;
+    const std::vector<std::string> normalised = NormaliseSignals(signals, &signal_error);
+    if (!signal_error.empty()) {
+        if (error != nullptr) *error = signal_error;  // 已含"哪个信号/哪个字符"
+        return {};
+    }
     std::string command;
     if (!normalised.empty()) {
         command = "mark_debug { ";
         for (const std::string& signal : normalised) {
+            // 到这里每个 signal 都已通过 IsValidProbeSignalName；仍逐项缩进/注释，
+            // 让任何未来的"绕过 NormaliseSignals"改动都在评审里显眼。
             command += signal;
             command += ' ';
         }
@@ -456,16 +545,24 @@ std::string RenderMdn(std::string_view original, const std::vector<std::string>&
 bool WriteMdn(const std::string& project_dir, const std::string& path,
               const std::vector<std::string>& signals, std::string* error) {
     const std::string original = IsFile(path) ? ReadText(path) : std::string();
+    // S-01 纵深防御：先把内容渲染出来并做严格校验，**通过后才碰文件系统**。
+    // 非法信号名连 chip_debugger/ 目录都不创建（"不落盘"包括不产生新目录）。
+    std::string render_error;
+    const std::string body = RenderMdn(original, signals, &render_error);
+    if (!render_error.empty()) {
+        if (error) *error = render_error;
+        return false;
+    }
     // 首次配置时 <project>/chip_debugger 可能还不存在：chip_debugger/ 是登记过的生成目录，
     // write_service 的 EnsureDir 允许创建它（其它工程目录仍拒绝）。
     const std::string mdn_dir = fpgalsp::platform::path_dirname(path);
     if (!mdn_dir.empty()) {
-        (void)fpgalsp::platform::writes::EnsureDir(
-            project_dir, mdn_dir, fpgalsp::platform::writes::Options{.caller = "probe.mdn_dir"});
+        fpgalsp::platform::IgnoreResult(fpgalsp::platform::writes::EnsureDir(
+            project_dir, mdn_dir, fpgalsp::platform::writes::Options{.caller = "probe.mdn_dir"}));
     }
     // 统一写服务：chip_debugger/*.mdn 属于登记的工程用户文件（策略 + 原子写 + 审计）。
     const fpgalsp::platform::writes::Result written = fpgalsp::platform::writes::Write(
-        project_dir, path, RenderMdn(original, signals),
+        project_dir, path, body,
         fpgalsp::platform::writes::Options{.caller = "probe.mdn"});
     if (!written.ok) {
         if (error) *error = "cannot write " + Slashes(path) + ": " + written.error;
@@ -646,8 +743,8 @@ CaptureData ParseCaptureCsv(std::string_view text) {
         std::string bus;
         if (RE2::FullMatch(column.name, kRange, &bus, &msb, &lsb)) {
             column.bus = bus;
-            column.msb = std::atoi(msb.c_str());
-            column.lsb = std::atoi(lsb.c_str());
+            column.msb = platform::DigitsToIntSaturating(msb);
+            column.lsb = platform::DigitsToIntSaturating(lsb);
             column.width = std::abs(column.msb - column.lsb) + 1;
         } else {
             column.bus = column.name;
@@ -672,7 +769,7 @@ CaptureData ParseCaptureCsv(std::string_view text) {
         parts.push_back(current);
         if (parts.size() < 2) continue;
         CaptureRow row;
-        row.index = std::atoi(Trim(parts[0]).c_str());
+        row.index = platform::DigitsToIntSaturating(Trim(parts[0]));
         row.trigger = Trim(parts[1]) == "1" || Trim(parts[1]) == "true";
         if (row.trigger && out.trigger_index < 0) out.trigger_index = row.index;
         for (std::size_t i = 2; i < parts.size() && (i - 2) < out.columns.size(); ++i) {
@@ -737,7 +834,7 @@ std::map<std::string, std::set<int>> GroupBitSignals(const std::vector<std::stri
         }
         const std::string base = name.substr(0, open);
         const std::string index = name.substr(open + 1, name.size() - open - 2);
-        out[base].insert(std::atoi(index.c_str()));
+        out[base].insert(platform::DigitsToIntSaturating(index));
     }
     return out;
 }
@@ -754,8 +851,8 @@ std::map<std::string, std::set<int>> GroupBusRanges(const std::vector<CwcBus>& b
             continue;
         }
         const std::string base = bus.name.substr(0, open);
-        const int msb = std::atoi(bus.name.substr(open + 1, colon - open - 1).c_str());
-        const int lsb = std::atoi(bus.name.substr(colon + 1).c_str());
+        const int msb = platform::DigitsToIntSaturating(bus.name.substr(open + 1, colon - open - 1));
+        const int lsb = platform::DigitsToIntSaturating(bus.name.substr(colon + 1));
         const int lo = std::min(msb, lsb);
         const int hi = std::max(msb, lsb);
         for (int bit = lo; bit <= hi; ++bit) out[base].insert(bit);
@@ -803,7 +900,7 @@ bool ParseIntAfter(const std::string& text, const char* key, int* out) {
         ++end;
     }
     if (end == begin) return false;
-    *out = std::atoi(text.substr(begin, end - begin).c_str());
+    *out = platform::DigitsToIntSaturating(text.substr(begin, end - begin));
     return true;
 }
 
@@ -819,14 +916,14 @@ bool ParseIntListAfter(const std::string& text, const char* key, std::vector<int
         const char c = text[i];
         if (c == ',' || std::isspace(static_cast<unsigned char>(c)) != 0) {
             if (!item.empty()) {
-                out->push_back(std::atoi(item.c_str()));
+                out->push_back(platform::DigitsToIntSaturating(item));
                 item.clear();
             }
             continue;
         }
         item.push_back(c);
     }
-    if (!item.empty()) out->push_back(std::atoi(item.c_str()));
+    if (!item.empty()) out->push_back(platform::DigitsToIntSaturating(item));
     return !out->empty();
 }
 
@@ -982,7 +1079,7 @@ std::vector<BidEram> ParseBidErams(const std::string& text, const std::string& i
         out.push_back(std::move(eram));
     }
     std::sort(out.begin(), out.end(), [](const BidEram& a, const BidEram& b) {
-        return std::atoi(a.data_offset.c_str()) < std::atoi(b.data_offset.c_str());
+        return platform::DigitsToIntSaturating(a.data_offset) < platform::DigitsToIntSaturating(b.data_offset);
     });
     return out;
 }
@@ -1384,13 +1481,13 @@ ProbeBuildConfig ReadProbeBuildConfig(const project::Project& project) {
             config.has_clock = true;
             config.clock = value;
         } else if (key == "depth") {
-            const int depth = std::atoi(value.c_str());
+            const int depth = platform::DigitsToIntSaturating(value);
             if (depth > 0) {
                 config.has_depth = true;
                 config.depth = depth;
             }
         } else if (key == "trigger_position") {
-            const int pos = std::atoi(value.c_str());
+            const int pos = platform::DigitsToIntSaturating(value);
             if (pos >= 0) config.trigger_position = pos;
         } else if (key == "apply") {
             config.apply_build_config = value != "0";
@@ -1408,9 +1505,9 @@ ProbeBuildConfig ReadProbeBuildConfig(const project::Project& project) {
 
 bool WriteProbeBuildConfig(const project::Project& project, const ProbeBuildConfig& config) {
     // 统一写服务：probe 状态目录（kState）；失败按原逻辑忽略（随后的 Write 会报具体错误）。
-    (void)fpgalsp::platform::writes::EnsureDir(
+    fpgalsp::platform::IgnoreResult(fpgalsp::platform::writes::EnsureDir(
         project.dir, StateProbeDir(project),
-        fpgalsp::platform::writes::Options{.caller = "probe.state_dir"});
+        fpgalsp::platform::writes::Options{.caller = "probe.state_dir"}));
     std::string text;
     if (config.has_clock) text += "clock=" + config.clock + "\n";
     if (config.has_depth) text += "depth=" + std::to_string(config.depth) + "\n";
@@ -1834,7 +1931,7 @@ jsonrpc::Json WriteCompiledCwcFromGate(const project::Project& project,
     }
     int depth = 1024;
     for (const BidEram& eram : erams) {
-        if (!eram.depth.empty()) depth = std::atoi(eram.depth.c_str());
+        if (!eram.depth.empty()) depth = platform::DigitsToIntSaturating(eram.depth);
     }
     // disable 之后采集 RAM 只按 **data 使能**的位分配（TD 自己写的 cwc：2 条总线 ->
     // logic_eram width="32"，而 phy bid 的各 mem 宽度和是 33）。所以 width 用
@@ -1926,9 +2023,9 @@ jsonrpc::Json WriteCompiledCwcFromGate(const project::Project& project,
         }
     }
     // 统一写服务：compiled.cwc 的父目录是 <prj>_Runs/phy_1/cw（kRun），失败随后由 Write 报错。
-    (void)fpgalsp::platform::writes::EnsureDir(
+    fpgalsp::platform::IgnoreResult(fpgalsp::platform::writes::EnsureDir(
         project.dir, fpgalsp::platform::path_dirname(CompiledCwc(project)),
-        fpgalsp::platform::writes::Options{.caller = "probe.cwc_dir"});
+        fpgalsp::platform::writes::Options{.caller = "probe.cwc_dir"}));
     if (!fpgalsp::platform::writes::Write(
                 project.dir, CompiledCwc(project), text,
                 fpgalsp::platform::writes::Options{.caller = "probe.cwc"})
@@ -2100,9 +2197,9 @@ bool WriteUserCfgFromMdn(const project::Project& project, std::string* error) {
         const std::string backup =
             fpgalsp::platform::state_dir(project.dir) + "/probe/user.cfg.bak";
         // 统一写服务：备份目录在状态目录下（kState）；随后 copy_file 的 ec 语义保持不变。
-        (void)fpgalsp::platform::writes::Copy(
+        fpgalsp::platform::IgnoreResult(fpgalsp::platform::writes::Copy(
             project.dir, user_cfg, backup,
-            fpgalsp::platform::writes::Options{.caller = "probe.user_cfg_backup"});
+            fpgalsp::platform::writes::Options{.caller = "probe.user_cfg_backup"}));
     }
     if (!fpgalsp::platform::writes::Write(
                 project.dir, user_cfg, text,
@@ -2196,9 +2293,9 @@ jsonrpc::Json WriteCompiledCwcAfterPhy(const project::Project& project) {
         return out;
     }
     // 统一写服务：compiled.cwc 的父目录（kRun）；失败随后由 Write 报错。
-    (void)fpgalsp::platform::writes::EnsureDir(
+    fpgalsp::platform::IgnoreResult(fpgalsp::platform::writes::EnsureDir(
         project.dir, fpgalsp::platform::path_dirname(CompiledCwc(project)),
-        fpgalsp::platform::writes::Options{.caller = "probe.cwc_dir"});
+        fpgalsp::platform::writes::Options{.caller = "probe.cwc_dir"}));
     if (!fpgalsp::platform::writes::Write(
                 project.dir, CompiledCwc(project), text,
                 fpgalsp::platform::writes::Options{.caller = "probe.cwc"})
@@ -2255,11 +2352,11 @@ std::vector<WatcherInstanceInfo> EnumerateWatcherInstances(const project::Projec
         const std::string text = ReadText(sv);
         if (const std::size_t at = text.find("CWC_BUS_NUM = ");
             at != std::string::npos) {
-            info.bus_num = std::atoi(text.c_str() + at + 14);
+            info.bus_num = platform::DigitsToIntSaturating(std::string_view(text).substr(at + 14));
         }
         if (const std::size_t at = text.find("CWC_BUS_DIN_NUM = ");
             at != std::string::npos) {
-            info.din_num = std::atoi(text.c_str() + at + 18);
+            info.din_num = platform::DigitsToIntSaturating(std::string_view(text).substr(at + 18));
         }
         out.push_back(std::move(info));
     }
@@ -2364,9 +2461,9 @@ bool QueryWatcherMap(const td::TdChoice& td, const project::Project& project, Wa
     // 别散落在工程根目录 —— 那里是 TD GUI 放自己日志的地方。
     options.log_dir = project.dir + "/log";
     // 统一写服务：work_dir = 工程目录（kProject，只允许"已存在"；正常流程工程目录必然存在）。
-    (void)fpgalsp::platform::writes::EnsureDir(
+    fpgalsp::platform::IgnoreResult(fpgalsp::platform::writes::EnsureDir(
         project.dir, options.work_dir,
-        fpgalsp::platform::writes::Options{.caller = "probe.probe_session_cwd"});
+        fpgalsp::platform::writes::Options{.caller = "probe.probe_session_cwd"}));
     const std::string al = Slashes(project.al_path);
     std::string out_text;
     for (const std::string& db : dbs) {
@@ -2378,8 +2475,8 @@ bool QueryWatcherMap(const td::TdChoice& td, const project::Project& project, Wa
         }
         const std::string commands =
             td::MakeImportDeviceCommand(db, project.device, project.speed) + "\n" +
-            "open_project {" + al + "} -single_run\n" +
-            "import_db {" + Slashes(gate_db) + "}\n" +
+            "open_project " + td::TclQuoteGrouped(al) + " -single_run\n" +
+            "import_db " + td::TclQuoteGrouped(Slashes(gate_db)) + "\n" +
             "report_cwc_status\n";
         out_text = session->Run(commands, 240.0);
         session->Kill();
@@ -2433,9 +2530,9 @@ bool QueryWatcherMap(const td::TdChoice& td, const project::Project& project, Wa
     if (map->nodes.empty() && map->instances.empty()) {
         return fail("report_cwc_status produced no parseable watcher rows");
     }
-    (void)fpgalsp::platform::writes::Write(
+    fpgalsp::platform::IgnoreResult(fpgalsp::platform::writes::Write(
         project.dir, cache_path, SerializeWatcherMap(key, *map),
-        fpgalsp::platform::writes::Options{.caller = "probe.watcher_cache"});
+        fpgalsp::platform::writes::Options{.caller = "probe.watcher_cache"}));
     return true;
 }
 
@@ -2520,9 +2617,9 @@ std::string QuerySampleClockFromGateDb(const td::TdChoice& td, const project::Pr
     options.work_dir = project.dir;
     options.log_dir = project.dir + "/log";  // 会话日志统一进 <al>/log/（同 GUI）
     // 统一写服务：work_dir = 工程目录（kProject，只允许"已存在"；正常流程工程目录必然存在）。
-    (void)fpgalsp::platform::writes::EnsureDir(
+    fpgalsp::platform::IgnoreResult(fpgalsp::platform::writes::EnsureDir(
         project.dir, options.work_dir,
-        fpgalsp::platform::writes::Options{.caller = "probe.capture_session_cwd"});
+        fpgalsp::platform::writes::Options{.caller = "probe.capture_session_cwd"}));
     std::unique_ptr<td::TdSession> session;
     const std::string al = Slashes(project.al_path);
     // ⚠ 必须用**工程自己的**器件数据库：写死 ph1_100.db 在 EF2 系列（CorpusAlpha = EF2L45LG144B）
@@ -2543,8 +2640,8 @@ std::string QuerySampleClockFromGateDb(const td::TdChoice& td, const project::Pr
         }
         const std::string commands =
             td::MakeImportDeviceCommand(db, project.device, project.speed) + "\n" +
-            "open_project {" + al + "} -single_run\n" +
-            "import_db {" + Slashes(gate_db) + "}\n" +
+            "open_project " + td::TclQuoteGrouped(al) + " -single_run\n" +
+            "import_db " + td::TclQuoteGrouped(Slashes(gate_db)) + "\n" +
             "report_cwc_status\n";
         out = session->Run(commands, 240.0);
         session->Kill();
@@ -2596,9 +2693,9 @@ std::string QuerySampleClockFromGateDb(const td::TdChoice& td, const project::Pr
         // 借用 error 之外的通道不合适；实例清单由调用方通过 info 拿到（见 Capture）。
         *error = std::string();
     }
-    (void)fpgalsp::platform::writes::Write(
+    fpgalsp::platform::IgnoreResult(fpgalsp::platform::writes::Write(
         project.dir, cache_path, key + "\n" + clock + "\n",
-        fpgalsp::platform::writes::Options{.caller = "probe.clock_cache"});
+        fpgalsp::platform::writes::Options{.caller = "probe.clock_cache"}));
     return clock;
 }
 
@@ -2668,9 +2765,9 @@ std::string EnsureCwcForInstance(const td::TdChoice& td, const project::Project&
     if (text.empty()) return fail(impl_error.empty() ? "cannot build cwc for " + instance : impl_error);
     const std::string path = StateProbeDir(project) + "/cwc_" + instance + ".cwc";
     // 统一写服务：probe 状态目录（kState）；失败随后由 Write 报错。
-    (void)fpgalsp::platform::writes::EnsureDir(
+    fpgalsp::platform::IgnoreResult(fpgalsp::platform::writes::EnsureDir(
         project.dir, StateProbeDir(project),
-        fpgalsp::platform::writes::Options{.caller = "probe.instance_cwc_dir"});
+        fpgalsp::platform::writes::Options{.caller = "probe.instance_cwc_dir"}));
     if (!fpgalsp::platform::writes::Write(
                 project.dir, path, text,
                 fpgalsp::platform::writes::Options{.caller = "probe.instance_cwc"})
@@ -2734,9 +2831,9 @@ jsonrpc::Json EnsureCompiledCwc(const project::Project& project,
         return out;
     }
     // 统一写服务：compiled.cwc 的父目录（kRun）；失败随后由 Write 报错。
-    (void)fpgalsp::platform::writes::EnsureDir(
+    fpgalsp::platform::IgnoreResult(fpgalsp::platform::writes::EnsureDir(
         project.dir, fpgalsp::platform::path_dirname(CompiledCwc(project)),
-        fpgalsp::platform::writes::Options{.caller = "probe.cwc_dir"});
+        fpgalsp::platform::writes::Options{.caller = "probe.cwc_dir"}));
     if (!fpgalsp::platform::writes::Write(
                 project.dir, CompiledCwc(project), text,
                 fpgalsp::platform::writes::Options{.caller = "probe.cwc"})
@@ -2774,6 +2871,9 @@ jsonrpc::Json Status(const project::Project& project) {
         jsonrpc::Json signals = jsonrpc::Json::array();
         for (const std::string& signal : mdn.signals) signals.push_back(signal);
         mdn_json["signals"] = std::move(signals);
+        // S-01：文件存在但里面有非法信号名时，ReadMdn 会填 error。把原因暴露出来，
+        // 否则上层只会看到 count:0（"没有探针"），把"被拒绝的注入"误判成"没配置"。
+        if (mdn.exists && !mdn.ok && !mdn.error.empty()) mdn_json["error"] = mdn.error;
         out["chip_debugger"] = std::move(mdn_json);
     }
 
@@ -2953,8 +3053,32 @@ jsonrpc::Json Configure(const project::Project& project, const std::vector<std::
     out["path"] = MdnPath(project);
 
     const MdnConfig before = ReadMdn(MdnPath(project));
+    // S-01：既有 user.mdn 里有非法名字（手改坏/恶意工程）时明确失败，不拿它继续算。
+    // 文件不存在不算错误（首次配置本来就会新建），read 用 exists 区分。
+    if (before.exists && !before.ok) {
+        out["reason"] = before.error;
+        return out;
+    }
+    // S-01：入口白名单。来自 MCP/LSP 的 signals 在**做任何事之前**先校验：
+    // 非法 -> ok:false + 明确 error（哪个信号、哪个字符），dry-run 也一样失败。
+    std::string invalid_signals;
+    if (!signals.empty() && !ValidateProbeSignalNames(signals, &invalid_signals)) {
+        out["reason"] = invalid_signals;
+        out["ok"] = false;
+        out["count"] = 0;
+        out["before"] = jsonrpc::Json::array();
+        out["after"] = jsonrpc::Json::array();
+        out["added"] = jsonrpc::Json::array();
+        out["removed"] = jsonrpc::Json::array();
+        return out;
+    }
     const std::vector<std::string> after =
         signals.empty() ? before.signals : NormaliseSignals(signals);
+    // 纵深防御：after 也可能是从文件读回的（signals 为空的分支），再校验一遍。
+    if (!ValidateProbeSignalNames(after, &invalid_signals)) {
+        out["reason"] = invalid_signals;
+        return out;
+    }
     const std::set<std::string> old_set(before.signals.begin(), before.signals.end());
     const std::set<std::string> new_set(after.begin(), after.end());
 
@@ -3174,7 +3298,7 @@ bool ParseBitName(std::string_view name, std::string* base, int* bit) {
         if (c < '0' || c > '9') return false;
     }
     *base = Trim(name.substr(0, open));
-    *bit = std::atoi(std::string(index).c_str());
+    *bit = platform::DigitsToIntSaturating(index);
     return true;
 }
 
@@ -3195,8 +3319,8 @@ bool ParseBusRange(std::string_view name, std::string* base, int* msb, int* lsb)
         if (c < '0' || c > '9') return false;
     }
     *base = Trim(name.substr(0, open));
-    *msb = std::atoi(a.c_str());
-    *lsb = std::atoi(b.c_str());
+    *msb = platform::DigitsToIntSaturating(a);
+    *lsb = platform::DigitsToIntSaturating(b);
     return true;
 }
 
@@ -3298,7 +3422,7 @@ jsonrpc::Json Verify(const project::Project& project, bool include_bits,
                                                       ? std::string::npos
                                                       : bid.find("</width>", width_at);
                     if (width_at == std::string::npos || width_end == std::string::npos) continue;
-                    bid_cwc_bits += std::atoi(bid.substr(width_at + 7, width_end - width_at - 7).c_str());
+                    bid_cwc_bits += platform::DigitsToIntSaturating(bid.substr(width_at + 7, width_end - width_at - 7));
                 }
             }
         }
@@ -3513,8 +3637,8 @@ std::string PatchTrigger(std::string_view cwc_text, const CaptureOptions::Trigge
         int msb = 0;
         int lsb = 0;
         if (RE2::FullMatch(bus.name, kBusRange, &base, &msb_s, &lsb_s)) {
-            msb = std::atoi(msb_s.c_str());
-            lsb = std::atoi(lsb_s.c_str());
+            msb = platform::DigitsToIntSaturating(msb_s);
+            lsb = platform::DigitsToIntSaturating(lsb_s);
         } else {
             // `pwm_reg0_i` 这种没带宽度的写法：从 .cwc 的 bus 名里补
             const RE2 find_bus("(<bus\\b[^>]*?\\bname=\")" + RE2::QuoteMeta(bus.name) +
@@ -3523,8 +3647,8 @@ std::string PatchTrigger(std::string_view cwc_text, const CaptureOptions::Trigge
             std::string a;
             std::string b;
             if (RE2::PartialMatch(text, find_bus, &full, &a, &b)) {
-                msb = std::atoi(a.c_str());
-                lsb = std::atoi(b.c_str());
+                msb = platform::DigitsToIntSaturating(a);
+                lsb = platform::DigitsToIntSaturating(b);
             } else {
                 continue;  // 找不到这条总线，跳过而不是猜
             }
@@ -3745,9 +3869,9 @@ jsonrpc::Json Capture(const td::TdChoice& td, const project::Project& project,
         effective.cwd = Slashes(project.dir);
     }
     // 统一写服务：cwd 默认工程目录（kProject，只允许"已存在"）；用户显式传 temp 下的 cwd 时为 kTemp。
-    (void)fpgalsp::platform::writes::EnsureDir(
+    fpgalsp::platform::IgnoreResult(fpgalsp::platform::writes::EnsureDir(
         project.dir, effective.cwd,
-        fpgalsp::platform::writes::Options{.caller = "probe.capture_cwd"});
+        fpgalsp::platform::writes::Options{.caller = "probe.capture_cwd"}));
     const std::string instance =
         effective.instance.empty() ? (cwc.instance.empty() ? "auto_created_cwc1" : cwc.instance)
                                    : effective.instance;
@@ -3760,9 +3884,9 @@ jsonrpc::Json Capture(const td::TdChoice& td, const project::Project& project,
         const std::size_t slash = csv.find_last_of('/');
         if (slash != std::string::npos) {
             // 统一写服务：默认是 <prj>_Runs/phy_1/cw（kRun）；用户自定义 CSV 路径按同一策略校验。
-            (void)fpgalsp::platform::writes::EnsureDir(
+            fpgalsp::platform::IgnoreResult(fpgalsp::platform::writes::EnsureDir(
                 project.dir, csv.substr(0, slash),
-                fpgalsp::platform::writes::Options{.caller = "probe.capture_csv_dir"});
+                fpgalsp::platform::writes::Options{.caller = "probe.capture_csv_dir"}));
         }
     }
 
@@ -3849,9 +3973,9 @@ jsonrpc::Json Capture(const td::TdChoice& td, const project::Project& project,
             const std::string trigger_dir =
                 fpgalsp::platform::state_dir(project.dir) + "/probe";
             // 统一写服务：触发条件临时 cwc 放状态目录（kState）。
-            (void)fpgalsp::platform::writes::EnsureDir(
+            fpgalsp::platform::IgnoreResult(fpgalsp::platform::writes::EnsureDir(
                 project.dir, trigger_dir,
-                fpgalsp::platform::writes::Options{.caller = "probe.trigger_dir"});
+                fpgalsp::platform::writes::Options{.caller = "probe.trigger_dir"}));
             const std::string target = trigger_dir + "/trigger_" + Timestamp() + ".cwc";
             if (fpgalsp::platform::writes::Write(
                     project.dir, target, patched,

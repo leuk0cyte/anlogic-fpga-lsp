@@ -16,6 +16,7 @@
 
 #include "hdl/hdl_index.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -869,6 +870,259 @@ TEST(HdlIndexQuery, ReferencesOfInternalNetAndPortConnection) {
     const std::vector<fpgalsp::hdl::Location> connection =
         project.index.References("Y:/proj/src/top.v", position.first, position.second);
     EXPECT_GE(connection.size(), 1u) << "端口连接位置必须能拿到引用";
+}
+
+// -----------------------------------------------------------------------------
+// 10c. 引用：net 的 scope-aware 语义（wire 引用不得混入同名例化端口标签）
+// -----------------------------------------------------------------------------
+//  用户报的 bug：wire `oc_chk_lock` 的"转到引用"把例化里 `.oc_chk_lock(...)` 的
+//  **端口标签**也算成引用 —— 那是被例化模块的端口名，与 wire 只是同名。
+//  修法（HdlIndex::References）：kind=="signal" 时只在**同文件同 module** 范围内找
+//  同名 token，并排除命名端口标签 / 端口·参数·实例·模块名等其它符号位置；
+//  非 signal（module/port/parameter/instance）保持文本级。
+
+namespace {
+
+constexpr const char* kRefsPath = "Y:/proj/src/refs.v";
+
+// module child 的端口名与 top 的 wire 同名；other_mod 里还有一个同名 wire。
+constexpr const char* kRefsText =
+    "module child(input oc_chk_lock, input other);\n"                     // 0
+    "endmodule\n"                                                         // 1
+    "module top(input a, input b);\n"                                     // 2
+    "  wire oc_chk_lock;\n"                                               // 3
+    "  assign oc_chk_lock = a & b;\n"                                     // 4
+    "  child u0 (.oc_chk_lock(oc_chk_lock), .other(oc_chk_lock));\n"      // 5
+    "endmodule\n"                                                         // 6
+    "module other_mod(input c, input d);\n"                               // 7
+    "  wire oc_chk_lock;\n"                                               // 8
+    "  assign oc_chk_lock = c & d;\n"                                     // 9
+    "endmodule\n";                                                        // 10
+
+std::vector<std::pair<int, int>> TokenPositions(const ParsedFile& file,
+                                                const std::string& name) {
+    std::vector<std::pair<int, int>> out;
+    for (const fpgalsp::hdl::Token& token : file.tokens) {
+        if (token.kind != 'i' || token.text != name) continue;
+        out.push_back({token.line, token.character});
+    }
+    return out;
+}
+
+// 所有例化命名端口标签的位置（instances[].connection_ports 的 key）
+std::vector<std::pair<int, int>> PortLabelPositions(const ParsedFile& file) {
+    std::vector<std::pair<int, int>> out;
+    for (const Instance& instance : file.instances) {
+        for (const auto& entry : instance.connection_ports) out.push_back(entry.first);
+    }
+    return out;
+}
+
+bool Contains(const std::vector<fpgalsp::hdl::Location>& locations, int line,
+              int character) {
+    for (const fpgalsp::hdl::Location& location : locations) {
+        if (location.line == line && location.character == character) return true;
+    }
+    return false;
+}
+
+const ModuleInfo* ModuleInfoByName(const HdlIndex& index, std::string_view path,
+                                   const std::string& name) {
+    for (const ModuleInfo* info : index.ModulesOfFile(path)) {
+        if (info->module.name == name) return info;
+    }
+    return nullptr;
+}
+
+}  // namespace
+
+TEST(HdlIndexQuery, ReferencesOfWireExcludeInstancePortLabels) {
+    HdlIndex index;
+    index.AddFile(Parse(kRefsText, kRefsPath));
+    const ParsedFile* file = index.File(kRefsPath);
+    ASSERT_NE(file, nullptr);
+
+    const ModuleInfo* top = ModuleInfoByName(index, kRefsPath, "top");
+    ASSERT_NE(top, nullptr);
+    const Signal* wire = FindSignal(*top, "oc_chk_lock");
+    ASSERT_NE(wire, nullptr);
+
+    // 例化里有两个命名端口标签（.oc_chk_lock / .other），其中与本 wire 同名的是前者
+    const auto labels = PortLabelPositions(*file);
+    ASSERT_EQ(labels.size(), 2u);
+    const auto same_name = TokenPositions(*file, "oc_chk_lock");
+    std::vector<std::pair<int, int>> same_name_labels;
+    for (const auto& position : same_name) {
+        if (std::find(labels.begin(), labels.end(), position) != labels.end()) {
+            same_name_labels.push_back(position);
+        }
+    }
+    ASSERT_EQ(same_name_labels.size(), 1u) << "例化里只有一个同名端口标签 .oc_chk_lock";
+    const auto label = same_name_labels[0];
+
+    // 例化行上另外两个同名 token 是 .oc_chk_lock(...) 与 .other(...) 的**实参**
+    std::vector<std::pair<int, int>> instance_arguments;
+    for (const auto& position : same_name) {
+        if (position.first == label.first && position != label) {
+            instance_arguments.push_back(position);
+        }
+    }
+    ASSERT_EQ(instance_arguments.size(), 2u);
+
+    // assign 行的 LHS（本行唯一同名 token）
+    std::vector<std::pair<int, int>> assign_lhs;
+    for (const auto& position : same_name) {
+        if (position.first == wire->line + 1) assign_lhs.push_back(position);
+    }
+    ASSERT_EQ(assign_lhs.size(), 1u);
+
+    const auto refs = index.References(kRefsPath, wire->line, wire->character);
+    // 声明 + assign LHS + 两个实参；端口标签不算引用
+    EXPECT_EQ(refs.size(), 4u);
+    for (const auto& location : refs) EXPECT_EQ(location.path, kRefsPath);
+
+    EXPECT_FALSE(Contains(refs, label.first, label.second))
+        << "`.oc_chk_lock` 端口标签不是 wire 的引用（用户报的误报）";
+    EXPECT_TRUE(Contains(refs, wire->line, wire->character)) << "include_declaration=true 含声明";
+    EXPECT_TRUE(Contains(refs, assign_lhs[0].first, assign_lhs[0].second)) << "assign LHS";
+    for (const auto& position : instance_arguments) {
+        EXPECT_TRUE(Contains(refs, position.first, position.second))
+            << "`.port(wire)` 的实参必须保留";
+    }
+
+    // include_declaration=false：只掉声明那一条，其余语义不变
+    const auto uses = index.References(kRefsPath, wire->line, wire->character, false);
+    EXPECT_EQ(uses.size(), 3u);
+    EXPECT_FALSE(Contains(uses, wire->line, wire->character));
+    EXPECT_FALSE(Contains(uses, label.first, label.second));
+    for (const auto& position : instance_arguments) {
+        EXPECT_TRUE(Contains(uses, position.first, position.second));
+    }
+
+    // 光标停在 assign 里的引用上 -> 与停在声明处等价（都解析成同一个 signal）
+    const auto from_use =
+        index.References(kRefsPath, assign_lhs[0].first, assign_lhs[0].second);
+    EXPECT_EQ(from_use.size(), refs.size());
+    const auto use_symbol =
+        index.SymbolAt(kRefsPath, assign_lhs[0].first, assign_lhs[0].second);
+    ASSERT_TRUE(use_symbol.has_value());
+    EXPECT_EQ(use_symbol->kind, "signal");
+}
+
+TEST(HdlIndexQuery, ReferencesOfWireAreScopedToOwnModule) {
+    HdlIndex index;
+    index.AddFile(Parse(kRefsText, kRefsPath));
+    const ParsedFile* file = index.File(kRefsPath);
+    ASSERT_NE(file, nullptr);
+
+    const ModuleInfo* top = ModuleInfoByName(index, kRefsPath, "top");
+    const ModuleInfo* other = ModuleInfoByName(index, kRefsPath, "other_mod");
+    ASSERT_NE(top, nullptr);
+    ASSERT_NE(other, nullptr);
+    const Signal* top_wire = FindSignal(*top, "oc_chk_lock");
+    const Signal* other_wire = FindSignal(*other, "oc_chk_lock");
+    ASSERT_NE(top_wire, nullptr);
+    ASSERT_NE(other_wire, nullptr);
+
+    const auto top_refs = index.References(kRefsPath, top_wire->line, top_wire->character);
+    const auto other_refs =
+        index.References(kRefsPath, other_wire->line, other_wire->character);
+
+    // other_mod：只有声明 + assign LHS
+    ASSERT_EQ(other_refs.size(), 2u);
+    for (const auto& location : other_refs) {
+        EXPECT_GE(location.line, other->module.keyword_line);
+        EXPECT_LE(location.line, other->module.end_line);
+    }
+    // top 的引用里不能出现 other_mod 里的同名 token（跨 module 同名不混入）
+    for (const auto& location : top_refs) {
+        EXPECT_GE(location.line, top->module.keyword_line);
+        EXPECT_LE(location.line, top->module.end_line);
+        EXPECT_FALSE(location.line == other_wire->line &&
+                     location.character == other_wire->character);
+    }
+    EXPECT_EQ(top_refs.size(), 4u);
+
+    // 两个 module 的引用集合不相交
+    for (const auto& location : other_refs) {
+        EXPECT_FALSE(Contains(top_refs, location.line, location.character));
+    }
+}
+
+TEST(HdlIndexQuery, ReferencesOfWireExcludeSameNameModuleAndInstancePositions) {
+    // wire 与"例化的模块名/实例名"同名：那两个 token 也不是 wire 的引用
+    HdlIndex index;
+    const char* text =
+        "module child(input d);\n"           // 0
+        "endmodule\n"                         // 1
+        "module top(input a);\n"              // 2
+        "  wire child;\n"                     // 3
+        "  assign child = a;\n"               // 4
+        "  child child (.d(child));\n"        // 5
+        "endmodule\n";                        // 6
+    index.AddFile(Parse(text, kRefsPath));
+
+    const ModuleInfo* top = ModuleInfoByName(index, kRefsPath, "top");
+    ASSERT_NE(top, nullptr);
+    const Signal* wire = FindSignal(*top, "child");
+    ASSERT_NE(wire, nullptr);
+
+    const ParsedFile* file = index.File(kRefsPath);
+    ASSERT_NE(file, nullptr);
+    const auto same_name = TokenPositions(*file, "child");
+    std::vector<std::pair<int, int>> instance_line;
+    for (const auto& position : same_name) {
+        if (position.first == wire->line + 2) instance_line.push_back(position);
+    }
+    ASSERT_EQ(instance_line.size(), 3u) << "模块名 + 实例名 + .d(child) 实参";
+    const auto modref = instance_line[0];
+    const auto instance_name = instance_line[1];
+    const auto argument = instance_line[2];
+
+    const auto refs = index.References(kRefsPath, wire->line, wire->character);
+    EXPECT_EQ(refs.size(), 3u) << "声明 + assign LHS + .d(child) 实参";
+    EXPECT_FALSE(Contains(refs, modref.first, modref.second)) << "例化的模块名不是 wire 引用";
+    EXPECT_FALSE(Contains(refs, instance_name.first, instance_name.second))
+        << "实例名不是 wire 引用";
+    EXPECT_TRUE(Contains(refs, argument.first, argument.second));
+}
+
+TEST(HdlIndexQuery, ReferencesOfInstancePortLabelKeepsTextLevel) {
+    // 光标本来就停在 `.oc_chk_lock` 端口标签上：那是被例化模块 child 的端口符号，
+    // 不是 net；保持旧的文本级语义（跨文件全量同名 token），不要误伤。
+    HdlIndex index;
+    index.AddFile(Parse(kRefsText, kRefsPath));
+    const ParsedFile* file = index.File(kRefsPath);
+    ASSERT_NE(file, nullptr);
+
+    std::pair<int, int> label{};
+    bool found = false;
+    for (const Instance& instance : file->instances) {
+        for (const auto& entry : instance.connection_ports) {
+            if (entry.second == "oc_chk_lock") {
+                label = entry.first;
+                found = true;
+            }
+        }
+    }
+    ASSERT_TRUE(found) << "fixture 里应存在 .oc_chk_lock 端口标签";
+    const auto symbol = index.SymbolAt(kRefsPath, label.first, label.second);
+    ASSERT_TRUE(symbol.has_value());
+    EXPECT_EQ(symbol->kind, "port");
+    EXPECT_EQ(symbol->module, "child");
+
+    const auto all = index.References(kRefsPath, label.first, label.second);
+    // 只索引了一个文件，文本级 = 该文件里全部同名 token
+    const auto same_name = TokenPositions(*file, "oc_chk_lock");
+    ASSERT_EQ(all.size(), same_name.size()) << "端口标签上的引用保持文本级旧语义";
+    for (const auto& position : same_name) {
+        EXPECT_TRUE(Contains(all, position.first, position.second));
+    }
+
+    // include_declaration=false：只掉被例化模块的端口声明那一条
+    const auto uses = index.References(kRefsPath, label.first, label.second, false);
+    EXPECT_EQ(uses.size() + 1, all.size());
+    EXPECT_FALSE(Contains(uses, symbol->span.line, symbol->span.start_character));
 }
 
 // -----------------------------------------------------------------------------

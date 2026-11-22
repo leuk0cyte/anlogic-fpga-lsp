@@ -1,0 +1,120 @@
+# =============================================================================
+#  fpga-lsp-cpp —— 仓库根 clang-tidy 配置（门禁口径）
+# =============================================================================
+#  定位：**缺陷优先**的回归棘轮，不是"风格洁癖"清单。
+#
+#  为什么有这个文件（2026-11-22 现代化静态审计结论）：
+#    上一轮（0.26.0）遗留了 `atoi` 家族（cert-err34-c）、超长函数等退化项，
+#    根因不是"不知道有这些问题"，而是**连续两轮没有门禁** —— 静态分析只在
+#    "人记得跑"的时候跑，退化就无人发现。这里把它固化成机器门禁：
+#    `.clang-tidy` 负责"查什么"，`tools/audit/clang_tidy_gate.py` 负责
+#    "和上一次比有没有变差"（基线棘轮：既有问题进基线，只许减少）。
+#
+#  用法：
+#    python tools/audit/clang_tidy_gate.py               # CI / 本地门禁（棘轮比对）
+#    ctest -L tidy                                       # 同上（经 with_vcvars 自动注册）
+#
+#  三条纪律：
+#    1. 只收「高信号、真缺陷、可机械判定」的 check。风格/重排类（readability-*、
+#       modernize 的绝大多数、cppcoreguidelines 的边界类）**不进 gate**：
+#       它们噪音大、修复会污染 src/ 的 review 焦点，把门禁变成"永远红"。
+#    2. 关闭项必须写理由（见下面 OFF 列表），不接受"噪音太多"作为唯一理由。
+#    3. `WarningsAsErrors` 刻意不开：门禁靠基线棘轮，而不是"一键全红"。
+#       全红只会训练人 `--update-baseline`，那是把门禁关掉的另一种方式。
+#
+#  ⚠ YAML 陷阱：`Checks:` 是折叠标量，块**内部不能出现 `#` 注释**。
+#    `# 说明` 会被当成分隔符/内容的一部分，clang-tidy 不报错但整条规则静默失效
+#    （thirdparty/verible/.clang-tidy 里 hzeller 也踩过同一个坑）。
+#    所以下面只有 check 名，一行一个，注释全部写在块外。
+#
+#  ⚠ 作用域：本文件只对 `src/` 生效（HeaderFilterRegex）。thirdparty/ 下三个
+#    子模块各自带 .clang-tidy（json / spdlog / verible），门禁脚本对每个 TU 都
+#    显式传 `--config-file=<仓库根>/.clang-tidy`，因此它们的配置不会被继承、
+#    也不会被我方改动影响；第三方头文件的诊断由 HeaderFilterRegex 挡掉。
+#
+#  check 集规模实测（2026-11-22，67 TU，LLVM 23.1.5）：本配置在当时的 src/ 上产生
+#    **320 条唯一位置诊断**（jobs=8，131s），已全部入库为初始基线
+#    （tools/audit/clang_tidy_baseline.json）。分布：modernize-avoid-c-arrays 64、
+#    cert-err34-c 36、bugprone-exception-escape 30、cert-err33-c 23、
+#    bugprone-empty-catch 17 …
+#    对照：审计用的全量 check 集是 11,154 条原始诊断 —— 那种规模只能做"报告"、
+#    做不了"门禁"（永远红只会训练人去 --update-baseline）。
+# =============================================================================
+
+Checks: >
+  -*,
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-implicit-widening-of-multiplication-result,
+  -bugprone-signed-char-misuse,
+  -bugprone-macro-parentheses,
+  clang-analyzer-*,
+  performance-*,
+  -performance-enum-size,
+  cert-err33-c,
+  cert-err34-c,
+  cert-err52-cpp,
+  cert-err60-cpp,
+  cert-err61-cpp,
+  cert-ctr51-cpp,
+  cert-oop54-cpp,
+  modernize-avoid-c-arrays,
+  modernize-use-nullptr,
+  modernize-use-override,
+  modernize-use-emplace
+
+# =============================================================================
+#  OFF 列表与理由（都在上面 `Checks` 里以 `-check` 形式出现）
+# =============================================================================
+#  bugprone-easily-swappable-parameters
+#      相邻同型参数（如 (int w, int h)）的组合爆炸：单文件几十条，且"修法"是
+#      改 API 或加类型包装，不是机械可修的缺陷。真正的防护在类型设计 + 单测，
+#      放进 gate 只会淹没真信号。
+#  bugprone-implicit-widening-of-multiplication-result
+#      实测 65 条，绝大多数是 `size_t * int` 这类算术上下文，MSVC /W4 已覆盖
+#      有实际危害的子集（C4244/C4267），再进 gate 是重复计账。
+#  bugprone-signed-char-misuse
+#      本项目字节处理统一走 uint8_t/std::byte，signed char 参与运算的写法很少；
+#      实测 0 条，但该 check 对"UTF-8 字节当 char 比较"会持续误报，故关。
+#  bugprone-macro-parentheses
+#      预处理器参数加括号属风格约束（MSVC /W4 也有 C4003 一类），不是缺陷类；
+#      且本项目宏很少，收益≈0。
+#  performance-enum-size
+#      实测 166 条，是本仓库最大的噪音源：它建议 enum 换底层类型以省内存，
+#      属于 ABI/序列化敏感改动（和 MCP schema、二进制索引格式冲突），
+#      必须人工逐项判断，不能做门禁。
+#
+#  另外刻意**不启用**的族（不是"关"，是从未加入）：
+#    readability-*     风格与命名，量级 6k+，与本仓 .clang-format 的取向重叠；
+#    cppcoreguidelines-* 大量边界/魔法数条目，审计用报告即可，门禁不背；
+#    modernize-* 其余项  —— 除下面四个缺陷类外，其余（use-nodiscard 1598 条、
+#                        use-scoped-lock 253、designated-initializers 207 …）
+#                        都是"整库重写式"改造，放进门禁等于禁止提交；
+#    google-*/abseil-*  无对应规范，本仓库不采用；
+#    concurrency-*      mt-unsafe 对 getenv/localtime 类调用误报偏高，
+#                        真并发问题由 clang-analyzer 与 TSAN 类测试覆盖。
+# =============================================================================
+
+HeaderFilterRegex: '.*[/\\]src[/\\].*'
+
+# 系统头（MSVC STL / Windows SDK）里的诊断不是我们的债；关掉。
+SystemHeaders: false
+
+# 格式建议会让输出噪音翻倍（每条诊断附一条 -fix 建议），门禁不需要。
+FormatStyle: none
+
+# 刻意留空：门禁用基线棘轮，不把 warning 升级成 error（见文件头纪律 3）。
+WarningsAsErrors: ''
+
+# =============================================================================
+#  CheckOptions
+# =============================================================================
+#  bugprone-signed-bitwise：保留该 check（负值参与位运算是真 UB 风险），但忽略
+#  "正整数常量当掩码"的形态。理由：本项目大量 UTF-8/字节处理写成
+#  `(b0 & 0xE0)` / `0xC0 | (cp >> 6)`，`unsigned char` 经整型提升成 `int` 后
+#  运算符两侧都是 signed —— 语义完全良性，却会被逐行举报（实测单文件 22 条、
+#  全仓 200+ 条）。开启该选项后同一批代码 0 条，而 `signed & signed 变量`
+#  这类真正危险（且 MSVC /W4 不报）的形态仍然会被抓。
+CheckOptions:
+  - key: bugprone-signed-bitwise.IgnorePositiveIntegerLiterals
+    value: 'true'

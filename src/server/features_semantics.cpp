@@ -36,36 +36,32 @@ namespace fpgalsp::server {
 //  textDocument/semanticTokens/full
 // =============================================================================
 
-Json LspServer::FeatureSemanticTokens(std::string_view path) {
-    Json result = Json::object();
-    result["data"] = Json::array();
-
+LspServer::SemanticTokenContext LspServer::SemanticTokenContextFor(std::string_view path) {
+    SemanticTokenContext context;
+    context.path = std::string(path);
+    if (context.path.empty()) return context;
     // `fpgaLsp.verible.highlight=false`：不生成任何语义 token（客户端就不会上色）。
-    // 以前这个开关只被插件发过来、服务端从不读取（审计 2026-11-22 的 A-2）。
-    if (!settings_.verible_highlight) return result;
+    if (!settings_.verible_highlight) return context;
 
-    const std::string path_string(path);
-    if (path_string.empty()) return result;
-
-    // C1：只读工程 -> shared 访问器；shared_ptr 持有到 IndexForProject 返回。
+    // C1：只读工程 -> shared 访问器；shared_ptr 持有到使用点结束。
     const std::shared_ptr<const project::Project> project = ProjectForPathShared(path);
-    if (project == nullptr) return result;  // Python: index is None -> {"data": []}
+    // 打开文档的版本号：delta 短路判据（未打开 = nullopt -> 不短路）。
+    context.version = docs_.GetVersionByPath(context.path);
+    if (project == nullptr) return context;  // Python: index is None -> 空 token
 
-    const std::shared_ptr<const hdl::HdlIndex> index = IndexForProject(*project);
-    if (!index) return result;
+    context.index = IndexForProject(*project);
+    if (context.index && index_service_) {
+        context.index_generation = index_service_->stats().generation;
+        context.have_generation = true;
+    }
+    return context;
+}
 
-    const std::optional<std::string> text = LoadText(path_string);
-    if (!text.has_value()) return result;
-
-    const std::vector<semantics::SemToken> tokens =
-        semantics::SemanticTokens(index.get(), path, *text);
-    const std::vector<int> encoded = semantics::EncodeTokens(tokens);
-
-    Json data = Json::array();
-    data.get_ref<nlohmann::json::array_t&>().reserve(encoded.size());
-    for (const int value : encoded) data.push_back(value);
-    result["data"] = std::move(data);
-    return result;
+std::shared_ptr<const std::vector<int>> LspServer::ComputeSemanticTokens(
+    const SemanticTokenContext& context, const std::shared_ptr<const std::string>& text) {
+    if (!context.index || !text) return nullptr;
+    return std::make_shared<const std::vector<int>>(
+        semantics::EncodeTokens(semantics::SemanticTokens(context.index.get(), context.path, *text)));
 }
 
 // =============================================================================
@@ -76,8 +72,9 @@ Json LspServer::FeatureFoldingRanges(std::string_view path) {
     const std::string path_string(path);
     if (path_string.empty()) return Json::array();
 
-    const std::optional<std::string> text = LoadText(path_string);
-    if (!text.has_value()) return Json::array();
+    // P1-2：共享缓冲文本（零整文件拷贝）。
+    const std::shared_ptr<const std::string> text = LoadTextShared(path_string);
+    if (!text) return Json::array();
 
     Json ranges = Json::array();
     for (const semantics::FoldingRange& range : semantics::FoldingRanges(*text)) {
@@ -108,9 +105,9 @@ Json LspServer::FeatureDebugHighlight(const Json& params) {
     std::string path;
     if (!uri.empty()) path = platform::uri_to_path(uri);
 
-    std::optional<std::string> text;
-    if (!path.empty()) text = LoadText(path);
-    if (!text.has_value()) {
+    std::shared_ptr<const std::string> text;
+    if (!path.empty()) text = LoadTextShared(path);
+    if (!text) {
         result["ok"] = false;
         result["error"] = "document not open: " + uri;
         return result;
@@ -132,7 +129,7 @@ Json LspServer::FeatureDebugHighlight(const Json& params) {
     for (const auto& [name, count] : stats.counts) counts[name] = count;
     result["counts"] = std::move(counts);
     // 这两个标志报告"当前是否真的在出语义高亮"：内嵌 Verible 词法流始终可用，
-    // 但 `fpgaLsp.verible.highlight=false` 时 FeatureSemanticTokens 会返回空 token，
+    // 但 `fpgaLsp.verible.highlight=false` 时 ComputeSemanticTokens 会返回空 token，
     // 所以这里必须跟随设置，而不是恒 true。
     result["verible"] = settings_.verible_highlight;
     result["veribleHighlight"] = settings_.verible_highlight;

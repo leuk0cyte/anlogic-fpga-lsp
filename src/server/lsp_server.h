@@ -181,7 +181,21 @@ public:
     //  但**签名与 dispatch 已在此固定**，避免并行改 lsp_server.cpp。
     Json FeatureReports(const Json& params);
     Json FeatureFlowStatus(const Json& params = Json::object());
-    Json FeatureSemanticTokens(std::string_view path);
+    // P1-1（2026-11-22 性能审计）：语义高亮不再返回 Json 再被深拷贝两次。
+    // 上下文（工程/索引/文档版本/索引 generation）与 token 编码分开：
+    //   * delta 在"文档版本 + 索引 generation 都没变"时可跳过 tokenize（空 edits）；
+    //   * token 用 vector<int> 缓存（shared_ptr），resultId 直接对整数做 FNV。
+    struct SemanticTokenContext {
+        std::string path;
+        std::shared_ptr<const hdl::HdlIndex> index;
+        std::optional<std::int64_t> version;  // 打开文档的 LSP 版本号（未打开 = nullopt）
+        std::uint64_t index_generation = 0;
+        bool have_generation = false;
+    };
+    SemanticTokenContext SemanticTokenContextFor(std::string_view path);
+    // 编码后的 5 元组（nullptr = 没有 token）。返回 shared_ptr：缓存/响应零深拷贝。
+    std::shared_ptr<const std::vector<int>> ComputeSemanticTokens(
+        const SemanticTokenContext& context, const std::shared_ptr<const std::string>& text);
     Json FeatureFoldingRanges(std::string_view path);
     Json FeatureCodeActions(std::string_view path, const Json& range, const Json& context);
     Json FeaturePrepareRename(std::string_view path, int line, int character);
@@ -404,6 +418,9 @@ private:
                                                          std::size_t* parse_errors = nullptr);
     // 读文本：未保存缓冲区优先，落盘回落（DocumentStore 已实现这个语义）
     std::optional<std::string> LoadText(const std::string& path);
+    // P1-2：共享只读文本（零整文件拷贝）。sp 指向 DocumentStore 内部的不可变字符串，
+    // 可在锁外安全使用到本次请求结束。
+    std::shared_ptr<const std::string> LoadTextShared(const std::string& path);
     // 文件签名：路径 + (缓冲区版本 | 磁盘 mtime+size)
     std::string ProjectSignature(const project::Project& project);
 
@@ -529,10 +546,14 @@ private:
     std::unique_ptr<IndexService> index_service_;
     // Phase 2 / A3：报告缓存（文件级 stamp + 分节快照）
     std::unique_ptr<ReportStore> report_store_;
-    // Phase 2 / B2：semanticTokens 增量（按 uri 记住上次 resultId/data）
+    // Phase 2 / B2 / P1-1：semanticTokens 增量（按 uri 记住上次 resultId + 编码结果）
     struct SemanticCacheEntry {
         std::string result_id;
-        Json data;
+        // 编码后的 5 元组（shared_ptr：缓存与响应共享，锁内零深拷贝）。
+        std::shared_ptr<const std::vector<int>> encoded;
+        std::optional<std::int64_t> version;   // 上次计算时的文档版本
+        std::uint64_t index_generation = 0;    // 上次计算时的索引 generation
+        bool have_meta = false;                // version/generation 是否可信（可短路）
     };
     std::mutex semantic_mutex_;
     std::map<std::string, SemanticCacheEntry> semantic_cache_;

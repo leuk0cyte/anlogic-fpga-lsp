@@ -57,8 +57,32 @@ std::vector<std::string> ParseMarkDebug(std::string_view text);
 // `WHG/pwm_reg0_i[0]` -> 排序键 (WHG/pwm_reg0_i, 0)，让 `[2]` 排在 `[10]` 之前。
 std::string NormaliseSignal(std::string_view signal);
 
-// 去空、去重、按 (base, index) 升序
-std::vector<std::string> NormaliseSignals(const std::vector<std::string>& signals);
+// -----------------------------------------------------------------------------
+// S-01：探针信号名严格校验（user.mdn 是 TD 打开工程时会执行的 Tcl）
+// -----------------------------------------------------------------------------
+// chip_debugger/user.mdn 的内容是**交给 TD 的 Tcl 脚本**：
+//     mark_debug { WHG/pwm_reg0_i[0] WHG/pwm_reg0_i[1] ... }
+// 花括号组里只要出现 `}`（提前闭合）、`\`（转义下一个字符，`\`+换行还会变成续行）
+// 或换行，后面的文本就会从"数据"变成"新的 Tcl 命令"。所以写盘前必须白名单化：
+//   允许：A-Z a-z 0-9 `_` `/` `.` `[` `]` `:` `-`
+//         （层次名 / 总线范围 / 位号，实测真实形态见 tests/unit/probe_test.cpp）
+//   拒绝：其它一切字符 —— 空白与控制字符、以及 `\ { } $ " ; # , ' ` + 等。
+// 为什么允许 `[`/`]`：真实探针名 `WHG/pwm_reg0_i[15:0]`、`top/cntT_q[0]` 必须能用；
+// 在**花括号组内** `[`/`]` 是字面量，不触发 Tcl 的命令替换，因此不破坏结构。
+// 为什么拒绝 `\`：反斜杠在 Tcl 大括号内仍处理 `\`+换行（续行成空格），且是唯一能
+// 让 `}` 不被计数的机制；白名单式拒绝比"只允许某些转义"更可审计。
+bool IsValidProbeSignalName(std::string_view name);
+
+// 校验一组信号名（先 Trim；空项忽略，与 NormaliseSignals 的"去空"语义一致）。
+// 失败时 error 给出第一个非法信号 + 其中的非法字符（便于 MCP 调用方直接报错）；
+// 成功时清空 error。返回 false 时调用方**不得**写 user.mdn。
+bool ValidateProbeSignalNames(const std::vector<std::string>& signals, std::string* error);
+
+// 去空、去重、按 (base, index) 升序。
+// 严格校验：任一信号名非法 -> 返回空 vector 并填 error（**不静默丢弃**）。
+// 传 nullptr 时非法输入同样返回空 vector，但调用方拿不到原因 —— 写盘路径必须传 error。
+std::vector<std::string> NormaliseSignals(const std::vector<std::string>& signals,
+                                          std::string* error = nullptr);
 
 // 把 `WHG/pwm_reg7_i[15:0]` / `[0:7]` 展开成逐位名字；其它形态原样返回。
 // 用户从 RTL 里复制的就是范围写法，而 mark_debug 要逐位网名。
@@ -114,10 +138,16 @@ MdnConfig ReadMdn(const std::string& path);
 
 // 生成新内容：替换第一条 `mark_debug {...}`，其余行逐字保留；
 // 没有 mark_debug 行时追加到末尾。传入空 signals 等价于删掉这条命令。
-std::string RenderMdn(std::string_view original, const std::vector<std::string>& signals);
+// 严格校验（S-01）：任一信号名非法 -> 返回空串并填 error（调用方不得落盘）。
+// 注意：返回空串**也可能**是合法的（original 只有这一条 mark_debug 且 signals 为空），
+// 所以调用方必须用 error 判断失败，不能只看返回值是否为空。
+std::string RenderMdn(std::string_view original, const std::vector<std::string>& signals,
+                      std::string* error = nullptr);
 
 // project_dir 用于统一写服务（platform::write_service）的 root 策略/审计；
 // .mdn 属于登记的工程用户文件，写入前会做路径校验与原子写。
+// S-01 纵深防御：落盘前再跑一次 NormaliseSignals/RenderMdn 的严格校验，
+// 非法名字直接失败（error 说明是哪个信号/哪个字符），**连目录都不创建**。
 bool WriteMdn(const std::string& project_dir, const std::string& path,
               const std::vector<std::string>& signals, std::string* error);
 

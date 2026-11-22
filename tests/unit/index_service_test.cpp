@@ -43,6 +43,7 @@
 
 #include "hdl/hdl_index.h"
 #include "platform/encoding.h"
+#include "platform/number.h"
 #include "platform/path.h"
 #include "project/al_project.h"
 #include "server/features.h"
@@ -864,7 +865,7 @@ TEST(IndexServiceBench, DidChangeToCompletion) {
 
     int iterations = 30;
     if (const char* text = std::getenv("FPGALSP_BENCH_ITERATIONS")) {
-        iterations = std::max(1, std::atoi(text));
+        iterations = std::max(1, fpgalsp::platform::DigitsToIntSaturating(text));
     }
     std::vector<int> sizes{200, 1000};
     if (const char* text = std::getenv("FPGALSP_BENCH_SIZES")) {
@@ -875,7 +876,9 @@ TEST(IndexServiceBench, DidChangeToCompletion) {
             const std::size_t end = spec.find(',', begin);
             const std::string item =
                 spec.substr(begin, (end == std::string::npos ? spec.size() : end) - begin);
-            if (!item.empty()) sizes.push_back(std::atoi(item.c_str()));
+            if (!item.empty()) {
+                sizes.push_back(fpgalsp::platform::DigitsToIntSaturating(item));
+            }
             if (end == std::string::npos) break;
             begin = end + 1;
         }

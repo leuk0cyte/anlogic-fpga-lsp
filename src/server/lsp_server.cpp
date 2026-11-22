@@ -35,6 +35,7 @@
 #include "platform/version.h"
 #include "flow/flow_runner.h"
 #include "hdl/hdl_index.h"
+#include "semantics/semantics.h"
 #include "td/td_diagnostics.h"
 #include "td/td_install.h"
 #include "td/td_session.h"
@@ -844,16 +845,90 @@ HandlerResult LspServer::HandleRangeFormatting(const Json& params) {
 
 namespace {
 
-std::string SemanticResultId(const Json& data, std::string_view uri) {
+// P1-1：resultId 直接对编码好的整数数组做 64-bit FNV，不再 `data.dump()`
+// 生成 30–60 KB 临时字符串再逐字符 hash（一次 full 请求省掉整份序列化 + 分配）。
+// 确定性：同一 (uri, data) 恒等；不同 data 的碰撞概率保持 64-bit FNV 级别。
+std::string SemanticResultId(const std::vector<int>& data, std::string_view uri) {
     std::uint64_t hash = 1469598103934665603ull;
-    const std::string text = std::string(uri) + data.dump();
-    for (unsigned char c : text) {
+    const auto mix = [&hash](unsigned char c) {
         hash ^= c;
         hash *= 1099511628211ull;
+    };
+    for (const char c : uri) mix(static_cast<unsigned char>(c));
+    mix(0xff);  // 分隔符，避免 (uri, data) 边界歧义
+    for (const int value : data) {
+        const std::uint32_t bits = static_cast<std::uint32_t>(value);
+        mix(static_cast<unsigned char>(bits & 0xFFu));
+        mix(static_cast<unsigned char>((bits >> 8) & 0xFFu));
+        mix(static_cast<unsigned char>((bits >> 16) & 0xFFu));
+        mix(static_cast<unsigned char>((bits >> 24) & 0xFFu));
     }
     char buffer[20];
     std::snprintf(buffer, sizeof(buffer), "%016llx", static_cast<unsigned long long>(hash));
     return std::string(buffer);
+}
+
+// 编码后的 token -> LSP `data` 数组。只在**组装响应**时做一次。
+Json SemanticDataArray(const std::vector<int>& encoded) {
+    Json data = Json::array();
+    data.get_ref<nlohmann::json::array_t&>().reserve(encoded.size());
+    for (const int value : encoded) data.push_back(value);
+    return data;
+}
+
+// SemanticDeltaEdits 的整数数组版本（handler 热路径用；Json 版本保留给单测/其它调用方）。
+Json SemanticDeltaEditsVector(const std::vector<int>& previous,
+                              const std::vector<int>& current) {
+    constexpr std::size_t kStride = 5;
+    const std::size_t before = previous.size();
+    const std::size_t after = current.size();
+
+    std::size_t prefix = 0;
+    while (prefix + kStride <= before && prefix + kStride <= after) {
+        bool same = true;
+        for (std::size_t k = 0; k < kStride; ++k) {
+            if (previous[prefix + k] != current[prefix + k]) {
+                same = false;
+                break;
+            }
+        }
+        if (!same) break;
+        prefix += kStride;
+    }
+
+    std::size_t suffix = 0;
+    while (suffix + kStride <= before - prefix && suffix + kStride <= after - prefix) {
+        const std::size_t p = before - kStride - suffix;
+        const std::size_t c = after - kStride - suffix;
+        bool same = true;
+        for (std::size_t k = 0; k < kStride; ++k) {
+            if (previous[p + k] != current[c + k]) {
+                same = false;
+                break;
+            }
+        }
+        if (!same) break;
+        suffix += kStride;
+    }
+
+    const std::size_t delete_count = before - prefix - suffix;
+    const std::size_t insert_count = after - prefix - suffix;
+    Json edits = Json::array();
+    if (delete_count == 0 && insert_count == 0) return edits;
+
+    Json edit = Json::object();
+    edit["start"] = prefix;
+    edit["deleteCount"] = delete_count;
+    if (insert_count > 0) {
+        Json slice = Json::array();
+        slice.get_ref<nlohmann::json::array_t&>().reserve(insert_count);
+        for (std::size_t i = prefix; i < prefix + insert_count; ++i) {
+            slice.push_back(current[i]);
+        }
+        edit["data"] = std::move(slice);
+    }
+    edits.push_back(std::move(edit));
+    return edits;
 }
 
 }  // namespace
@@ -925,21 +1000,31 @@ HandlerResult LspServer::HandleSemanticTokensFull(const Json& params) {
         empty["data"] = Json::array();
         return HandlerResult::Ok(std::move(empty));
     }
-    Json result = FeatureSemanticTokens(platform::uri_to_path(uri));
-    const std::string id = SemanticResultId(result["data"], uri);
+    const std::string path = platform::uri_to_path(uri);
+    const SemanticTokenContext context = SemanticTokenContextFor(path);
+    const std::shared_ptr<const std::string> text = LoadTextShared(path);
+    const std::shared_ptr<const std::vector<int>> encoded = ComputeSemanticTokens(context, text);
+    static const std::vector<int> kNoSemanticData;
+    const std::string id = SemanticResultId(encoded ? *encoded : kNoSemanticData, uri);
     {
+        // P1-1：锁内只做 shared_ptr 赋值（零深拷贝），不再拷贝整份 token 数组。
         std::lock_guard<std::mutex> lock(semantic_mutex_);
         SemanticCacheEntry& entry = semantic_cache_[uri];
         entry.result_id = id;
-        entry.data = result["data"];
+        entry.encoded = encoded;
+        entry.version = context.version;
+        entry.index_generation = context.index_generation;
+        entry.have_meta = context.have_generation;
     }
+    Json result = Json::object();
+    result["data"] = encoded ? SemanticDataArray(*encoded) : Json::array();
     result["resultId"] = id;
     return HandlerResult::Ok(std::move(result));
 }
 
-// Phase 2 / B2：semanticTokens 增量。当前实现：
-//   * 内容没变（resultId 相同）-> edits 为空（客户端复用旧 token）；
-//   * 变了 -> 返回一条“整段替换”编辑（合法 delta；比全量响应少一次 resultId 协商）。
+// Phase 2 / B2：semanticTokens 增量。
+//   * 文档版本与索引 generation 都没变 -> 直接回空 edits（连 tokenize 都不跑）；
+//   * 变了 -> 只回真正变化的那一段 5 元组（vector<int> 直接比较，零 JSON 拷贝）。
 HandlerResult LspServer::HandleSemanticTokensDelta(const Json& params) {
     std::string uri;
     if (!TextDocumentUri(params, &uri)) {
@@ -948,9 +1033,30 @@ HandlerResult LspServer::HandleSemanticTokensDelta(const Json& params) {
         return HandlerResult::Ok(std::move(empty));
     }
     const std::string previous = jsonrpc::GetString(params, "previousResultId");
-    Json current = FeatureSemanticTokens(platform::uri_to_path(uri));
-    const Json data = current["data"];
-    const std::string id = SemanticResultId(data, uri);
+    const std::string path = platform::uri_to_path(uri);
+    const SemanticTokenContext context = SemanticTokenContextFor(path);
+
+    // P1-1 增量短路：同版本 + 同索引 generation + 客户端基线就是缓存的那份
+    // -> 内容不可能变，直接空 edits（旧实现这里会先全量重算再发现"没变"）。
+    if (!previous.empty() && context.version.has_value() && context.have_generation) {
+        std::lock_guard<std::mutex> lock(semantic_mutex_);
+        if (const auto it = semantic_cache_.find(uri); it != semantic_cache_.end()) {
+            const SemanticCacheEntry& entry = it->second;
+            if (entry.encoded && entry.have_meta && entry.result_id == previous &&
+                entry.version == context.version &&
+                entry.index_generation == context.index_generation) {
+                Json result = Json::object();
+                result["resultId"] = previous;
+                result["edits"] = Json::array();
+                return HandlerResult::Ok(std::move(result));
+            }
+        }
+    }
+
+    const std::shared_ptr<const std::string> text = LoadTextShared(path);
+    const std::shared_ptr<const std::vector<int>> encoded = ComputeSemanticTokens(context, text);
+    static const std::vector<int> kNoSemanticData;
+    const std::string id = SemanticResultId(encoded ? *encoded : kNoSemanticData, uri);
 
     Json edits = Json::array();
     bool full_result = false;
@@ -966,20 +1072,23 @@ HandlerResult LspServer::HandleSemanticTokensDelta(const Json& params) {
             full_result = true;
         } else if (entry.result_id != id) {
             // P-D5：只发真正变化的那一段（而不是"新数组 + deleteCount=旧长度"）。
-            edits = SemanticDeltaEdits(entry.data, data);
+            static const std::vector<int> kEmpty;
+            edits = SemanticDeltaEditsVector(entry.encoded ? *entry.encoded : kEmpty,
+                                             encoded ? *encoded : kEmpty);
         }
         entry.result_id = id;
-        entry.data = data;
-    }
-    if (full_result) {
-        Json result = Json::object();
-        result["resultId"] = id;
-        result["data"] = data;
-        return HandlerResult::Ok(std::move(result));
+        entry.encoded = encoded;
+        entry.version = context.version;
+        entry.index_generation = context.index_generation;
+        entry.have_meta = context.have_generation;
     }
     Json result = Json::object();
     result["resultId"] = id;
-    result["edits"] = std::move(edits);
+    if (full_result) {
+        result["data"] = encoded ? SemanticDataArray(*encoded) : Json::array();
+    } else {
+        result["edits"] = std::move(edits);
+    }
     (void)previous;
     return HandlerResult::Ok(std::move(result));
 }
@@ -1060,6 +1169,12 @@ std::optional<std::string> LspServer::LoadText(const std::string& path) {
     // `path_to_uri()` 的大小写/编码不同，用 uri 直接查表会 miss -> 回落到磁盘 ->
     // 未保存修改不可见，格式化后语义高亮错位）。未打开时再按 uri 走磁盘缓存。
     return docs_.GetTextByPath(path);
+}
+
+std::shared_ptr<const std::string> LspServer::LoadTextShared(const std::string& path) {
+    // P1-2：热路径（semanticTokens/folding）零整文件拷贝。返回的 shared_ptr 指向
+    // DocumentStore 内部的不可变字符串，锁外安全。
+    return docs_.GetTextByPathShared(path);
 }
 
 namespace {

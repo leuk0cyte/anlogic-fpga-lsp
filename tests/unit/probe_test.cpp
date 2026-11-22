@@ -12,11 +12,13 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <limits>
 #include <string>
 #include <vector>
 
 #include "flow/probe.h"
 #include "platform/encoding.h"
+#include "platform/number.h"
 #include "platform/path.h"
 
 namespace {
@@ -194,6 +196,122 @@ TEST(ProbeMdn, ReadAndWriteRoundTrip) {
     ASSERT_TRUE(after.ok);
     ASSERT_EQ(after.signals.size(), 1u);
     EXPECT_EQ(after.signals[0], "WHG/pwm_reg0_i[0]");
+}
+
+// -----------------------------------------------------------------------------
+// S-01：user.mdn 是 TD 打开工程时会执行的 Tcl —— 信号名必须白名单化
+// -----------------------------------------------------------------------------
+// 攻击形态：`fpga_probe_config{signals:["WHG/x} ; exec calc ; #{"], write:true}`
+// 会在 user.mdn 里写出 `mark_debug { WHG/x} ; exec calc ; #{ }`；TD 下次打开工程
+// 时 `}` 提前闭合花括号，`; exec calc ;` 变成新命令（持久化注入）。
+// 这里钉住：非法名字必须被拒绝、不落盘；合法总线名/层次名不能被误拒。
+
+TEST(ProbeMdn, IsValidProbeSignalNameRejectsTclMetacharacters) {
+    const char* const kBad[] = {
+        "WHG/x}",          // 提前闭合 mark_debug 的花括号组
+        "WHG/x{",          // 嵌套括号，改变分组
+        "WHG/x;exec calc", // 命令分隔符
+        "WHG/x ; exec calc ; #{",
+        "WHG/a\nWHG/b",    // 换行（Tcl 在花括号里允许，但会把一行拆成两条语义）
+        "WHG/a\rb",
+        "WHG/a\tb",
+        "WHG/a b",         // 空格：在列表里会变成两个元素
+        "WHG/a,b",
+        "WHG/$x",          // Tcl 变量替换引导符
+        "WHG/a\"",         // 引号
+        "WHG/a\\",         // 反斜杠（`\`+换行是续行，唯一能绕过 `}` 计数的机制）
+        "WHG/a#b",
+        "",                // 空名字
+    };
+    for (const char* bad : kBad) {
+        EXPECT_FALSE(fpgalsp::probe::IsValidProbeSignalName(bad)) << "应拒绝: " << bad;
+    }
+    std::string error;
+    EXPECT_FALSE(fpgalsp::probe::ValidateProbeSignalNames({"WHG/ok[0]", "WHG/x;exec"}, &error));
+    EXPECT_NE(error.find("WHG/x;exec"), std::string::npos) << error;
+    EXPECT_NE(error.find(";"), std::string::npos) << "error 里要指出非法字符: " << error;
+}
+
+TEST(ProbeMdn, IsValidProbeSignalNameAcceptsRealNetlistNames) {
+    // 语料来自本机真实 user.mdn / RTL 网名（见文件头的 kRealMdn 说明）。
+    const char* const kOk[] = {
+        "WHG/pwm_reg0_i[15:0]",                 // 总线范围（ExpandSignalRanges 展开）
+        "WHG/pwm_reg0_i[0]",
+        "top/cntT_q[10]",
+        "main/pwm_road_1/SIN",
+        "WHG/ANPC_init0/ANPC_SVPWM_init/cnt[15]",
+        "top/u_pwm/clk",                        // 层次（点号分隔也可）
+        "WHG/e2e_hstat",
+        "WHG/a-b[3]",                           // 少数工具生成的名字带 `-`
+    };
+    for (const char* ok : kOk) {
+        EXPECT_TRUE(fpgalsp::probe::IsValidProbeSignalName(ok)) << "不应拒绝合法名字: " << ok;
+    }
+    // 范围写法要能照常展开成逐位名字（真实用法 `pwm_reg7_i[15:0]`）。
+    const std::vector<std::string> normalised = fpgalsp::probe::NormaliseSignals(
+        {"WHG/pwm_reg0_i[15:0]"});
+    ASSERT_EQ(normalised.size(), 16u);
+    EXPECT_EQ(normalised.front(), "WHG/pwm_reg0_i[0]");
+    EXPECT_EQ(normalised.back(), "WHG/pwm_reg0_i[15]");
+}
+
+TEST(ProbeMdn, NormaliseSignalsRejectsWithErrorInsteadOfSilentlyDropping) {
+    std::string error;
+    EXPECT_TRUE(fpgalsp::probe::NormaliseSignals({"WHG/a[0]"}, &error).empty() == false);
+    EXPECT_TRUE(error.empty());
+
+    const std::vector<std::string> rejected =
+        fpgalsp::probe::NormaliseSignals({"WHG/a[0]", "WHG/x}exec"}, &error);
+    EXPECT_TRUE(rejected.empty()) << "非法名字不能让整份渲染继续";
+    EXPECT_NE(error.find("illegal probe signal name"), std::string::npos) << error;
+}
+
+TEST(ProbeMdn, RenderMdnRejectsInjectionAndKeepsBraceStructure) {
+    // 合法名字：渲染结果必须是**恰好一个** `mark_debug { ... }` 组，没有换行注入。
+    std::string error;
+    const std::string rendered = fpgalsp::probe::RenderMdn(
+        "# note\n", {"WHG/pwm_reg0_i[15:0]", "top/cntT_q[3]"}, &error);
+    ASSERT_TRUE(error.empty()) << error;
+    EXPECT_EQ(rendered.find("mark_debug"), rendered.rfind("mark_debug"))
+        << "只能有一个 mark_debug（否则多出来的组会独立求值）: " << rendered;
+    EXPECT_EQ(std::count(rendered.begin(), rendered.end(), '{'), 1);
+    EXPECT_EQ(std::count(rendered.begin(), rendered.end(), '}'), 1);
+    EXPECT_EQ(std::count(rendered.begin(), rendered.end(), '\n'), 2) << rendered;
+    EXPECT_NE(rendered.find("mark_debug { WHG/pwm_reg0_i[0] "), std::string::npos) << rendered;
+    EXPECT_NE(rendered.find("top/cntT_q[3] }"), std::string::npos) << rendered;
+
+    // 注入字符串：必须返回失败（空串）+ 明确 error，绝不能生成脚本。
+    for (const char* bad : {"WHG/x} ; exec calc ; #{", "WHG/x\nWHG/y", "WHG/x;exec"}) {
+        std::string render_error;
+        EXPECT_TRUE(fpgalsp::probe::RenderMdn("", {bad}, &render_error).empty()) << bad;
+        EXPECT_NE(render_error.find("illegal probe signal name"), std::string::npos)
+            << render_error;
+    }
+}
+
+TEST(ProbeMdn, WriteMdnRejectsInjectionBeforeTouchingDisk) {
+    ScopedTempDir temp("mdn_inject");
+    const std::string project_dir = temp.path() + "/prj";
+    std::error_code ec;
+    fs::create_directories(fs::path(project_dir), ec);
+    const std::string path = project_dir + "/chip_debugger/user.mdn";
+
+    std::string error;
+    EXPECT_FALSE(fpgalsp::probe::WriteMdn(project_dir, path,
+                                          {"WHG/x} ; exec calc ; #{"}, &error));
+    EXPECT_NE(error.find("illegal probe signal name"), std::string::npos) << error;
+    EXPECT_FALSE(fs::exists(fs::path(path))) << "非法名字不能落盘";
+    EXPECT_FALSE(fs::exists(fs::path(project_dir + "/chip_debugger")))
+        << "连 chip_debugger/ 都不该创建（校验先于文件系统操作）";
+
+    // 已有文件时：内容必须逐字节不变（不能先写后校验/部分写）。
+    Write(path, kRealMdn);
+    const std::string before =
+        fpgalsp::platform::try_read_file_utf8(path).value_or("");
+    EXPECT_FALSE(fpgalsp::probe::WriteMdn(project_dir, path, {"WHG/a\nb"}, &error));
+    const std::string after =
+        fpgalsp::platform::try_read_file_utf8(path).value_or("");
+    EXPECT_EQ(before, after);
 }
 
 // -----------------------------------------------------------------------------
@@ -437,6 +555,61 @@ TEST(ProbeConfigure, RefusesToWriteAnEmptyList) {
     const fpgalsp::jsonrpc::Json read = fpgalsp::probe::Configure(project, {}, false);
     EXPECT_TRUE(read.value("ok", false)) << read.dump();
     EXPECT_EQ(read.value("count", 0), 8);
+}
+
+// -----------------------------------------------------------------------------
+// S-01：入口校验（MCP/LSP -> Configure -> user.mdn 的 Tcl 注入）
+// -----------------------------------------------------------------------------
+
+TEST(ProbeConfigure, RejectsInjectionSignalNames) {
+    ScopedTempDir temp("config_inject");
+    const fpgalsp::project::Project project = MakeProject(temp.path());
+    Write(fpgalsp::probe::MdnPath(project), kRealMdn);
+    const std::string before =
+        fpgalsp::platform::try_read_file_utf8(fpgalsp::probe::MdnPath(project)).value_or("");
+
+    // write:true —— ok:false + 明确 error，且不落盘
+    const fpgalsp::jsonrpc::Json written = fpgalsp::probe::Configure(
+        project, {"WHG/x} ; exec calc ; #{"}, true);
+    EXPECT_FALSE(written.value("ok", true)) << written.dump();
+    EXPECT_FALSE(written.value("written", false));
+    EXPECT_NE(written.value("reason", std::string()).find("illegal probe signal name"),
+              std::string::npos)
+        << written.dump();
+    const std::string after =
+        fpgalsp::platform::try_read_file_utf8(fpgalsp::probe::MdnPath(project)).value_or("");
+    EXPECT_EQ(before, after) << "拒绝时 user.mdn 必须逐字节不变";
+
+    // dry-run 也不能"看起来成功"：注入名字一律 ok:false。
+    const fpgalsp::jsonrpc::Json dry = fpgalsp::probe::Configure(project, {"WHG/x;exec"}, false);
+    EXPECT_FALSE(dry.value("ok", true)) << dry.dump();
+    EXPECT_NE(dry.value("reason", std::string()).find("illegal probe signal name"),
+              std::string::npos);
+
+    // 合法总线范围（真实形态）仍成功。
+    const fpgalsp::jsonrpc::Json ok = fpgalsp::probe::Configure(
+        project, {"WHG/pwm_reg0_i[15:0]"}, false);
+    EXPECT_TRUE(ok.value("ok", false)) << ok.dump();
+    EXPECT_EQ(ok.value("count", 0), 16);
+}
+
+TEST(ProbeConfigure, RefusesToOperateOnUserMdnWithIllegalName) {
+    // 既有 user.mdn 被手改坏/来自工作区：读路径必须明确报错，而不是静默当"没有探针"。
+    ScopedTempDir temp("config_poisoned");
+    const fpgalsp::project::Project project = MakeProject(temp.path());
+    Write(fpgalsp::probe::MdnPath(project), "mark_debug { WHG/a[0];exec calc }\n");
+
+    const MdnConfig read = fpgalsp::probe::ReadMdn(fpgalsp::probe::MdnPath(project));
+    EXPECT_FALSE(read.ok);
+    EXPECT_TRUE(read.signals.empty());
+    EXPECT_NE(read.error.find("illegal probe signal name"), std::string::npos) << read.error;
+
+    const fpgalsp::jsonrpc::Json result = fpgalsp::probe::Configure(project, {}, false);
+    EXPECT_FALSE(result.value("ok", true)) << result.dump();
+    const fpgalsp::jsonrpc::Json status = fpgalsp::probe::Status(project);
+    EXPECT_NE(status["chip_debugger"].value("error", std::string()).find("illegal"),
+              std::string::npos)
+        << status.dump();
 }
 
 // -----------------------------------------------------------------------------
@@ -985,4 +1158,50 @@ TEST(ProbeUserCfg, PatchesTemplateAndFallsBackWhenBusSetDiffers) {
     EXPECT_NE(written.find("is_enabled=\"no\""), std::string::npos) << "整条 disable 的总线";
     EXPECT_NE(written.find("data=\"disable\""), std::string::npos);
     EXPECT_NE(written.find("pwm_reg0_i[15:0]"), std::string::npos);
+}
+// =============================================================================
+//  A-1：整数解析（platform/number.h）—— 取代 probe.cpp 里 30 处 std::atoi
+// =============================================================================
+//  probe 的 ChipWatcher/TD 报告解析全部走饱和解析：荒谬位号 -> INT_MAX（随后被既有
+//  范围检查当成"越界"），而不是 atoi 的 0（会被当成"位 0"静默抓错点）。
+TEST(PlatformNumber, DigitsToIntSaturatingHandlesReportFragments) {
+    using fpgalsp::platform::DigitsToIntSaturating;
+    EXPECT_EQ(DigitsToIntSaturating("15"), 15);
+    EXPECT_EQ(DigitsToIntSaturating("00015"), 15);
+    // 直接喂整段报告文本也行：非数字字符被跳过（与 adc::DigitsToInt 语义一致）
+    EXPECT_EQ(DigitsToIntSaturating("CWC_BUS_NUM = 3"), 3);
+    EXPECT_EQ(DigitsToIntSaturating("<width>32</width>"), 32);
+    EXPECT_EQ(DigitsToIntSaturating("15:0"), 150);  // 只取数字：合法位宽由调用方另行校验
+    // TD 的 data_offset 可能带负号
+    EXPECT_EQ(DigitsToIntSaturating("-5"), -5);
+    EXPECT_EQ(DigitsToIntSaturating("-2147483648"), -2147483647);  // 饱和到 -INT_MAX
+    // 荒谬位号：饱和而不是静默 0 / 溢出 UB
+    EXPECT_EQ(DigitsToIntSaturating("99999999999999999999"), (std::numeric_limits<int>::max)());
+    EXPECT_EQ(DigitsToIntSaturating("-99999999999999999999"),
+              -(std::numeric_limits<int>::max)());
+    EXPECT_EQ(DigitsToIntSaturating(""), 0);
+}
+
+TEST(PlatformNumber, ParseDecimalIsStrict) {
+    using fpgalsp::platform::ParseDecimal;
+    ASSERT_TRUE(ParseDecimal<int>("42").has_value());
+    EXPECT_EQ(ParseDecimal<int>("42").value(), 42);
+    EXPECT_EQ(ParseDecimal<int>("-42").value(), -42);
+    // 失败必须有原因、且不能返回 0（atoi 的失败形状）
+    const auto junk = ParseDecimal<int>("abc");
+    ASSERT_FALSE(junk.has_value());
+    EXPECT_NE(junk.error().find("不是整数"), std::string::npos);
+    // 尾巴没吃完也算失败（atoi 会把 "12abc" 当 12）
+    EXPECT_FALSE(ParseDecimal<int>("12abc").has_value());
+    // 不跳前后空白（CLI 参数严格）
+    EXPECT_FALSE(ParseDecimal<int>(" 12").has_value());
+    EXPECT_FALSE(ParseDecimal<int>("12 ").has_value());
+    // 无符号类型：负数非法、越界单独报"范围"
+    EXPECT_FALSE(ParseDecimal<unsigned short>("-1").has_value());
+    const auto port = ParseDecimal<unsigned short>("70000");
+    ASSERT_FALSE(port.has_value());
+    EXPECT_NE(port.error().find("范围"), std::string::npos)
+        << "70000 以前被 static_cast<unsigned short> 静默截断成 4464（连错端口）";
+    ASSERT_TRUE(ParseDecimal<unsigned short>("65535").has_value());
+    EXPECT_EQ(ParseDecimal<unsigned short>("65535").value(), 65535);
 }

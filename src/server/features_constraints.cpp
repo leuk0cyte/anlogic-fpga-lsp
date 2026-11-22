@@ -75,7 +75,9 @@ lsp::DiagnosticList ConstraintDiagnostics(std::string_view path, std::string_vie
         const std::vector<constraints::adc::Entry> entries = constraints::adc::Parse(text);
         // B-B5：顺便给出"未约束 IO"的覆盖率概览（一条 info；全部约束时不产生）。
         constraints::adc::DiagnosticsOptions options;
-        options.text = text;
+        // A-6：DiagnosticsOptions::text 现在有所有权（std::string），这里必须显式拷贝。
+        // 以前是 string_view 直接指向上面的 text，语义等价但类型上不表达生命周期。
+        options.text = std::string(text);
         options.include_coverage = true;
         for (const lsp::Diagnostic& diagnostic :
              constraints::adc::Diagnostics(entries, ports, options)) {

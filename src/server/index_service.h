@@ -99,7 +99,7 @@ public:
     //   text.has_value() -> 用这份文本（未保存缓冲区）解析并安装；
     //   text == nullopt  -> 从磁盘重读；读不到就从索引里移除（等价于删除）。
     // 不在工程 HDL 文件集合里的路径直接忽略（不改变快照）。
-    void OnFileChanged(std::string path, std::optional<std::string> text);
+    void OnFileChanged(const std::string& path, std::optional<std::string> text);
 
     // didChangeWatchedFiles。`.al` 变了 -> 重新解析 .al 并**全量重建**（懒）；
     // 其它 HDL 文件 -> 只重读/重解析变了的那些（增量）。

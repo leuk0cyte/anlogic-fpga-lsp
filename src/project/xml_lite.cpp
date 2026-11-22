@@ -280,6 +280,12 @@ private:
         struct DepthGuard {
             int& depth;
             explicit DepthGuard(int& d) : depth(d) { ++depth; }
+            // A-2：持有的是 depth_ 的引用，拷贝/移动会让两个 guard 各减一次 depth，
+            // 让深度计数变成负数（后续元素就绕过了 512 层上限）。因此一律禁止。
+            DepthGuard(const DepthGuard&) = delete;
+            DepthGuard& operator=(const DepthGuard&) = delete;
+            DepthGuard(DepthGuard&&) = delete;
+            DepthGuard& operator=(DepthGuard&&) = delete;
             ~DepthGuard() { --depth; }
         } depth_guard(depth_);
 

@@ -1,0 +1,2348 @@
+{
+ "schema": 1,
+ "generated": "2026-11-22T18:08:39+0800",
+ "tool": "LLVM 23.1.5",
+ "config": ".clang-tidy",
+ "config_sha1": "d86d7a7e8828850aa915ed1dde75ffc07892a838",
+ "header_filter": ".*[/\\\\]src[/\\\\].*",
+ "tu_count": 67,
+ "diag_count": 281,
+ "counts_by_check": {
+  "modernize-avoid-c-arrays": 64,
+  "bugprone-exception-escape": 30,
+  "cert-err33-c": 26,
+  "performance-inefficient-string-concatenation": 23,
+  "bugprone-empty-catch": 17,
+  "performance-faster-string-find,performance-prefer-single-char-overloads": 17,
+  "performance-string-view-conversions": 17,
+  "performance-no-automatic-move": 14,
+  "bugprone-signed-bitwise": 12,
+  "modernize-use-emplace": 10,
+  "clang-analyzer-deadcode.DeadStores": 9,
+  "bugprone-throwing-static-initialization": 8,
+  "performance-inefficient-vector-operation": 5,
+  "bugprone-branch-clone": 4,
+  "performance-avoid-endl": 4,
+  "performance-unnecessary-value-param": 4,
+  "bugprone-narrowing-conversions": 3,
+  "bugprone-unchecked-optional-access": 3,
+  "bugprone-reserved-identifier": 2,
+  "bugprone-argument-comment": 1,
+  "bugprone-unchecked-string-to-number-conversion,cert-err34-c": 1,
+  "bugprone-unused-local-non-trivial-variable": 1,
+  "bugprone-use-after-move": 1,
+  "clang-analyzer-core.uninitialized.UndefReturn": 1,
+  "clang-analyzer-cplusplus.Move": 1,
+  "performance-for-range-copy": 1,
+  "performance-unnecessary-copy-initialization": 1,
+  "performance-use-std-move": 1
+ },
+ "counts_by_file": {
+  "src/flow/flow_runner.cpp": 27,
+  "src/flow/probe.cpp": 24,
+  "src/mcp/bridge.cpp": 20,
+  "src/constraints/adc.cpp": 13,
+  "src/app/mcp_tcp.cpp": 12,
+  "src/platform/write_service.cpp": 11,
+  "src/app/main.cpp": 10,
+  "src/flow/flow_logic.cpp": 9,
+  "src/server/lsp_server.cpp": 9,
+  "src/flow/programmer.cpp": 8,
+  "src/project/al_project.cpp": 7,
+  "src/server/commands.cpp": 6,
+  "src/td/td_install.cpp": 6,
+  "src/constraints/sdc.cpp": 5,
+  "src/hdl/hdl_index.cpp": 5,
+  "src/hdl/hdl_index.h": 5,
+  "src/lsp/document_store.cpp": 5,
+  "src/platform/path.cpp": 5,
+  "src/reports/reports_aggregate.cpp": 5,
+  "src/semantics/semantics.cpp": 5,
+  "src/server/features_optional.cpp": 5,
+  "src/server/ide_features.cpp": 5,
+  "src/flow/strategy.cpp": 4,
+  "src/mcp/mcp_server.cpp": 4,
+  "src/server/features.cpp": 4,
+  "src/td/td_diagnostics.cpp": 4,
+  "src/td/td_session.cpp": 4,
+  "src/tools/cst_dump/main.cpp": 4,
+  "src/tools/lint_dump/main.cpp": 4,
+  "src/platform/log.cpp": 3,
+  "src/reports/qor.cpp": 3,
+  "src/reports/reports_aggregate.h": 3,
+  "src/reports/timing.cpp": 3,
+  "src/td/td_device.cpp": 3,
+  "src/analysis/analysis.cpp": 2,
+  "src/constraints/adc.h": 2,
+  "src/constraints/data/adc_io.inc": 2,
+  "src/constraints/text_util.cpp": 2,
+  "src/flow/flow_status.cpp": 2,
+  "src/hdl/data/primitives.inc": 2,
+  "src/reports/area.h": 2,
+  "src/td/td_output.cpp": 2,
+  "src/tools/format_dump/main.cpp": 2,
+  "src/constraints/data/td_commands.inc": 1,
+  "src/flow/probe.h": 1,
+  "src/mcp/mcp_server.h": 1,
+  "src/platform/encoding.cpp": 1,
+  "src/platform/write_service.h": 1,
+  "src/reports/area.cpp": 1,
+  "src/reports/flow_status.cpp": 1,
+  "src/reports/timing.h": 1,
+  "src/semantics/semantics.h": 1,
+  "src/server/async_dispatcher.cpp": 1,
+  "src/td/td_cancel.h": 1,
+  "src/td/td_device.h": 1,
+  "src/td/td_diagnostics.h": 1
+ },
+ "entries": [
+  {
+   "file": "src/analysis/analysis.cpp",
+   "line": 329,
+   "col": 22,
+   "check": "performance-for-range-copy",
+   "sev": "warning",
+   "msg": "loop variable is copied but only used as const reference; consider making it a const reference"
+  },
+  {
+   "file": "src/analysis/analysis.cpp",
+   "line": 599,
+   "col": 19,
+   "check": "performance-faster-string-find,performance-prefer-single-char-overloads",
+   "sev": "warning",
+   "msg": "'operator+=' called with a string literal consisting of a single character; consider using the more efficient overload accepting a character"
+  },
+  {
+   "file": "src/app/main.cpp",
+   "line": 77,
+   "col": 5,
+   "check": "cert-err33-c",
+   "sev": "warning",
+   "msg": "the value returned by this function should not be disregarded; neglecting it may lead to errors"
+  },
+  {
+   "file": "src/app/main.cpp",
+   "line": 115,
+   "col": 17,
+   "check": "cert-err33-c",
+   "sev": "warning",
+   "msg": "the value returned by this function should not be disregarded; neglecting it may lead to errors"
+  },
+  {
+   "file": "src/app/main.cpp",
+   "line": 119,
+   "col": 17,
+   "check": "cert-err33-c",
+   "sev": "warning",
+   "msg": "the value returned by this function should not be disregarded; neglecting it may lead to errors"
+  },
+  {
+   "file": "src/app/main.cpp",
+   "line": 128,
+   "col": 17,
+   "check": "cert-err33-c",
+   "sev": "warning",
+   "msg": "the value returned by this function should not be disregarded; neglecting it may lead to errors"
+  },
+  {
+   "file": "src/app/main.cpp",
+   "line": 142,
+   "col": 13,
+   "check": "cert-err33-c",
+   "sev": "warning",
+   "msg": "the value returned by this function should not be disregarded; neglecting it may lead to errors"
+  },
+  {
+   "file": "src/app/main.cpp",
+   "line": 176,
+   "col": 65,
+   "check": "bugprone-branch-clone",
+   "sev": "warning",
+   "msg": "conditional operator with identical true and false expressions"
+  },
+  {
+   "file": "src/app/main.cpp",
+   "line": 214,
+   "col": 13,
+   "check": "clang-analyzer-deadcode.DeadStores",
+   "sev": "warning",
+   "msg": "Value stored to 'exit_requested' is never read"
+  },
+  {
+   "file": "src/app/main.cpp",
+   "line": 260,
+   "col": 5,
+   "check": "bugprone-exception-escape",
+   "sev": "warning",
+   "msg": "an exception may be thrown in function 'main' which should not throw exceptions"
+  },
+  {
+   "file": "src/app/main.cpp",
+   "line": 397,
+   "col": 9,
+   "check": "cert-err33-c",
+   "sev": "warning",
+   "msg": "the value returned by this function should not be disregarded; neglecting it may lead to errors"
+  },
+  {
+   "file": "src/app/main.cpp",
+   "line": 400,
+   "col": 9,
+   "check": "cert-err33-c",
+   "sev": "warning",
+   "msg": "the value returned by this function should not be disregarded; neglecting it may lead to errors"
+  },
+  {
+   "file": "src/app/mcp_tcp.cpp",
+   "line": 56,
+   "col": 44,
+   "check": "bugprone-signed-bitwise",
+   "sev": "warning",
+   "msg": "use of a signed integer operand with a binary bitwise operator"
+  },
+  {
+   "file": "src/app/mcp_tcp.cpp",
+   "line": 133,
+   "col": 7,
+   "check": "bugprone-empty-catch",
+   "sev": "warning",
+   "msg": "empty catch statements hide issues; to handle exceptions appropriately, consider re-throwing, handling, or avoiding catch altogether"
+  },
+  {
+   "file": "src/app/mcp_tcp.cpp",
+   "line": 299,
+   "col": 13,
+   "check": "modernize-avoid-c-arrays",
+   "sev": "warning",
+   "msg": "do not declare C-style arrays, use 'std::array' instead"
+  },
+  {
+   "file": "src/app/mcp_tcp.cpp",
+   "line": 310,
+   "col": 18,
+   "check": "bugprone-signed-bitwise",
+   "sev": "warning",
+   "msg": "use of a signed integer operand with a binary bitwise operator"
+  },
+  {
+   "file": "src/app/mcp_tcp.cpp",
+   "line": 311,
+   "col": 17,
+   "check": "modernize-avoid-c-arrays",
+   "sev": "warning",
+   "msg": "do not declare C-style arrays, use 'std::array' instead"
+  },
+  {
+   "file": "src/app/mcp_tcp.cpp",
+   "line": 314,
+   "col": 18,
+   "check": "bugprone-signed-bitwise",
+   "sev": "warning",
+   "msg": "use of a signed integer operand with a binary bitwise operator"
+  },
+  {
+   "file": "src/app/mcp_tcp.cpp",
+   "line": 339,
+   "col": 17,
+   "check": "modernize-avoid-c-arrays",
+   "sev": "warning",
+   "msg": "do not declare C-style arrays, use 'std::array' instead"
+  },
+  {
+   "file": "src/app/mcp_tcp.cpp",
+   "line": 409,
+   "col": 13,
+   "check": "modernize-avoid-c-arrays",
+   "sev": "warning",
+   "msg": "do not declare C-style arrays, use 'std::array' instead"
+  },
+  {
+   "file": "src/app/mcp_tcp.cpp",
+   "line": 552,
+   "col": 9,
+   "check": "cert-err33-c",
+   "sev": "warning",
+   "msg": "the value returned by this function should not be disregarded; neglecting it may lead to errors"
+  },
+  {
+   "file": "src/app/mcp_tcp.cpp",
+   "line": 563,
+   "col": 9,
+   "check": "modernize-avoid-c-arrays",
+   "sev": "warning",
+   "msg": "do not declare C-style arrays, use 'std::array' instead"
+  },
+  {
+   "file": "src/app/mcp_tcp.cpp",
+   "line": 590,
+   "col": 19,
+   "check": "bugprone-empty-catch",
+   "sev": "warning",
+   "msg": "empty catch statements hide issues; to handle exceptions appropriately, consider re-throwing, handling, or avoiding catch altogether"
+  },
+  {
+   "file": "src/app/mcp_tcp.cpp",
+   "line": 604,
+   "col": 5,
+   "check": "modernize-avoid-c-arrays",
+   "sev": "warning",
+   "msg": "do not declare C-style arrays, use 'std::array' instead"
+  },
+  {
+   "file": "src/constraints/adc.cpp",
+   "line": 179,
+   "col": 9,
+   "check": "modernize-avoid-c-arrays",
+   "sev": "warning",
+   "msg": "do not declare C-style arrays, use 'std::array' instead"
+  },
+  {
+   "file": "src/constraints/adc.cpp",
+   "line": 180,
+   "col": 9,
+   "check": "cert-err33-c",
+   "sev": "warning",
+   "msg": "the value returned by this function should not be disregarded; neglecting it may lead to errors"
+  },
+  {
+   "file": "src/constraints/adc.cpp",
+   "line": 229,
+   "col": 16,
+   "check": "performance-faster-string-find,performance-prefer-single-char-overloads",
+   "sev": "warning",
+   "msg": "'operator+=' called with a string literal consisting of a single character; consider using the more efficient overload accepting a character"
+  },
+  {
+   "file": "src/constraints/adc.cpp",
+   "line": 399,
+   "col": 8,
+   "check": "bugprone-exception-escape",
+   "sev": "warning",
+   "msg": "an exception may be thrown in function 'PinMaps' which should not throw exceptions"
+  },
+  {
+   "file": "src/constraints/adc.cpp",
+   "line": 486,
+   "col": 8,
+   "check": "bugprone-exception-escape",
+   "sev": "warning",
+   "msg": "an exception may be thrown in function 'OrderedPorts' which should not throw exceptions"
+  },
+  {
+   "file": "src/constraints/adc.cpp",
+   "line": 546,
+   "col": 11,
+   "check": "modernize-avoid-c-arrays",
+   "sev": "warning",
+   "msg": "do not declare C-style arrays, use 'std::array' instead"
+  },
+  {
+   "file": "src/constraints/adc.cpp",
+   "line": 574,
+   "col": 9,
+   "check": "clang-analyzer-deadcode.DeadStores",
+   "sev": "warning",
+   "msg": "Value stored to 'command_end' during its initialization is never read"
+  },
+  {
+   "file": "src/constraints/adc.cpp",
+   "line": 820,
+   "col": 65,
+   "check": "bugprone-unchecked-optional-access",
+   "sev": "warning",
+   "msg": "unchecked access to optional value"
+  },
+  {
+   "file": "src/constraints/adc.cpp",
+   "line": 958,
+   "col": 5,
+   "check": "modernize-avoid-c-arrays",
+   "sev": "warning",
+   "msg": "do not declare C-style arrays, use 'std::array' instead"
+  },
+  {
+   "file": "src/constraints/adc.cpp",
+   "line": 959,
+   "col": 5,
+   "check": "cert-err33-c",
+   "sev": "warning",
+   "msg": "the value returned by this function should not be disregarded; neglecting it may lead to errors"
+  },
+  {
+   "file": "src/constraints/adc.cpp",
+   "line": 969,
+   "col": 9,
+   "check": "performance-inefficient-vector-operation",
+   "sev": "warning",
+   "msg": "'push_back' is called inside a loop; consider pre-allocating the container capacity before the loop"
+  },
+  {
+   "file": "src/constraints/adc.cpp",
+   "line": 1091,
+   "col": 16,
+   "check": "clang-analyzer-deadcode.DeadStores",
+   "sev": "warning",
+   "msg": "Value stored to 'match_end' during its initialization is never read"
+  },
+  {
+   "file": "src/constraints/adc.cpp",
+   "line": 1306,
+   "col": 11,
+   "check": "modernize-avoid-c-arrays",
+   "sev": "warning",
+   "msg": "do not declare C-style arrays, use 'std::array' instead"
+  },
+  {
+   "file": "src/constraints/adc.h",
+   "line": 98,
+   "col": 8,
+   "check": "bugprone-exception-escape",
+   "sev": "warning",
+   "msg": "an exception may be thrown in function 'Entry' which should not throw exceptions"
+  },
+  {
+   "file": "src/constraints/adc.h",
+   "line": 145,
+   "col": 8,
+   "check": "bugprone-exception-escape",
+   "sev": "warning",
+   "msg": "an exception may be thrown in function 'CoverageReport' which should not throw exceptions"
+  },
+  {
+   "file": "src/constraints/data/adc_io.inc",
+   "line": 16,
+   "col": 11,
+   "check": "modernize-avoid-c-arrays",
+   "sev": "warning",
+   "msg": "do not declare C-style arrays, use 'std::array' instead"
+  },
+  {
+   "file": "src/constraints/data/adc_io.inc",
+   "line": 56,
+   "col": 11,
+   "check": "modernize-avoid-c-arrays",
+   "sev": "warning",
+   "msg": "do not declare C-style arrays, use 'std::array' instead"
+  },
+  {
+   "file": "src/constraints/data/td_commands.inc",
+   "line": 16,
+   "col": 11,
+   "check": "modernize-avoid-c-arrays",
+   "sev": "warning",
+   "msg": "do not declare C-style arrays, use 'std::array' instead"
+  },
+  {
+   "file": "src/constraints/sdc.cpp",
+   "line": 883,
+   "col": 26,
+   "check": "performance-faster-string-find,performance-prefer-single-char-overloads",
+   "sev": "warning",
+   "msg": "'operator+=' called with a string literal consisting of a single character; consider using the more efficient overload accepting a character"
+  },
+  {
+   "file": "src/constraints/sdc.cpp",
+   "line": 951,
+   "col": 95,
+   "check": "performance-inefficient-string-concatenation",
+   "sev": "warning",
+   "msg": "string concatenation results in allocation of unnecessary temporary strings; consider using 'operator+=' or 'string::append()' instead"
+  },
+  {
+   "file": "src/constraints/sdc.cpp",
+   "line": 1227,
+   "col": 15,
+   "check": "modernize-avoid-c-arrays",
+   "sev": "warning",
+   "msg": "do not declare C-style arrays, use 'std::array' instead"
+  },
+  {
+   "file": "src/constraints/sdc.cpp",
+   "line": 1396,
+   "col": 35,
+   "check": "performance-faster-string-find,performance-prefer-single-char-overloads",
+   "sev": "warning",
+   "msg": "'operator+=' called with a string literal consisting of a single character; consider using the more efficient overload accepting a character"
+  },
+  {
+   "file": "src/constraints/sdc.cpp",
+   "line": 1492,
+   "col": 63,
+   "check": "bugprone-unchecked-optional-access",
+   "sev": "warning",
+   "msg": "unchecked access to optional value"
+  },
+  {
+   "file": "src/constraints/text_util.cpp",
+   "line": 156,
+   "col": 5,
+   "check": "modernize-avoid-c-arrays",
+   "sev": "warning",
+   "msg": "do not declare C-style arrays, use 'std::array' instead"
+  },
+  {
+   "file": "src/constraints/text_util.cpp",
+   "line": 177,
+   "col": 21,
+   "check": "cert-err33-c",
+   "sev": "warning",
+   "msg": "the value returned by this function should not be disregarded; neglecting it may lead to errors"
+  },
+  {
+   "file": "src/flow/flow_logic.cpp",
+   "line": 117,
+   "col": 17,
+   "check": "modernize-use-emplace",
+   "sev": "warning",
+   "msg": "use emplace_back instead of push_back"
+  },
+  {
+   "file": "src/flow/flow_logic.cpp",
+   "line": 121,
+   "col": 17,
+   "check": "modernize-use-emplace",
+   "sev": "warning",
+   "msg": "use emplace_back instead of push_back"
+  },
+  {
+   "file": "src/flow/flow_logic.cpp",
+   "line": 367,
+   "col": 9,
+   "check": "modernize-avoid-c-arrays",
+   "sev": "warning",
+   "msg": "do not declare C-style arrays, use 'std::array' instead"
+  },
+  {
+   "file": "src/flow/flow_logic.cpp",
+   "line": 368,
+   "col": 9,
+   "check": "cert-err33-c",
+   "sev": "warning",
+   "msg": "the value returned by this function should not be disregarded; neglecting it may lead to errors"
+  },
+  {
+   "file": "src/flow/flow_logic.cpp",
+   "line": 381,
+   "col": 66,
+   "check": "bugprone-narrowing-conversions",
+   "sev": "warning",
+   "msg": "narrowing conversion from 'size_t' (aka 'unsigned long long') to signed type 'difference_type' (aka 'long long') is implementation-defined"
+  },
+  {
+   "file": "src/flow/flow_logic.cpp",
+   "line": 387,
+   "col": 5,
+   "check": "modernize-avoid-c-arrays",
+   "sev": "warning",
+   "msg": "do not declare C-style arrays, use 'std::array' instead"
+  },
+  {
+   "file": "src/flow/flow_logic.cpp",
+   "line": 388,
+   "col": 5,
+   "check": "cert-err33-c",
+   "sev": "warning",
+   "msg": "the value returned by this function should not be disregarded; neglecting it may lead to errors"
+  },
+  {
+   "file": "src/flow/flow_logic.cpp",
+   "line": 426,
+   "col": 17,
+   "check": "modernize-avoid-c-arrays",
+   "sev": "warning",
+   "msg": "do not declare C-style arrays, use 'std::array' instead"
+  },
+  {
+   "file": "src/flow/flow_logic.cpp",
+   "line": 427,
+   "col": 17,
+   "check": "cert-err33-c",
+   "sev": "warning",
+   "msg": "the value returned by this function should not be disregarded; neglecting it may lead to errors"
+  },
+  {
+   "file": "src/flow/flow_runner.cpp",
+   "line": 11,
+   "col": 9,
+   "check": "bugprone-reserved-identifier",
+   "sev": "warning",
+   "msg": "declaration uses identifier '_CRT_SECURE_NO_WARNINGS', which is a reserved identifier"
+  },
+  {
+   "file": "src/flow/flow_runner.cpp",
+   "line": 207,
+   "col": 5,
+   "check": "modernize-avoid-c-arrays",
+   "sev": "warning",
+   "msg": "do not declare C-style arrays, use 'std::array' instead"
+  },
+  {
+   "file": "src/flow/flow_runner.cpp",
+   "line": 208,
+   "col": 5,
+   "check": "cert-err33-c",
+   "sev": "warning",
+   "msg": "the value returned by this function should not be disregarded; neglecting it may lead to errors"
+  },
+  {
+   "file": "src/flow/flow_runner.cpp",
+   "line": 241,
+   "col": 31,
+   "check": "performance-string-view-conversions",
+   "sev": "warning",
+   "msg": "redundant conversion to 'std::string' (aka 'basic_string<char, char_traits<char>, allocator<char>>') and then back to 'basic_string_view<char, std::char_traits<char>>'"
+  },
+  {
+   "file": "src/flow/flow_runner.cpp",
+   "line": 295,
+   "col": 11,
+   "check": "bugprone-empty-catch",
+   "sev": "warning",
+   "msg": "empty catch statements hide issues; to handle exceptions appropriately, consider re-throwing, handling, or avoiding catch altogether"
+  },
+  {
+   "file": "src/flow/flow_runner.cpp",
+   "line": 308,
+   "col": 11,
+   "check": "bugprone-empty-catch",
+   "sev": "warning",
+   "msg": "empty catch statements hide issues; to handle exceptions appropriately, consider re-throwing, handling, or avoiding catch altogether"
+  },
+  {
+   "file": "src/flow/flow_runner.cpp",
+   "line": 592,
+   "col": 15,
+   "check": "bugprone-empty-catch",
+   "sev": "warning",
+   "msg": "empty catch statements hide issues; to handle exceptions appropriately, consider re-throwing, handling, or avoiding catch altogether"
+  },
+  {
+   "file": "src/flow/flow_runner.cpp",
+   "line": 631,
+   "col": 11,
+   "check": "bugprone-empty-catch",
+   "sev": "warning",
+   "msg": "empty catch statements hide issues; to handle exceptions appropriately, consider re-throwing, handling, or avoiding catch altogether"
+  },
+  {
+   "file": "src/flow/flow_runner.cpp",
+   "line": 958,
+   "col": 24,
+   "check": "performance-faster-string-find,performance-prefer-single-char-overloads",
+   "sev": "warning",
+   "msg": "'operator+=' called with a string literal consisting of a single character; consider using the more efficient overload accepting a character"
+  },
+  {
+   "file": "src/flow/flow_runner.cpp",
+   "line": 968,
+   "col": 20,
+   "check": "clang-analyzer-deadcode.DeadStores",
+   "sev": "warning",
+   "msg": "Value stored to 'has_config' during its initialization is never read"
+  },
+  {
+   "file": "src/flow/flow_runner.cpp",
+   "line": 1257,
+   "col": 29,
+   "check": "performance-inefficient-string-concatenation",
+   "sev": "warning",
+   "msg": "string concatenation results in allocation of unnecessary temporary strings; consider using 'operator+=' or 'string::append()' instead"
+  },
+  {
+   "file": "src/flow/flow_runner.cpp",
+   "line": 1324,
+   "col": 9,
+   "check": "modernize-avoid-c-arrays",
+   "sev": "warning",
+   "msg": "do not declare C-style arrays, use 'std::array' instead"
+  },
+  {
+   "file": "src/flow/flow_runner.cpp",
+   "line": 1325,
+   "col": 9,
+   "check": "cert-err33-c",
+   "sev": "warning",
+   "msg": "the value returned by this function should not be disregarded; neglecting it may lead to errors"
+  },
+  {
+   "file": "src/flow/flow_runner.cpp",
+   "line": 1393,
+   "col": 71,
+   "check": "performance-unnecessary-value-param",
+   "sev": "warning",
+   "msg": "the parameter 'stages' of type 'std::vector<std::string>' (aka 'std::vector<basic_string<char, char_traits<char>, allocator<char>>>') is copied for each invocation but only used as a const reference; consider making it a const reference"
+  },
+  {
+   "file": "src/flow/flow_runner.cpp",
+   "line": 1454,
+   "col": 63,
+   "check": "performance-string-view-conversions",
+   "sev": "warning",
+   "msg": "redundant conversion to 'std::string' (aka 'basic_string<char, char_traits<char>, allocator<char>>') and then back to 'basic_string_view<char, std::char_traits<char>>'"
+  },
+  {
+   "file": "src/flow/flow_runner.cpp",
+   "line": 1508,
+   "col": 49,
+   "check": "performance-inefficient-string-concatenation",
+   "sev": "warning",
+   "msg": "string concatenation results in allocation of unnecessary temporary strings; consider using 'operator+=' or 'string::append()' instead"
+  },
+  {
+   "file": "src/flow/flow_runner.cpp",
+   "line": 1509,
+   "col": 63,
+   "check": "performance-inefficient-string-concatenation",
+   "sev": "warning",
+   "msg": "string concatenation results in allocation of unnecessary temporary strings; consider using 'operator+=' or 'string::append()' instead"
+  },
+  {
+   "file": "src/flow/flow_runner.cpp",
+   "line": 1517,
+   "col": 72,
+   "check": "performance-inefficient-string-concatenation",
+   "sev": "warning",
+   "msg": "string concatenation results in allocation of unnecessary temporary strings; consider using 'operator+=' or 'string::append()' instead"
+  },
+  {
+   "file": "src/flow/flow_runner.cpp",
+   "line": 1592,
+   "col": 23,
+   "check": "bugprone-empty-catch",
+   "sev": "warning",
+   "msg": "empty catch statements hide issues; to handle exceptions appropriately, consider re-throwing, handling, or avoiding catch altogether"
+  },
+  {
+   "file": "src/flow/flow_runner.cpp",
+   "line": 1694,
+   "col": 10,
+   "check": "bugprone-exception-escape",
+   "sev": "warning",
+   "msg": "an exception may be thrown in function 'RestoreProbeHooks' which should not throw exceptions"
+  },
+  {
+   "file": "src/flow/flow_runner.cpp",
+   "line": 1710,
+   "col": 76,
+   "check": "performance-inefficient-string-concatenation",
+   "sev": "warning",
+   "msg": "string concatenation results in allocation of unnecessary temporary strings; consider using 'operator+=' or 'string::append()' instead"
+  },
+  {
+   "file": "src/flow/flow_runner.cpp",
+   "line": 1715,
+   "col": 15,
+   "check": "bugprone-empty-catch",
+   "sev": "warning",
+   "msg": "empty catch statements hide issues; to handle exceptions appropriately, consider re-throwing, handling, or avoiding catch altogether"
+  },
+  {
+   "file": "src/flow/flow_runner.cpp",
+   "line": 1726,
+   "col": 11,
+   "check": "bugprone-empty-catch",
+   "sev": "warning",
+   "msg": "empty catch statements hide issues; to handle exceptions appropriately, consider re-throwing, handling, or avoiding catch altogether"
+  },
+  {
+   "file": "src/flow/flow_runner.cpp",
+   "line": 1861,
+   "col": 33,
+   "check": "bugprone-exception-escape",
+   "sev": "warning",
+   "msg": "an exception may be thrown in function '(lambda at Y:\\fpga-lsp-cpp\\src\\flow\\flow_runner.cpp:1861:33)' which should not throw exceptions"
+  },
+  {
+   "file": "src/flow/flow_runner.cpp",
+   "line": 1875,
+   "col": 15,
+   "check": "bugprone-empty-catch",
+   "sev": "warning",
+   "msg": "empty catch statements hide issues; to handle exceptions appropriately, consider re-throwing, handling, or avoiding catch altogether"
+  },
+  {
+   "file": "src/flow/flow_runner.cpp",
+   "line": 1880,
+   "col": 15,
+   "check": "bugprone-empty-catch",
+   "sev": "warning",
+   "msg": "empty catch statements hide issues; to handle exceptions appropriately, consider re-throwing, handling, or avoiding catch altogether"
+  },
+  {
+   "file": "src/flow/flow_runner.cpp",
+   "line": 1904,
+   "col": 18,
+   "check": "modernize-avoid-c-arrays",
+   "sev": "warning",
+   "msg": "do not declare C-style arrays, use 'std::array' instead"
+  },
+  {
+   "file": "src/flow/flow_status.cpp",
+   "line": 41,
+   "col": 11,
+   "check": "modernize-avoid-c-arrays",
+   "sev": "warning",
+   "msg": "do not declare C-style arrays, use 'std::array' instead"
+  },
+  {
+   "file": "src/flow/flow_status.cpp",
+   "line": 70,
+   "col": 11,
+   "check": "modernize-avoid-c-arrays",
+   "sev": "warning",
+   "msg": "do not declare C-style arrays, use 'std::array' instead"
+  },
+  {
+   "file": "src/flow/probe.cpp",
+   "line": 147,
+   "col": 5,
+   "check": "cert-err33-c",
+   "sev": "warning",
+   "msg": "the value returned by this function should not be disregarded; neglecting it may lead to errors"
+  },
+  {
+   "file": "src/flow/probe.cpp",
+   "line": 151,
+   "col": 5,
+   "check": "modernize-avoid-c-arrays",
+   "sev": "warning",
+   "msg": "do not declare C-style arrays, use 'std::array' instead"
+  },
+  {
+   "file": "src/flow/probe.cpp",
+   "line": 152,
+   "col": 5,
+   "check": "cert-err33-c",
+   "sev": "warning",
+   "msg": "the value returned by this function should not be disregarded; neglecting it may lead to errors"
+  },
+  {
+   "file": "src/flow/probe.cpp",
+   "line": 219,
+   "col": 9,
+   "check": "modernize-avoid-c-arrays",
+   "sev": "warning",
+   "msg": "do not declare C-style arrays, use 'std::array' instead"
+  },
+  {
+   "file": "src/flow/probe.cpp",
+   "line": 221,
+   "col": 13,
+   "check": "cert-err33-c",
+   "sev": "warning",
+   "msg": "the value returned by this function should not be disregarded; neglecting it may lead to errors"
+  },
+  {
+   "file": "src/flow/probe.cpp",
+   "line": 223,
+   "col": 13,
+   "check": "cert-err33-c",
+   "sev": "warning",
+   "msg": "the value returned by this function should not be disregarded; neglecting it may lead to errors"
+  },
+  {
+   "file": "src/flow/probe.cpp",
+   "line": 292,
+   "col": 87,
+   "check": "performance-no-automatic-move",
+   "sev": "warning",
+   "msg": "constness of 'trimmed' prevents automatic move"
+  },
+  {
+   "file": "src/flow/probe.cpp",
+   "line": 295,
+   "col": 31,
+   "check": "performance-no-automatic-move",
+   "sev": "warning",
+   "msg": "constness of 'trimmed' prevents automatic move"
+  },
+  {
+   "file": "src/flow/probe.cpp",
+   "line": 297,
+   "col": 40,
+   "check": "performance-no-automatic-move",
+   "sev": "warning",
+   "msg": "constness of 'trimmed' prevents automatic move"
+  },
+  {
+   "file": "src/flow/probe.cpp",
+   "line": 301,
+   "col": 27,
+   "check": "performance-no-automatic-move",
+   "sev": "warning",
+   "msg": "constness of 'trimmed' prevents automatic move"
+  },
+  {
+   "file": "src/flow/probe.cpp",
+   "line": 1352,
+   "col": 73,
+   "check": "performance-inefficient-string-concatenation",
+   "sev": "warning",
+   "msg": "string concatenation results in allocation of unnecessary temporary strings; consider using 'operator+=' or 'string::append()' instead"
+  },
+  {
+   "file": "src/flow/probe.cpp",
+   "line": 1378,
+   "col": 64,
+   "check": "performance-inefficient-string-concatenation",
+   "sev": "warning",
+   "msg": "string concatenation results in allocation of unnecessary temporary strings; consider using 'operator+=' or 'string::append()' instead"
+  },
+  {
+   "file": "src/flow/probe.cpp",
+   "line": 1452,
+   "col": 40,
+   "check": "performance-faster-string-find,performance-prefer-single-char-overloads",
+   "sev": "warning",
+   "msg": "'operator+=' called with a string literal consisting of a single character; consider using the more efficient overload accepting a character"
+  },
+  {
+   "file": "src/flow/probe.cpp",
+   "line": 1520,
+   "col": 44,
+   "check": "performance-faster-string-find,performance-prefer-single-char-overloads",
+   "sev": "warning",
+   "msg": "'operator+=' called with a string literal consisting of a single character; consider using the more efficient overload accepting a character"
+  },
+  {
+   "file": "src/flow/probe.cpp",
+   "line": 1614,
+   "col": 56,
+   "check": "performance-inefficient-string-concatenation",
+   "sev": "warning",
+   "msg": "string concatenation results in allocation of unnecessary temporary strings; consider using 'operator+=' or 'string::append()' instead"
+  },
+  {
+   "file": "src/flow/probe.cpp",
+   "line": 1620,
+   "col": 73,
+   "check": "performance-inefficient-string-concatenation",
+   "sev": "warning",
+   "msg": "string concatenation results in allocation of unnecessary temporary strings; consider using 'operator+=' or 'string::append()' instead"
+  },
+  {
+   "file": "src/flow/probe.cpp",
+   "line": 1639,
+   "col": 64,
+   "check": "performance-inefficient-string-concatenation",
+   "sev": "warning",
+   "msg": "string concatenation results in allocation of unnecessary temporary strings; consider using 'operator+=' or 'string::append()' instead"
+  },
+  {
+   "file": "src/flow/probe.cpp",
+   "line": 2428,
+   "col": 39,
+   "check": "performance-inefficient-string-concatenation",
+   "sev": "warning",
+   "msg": "string concatenation results in allocation of unnecessary temporary strings; consider using 'operator+=' or 'string::append()' instead"
+  },
+  {
+   "file": "src/flow/probe.cpp",
+   "line": 2778,
+   "col": 12,
+   "check": "performance-no-automatic-move",
+   "sev": "warning",
+   "msg": "constness of 'path' prevents automatic move"
+  },
+  {
+   "file": "src/flow/probe.cpp",
+   "line": 2857,
+   "col": 39,
+   "check": "bugprone-branch-clone",
+   "sev": "warning",
+   "msg": "conditional operator with identical true and false expressions"
+  },
+  {
+   "file": "src/flow/probe.cpp",
+   "line": 3628,
+   "col": 47,
+   "check": "performance-inefficient-string-concatenation",
+   "sev": "warning",
+   "msg": "string concatenation results in allocation of unnecessary temporary strings; consider using 'operator+=' or 'string::append()' instead"
+  },
+  {
+   "file": "src/flow/probe.cpp",
+   "line": 3663,
+   "col": 58,
+   "check": "performance-inefficient-string-concatenation",
+   "sev": "warning",
+   "msg": "string concatenation results in allocation of unnecessary temporary strings; consider using 'operator+=' or 'string::append()' instead"
+  },
+  {
+   "file": "src/flow/probe.cpp",
+   "line": 3667,
+   "col": 46,
+   "check": "bugprone-signed-bitwise",
+   "sev": "warning",
+   "msg": "use of a signed integer operand with a binary bitwise operator"
+  },
+  {
+   "file": "src/flow/probe.cpp",
+   "line": 3921,
+   "col": 51,
+   "check": "performance-string-view-conversions",
+   "sev": "warning",
+   "msg": "redundant conversion to 'std::string' (aka 'basic_string<char, char_traits<char>, allocator<char>>') and then back to 'basic_string_view<char, std::char_traits<char>>'"
+  },
+  {
+   "file": "src/flow/probe.h",
+   "line": 110,
+   "col": 8,
+   "check": "bugprone-exception-escape",
+   "sev": "warning",
+   "msg": "an exception may be thrown in function 'DisabledPlan' which should not throw exceptions"
+  },
+  {
+   "file": "src/flow/programmer.cpp",
+   "line": 14,
+   "col": 9,
+   "check": "bugprone-reserved-identifier",
+   "sev": "warning",
+   "msg": "declaration uses identifier '_CRT_SECURE_NO_WARNINGS', which is a reserved identifier"
+  },
+  {
+   "file": "src/flow/programmer.cpp",
+   "line": 283,
+   "col": 9,
+   "check": "modernize-avoid-c-arrays",
+   "sev": "warning",
+   "msg": "do not declare C-style arrays, use 'std::array' instead"
+  },
+  {
+   "file": "src/flow/programmer.cpp",
+   "line": 355,
+   "col": 15,
+   "check": "modernize-avoid-c-arrays",
+   "sev": "warning",
+   "msg": "do not declare C-style arrays, use 'std::array' instead"
+  },
+  {
+   "file": "src/flow/programmer.cpp",
+   "line": 423,
+   "col": 29,
+   "check": "performance-no-automatic-move",
+   "sev": "warning",
+   "msg": "constness of 'exe' prevents automatic move"
+  },
+  {
+   "file": "src/flow/programmer.cpp",
+   "line": 466,
+   "col": 66,
+   "check": "bugprone-narrowing-conversions",
+   "sev": "warning",
+   "msg": "narrowing conversion from 'size_t' (aka 'unsigned long long') to signed type 'difference_type' (aka 'long long') is implementation-defined"
+  },
+  {
+   "file": "src/flow/programmer.cpp",
+   "line": 528,
+   "col": 24,
+   "check": "clang-analyzer-cplusplus.Move",
+   "sev": "warning",
+   "msg": "Moved-from object 'device' of type 'std::basic_string' is moved"
+  },
+  {
+   "file": "src/flow/programmer.cpp",
+   "line": 647,
+   "col": 30,
+   "check": "performance-string-view-conversions",
+   "sev": "warning",
+   "msg": "redundant conversion to 'std::string' (aka 'basic_string<char, char_traits<char>, allocator<char>>') and then back to 'basic_string_view<char, std::char_traits<char>>'"
+  },
+  {
+   "file": "src/flow/programmer.cpp",
+   "line": 661,
+   "col": 30,
+   "check": "performance-string-view-conversions",
+   "sev": "warning",
+   "msg": "redundant conversion to 'std::string' (aka 'basic_string<char, char_traits<char>, allocator<char>>') and then back to 'basic_string_view<char, std::char_traits<char>>'"
+  },
+  {
+   "file": "src/flow/strategy.cpp",
+   "line": 269,
+   "col": 47,
+   "check": "bugprone-narrowing-conversions",
+   "sev": "warning",
+   "msg": "narrowing conversion from 'unsigned long long' to signed type 'difference_type' (aka 'long long') is implementation-defined"
+  },
+  {
+   "file": "src/flow/strategy.cpp",
+   "line": 333,
+   "col": 5,
+   "check": "modernize-avoid-c-arrays",
+   "sev": "warning",
+   "msg": "do not declare C-style arrays, use 'std::array' instead"
+  },
+  {
+   "file": "src/flow/strategy.cpp",
+   "line": 414,
+   "col": 23,
+   "check": "bugprone-empty-catch",
+   "sev": "warning",
+   "msg": "empty catch statements hide issues; to handle exceptions appropriately, consider re-throwing, handling, or avoiding catch altogether"
+  },
+  {
+   "file": "src/flow/strategy.cpp",
+   "line": 420,
+   "col": 23,
+   "check": "bugprone-empty-catch",
+   "sev": "warning",
+   "msg": "empty catch statements hide issues; to handle exceptions appropriately, consider re-throwing, handling, or avoiding catch altogether"
+  },
+  {
+   "file": "src/hdl/data/primitives.inc",
+   "line": 16,
+   "col": 11,
+   "check": "modernize-avoid-c-arrays",
+   "sev": "warning",
+   "msg": "do not declare C-style arrays, use 'std::array' instead"
+  },
+  {
+   "file": "src/hdl/data/primitives.inc",
+   "line": 764,
+   "col": 11,
+   "check": "modernize-avoid-c-arrays",
+   "sev": "warning",
+   "msg": "do not declare C-style arrays, use 'std::array' instead"
+  },
+  {
+   "file": "src/hdl/hdl_index.cpp",
+   "line": 296,
+   "col": 9,
+   "check": "bugprone-signed-bitwise",
+   "sev": "warning",
+   "msg": "use of a signed integer operand with a binary bitwise operator"
+  },
+  {
+   "file": "src/hdl/hdl_index.cpp",
+   "line": 399,
+   "col": 48,
+   "check": "bugprone-branch-clone",
+   "sev": "warning",
+   "msg": "repeated branch body in conditional chain"
+  },
+  {
+   "file": "src/hdl/hdl_index.cpp",
+   "line": 655,
+   "col": 50,
+   "check": "bugprone-signed-bitwise",
+   "sev": "warning",
+   "msg": "use of a signed integer operand with a unary bitwise operator"
+  },
+  {
+   "file": "src/hdl/hdl_index.cpp",
+   "line": 1033,
+   "col": 40,
+   "check": "clang-analyzer-deadcode.DeadStores",
+   "sev": "warning",
+   "msg": "Value stored to 'k' is never read"
+  },
+  {
+   "file": "src/hdl/hdl_index.cpp",
+   "line": 1069,
+   "col": 12,
+   "check": "bugprone-exception-escape",
+   "sev": "warning",
+   "msg": "an exception may be thrown in function 'Connections' which should not throw exceptions"
+  },
+  {
+   "file": "src/hdl/hdl_index.h",
+   "line": 110,
+   "col": 8,
+   "check": "bugprone-exception-escape",
+   "sev": "warning",
+   "msg": "an exception may be thrown in function 'Instance' which should not throw exceptions"
+  },
+  {
+   "file": "src/hdl/hdl_index.h",
+   "line": 165,
+   "col": 8,
+   "check": "bugprone-exception-escape",
+   "sev": "warning",
+   "msg": "an exception may be thrown in function 'ModulePositions' which should not throw exceptions"
+  },
+  {
+   "file": "src/hdl/hdl_index.h",
+   "line": 175,
+   "col": 8,
+   "check": "bugprone-exception-escape",
+   "sev": "warning",
+   "msg": "an exception may be thrown in function 'ModuleInfo' which should not throw exceptions"
+  },
+  {
+   "file": "src/hdl/hdl_index.h",
+   "line": 294,
+   "col": 7,
+   "check": "bugprone-exception-escape",
+   "sev": "warning",
+   "msg": "an exception may be thrown in function 'HdlIndex' which should not throw exceptions"
+  },
+  {
+   "file": "src/hdl/hdl_index.h",
+   "line": 430,
+   "col": 8,
+   "check": "bugprone-exception-escape",
+   "sev": "warning",
+   "msg": "an exception may be thrown in function 'BuildResult' which should not throw exceptions"
+  },
+  {
+   "file": "src/lsp/document_store.cpp",
+   "line": 57,
+   "col": 44,
+   "check": "performance-string-view-conversions",
+   "sev": "warning",
+   "msg": "redundant conversion to 'std::string' (aka 'basic_string<char, char_traits<char>, allocator<char>>') and then back to 'basic_string_view<char, std::char_traits<char>>'"
+  },
+  {
+   "file": "src/lsp/document_store.cpp",
+   "line": 162,
+   "col": 50,
+   "check": "performance-string-view-conversions",
+   "sev": "warning",
+   "msg": "redundant conversion to 'std::string' (aka 'basic_string<char, char_traits<char>, allocator<char>>') and then back to 'basic_string_view<char, std::char_traits<char>>'"
+  },
+  {
+   "file": "src/lsp/document_store.cpp",
+   "line": 288,
+   "col": 19,
+   "check": "bugprone-signed-bitwise",
+   "sev": "warning",
+   "msg": "use of a signed integer operand with a binary bitwise operator"
+  },
+  {
+   "file": "src/lsp/document_store.cpp",
+   "line": 380,
+   "col": 40,
+   "check": "performance-string-view-conversions",
+   "sev": "warning",
+   "msg": "redundant conversion to 'std::string' (aka 'basic_string<char, char_traits<char>, allocator<char>>') and then back to 'basic_string_view<char, std::char_traits<char>>'"
+  },
+  {
+   "file": "src/lsp/document_store.cpp",
+   "line": 398,
+   "col": 48,
+   "check": "performance-string-view-conversions",
+   "sev": "warning",
+   "msg": "redundant conversion to 'std::string' (aka 'basic_string<char, char_traits<char>, allocator<char>>') and then back to 'basic_string_view<char, std::char_traits<char>>'"
+  },
+  {
+   "file": "src/mcp/bridge.cpp",
+   "line": 409,
+   "col": 41,
+   "check": "bugprone-throwing-static-initialization",
+   "sev": "warning",
+   "msg": "initialization of 'g_project_list_cache' with static storage duration may throw an exception that cannot be caught"
+  },
+  {
+   "file": "src/mcp/bridge.cpp",
+   "line": 544,
+   "col": 43,
+   "check": "bugprone-throwing-static-initialization",
+   "sev": "warning",
+   "msg": "initialization of 'g_project_cache' with static storage duration may throw an exception that cannot be caught"
+  },
+  {
+   "file": "src/mcp/bridge.cpp",
+   "line": 562,
+   "col": 36,
+   "check": "bugprone-throwing-static-initialization",
+   "sev": "warning",
+   "msg": "initialization of 'g_al_name_cache' with static storage duration may throw an exception that cannot be caught"
+  },
+  {
+   "file": "src/mcp/bridge.cpp",
+   "line": 862,
+   "col": 16,
+   "check": "performance-no-automatic-move",
+   "sev": "warning",
+   "msg": "constness of 'candidate' prevents automatic move"
+  },
+  {
+   "file": "src/mcp/bridge.cpp",
+   "line": 974,
+   "col": 37,
+   "check": "bugprone-branch-clone",
+   "sev": "warning",
+   "msg": "repeated branch body in conditional chain"
+  },
+  {
+   "file": "src/mcp/bridge.cpp",
+   "line": 1053,
+   "col": 76,
+   "check": "bugprone-unchecked-optional-access",
+   "sev": "warning",
+   "msg": "unchecked access to optional value"
+  },
+  {
+   "file": "src/mcp/bridge.cpp",
+   "line": 1098,
+   "col": 15,
+   "check": "modernize-avoid-c-arrays",
+   "sev": "warning",
+   "msg": "do not declare C-style arrays, use 'std::array' instead"
+  },
+  {
+   "file": "src/mcp/bridge.cpp",
+   "line": 1931,
+   "col": 54,
+   "check": "performance-faster-string-find,performance-prefer-single-char-overloads",
+   "sev": "warning",
+   "msg": "'operator+=' called with a string literal consisting of a single character; consider using the more efficient overload accepting a character"
+  },
+  {
+   "file": "src/mcp/bridge.cpp",
+   "line": 2418,
+   "col": 42,
+   "check": "modernize-use-emplace",
+   "sev": "warning",
+   "msg": "use emplace_back instead of push_back"
+  },
+  {
+   "file": "src/mcp/bridge.cpp",
+   "line": 3003,
+   "col": 23,
+   "check": "modernize-avoid-c-arrays",
+   "sev": "warning",
+   "msg": "do not declare C-style arrays, use 'std::array' instead"
+  },
+  {
+   "file": "src/mcp/bridge.cpp",
+   "line": 3350,
+   "col": 86,
+   "check": "performance-unnecessary-value-param",
+   "sev": "warning",
+   "msg": "the parameter 'stage' of type 'std::string' (aka 'basic_string<char, char_traits<char>, allocator<char>>') is copied for each invocation but only used as a const reference; consider making it a const reference"
+  },
+  {
+   "file": "src/mcp/bridge.cpp",
+   "line": 3351,
+   "col": 35,
+   "check": "performance-unnecessary-value-param",
+   "sev": "warning",
+   "msg": "the parameter 'section' of type 'std::string' (aka 'basic_string<char, char_traits<char>, allocator<char>>') is copied for each invocation but only used as a const reference; consider making it a const reference"
+  },
+  {
+   "file": "src/mcp/bridge.cpp",
+   "line": 3679,
+   "col": 32,
+   "check": "modernize-use-emplace",
+   "sev": "warning",
+   "msg": "use emplace_back instead of push_back"
+  },
+  {
+   "file": "src/mcp/bridge.cpp",
+   "line": 4011,
+   "col": 11,
+   "check": "bugprone-empty-catch",
+   "sev": "warning",
+   "msg": "empty catch statements hide issues; to handle exceptions appropriately, consider re-throwing, handling, or avoiding catch altogether"
+  },
+  {
+   "file": "src/mcp/bridge.cpp",
+   "line": 4365,
+   "col": 38,
+   "check": "performance-inefficient-string-concatenation",
+   "sev": "warning",
+   "msg": "string concatenation results in allocation of unnecessary temporary strings; consider using 'operator+=' or 'string::append()' instead"
+  },
+  {
+   "file": "src/mcp/bridge.cpp",
+   "line": 4374,
+   "col": 34,
+   "check": "performance-inefficient-string-concatenation",
+   "sev": "warning",
+   "msg": "string concatenation results in allocation of unnecessary temporary strings; consider using 'operator+=' or 'string::append()' instead"
+  },
+  {
+   "file": "src/mcp/bridge.cpp",
+   "line": 4594,
+   "col": 19,
+   "check": "modernize-avoid-c-arrays",
+   "sev": "warning",
+   "msg": "do not declare C-style arrays, use 'std::array' instead"
+  },
+  {
+   "file": "src/mcp/bridge.cpp",
+   "line": 4631,
+   "col": 19,
+   "check": "modernize-avoid-c-arrays",
+   "sev": "warning",
+   "msg": "do not declare C-style arrays, use 'std::array' instead"
+  },
+  {
+   "file": "src/mcp/bridge.cpp",
+   "line": 4898,
+   "col": 41,
+   "check": "performance-string-view-conversions",
+   "sev": "warning",
+   "msg": "redundant conversion to 'std::string' (aka 'basic_string<char, char_traits<char>, allocator<char>>') and then back to 'basic_string_view<char, std::char_traits<char>>'"
+  },
+  {
+   "file": "src/mcp/bridge.cpp",
+   "line": 4917,
+   "col": 41,
+   "check": "performance-string-view-conversions",
+   "sev": "warning",
+   "msg": "redundant conversion to 'std::string' (aka 'basic_string<char, char_traits<char>, allocator<char>>') and then back to 'basic_string_view<char, std::char_traits<char>>'"
+  },
+  {
+   "file": "src/mcp/mcp_server.cpp",
+   "line": 417,
+   "col": 11,
+   "check": "bugprone-empty-catch",
+   "sev": "warning",
+   "msg": "empty catch statements hide issues; to handle exceptions appropriately, consider re-throwing, handling, or avoiding catch altogether"
+  },
+  {
+   "file": "src/mcp/mcp_server.cpp",
+   "line": 466,
+   "col": 26,
+   "check": "bugprone-exception-escape",
+   "sev": "warning",
+   "msg": "an exception may be thrown in function '(lambda at Y:\\fpga-lsp-cpp\\src\\mcp\\mcp_server.cpp:466:26)' which should not throw exceptions"
+  },
+  {
+   "file": "src/mcp/mcp_server.cpp",
+   "line": 466,
+   "col": 16,
+   "check": "modernize-use-emplace",
+   "sev": "warning",
+   "msg": "use emplace_back instead of push_back"
+  },
+  {
+   "file": "src/mcp/mcp_server.cpp",
+   "line": 676,
+   "col": 44,
+   "check": "bugprone-exception-escape",
+   "sev": "warning",
+   "msg": "an exception may be thrown in function '(lambda at Y:\\fpga-lsp-cpp\\src\\mcp\\mcp_server.cpp:676:44)' which should not throw exceptions"
+  },
+  {
+   "file": "src/mcp/mcp_server.h",
+   "line": 109,
+   "col": 28,
+   "check": "modernize-avoid-c-arrays",
+   "sev": "warning",
+   "msg": "do not declare C-style arrays, use 'std::array' instead"
+  },
+  {
+   "file": "src/platform/encoding.cpp",
+   "line": 77,
+   "col": 46,
+   "check": "bugprone-signed-bitwise",
+   "sev": "warning",
+   "msg": "use of a signed integer operand with a binary bitwise operator"
+  },
+  {
+   "file": "src/platform/log.cpp",
+   "line": 55,
+   "col": 7,
+   "check": "bugprone-empty-catch",
+   "sev": "warning",
+   "msg": "empty catch statements hide issues; to handle exceptions appropriately, consider re-throwing, handling, or avoiding catch altogether"
+  },
+  {
+   "file": "src/platform/log.cpp",
+   "line": 70,
+   "col": 7,
+   "check": "bugprone-empty-catch",
+   "sev": "warning",
+   "msg": "empty catch statements hide issues; to handle exceptions appropriately, consider re-throwing, handling, or avoiding catch altogether"
+  },
+  {
+   "file": "src/platform/log.cpp",
+   "line": 128,
+   "col": 8,
+   "check": "bugprone-throwing-static-initialization",
+   "sev": "warning",
+   "msg": "initialization of 'g_default_logger' with static storage duration may throw an exception that cannot be caught"
+  },
+  {
+   "file": "src/platform/path.cpp",
+   "line": 58,
+   "col": 17,
+   "check": "bugprone-unused-local-non-trivial-variable",
+   "sev": "warning",
+   "msg": "unused local variable 'prefix' of type 'std::string' (aka 'basic_string<char, char_traits<char>, allocator<char>>')"
+  },
+  {
+   "file": "src/platform/path.cpp",
+   "line": 164,
+   "col": 22,
+   "check": "modernize-avoid-c-arrays",
+   "sev": "warning",
+   "msg": "do not declare C-style arrays, use 'std::array' instead"
+  },
+  {
+   "file": "src/platform/path.cpp",
+   "line": 178,
+   "col": 32,
+   "check": "bugprone-signed-bitwise",
+   "sev": "warning",
+   "msg": "use of a signed integer operand with a binary bitwise operator"
+  },
+  {
+   "file": "src/platform/path.cpp",
+   "line": 193,
+   "col": 49,
+   "check": "bugprone-signed-bitwise",
+   "sev": "warning",
+   "msg": "use of a signed integer operand with a binary bitwise operator"
+  },
+  {
+   "file": "src/platform/path.cpp",
+   "line": 500,
+   "col": 18,
+   "check": "modernize-avoid-c-arrays",
+   "sev": "warning",
+   "msg": "do not declare C-style arrays, use 'std::array' instead"
+  },
+  {
+   "file": "src/platform/write_service.cpp",
+   "line": 41,
+   "col": 15,
+   "check": "bugprone-throwing-static-initialization",
+   "sev": "warning",
+   "msg": "initialization of 'g_audit_stream' with static storage duration may throw an exception that cannot be caught"
+  },
+  {
+   "file": "src/platform/write_service.cpp",
+   "line": 43,
+   "col": 23,
+   "check": "bugprone-throwing-static-initialization",
+   "sev": "warning",
+   "msg": "initialization of 'g_audit_dirs_created' with static storage duration may throw an exception that cannot be caught"
+  },
+  {
+   "file": "src/platform/write_service.cpp",
+   "line": 55,
+   "col": 1,
+   "check": "modernize-avoid-c-arrays",
+   "sev": "warning",
+   "msg": "do not declare C-style arrays, use 'std::array' instead"
+  },
+  {
+   "file": "src/platform/write_service.cpp",
+   "line": 116,
+   "col": 18,
+   "check": "modernize-avoid-c-arrays",
+   "sev": "warning",
+   "msg": "do not declare C-style arrays, use 'std::array' instead"
+  },
+  {
+   "file": "src/platform/write_service.cpp",
+   "line": 154,
+   "col": 21,
+   "check": "modernize-avoid-c-arrays",
+   "sev": "warning",
+   "msg": "do not declare C-style arrays, use 'std::array' instead"
+  },
+  {
+   "file": "src/platform/write_service.cpp",
+   "line": 155,
+   "col": 21,
+   "check": "cert-err33-c",
+   "sev": "warning",
+   "msg": "the value returned by this function should not be disregarded; neglecting it may lead to errors"
+  },
+  {
+   "file": "src/platform/write_service.cpp",
+   "line": 182,
+   "col": 33,
+   "check": "bugprone-signed-bitwise",
+   "sev": "warning",
+   "msg": "use of a signed integer operand with a binary bitwise operator"
+  },
+  {
+   "file": "src/platform/write_service.cpp",
+   "line": 317,
+   "col": 36,
+   "check": "bugprone-throwing-static-initialization",
+   "sev": "warning",
+   "msg": "initialization of 'g_state_dir_cache' with static storage duration may throw an exception that cannot be caught"
+  },
+  {
+   "file": "src/platform/write_service.cpp",
+   "line": 353,
+   "col": 18,
+   "check": "modernize-avoid-c-arrays",
+   "sev": "warning",
+   "msg": "do not declare C-style arrays, use 'std::array' instead"
+  },
+  {
+   "file": "src/platform/write_service.cpp",
+   "line": 383,
+   "col": 41,
+   "check": "bugprone-signed-bitwise",
+   "sev": "warning",
+   "msg": "use of a signed integer operand with a binary bitwise operator"
+  },
+  {
+   "file": "src/platform/write_service.cpp",
+   "line": 909,
+   "col": 13,
+   "check": "clang-analyzer-deadcode.DeadStores",
+   "sev": "warning",
+   "msg": "Value stored to 'project_dest_ok' is never read"
+  },
+  {
+   "file": "src/platform/write_service.h",
+   "line": 123,
+   "col": 5,
+   "check": "modernize-avoid-c-arrays",
+   "sev": "warning",
+   "msg": "do not declare C-style arrays, use 'std::array' instead"
+  },
+  {
+   "file": "src/project/al_project.cpp",
+   "line": 26,
+   "col": 17,
+   "check": "modernize-avoid-c-arrays",
+   "sev": "warning",
+   "msg": "do not declare C-style arrays, use 'std::array' instead"
+  },
+  {
+   "file": "src/project/al_project.cpp",
+   "line": 27,
+   "col": 17,
+   "check": "modernize-avoid-c-arrays",
+   "sev": "warning",
+   "msg": "do not declare C-style arrays, use 'std::array' instead"
+  },
+  {
+   "file": "src/project/al_project.cpp",
+   "line": 419,
+   "col": 23,
+   "check": "modernize-use-emplace",
+   "sev": "warning",
+   "msg": "use emplace_back instead of push_back"
+  },
+  {
+   "file": "src/project/al_project.cpp",
+   "line": 422,
+   "col": 23,
+   "check": "modernize-use-emplace",
+   "sev": "warning",
+   "msg": "use emplace_back instead of push_back"
+  },
+  {
+   "file": "src/project/al_project.cpp",
+   "line": 445,
+   "col": 23,
+   "check": "modernize-use-emplace",
+   "sev": "warning",
+   "msg": "use emplace_back instead of push_back"
+  },
+  {
+   "file": "src/project/al_project.cpp",
+   "line": 450,
+   "col": 23,
+   "check": "modernize-use-emplace",
+   "sev": "warning",
+   "msg": "use emplace_back instead of push_back"
+  },
+  {
+   "file": "src/project/al_project.cpp",
+   "line": 673,
+   "col": 43,
+   "check": "performance-no-automatic-move",
+   "sev": "warning",
+   "msg": "constness of 'al' prevents automatic move"
+  },
+  {
+   "file": "src/reports/area.cpp",
+   "line": 33,
+   "col": 11,
+   "check": "modernize-avoid-c-arrays",
+   "sev": "warning",
+   "msg": "do not declare C-style arrays, use 'std::array' instead"
+  },
+  {
+   "file": "src/reports/area.h",
+   "line": 58,
+   "col": 8,
+   "check": "bugprone-exception-escape",
+   "sev": "warning",
+   "msg": "an exception may be thrown in function 'AreaModule' which should not throw exceptions"
+  },
+  {
+   "file": "src/reports/area.h",
+   "line": 67,
+   "col": 8,
+   "check": "bugprone-exception-escape",
+   "sev": "warning",
+   "msg": "an exception may be thrown in function 'AreaReport' which should not throw exceptions"
+  },
+  {
+   "file": "src/reports/flow_status.cpp",
+   "line": 36,
+   "col": 11,
+   "check": "modernize-avoid-c-arrays",
+   "sev": "warning",
+   "msg": "do not declare C-style arrays, use 'std::array' instead"
+  },
+  {
+   "file": "src/reports/qor.cpp",
+   "line": 63,
+   "col": 11,
+   "check": "modernize-avoid-c-arrays",
+   "sev": "warning",
+   "msg": "do not declare C-style arrays, use 'std::array' instead"
+  },
+  {
+   "file": "src/reports/qor.cpp",
+   "line": 166,
+   "col": 13,
+   "check": "clang-analyzer-deadcode.DeadStores",
+   "sev": "warning",
+   "msg": "Value stored to 'has_current' is never read"
+  },
+  {
+   "file": "src/reports/qor.cpp",
+   "line": 196,
+   "col": 25,
+   "check": "performance-faster-string-find,performance-prefer-single-char-overloads",
+   "sev": "warning",
+   "msg": "'operator+=' called with a string literal consisting of a single character; consider using the more efficient overload accepting a character"
+  },
+  {
+   "file": "src/reports/reports_aggregate.cpp",
+   "line": 159,
+   "col": 47,
+   "check": "performance-inefficient-vector-operation",
+   "sev": "warning",
+   "msg": "'push_back' is called inside a loop; consider pre-allocating the container capacity before the loop"
+  },
+  {
+   "file": "src/reports/reports_aggregate.cpp",
+   "line": 162,
+   "col": 50,
+   "check": "performance-inefficient-vector-operation",
+   "sev": "warning",
+   "msg": "'push_back' is called inside a loop; consider pre-allocating the container capacity before the loop"
+  },
+  {
+   "file": "src/reports/reports_aggregate.cpp",
+   "line": 169,
+   "col": 48,
+   "check": "performance-inefficient-vector-operation",
+   "sev": "warning",
+   "msg": "'push_back' is called inside a loop; consider pre-allocating the container capacity before the loop"
+  },
+  {
+   "file": "src/reports/reports_aggregate.cpp",
+   "line": 175,
+   "col": 50,
+   "check": "performance-inefficient-vector-operation",
+   "sev": "warning",
+   "msg": "'push_back' is called inside a loop; consider pre-allocating the container capacity before the loop"
+  },
+  {
+   "file": "src/reports/reports_aggregate.cpp",
+   "line": 495,
+   "col": 48,
+   "check": "performance-inefficient-string-concatenation",
+   "sev": "warning",
+   "msg": "string concatenation results in allocation of unnecessary temporary strings; consider using 'operator+=' or 'string::append()' instead"
+  },
+  {
+   "file": "src/reports/reports_aggregate.h",
+   "line": 123,
+   "col": 8,
+   "check": "bugprone-exception-escape",
+   "sev": "warning",
+   "msg": "an exception may be thrown in function 'StageSection' which should not throw exceptions"
+  },
+  {
+   "file": "src/reports/reports_aggregate.h",
+   "line": 140,
+   "col": 8,
+   "check": "bugprone-exception-escape",
+   "sev": "warning",
+   "msg": "an exception may be thrown in function 'RunMetrics' which should not throw exceptions"
+  },
+  {
+   "file": "src/reports/reports_aggregate.h",
+   "line": 155,
+   "col": 8,
+   "check": "bugprone-exception-escape",
+   "sev": "warning",
+   "msg": "an exception may be thrown in function 'ReportsBundle' which should not throw exceptions"
+  },
+  {
+   "file": "src/reports/timing.cpp",
+   "line": 62,
+   "col": 11,
+   "check": "modernize-avoid-c-arrays",
+   "sev": "warning",
+   "msg": "do not declare C-style arrays, use 'std::array' instead"
+  },
+  {
+   "file": "src/reports/timing.cpp",
+   "line": 81,
+   "col": 11,
+   "check": "modernize-avoid-c-arrays",
+   "sev": "warning",
+   "msg": "do not declare C-style arrays, use 'std::array' instead"
+  },
+  {
+   "file": "src/reports/timing.cpp",
+   "line": 141,
+   "col": 22,
+   "check": "performance-faster-string-find,performance-prefer-single-char-overloads",
+   "sev": "warning",
+   "msg": "'operator+=' called with a string literal consisting of a single character; consider using the more efficient overload accepting a character"
+  },
+  {
+   "file": "src/reports/timing.h",
+   "line": 154,
+   "col": 8,
+   "check": "bugprone-exception-escape",
+   "sev": "warning",
+   "msg": "an exception may be thrown in function 'TimingReport' which should not throw exceptions"
+  },
+  {
+   "file": "src/semantics/semantics.cpp",
+   "line": 52,
+   "col": 11,
+   "check": "modernize-avoid-c-arrays",
+   "sev": "warning",
+   "msg": "do not declare C-style arrays, use 'std::array' instead"
+  },
+  {
+   "file": "src/semantics/semantics.cpp",
+   "line": 58,
+   "col": 11,
+   "check": "modernize-avoid-c-arrays",
+   "sev": "warning",
+   "msg": "do not declare C-style arrays, use 'std::array' instead"
+  },
+  {
+   "file": "src/semantics/semantics.cpp",
+   "line": 68,
+   "col": 11,
+   "check": "modernize-avoid-c-arrays",
+   "sev": "warning",
+   "msg": "do not declare C-style arrays, use 'std::array' instead"
+  },
+  {
+   "file": "src/semantics/semantics.cpp",
+   "line": 73,
+   "col": 11,
+   "check": "modernize-avoid-c-arrays",
+   "sev": "warning",
+   "msg": "do not declare C-style arrays, use 'std::array' instead"
+  },
+  {
+   "file": "src/semantics/semantics.cpp",
+   "line": 79,
+   "col": 11,
+   "check": "modernize-avoid-c-arrays",
+   "sev": "warning",
+   "msg": "do not declare C-style arrays, use 'std::array' instead"
+  },
+  {
+   "file": "src/semantics/semantics.h",
+   "line": 95,
+   "col": 8,
+   "check": "bugprone-exception-escape",
+   "sev": "warning",
+   "msg": "an exception may be thrown in function 'TokenStats' which should not throw exceptions"
+  },
+  {
+   "file": "src/server/async_dispatcher.cpp",
+   "line": 44,
+   "col": 18,
+   "check": "modernize-avoid-c-arrays",
+   "sev": "warning",
+   "msg": "do not declare C-style arrays, use 'std::array' instead"
+  },
+  {
+   "file": "src/server/commands.cpp",
+   "line": 108,
+   "col": 79,
+   "check": "bugprone-throwing-static-initialization",
+   "sev": "warning",
+   "msg": "initialization of 'g_flow_status_cache' with static storage duration may throw an exception that cannot be caught"
+  },
+  {
+   "file": "src/server/commands.cpp",
+   "line": 276,
+   "col": 77,
+   "check": "performance-string-view-conversions",
+   "sev": "warning",
+   "msg": "redundant conversion to 'std::string' (aka 'basic_string<char, char_traits<char>, allocator<char>>') and then back to 'basic_string_view<char, std::char_traits<char>>'"
+  },
+  {
+   "file": "src/server/commands.cpp",
+   "line": 307,
+   "col": 77,
+   "check": "performance-string-view-conversions",
+   "sev": "warning",
+   "msg": "redundant conversion to 'std::string' (aka 'basic_string<char, char_traits<char>, allocator<char>>') and then back to 'basic_string_view<char, std::char_traits<char>>'"
+  },
+  {
+   "file": "src/server/commands.cpp",
+   "line": 952,
+   "col": 12,
+   "check": "performance-no-automatic-move",
+   "sev": "warning",
+   "msg": "constness of 'normal' prevents automatic move"
+  },
+  {
+   "file": "src/server/commands.cpp",
+   "line": 1359,
+   "col": 24,
+   "check": "performance-unnecessary-copy-initialization",
+   "sev": "warning",
+   "msg": "the const qualified variable 'first' of type 'const Json' (aka 'const basic_json<>') is copy-constructed from a const reference; consider making it a const reference"
+  },
+  {
+   "file": "src/server/commands.cpp",
+   "line": 1431,
+   "col": 36,
+   "check": "modernize-use-emplace",
+   "sev": "warning",
+   "msg": "use emplace_back instead of push_back"
+  },
+  {
+   "file": "src/server/features.cpp",
+   "line": 139,
+   "col": 20,
+   "check": "performance-faster-string-find,performance-prefer-single-char-overloads",
+   "sev": "warning",
+   "msg": "'operator+=' called with a string literal consisting of a single character; consider using the more efficient overload accepting a character"
+  },
+  {
+   "file": "src/server/features.cpp",
+   "line": 153,
+   "col": 39,
+   "check": "performance-no-automatic-move",
+   "sev": "warning",
+   "msg": "constness of 'base' prevents automatic move"
+  },
+  {
+   "file": "src/server/features.cpp",
+   "line": 158,
+   "col": 12,
+   "check": "performance-no-automatic-move",
+   "sev": "warning",
+   "msg": "constness of 'base' prevents automatic move"
+  },
+  {
+   "file": "src/server/features.cpp",
+   "line": 657,
+   "col": 22,
+   "check": "bugprone-use-after-move",
+   "sev": "warning",
+   "msg": "'parse_errors' used after it was moved"
+  },
+  {
+   "file": "src/server/features_optional.cpp",
+   "line": 135,
+   "col": 20,
+   "check": "performance-faster-string-find,performance-prefer-single-char-overloads",
+   "sev": "warning",
+   "msg": "'operator+=' called with a string literal consisting of a single character; consider using the more efficient overload accepting a character"
+  },
+  {
+   "file": "src/server/features_optional.cpp",
+   "line": 138,
+   "col": 16,
+   "check": "performance-faster-string-find,performance-prefer-single-char-overloads",
+   "sev": "warning",
+   "msg": "'operator+=' called with a string literal consisting of a single character; consider using the more efficient overload accepting a character"
+  },
+  {
+   "file": "src/server/features_optional.cpp",
+   "line": 413,
+   "col": 14,
+   "check": "performance-faster-string-find,performance-prefer-single-char-overloads",
+   "sev": "warning",
+   "msg": "'operator+=' called with a string literal consisting of a single character; consider using the more efficient overload accepting a character"
+  },
+  {
+   "file": "src/server/features_optional.cpp",
+   "line": 736,
+   "col": 5,
+   "check": "modernize-avoid-c-arrays",
+   "sev": "warning",
+   "msg": "do not declare C-style arrays, use 'std::array' instead"
+  },
+  {
+   "file": "src/server/features_optional.cpp",
+   "line": 737,
+   "col": 5,
+   "check": "cert-err33-c",
+   "sev": "warning",
+   "msg": "the value returned by this function should not be disregarded; neglecting it may lead to errors"
+  },
+  {
+   "file": "src/server/ide_features.cpp",
+   "line": 166,
+   "col": 35,
+   "check": "performance-inefficient-string-concatenation",
+   "sev": "warning",
+   "msg": "string concatenation results in allocation of unnecessary temporary strings; consider using 'operator+=' or 'string::append()' instead"
+  },
+  {
+   "file": "src/server/ide_features.cpp",
+   "line": 175,
+   "col": 31,
+   "check": "performance-inefficient-string-concatenation",
+   "sev": "warning",
+   "msg": "string concatenation results in allocation of unnecessary temporary strings; consider using 'operator+=' or 'string::append()' instead"
+  },
+  {
+   "file": "src/server/ide_features.cpp",
+   "line": 301,
+   "col": 54,
+   "check": "performance-faster-string-find,performance-prefer-single-char-overloads",
+   "sev": "warning",
+   "msg": "'operator+=' called with a string literal consisting of a single character; consider using the more efficient overload accepting a character"
+  },
+  {
+   "file": "src/server/ide_features.cpp",
+   "line": 506,
+   "col": 19,
+   "check": "modernize-avoid-c-arrays",
+   "sev": "warning",
+   "msg": "do not declare C-style arrays, use 'std::array' instead"
+  },
+  {
+   "file": "src/server/ide_features.cpp",
+   "line": 530,
+   "col": 19,
+   "check": "modernize-avoid-c-arrays",
+   "sev": "warning",
+   "msg": "do not declare C-style arrays, use 'std::array' instead"
+  },
+  {
+   "file": "src/server/lsp_server.cpp",
+   "line": 866,
+   "col": 5,
+   "check": "modernize-avoid-c-arrays",
+   "sev": "warning",
+   "msg": "do not declare C-style arrays, use 'std::array' instead"
+  },
+  {
+   "file": "src/server/lsp_server.cpp",
+   "line": 867,
+   "col": 5,
+   "check": "cert-err33-c",
+   "sev": "warning",
+   "msg": "the value returned by this function should not be disregarded; neglecting it may lead to errors"
+  },
+  {
+   "file": "src/server/lsp_server.cpp",
+   "line": 1505,
+   "col": 37,
+   "check": "performance-string-view-conversions",
+   "sev": "warning",
+   "msg": "redundant conversion to 'std::string' (aka 'basic_string<char, char_traits<char>, allocator<char>>') and then back to 'basic_string_view<char, std::char_traits<char>>'"
+  },
+  {
+   "file": "src/server/lsp_server.cpp",
+   "line": 1875,
+   "col": 82,
+   "check": "performance-unnecessary-value-param",
+   "sev": "warning",
+   "msg": "the parameter 'result' of type 'td::TdCheckResult' is copied for each invocation but only used as a const reference; consider making it a const reference"
+  },
+  {
+   "file": "src/server/lsp_server.cpp",
+   "line": 1908,
+   "col": 5,
+   "check": "modernize-avoid-c-arrays",
+   "sev": "warning",
+   "msg": "do not declare C-style arrays, use 'std::array' instead"
+  },
+  {
+   "file": "src/server/lsp_server.cpp",
+   "line": 1911,
+   "col": 5,
+   "check": "cert-err33-c",
+   "sev": "warning",
+   "msg": "the value returned by this function should not be disregarded; neglecting it may lead to errors"
+  },
+  {
+   "file": "src/server/lsp_server.cpp",
+   "line": 2002,
+   "col": 5,
+   "check": "modernize-avoid-c-arrays",
+   "sev": "warning",
+   "msg": "do not declare C-style arrays, use 'std::array' instead"
+  },
+  {
+   "file": "src/server/lsp_server.cpp",
+   "line": 2003,
+   "col": 5,
+   "check": "cert-err33-c",
+   "sev": "warning",
+   "msg": "the value returned by this function should not be disregarded; neglecting it may lead to errors"
+  },
+  {
+   "file": "src/server/lsp_server.cpp",
+   "line": 2300,
+   "col": 9,
+   "check": "bugprone-exception-escape",
+   "sev": "warning",
+   "msg": "an exception may be thrown in function '(lambda at Y:\\fpga-lsp-cpp\\src\\server\\lsp_server.cpp:2300:9)' which should not throw exceptions"
+  },
+  {
+   "file": "src/td/td_cancel.h",
+   "line": 63,
+   "col": 26,
+   "check": "performance-use-std-move",
+   "sev": "warning",
+   "msg": "'hook' could be moved here"
+  },
+  {
+   "file": "src/td/td_device.cpp",
+   "line": 183,
+   "col": 51,
+   "check": "performance-inefficient-string-concatenation",
+   "sev": "warning",
+   "msg": "string concatenation results in allocation of unnecessary temporary strings; consider using 'operator+=' or 'string::append()' instead"
+  },
+  {
+   "file": "src/td/td_device.cpp",
+   "line": 364,
+   "col": 12,
+   "check": "performance-faster-string-find,performance-prefer-single-char-overloads",
+   "sev": "warning",
+   "msg": "'operator+=' called with a string literal consisting of a single character; consider using the more efficient overload accepting a character"
+  },
+  {
+   "file": "src/td/td_device.cpp",
+   "line": 366,
+   "col": 12,
+   "check": "performance-faster-string-find,performance-prefer-single-char-overloads",
+   "sev": "warning",
+   "msg": "'operator+=' called with a string literal consisting of a single character; consider using the more efficient overload accepting a character"
+  },
+  {
+   "file": "src/td/td_device.h",
+   "line": 49,
+   "col": 8,
+   "check": "bugprone-exception-escape",
+   "sev": "warning",
+   "msg": "an exception may be thrown in function 'DeviceInfo' which should not throw exceptions"
+  },
+  {
+   "file": "src/td/td_diagnostics.cpp",
+   "line": 81,
+   "col": 16,
+   "check": "performance-no-automatic-move",
+   "sev": "warning",
+   "msg": "constness of 'clean' prevents automatic move"
+  },
+  {
+   "file": "src/td/td_diagnostics.cpp",
+   "line": 89,
+   "col": 11,
+   "check": "modernize-avoid-c-arrays",
+   "sev": "warning",
+   "msg": "do not declare C-style arrays, use 'std::array' instead"
+  },
+  {
+   "file": "src/td/td_diagnostics.cpp",
+   "line": 105,
+   "col": 12,
+   "check": "performance-no-automatic-move",
+   "sev": "warning",
+   "msg": "constness of 'clean' prevents automatic move"
+  },
+  {
+   "file": "src/td/td_diagnostics.cpp",
+   "line": 365,
+   "col": 51,
+   "check": "performance-string-view-conversions",
+   "sev": "warning",
+   "msg": "redundant conversion to 'std::string' (aka 'basic_string<char, char_traits<char>, allocator<char>>') and then back to 'basic_string_view<char, std::char_traits<char>>'"
+  },
+  {
+   "file": "src/td/td_diagnostics.h",
+   "line": 160,
+   "col": 8,
+   "check": "bugprone-exception-escape",
+   "sev": "warning",
+   "msg": "an exception may be thrown in function 'TdCheckResult' which should not throw exceptions"
+  },
+  {
+   "file": "src/td/td_install.cpp",
+   "line": 65,
+   "col": 21,
+   "check": "clang-analyzer-deadcode.DeadStores",
+   "sev": "warning",
+   "msg": "Value stored to 'p' during its initialization is never read"
+  },
+  {
+   "file": "src/td/td_install.cpp",
+   "line": 285,
+   "col": 15,
+   "check": "modernize-avoid-c-arrays",
+   "sev": "warning",
+   "msg": "do not declare C-style arrays, use 'std::array' instead"
+  },
+  {
+   "file": "src/td/td_install.cpp",
+   "line": 293,
+   "col": 37,
+   "check": "performance-inefficient-string-concatenation",
+   "sev": "warning",
+   "msg": "string concatenation results in allocation of unnecessary temporary strings; consider using 'operator+=' or 'string::append()' instead"
+  },
+  {
+   "file": "src/td/td_install.cpp",
+   "line": 300,
+   "col": 52,
+   "check": "performance-inefficient-string-concatenation",
+   "sev": "warning",
+   "msg": "string concatenation results in allocation of unnecessary temporary strings; consider using 'operator+=' or 'string::append()' instead"
+  },
+  {
+   "file": "src/td/td_install.cpp",
+   "line": 303,
+   "col": 42,
+   "check": "performance-inefficient-string-concatenation",
+   "sev": "warning",
+   "msg": "string concatenation results in allocation of unnecessary temporary strings; consider using 'operator+=' or 'string::append()' instead"
+  },
+  {
+   "file": "src/td/td_install.cpp",
+   "line": 413,
+   "col": 24,
+   "check": "bugprone-unchecked-string-to-number-conversion,cert-err34-c",
+   "sev": "warning",
+   "msg": "'atoll' used to convert a string to an integer value, but function will not report conversion errors; consider using 'strtoll' instead"
+  },
+  {
+   "file": "src/td/td_output.cpp",
+   "line": 264,
+   "col": 30,
+   "check": "performance-string-view-conversions",
+   "sev": "warning",
+   "msg": "redundant conversion to 'std::string' (aka 'basic_string<char, char_traits<char>, allocator<char>>') and then back to 'basic_string_view<char, std::char_traits<char>>'"
+  },
+  {
+   "file": "src/td/td_output.cpp",
+   "line": 268,
+   "col": 30,
+   "check": "performance-string-view-conversions",
+   "sev": "warning",
+   "msg": "redundant conversion to 'std::string' (aka 'basic_string<char, char_traits<char>, allocator<char>>') and then back to 'basic_string_view<char, std::char_traits<char>>'"
+  },
+  {
+   "file": "src/td/td_session.cpp",
+   "line": 88,
+   "col": 12,
+   "check": "performance-no-automatic-move",
+   "sev": "warning",
+   "msg": "constness of 'dir_utf8' prevents automatic move"
+  },
+  {
+   "file": "src/td/td_session.cpp",
+   "line": 169,
+   "col": 21,
+   "check": "clang-analyzer-deadcode.DeadStores",
+   "sev": "warning",
+   "msg": "Value stored to 'moved' is never read"
+  },
+  {
+   "file": "src/td/td_session.cpp",
+   "line": 421,
+   "col": 12,
+   "check": "bugprone-exception-escape",
+   "sev": "warning",
+   "msg": "an exception may be thrown in function '~TdSession' which should not throw exceptions"
+  },
+  {
+   "file": "src/td/td_session.cpp",
+   "line": 567,
+   "col": 5,
+   "check": "clang-analyzer-core.uninitialized.UndefReturn",
+   "sev": "warning",
+   "msg": "Returning null reference"
+  },
+  {
+   "file": "src/tools/cst_dump/main.cpp",
+   "line": 95,
+   "col": 11,
+   "check": "modernize-avoid-c-arrays",
+   "sev": "warning",
+   "msg": "do not declare C-style arrays, use 'std::array' instead"
+  },
+  {
+   "file": "src/tools/cst_dump/main.cpp",
+   "line": 96,
+   "col": 11,
+   "check": "cert-err33-c",
+   "sev": "warning",
+   "msg": "the value returned by this function should not be disregarded; neglecting it may lead to errors"
+  },
+  {
+   "file": "src/tools/cst_dump/main.cpp",
+   "line": 224,
+   "col": 18,
+   "check": "performance-avoid-endl",
+   "sev": "warning",
+   "msg": "do not use 'std::endl' with streams; use '\\n' instead"
+  },
+  {
+   "file": "src/tools/cst_dump/main.cpp",
+   "line": 313,
+   "col": 5,
+   "check": "bugprone-exception-escape",
+   "sev": "warning",
+   "msg": "an exception may be thrown in function 'main' which should not throw exceptions"
+  },
+  {
+   "file": "src/tools/format_dump/main.cpp",
+   "line": 115,
+   "col": 5,
+   "check": "bugprone-exception-escape",
+   "sev": "warning",
+   "msg": "an exception may be thrown in function 'main' which should not throw exceptions"
+  },
+  {
+   "file": "src/tools/format_dump/main.cpp",
+   "line": 148,
+   "col": 51,
+   "check": "performance-avoid-endl",
+   "sev": "warning",
+   "msg": "do not use 'std::endl' with streams; use '\\n' instead"
+  },
+  {
+   "file": "src/tools/lint_dump/main.cpp",
+   "line": 98,
+   "col": 5,
+   "check": "bugprone-exception-escape",
+   "sev": "warning",
+   "msg": "an exception may be thrown in function 'main' which should not throw exceptions"
+  },
+  {
+   "file": "src/tools/lint_dump/main.cpp",
+   "line": 181,
+   "col": 40,
+   "check": "performance-avoid-endl",
+   "sev": "warning",
+   "msg": "do not use 'std::endl' with streams; use '\\n' instead"
+  },
+  {
+   "file": "src/tools/lint_dump/main.cpp",
+   "line": 220,
+   "col": 42,
+   "check": "performance-avoid-endl",
+   "sev": "warning",
+   "msg": "do not use 'std::endl' with streams; use '\\n' instead"
+  },
+  {
+   "file": "src/tools/lint_dump/main.cpp",
+   "line": 229,
+   "col": 32,
+   "check": "bugprone-argument-comment",
+   "sev": "warning",
+   "msg": "argument name 'show_diagnostic_context' in comment does not match parameter name 'show_context'"
+  }
+ ]
+}

@@ -36,6 +36,11 @@ namespace {
 
 std::atomic<unsigned long long> g_temp_sequence{0};
 std::mutex g_audit_mutex;
+// P2（2026-11-22 性能审计）：审计 jsonl 改长驻 ofstream（原来每次 open/write/flush/close）。
+// 静态析构时 ofstream 会关闭并 flush；写失败仍不影响主写（调用方只看 bool）。
+std::ofstream g_audit_stream;
+std::string g_audit_stream_path;
+std::set<std::string> g_audit_dirs_created;
 
 // 指标：进程内累计（fpgalsp.metrics 读取快照）。
 std::atomic<std::uint64_t> g_writes_ok{0};
@@ -305,6 +310,36 @@ Backend& BackendRef() {
     return g_custom_backend != nullptr ? *g_custom_backend : g_disk_backend;
 }
 
+// P2：`state_dir(project_dir)` 每次写都会重算（env 检查 + FNV + temp_directory_path），
+// 而同一工程的写操作往往连续成批（strategy 逐文件 Copy）。这里按规范化路径 memoize；
+// `FPGALSP_STATE_DIR` 显式设置时**不走缓存**（用户/测试切换立即生效，避免串味）。
+std::mutex g_state_dir_mutex;
+std::map<std::string, std::string> g_state_dir_cache;
+
+const std::string& StateDirCached(std::string_view project_dir) {
+    if (state_dir_from_env()) {
+        // 环境变量模式：直接现算（结果不落缓存，env 变化天然可见）。
+        static thread_local std::string env_value;
+        env_value = state_dir(project_dir);
+        return env_value;
+    }
+    std::string key = normalize_path(project_dir);
+    for (char& c : key) {
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_state_dir_mutex);
+        if (const auto it = g_state_dir_cache.find(key); it != g_state_dir_cache.end()) {
+            return it->second;
+        }
+    }
+    std::string value = state_dir(project_dir);
+    std::lock_guard<std::mutex> lock(g_state_dir_mutex);
+    // 小上界（工程数通常 1–2 个）；满了整体清空，避免无界增长。
+    if (g_state_dir_cache.size() >= 64) g_state_dir_cache.clear();
+    return g_state_dir_cache.emplace(std::move(key), std::move(value)).first->second;
+}
+
 bool UsingMemoryBackend() {
     std::lock_guard<std::mutex> lock(g_backend_mutex);
     return g_custom_backend != nullptr;
@@ -316,7 +351,7 @@ void Audit(Root root, std::string_view project_dir, std::string_view display_pat
     const char* disabled = std::getenv("FPGALSP_WRITE_AUDIT");
     if (disabled != nullptr && std::strcmp(disabled, "0") == 0) return;
     static const char* kRootNames[] = {"state", "project", "run", "temp"};
-    const std::string audit_dir = state_dir(project_dir);
+    const std::string audit_dir = StateDirCached(project_dir);
     const std::string audit_path = path_join(audit_dir, "logs/writes.jsonl");
 
     const auto now = std::chrono::system_clock::now();
@@ -335,9 +370,28 @@ void Audit(Root root, std::string_view project_dir, std::string_view display_pat
     line += "}\n";
 
     std::lock_guard<std::mutex> lock(g_audit_mutex);
-    Backend& backend = BackendRef();
-    (void)backend.EnsureDir(path_join(audit_dir, "logs"));
-    (void)backend.AppendFile(audit_path, line);
+    // P2：长驻 stream + 每行 flush（外部 reader 仍能即时看到；省掉 open/close）。
+    // 失败时回落到原来的 backend append，审计本身**永不**影响主写结果。
+    bool stream_ok = false;
+    if (g_audit_stream.is_open() && g_audit_stream_path == audit_path) {
+        stream_ok = true;
+    } else {
+        if (g_audit_dirs_created.insert(audit_dir).second) {
+            (void)BackendRef().EnsureDir(path_join(audit_dir, "logs"));
+        }
+        if (g_audit_stream.is_open()) g_audit_stream.close();
+        g_audit_stream.open(audit_path, std::ios::out | std::ios::app | std::ios::binary);
+        g_audit_stream_path = audit_path;
+        stream_ok = g_audit_stream.is_open();
+    }
+    if (stream_ok) {
+        g_audit_stream << line;
+        g_audit_stream.flush();
+    } else {
+        Backend& backend = BackendRef();
+        (void)backend.EnsureDir(path_join(audit_dir, "logs"));
+        (void)backend.AppendFile(audit_path, line);
+    }
 }
 
 bool AtomicWrite(const std::string& target, std::string_view bytes, std::string* error) {
@@ -386,7 +440,7 @@ void BackupIfRequested(const std::string& project_dir, const std::string& target
         safe.push_back((c == '/' || c == '\\' || c == ':') ? '_' : c);
     }
     const std::string backup_path =
-        path_join(path_join(state_dir(project_dir), "backup"), safe + ".bak");
+        path_join(path_join(StateDirCached(project_dir), "backup"), safe + ".bak");
     const ReadFileResult previous = read_file_utf8(target);
     if (!previous.ok) return;
     std::string ignored;
@@ -397,12 +451,13 @@ void BackupIfRequested(const std::string& project_dir, const std::string& target
 
 // DisplayPathImpl 先实现（BackupIfRequested 用到），再对外暴露。
 std::string DisplayPathImpl(std::string_view project_dir, std::string_view path) {
-    const std::string normalized = normalize_path(path);
+    // §2.7：非 const（隐式 move），并只在需要时算一次 state_dir。
+    std::string normalized = normalize_path(path);
     if (!project_dir.empty()) {
         const std::string rel = RelativeWithin(normalized, normalize_path(project_dir));
         if (!rel.empty()) return rel;
     }
-    const std::string state_rel = RelativeWithin(normalized, state_dir(project_dir));
+    const std::string state_rel = RelativeWithin(normalized, StateDirCached(project_dir));
     if (!state_rel.empty()) return "<state>/" + state_rel;
     return normalized;
 }
@@ -442,7 +497,7 @@ bool Classify(std::string_view project_dir, std::string_view path, Root* out,
     }
 
     // 1) 状态目录（最优先：所有缓存/日志/审计都在这里）
-    const std::string state_root = state_dir(project_dir);
+    const std::string state_root = StateDirCached(project_dir);
     if (path_is_within_canonical(normalized, state_root)) {
         *out = Root::kState;
         return true;
@@ -485,7 +540,7 @@ bool Classify(std::string_view project_dir, std::string_view path, Root* out,
 }
 
 std::string StatePath(std::string_view project_dir, std::string_view rel) {
-    return path_join(state_dir(project_dir), rel);
+    return path_join(StateDirCached(project_dir), rel);
 }
 
 Result Write(std::string_view project_dir, std::string_view path, std::string_view bytes,

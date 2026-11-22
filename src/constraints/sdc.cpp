@@ -19,6 +19,7 @@
 #include "constraints/sdc.h"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <format>
 #include <iterator>
@@ -56,20 +57,20 @@ constexpr const char* kSource = "fpga-lsp";
 // -----------------------------------------------------------------------------
 
 // Python: CLOCK_COMMANDS
-const std::set<std::string> kClockCommands = {
+constexpr std::array<std::string_view, 3> kClockCommands = {
     "create_clock",
     "create_generated_clock",
     "derive_pll_clocks",
 };
 
 // Python: DELAY_COMMANDS
-const std::set<std::string> kDelayCommands = {
+constexpr std::array<std::string_view, 2> kDelayCommands = {
     "set_input_delay",
     "set_output_delay",
 };
 
 // Python: GET_PORTS_OPTIONS
-const std::set<std::string> kGetPortsOptions = {
+constexpr std::array<std::string_view, 4> kGetPortsOptions = {
     "-nocase",
     "-regexp",
     "-filter",
@@ -255,9 +256,12 @@ int DigitsToInt(std::string_view digits) {
 //  常量表访问
 // =============================================================================
 
-const std::set<std::string>& ClockCommands() { return kClockCommands; }
-const std::set<std::string>& DelayCommands() { return kDelayCommands; }
-const std::set<std::string>& GetPortsOptions() { return kGetPortsOptions; }
+// A-5：三张命名空间级 `const std::set<std::string>` 改成 `constexpr std::array<
+// std::string_view>` —— 零动态初始化（分配失败 -> 静态初始化期 throw -> terminate），
+// 查询走 std::ranges::find（不再为每个元素构造 std::string 节点）。
+std::span<const std::string_view> ClockCommands() { return kClockCommands; }
+std::span<const std::string_view> DelayCommands() { return kDelayCommands; }
+std::span<const std::string_view> GetPortsOptions() { return kGetPortsOptions; }
 
 const std::set<std::string>& KnownCommands() {
     static const std::set<std::string> commands = [] {
@@ -748,7 +752,9 @@ void PatternsFrom(const std::vector<Token>& tokens, size_t start_index,
                 skip_next = true;
                 continue;
             }
-            if (kGetPortsOptions.find(text) != kGetPortsOptions.end()) continue;
+            if (std::ranges::find(kGetPortsOptions, std::string_view(text)) !=
+                kGetPortsOptions.end())
+                continue;
             return;
         }
         if (token.kind == TokenKind::kBrace || token.kind == TokenKind::kQuote) {
@@ -927,7 +933,8 @@ std::vector<Diagnostic> Diagnostics(const std::vector<Command>& commands,
         }
 
         if (name.empty()) continue;
-        if (kClockCommands.find(name) != kClockCommands.end()) clock_present = true;
+        if (std::ranges::find(kClockCommands, std::string_view(name)) != kClockCommands.end())
+            clock_present = true;
 
         // ---- 未知命令（只有调用方给了 known_commands 才判断）----
         if (known_commands != nullptr && known_commands->find(name) == known_commands->end()) {
@@ -973,7 +980,7 @@ std::vector<Diagnostic> Diagnostics(const std::vector<Command>& commands,
         }
 
         // ---- set_input_delay / set_output_delay 必须有 -clock ----
-        if (kDelayCommands.find(name) != kDelayCommands.end() &&
+        if (std::ranges::find(kDelayCommands, std::string_view(name)) != kDelayCommands.end() &&
             OptionIndex(command, "-clock") < 0) {
             result.push_back(MakeDiag("SDC-DELAY", kWarning, CommandRange(command),
                                       name + " is missing the -clock option"));

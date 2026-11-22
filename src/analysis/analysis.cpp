@@ -40,6 +40,8 @@
 #include <re2/re2.h>
 
 #include "platform/encoding.h"
+#include "platform/never_throw.h"
+#include "platform/number.h"
 #include "platform/path.h"
 #include "platform/write_service.h"
 #include "td/td_diagnostics.h"  // EnsureDevice
@@ -293,7 +295,7 @@ Json ParseDrc(std::string_view text) {
                 Json item = Json::object();
                 item["rule"] = rule;
                 item["severity"] = severity;
-                item["count"] = std::atoi(count.c_str());
+                item["count"] = platform::DigitsToIntSaturating(count);
                 rules.push_back(std::move(item));
             }
         } else if (section == "details") {
@@ -370,7 +372,7 @@ Json ParseCdc(std::string_view text) {
                 previous_space = false;
             }
         }
-        const int value = std::atoi(number.c_str());
+        const int value = platform::DigitsToIntSaturating(number);
         const int previous = counts.contains(key) ? counts[key].get<int>() : 0;
         counts[key] = previous + value;
     }
@@ -462,16 +464,16 @@ Json Run(const project::Project& project, std::string_view td_explicit, const Lo
     const std::string cache = CacheDir(project);
     const std::string out_dir = platform::normalize_path(cache + "/analysis");
     // 统一写服务：analysis 缓存目录在状态目录下（kState）；失败随后由报告写入报错。
-    (void)platform::writes::EnsureDir(
-        project.dir, out_dir, platform::writes::Options{.caller = "analysis.cache_dir"});
+    platform::IgnoreResult(platform::writes::EnsureDir(
+        project.dir, out_dir, platform::writes::Options{.caller = "analysis.cache_dir"}));
     const std::string drc_path = platform::normalize_path(out_dir + "/drc.rpt");
     const std::string cdc_path = platform::normalize_path(out_dir + "/cdc.rpt");
     for (const std::string& stale : {drc_path, cdc_path}) {
         // 统一写服务：analysis 缓存目录在状态目录下（kState）；失败照旧忽略
         //（旧的裸 fs::remove 也是忽略错误码）。
-        (void)platform::writes::Remove(
+        platform::IgnoreResult(platform::writes::Remove(
             project.dir, stale, false,
-            platform::writes::Options{.caller = "analysis.stale_report"});
+            platform::writes::Options{.caller = "analysis.stale_report"}));
     }
 
     // Python：run_dir = <project>/.fpgalsp/analysis（P-4 行为保持）
@@ -555,10 +557,10 @@ Json Run(const project::Project& project, std::string_view td_explicit, const Lo
 
     // 只有完整跑完才写缓存（与 Python 一致：提前 return 的分支不落盘）
     if (!cache.empty()) {
-        (void)platform::writes::Write(
+        platform::IgnoreResult(platform::writes::Write(
             project.dir, cache + "/analysis.json",
             result.dump(-1, ' ', /*ensure_ascii=*/false, Json::error_handler_t::replace),
-            platform::writes::Options{.caller = "analysis.cache"});
+            platform::writes::Options{.caller = "analysis.cache"}));
     }
     {
         const int violations = result["drc"].value("violations", 0);

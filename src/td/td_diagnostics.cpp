@@ -19,6 +19,7 @@
 
 #include "platform/encoding.h"
 #include "platform/log.h"
+#include "platform/never_throw.h"
 #include "platform/path.h"
 #include "platform/write_service.h"
 #include "td/td_device.h"
@@ -325,33 +326,37 @@ std::optional<std::string> ReadDeviceCache(const std::string& path, const std::s
 void UpdateDeviceCache(const project::Project& project, const std::string& path,
                        const std::string& key, const std::optional<std::string>& db) {
     if (path.empty()) return;
-    try {
-        nlohmann::json root = nlohmann::json::object();
-        if (const std::optional<std::string> text = platform::try_read_file_utf8(path);
-            text.has_value()) {
-            try {
-                const nlohmann::json parsed = nlohmann::json::parse(*text);
-                if (parsed.is_object()) root = parsed;
-            } catch (...) {
-                root = nlohmann::json::object();
+    // A-4：写缓存是尽力而为，但**失败必须留一条日志**。以前整个函数被空 catch
+    // 包住，磁盘满/权限拒绝时一次都不记，用户只看到"下一轮设备探测又变慢"。
+    // NeverThrow 保留"既不外抛也不中断探测"的契约，并让被吞的异常进 debug 日志。
+    platform::NeverThrow(
+        [&] {
+            nlohmann::json root = nlohmann::json::object();
+            if (const std::optional<std::string> text = platform::try_read_file_utf8(path);
+                text.has_value()) {
+                try {
+                    const nlohmann::json parsed = nlohmann::json::parse(*text);
+                    if (parsed.is_object()) root = parsed;
+                } catch (...) {
+                    root = nlohmann::json::object();  // 缓存损坏：当空表重建
+                }
             }
-        }
-        if (db.has_value()) {
-            root[key] = nlohmann::json{{"db", *db}};
-            if (root.size() > kDeviceCacheMaxEntries) {
-                root = nlohmann::json::object();
+            if (db.has_value()) {
                 root[key] = nlohmann::json{{"db", *db}};
+                if (root.size() > kDeviceCacheMaxEntries) {
+                    root = nlohmann::json::object();
+                    root[key] = nlohmann::json{{"db", *db}};
+                }
+            } else {
+                root.erase(key);
+                if (root.empty()) return;  // 不留空文件
             }
-        } else {
-            root.erase(key);
-            if (root.empty()) return;  // 不留空文件
-        }
-        // 统一写服务：状态目录 + 原子写 + 审计（2026-11-22 写服务改造）。
-        (void)platform::writes::Write(project.dir, path, root.dump(),
-                                      platform::writes::Options{.caller = "td.device_cache"});
-    } catch (...) {
-        // 写缓存失败 = 静默放弃；下一轮还是全量试错（行为不变）
-    }
+            // 统一写服务：状态目录 + 原子写 + 审计（2026-11-22 写服务改造）。
+            platform::IgnoreResult(platform::writes::Write(
+                project.dir, path, root.dump(),
+                platform::writes::Options{.caller = "td.device_cache"}));
+        },
+        "td.device_cache");
 }
 
 bool DbFileExists(std::string_view td_root, const std::string& db) {

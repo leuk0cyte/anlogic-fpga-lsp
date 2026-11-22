@@ -20,6 +20,7 @@
 
 #include "flow/flow_logic.h"
 #include "platform/encoding.h"
+#include "platform/never_throw.h"
 #include "platform/path.h"
 #include "platform/write_service.h"
 #include "reports/qor.h"
@@ -108,9 +109,9 @@ void CopyProjectTree(const std::string& project_dir, const std::string& from,
                 CopyProjectTree(project_dir, it->path().string(), target, ec);
                 if (ec) return;
             } else {
-                (void)platform::writes::Copy(project_dir, it->path().string(), target,
+                platform::IgnoreResult(platform::writes::Copy(project_dir, it->path().string(), target,
                                              platform::writes::Options{
-                                                 .caller = "strategy.copy_file"});
+                                                 .caller = "strategy.copy_file"}));
             }
         }
         it.increment(ec);
@@ -183,9 +184,9 @@ void PruneWorkDirs(const std::string& project_dir, std::string_view root, int ke
     std::sort(names.begin(), names.end());  // 目录名是时间戳，字典序即时间序
     while (static_cast<int>(names.size()) > keep) {
         // 统一写服务：compare 工作目录（kState）递归删除；失败照旧忽略（旧 remove_ec 也未使用）。
-        (void)platform::writes::Remove(
+        platform::IgnoreResult(platform::writes::Remove(
             project_dir, Join(root, names.front()), true,
-            platform::writes::Options{.caller = "strategy.prune_work_dir"});
+            platform::writes::Options{.caller = "strategy.prune_work_dir"}));
         names.erase(names.begin());
     }
 }
@@ -374,6 +375,7 @@ jsonrpc::Json CompareStrategies(const project::Project& project, const td::TdCho
     }
 
     std::vector<std::string> run_names;
+    run_names.reserve(wanted.size());  // §2.7：循环内 push_back 预留
     for (std::size_t i = 0; i < wanted.size(); ++i) {
         run_names.push_back("phy_cmp_" + std::to_string(i + 1));
     }

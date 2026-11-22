@@ -54,6 +54,11 @@ private:
 };
 
 // RAII：构造时抢，析构时放。held() 为 false 时调用方必须拒绝。
+// A-2：**不可拷贝也不可移动** —— 租约是"当前作用域持有硬件"的独占声明：
+//   * 拷贝会让两个 guard 各自 Release 一次（第一个析构后租约已释放，第二个
+//     析构再 Release 会把**别人**刚抢到的租约清掉）；
+//   * 移动则让被移出的对象变成"已放但 held_ 仍为 false"的哑对象，语义模糊。
+// 显式 delete 比"依赖隐式规则"更可审计（clang-tidy special-member-functions）。
 class HardwareLeaseGuard {
 public:
     explicit HardwareLeaseGuard(std::string_view owner) : held_(HardwareLease::TryAcquire(owner)) {}
@@ -63,6 +68,8 @@ public:
 
     HardwareLeaseGuard(const HardwareLeaseGuard&) = delete;
     HardwareLeaseGuard& operator=(const HardwareLeaseGuard&) = delete;
+    HardwareLeaseGuard(HardwareLeaseGuard&&) = delete;
+    HardwareLeaseGuard& operator=(HardwareLeaseGuard&&) = delete;
 
     bool held() const { return held_; }
 

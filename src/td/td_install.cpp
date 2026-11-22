@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "platform/path.h"
+#include "platform/never_throw.h"
 #include "platform/write_service.h"
 
 namespace fpgalsp::td {
@@ -439,16 +440,16 @@ void WriteCache(const TdEnv& env, const TdChoice& choice) {
     text += "version=" + choice.version + "\n";
     text += "source=" + choice.source + "\n";
     text += "saved_at=" + std::to_string(NowSeconds()) + "\n";
-    (void)platform::writes::Write(std::string(), path, text,
-                                  platform::writes::Options{.caller = "td.install_cache"});
+    platform::IgnoreResult(platform::writes::Write(std::string(), path, text,
+                                  platform::writes::Options{.caller = "td.install_cache"}));
 }
 
 void ClearCache() {
     const std::string path = CachePath();
     if (path.empty()) return;
     // 统一写服务：安装缓存是 %TEMP%/fpgalsp 下的 scratch（kTemp）；失败照旧忽略。
-    (void)platform::writes::Remove(std::string(), path, false,
-                                   platform::writes::Options{.caller = "td.install_cache_clear"});
+    platform::IgnoreResult(platform::writes::Remove(std::string(), path, false,
+                                   platform::writes::Options{.caller = "td.install_cache_clear"}));
 }
 
 }  // namespace

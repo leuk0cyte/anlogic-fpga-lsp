@@ -23,7 +23,9 @@
 #include <set>
 #include <optional>
 #include <sstream>
+#include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "constraints/adc.h"
@@ -518,11 +520,16 @@ const char* const kExpectedStandards[] = {
 };
 
 TEST(AdcIoStandards, MatchesPythonWhitelistExactly) {
-    const std::set<std::string>& standards = fpgalsp::constraints::adc::KnownIoStandards();
+    // A-5：查表类型改成 constexpr std::array<std::string_view>（零动态初始化），
+    // 内容必须逐项不变 —— 这里把 span 收成 set 再与 Python 表比对。
+    const std::span<const std::string_view> standards =
+        fpgalsp::constraints::adc::KnownIoStandards();
+    std::set<std::string> actual;
+    for (const std::string_view value : standards) actual.emplace(value);
     std::set<std::string> expected(std::begin(kExpectedStandards), std::end(kExpectedStandards));
-    EXPECT_EQ(standards.size(), 71u);
+    EXPECT_EQ(actual.size(), 71u);
     EXPECT_EQ(expected.size(), 71u) << "期望表本身有重复项";
-    EXPECT_EQ(standards, expected) << "白名单与 Python 版（adc.KNOWN_IO_STANDARDS）不一致";
+    EXPECT_EQ(actual, expected) << "白名单与 Python 版（adc.KNOWN_IO_STANDARDS）不一致";
 }
 
 TEST(AdcIoStandards, ContractMinimumIsPresent) {
@@ -555,20 +562,22 @@ TEST(AdcIoStandards, LookupIsCaseInsensitive) {
 }
 
 TEST(AdcIoStandards, PulltypesAndAttrKeys) {
-    const std::set<std::string>& pulltypes = fpgalsp::constraints::adc::KnownPulltypes();
+    const std::span<const std::string_view> pulltypes =
+        fpgalsp::constraints::adc::KnownPulltypes();
     EXPECT_EQ(pulltypes.size(), 6u);
-    EXPECT_TRUE(pulltypes.count("WEAKPULLUP") == 1u);
-    EXPECT_TRUE(pulltypes.count("NONE") == 1u);
+    EXPECT_NE(std::ranges::find(pulltypes, std::string_view("WEAKPULLUP")), pulltypes.end());
+    EXPECT_NE(std::ranges::find(pulltypes, std::string_view("NONE")), pulltypes.end());
 
-    const std::set<std::string>& keys = fpgalsp::constraints::adc::KnownAttrKeys();
-    EXPECT_TRUE(keys.count("LOCATION") == 1u);
-    EXPECT_TRUE(keys.count("IOSTANDARD") == 1u);
-    EXPECT_TRUE(keys.count("CLOCK_DEDICATED_ROUTE") == 1u);
-    EXPECT_TRUE(keys.count("BOGUS") == 0u);
+    const std::span<const std::string_view> keys = fpgalsp::constraints::adc::KnownAttrKeys();
+    EXPECT_NE(std::ranges::find(keys, std::string_view("LOCATION")), keys.end());
+    EXPECT_NE(std::ranges::find(keys, std::string_view("IOSTANDARD")), keys.end());
+    EXPECT_NE(std::ranges::find(keys, std::string_view("CLOCK_DEDICATED_ROUTE")), keys.end());
+    EXPECT_EQ(std::ranges::find(keys, std::string_view("BOGUS")), keys.end());
 }
 
 TEST(AdcIoStandards, OnlySetPinAssignmentIsKnown) {
-    const std::set<std::string>& commands = fpgalsp::constraints::adc::KnownCommands();
+    const std::span<const std::string_view> commands =
+        fpgalsp::constraints::adc::KnownCommands();
     EXPECT_EQ(commands.size(), 1u);
     EXPECT_TRUE(fpgalsp::constraints::adc::IsKnownCommand("set_pin_assignment"));
     // ⚠ P-8：Python 的**补全**列表里会推荐 set_ippin_assignment，

@@ -192,7 +192,7 @@ void IndexService::SetProject(const project::Project& project) {
     state_.dirty = true;
 }
 
-void IndexService::OnFileChanged(std::string path, std::optional<std::string> text) {
+void IndexService::OnFileChanged(const std::string& path, std::optional<std::string> text) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!state_.have_project || path.empty()) return;
 

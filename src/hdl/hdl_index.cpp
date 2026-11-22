@@ -2110,6 +2110,15 @@ std::string SignalDetail(const Signal& signal) {
     return detail;
 }
 
+// 位置是否落在 module 的整块范围内（keyword_line/keyword_character 起，
+// end_line/end_character 止，两端都含）。用于把 net 的引用限制在**定义它的模块**内。
+bool InModuleRange(const Module& module, int line, int character) {
+    if (line < module.keyword_line || line > module.end_line) return false;
+    if (line == module.keyword_line && character < module.keyword_character) return false;
+    if (line == module.end_line && character > module.end_character) return false;
+    return true;
+}
+
 Span SpanOf(int line, int character, std::string_view name) {
     Span span;
     span.line = line;
@@ -2478,22 +2487,84 @@ std::vector<Location> HdlIndex::References(std::string_view path, int line, int 
     const std::string wanted = IdentKey(token->text);
     if (wanted.empty()) return out;
 
-    // 声明位置：只在 include_declaration=false 时需要。符号解析失败（例如光标在
-    // 一个只有隐式声明、索引里没有记录的网名上）就退化为"不过滤"，不吞掉真引用。
-    std::optional<SymbolAtResult> symbol;
-    if (!include_declaration) symbol = SymbolAt(path, line, character);
+    // **总是**解析光标处符号（不再只在 include_declaration=false 时解析）：
+    //   * kind == "signal" -> 走下面的 scope-aware 路径（wire/reg/logic 等 net）
+    //   * 其它 kind（module/port/parameter/instance）-> 保持原来的文本级行为
+    //   * 解析失败（隐式网、损坏文件）-> 也保持文本级行为，宁多勿少
+    const std::optional<SymbolAtResult> symbol = SymbolAt(path, line, character);
+    const bool drop_declaration = !include_declaration && symbol.has_value();
+    auto is_declaration = [&](const std::string& candidate_path, const Token& other) {
+        return drop_declaration && candidate_path == symbol->file &&
+               other.line == symbol->span.line &&
+               other.character == symbol->span.start_character;
+    };
 
+    if (symbol.has_value() && symbol->kind == "signal") {
+        // ---------------------------------------------------------------------
+        // net 符号（wire/reg/logic/...）：**scope-aware** 引用
+        // ---------------------------------------------------------------------
+        // 纯文本级会把这些同名 token 误算成本 net 的引用：
+        //   * 例化里的命名端口标签 `.foo(x)` 的 `foo` —— 那是**被例化模块的端口名**，
+        //     与当前 wire 只是碰巧同名（用户报的 bug）；
+        //   * 其它 module 里同名的 net/port（跨模块同名，本来就不该混进来）。
+        // 所以这里只在**同一文件、同一 module 的整块范围**内找同名 token，并排除
+        // 所有"其它符号的定义/引用位置"。
+        const ModuleInfo* info = nullptr;
+        for (const ModuleInfo& candidate : file->modules) {
+            if (IdentKey(candidate.module.name) == IdentKey(symbol->module)) {
+                info = &candidate;
+                break;
+            }
+        }
+        if (info == nullptr) info = ModuleAt(*file, symbol->span.line);  // 名字对不上时按行回落
+        if (info != nullptr) {
+            // 需要跳过的位置集合（都是"同名但不是本 net 引用"的地方）：
+            //   * 命名端口标签：`conn_port_pos` 就是 instances[].connection_ports 的
+            //     位置表（AddInstance 时逐个登记），`.port(` 里的 port；
+            //   * 其它符号定义：端口声明 / 非 ANSI header 端口 alias / 参数声明 /
+            //     实例名 / 例化的模块名引用；
+            //   * 模块定义名本身（同名 wire 与模块名撞车时，不应命模块名 token）。
+            std::set<std::pair<int, int>> excluded;
+            for (const auto& entry : info->positions.port_pos) excluded.insert(entry.first);
+            for (const auto& entry : info->positions.port_alias) excluded.insert(entry.first);
+            for (const auto& entry : info->positions.param_pos) excluded.insert(entry.first);
+            for (const auto& entry : info->positions.inst_name_pos) excluded.insert(entry.first);
+            for (const auto& entry : info->positions.modref_pos) excluded.insert(entry.first);
+            for (const auto& entry : info->positions.conn_port_pos) excluded.insert(entry.first);
+            for (const ModuleInfo& candidate : file->modules) {
+                excluded.insert({candidate.module.line, candidate.module.character});
+            }
+
+            for (const Token& other : file->tokens) {
+                if (other.kind != 'i') continue;
+                if (IdentKey(other.text) != wanted) continue;
+                // 只认本模块范围内的 token（同名 wire 在别的 module 里不算）
+                if (!InModuleRange(info->module, other.line, other.character)) continue;
+                // 端口标签 / 其它符号位置：不是本 net 的引用
+                if (excluded.count({other.line, other.character}) != 0) continue;
+                // 本 net 的声明：include_declaration=false 时丢掉
+                if (is_declaration(file->path, other)) continue;
+                out.push_back(
+                    LocationOf(file->path, other.line, other.character, other.text));
+            }
+            return out;
+        }
+        // 找不到所属 module info（异常路径）-> 回退到文本级，不吞真引用
+    }
+
+    // -------------------------------------------------------------------------
+    // 非 net（module/port/parameter/instance）或符号解析失败的兜底：文本级
+    // -------------------------------------------------------------------------
+    //  这里**有意**保持旧语义：端口引用要看其它文件里同名 token（端口名在例化侧
+    //  是被例化模块的端口标签，与声明处的端口是同一个符号），而 module/instance
+    //  的引用本来就是跨文件的。改成 scope-aware 会砍掉真引用。
     for (const auto& candidate_ptr : files_) {
         if (!candidate_ptr) continue;
         const ParsedFile& candidate = *candidate_ptr;
         for (const Token& other : candidate.tokens) {
             if (other.kind != 'i') continue;
             if (IdentKey(other.text) != wanted) continue;
-            if (symbol.has_value() && candidate.path == symbol->file &&
-                other.line == symbol->span.line &&
-                other.character == symbol->span.start_character) {
-                continue;  // 声明本身
-            }
+            if (is_declaration(candidate.path, other)) continue;  // 声明本身
             out.push_back(LocationOf(candidate.path, other.line, other.character,
                                      other.text));
         }

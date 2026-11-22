@@ -21,6 +21,8 @@
 #include "mcp/bridge.h"
 #include "mcp/mcp_server.h"
 #include "platform/log.h"
+#include "platform/never_throw.h"
+#include "platform/number.h"
 #include "platform/write_service.h"
 #include "platform/path.h"
 #include "platform/version.h"
@@ -68,7 +70,7 @@ std::string EndpointPath(unsigned short port) {
     if (dir.empty()) return {};
     // 统一写服务：端点文件目录 = FPGALSP_STATE_DIR（Classify 按 state_dir 命中 kState）。
     // 失败照旧忽略（随后 Write 返回错误、调用方拿到空路径）。
-    (void)platform::writes::EnsureDir(std::string(), dir, {.caller = "mcp.endpoint_dir"});
+    platform::IgnoreResult(platform::writes::EnsureDir(std::string(), dir, {.caller = "mcp.endpoint_dir"}));
     return platform::path_join(dir, "mcp-endpoint-" + std::to_string(port) + ".json");
 }
 
@@ -111,10 +113,10 @@ void RemoveMcpEndpoint(const std::string& path) {
     if (path.empty()) return;
     // 统一写服务：端点文件在 FPGALSP_STATE_DIR 下（kState；空 project_dir 时 Classify 仍
     // 按 state_dir/ temp 分类）。失败照旧忽略（与旧的 fs::remove(error_code) 一致）。
-    (void)platform::writes::Remove(std::string(), path, false,
-                                   platform::writes::Options{.caller = "mcp.endpoint_cleanup"});
-    (void)platform::writes::Remove(std::string(), path + ".tmp", false,
-                                   platform::writes::Options{.caller = "mcp.endpoint_cleanup"});
+    platform::IgnoreResult(platform::writes::Remove(std::string(), path, false,
+                                   platform::writes::Options{.caller = "mcp.endpoint_cleanup"}));
+    platform::IgnoreResult(platform::writes::Remove(std::string(), path + ".tmp", false,
+                                   platform::writes::Options{.caller = "mcp.endpoint_cleanup"}));
 }
 
 // 读端点文件里的 token（给 attach 代理用）。
@@ -147,8 +149,15 @@ class McpTcpHost::Impl {
         // 环境变量便于压测时调整（1 = 退回旧的串行行为）。
         max_clients_ = 8;
         if (const char* configured = std::getenv("FPGALSP_MCP_CLIENTS"); configured != nullptr) {
-            const int parsed = std::atoi(configured);
-            if (parsed >= 1 && parsed <= 64) max_clients_ = parsed;
+            // A-1：以前 std::atoi 把非法值静默变成 0（0 不在 1..64 -> 保持默认，
+            // 但连一条日志都没有）。现在严格解析 + 显式记录"为什么没生效"。
+            const auto parsed = platform::ParseDecimal<int>(configured);
+            if (parsed.has_value() && *parsed >= 1 && *parsed <= 64) {
+                max_clients_ = *parsed;
+            } else {
+                platform::default_logger().debug(
+                    std::string("FPGALSP_MCP_CLIENTS ignored (want 1..64): ") + configured);
+            }
         }
         // P-A3：每进程随机 token；FPGALSP_MCP_REQUIRE_TOKEN=1 时才强制（两版本灰度：
         // 先让旧扩展在"给了 token 就校验、没给就放行"的宽松模式下跑一轮）。

@@ -323,7 +323,8 @@ Json References(const HdlIndex& index, std::string_view path, int line, int char
                 bool include_declaration) {
     Json out = Json::array();
     // 声明的取舍（include_declaration）已经下沉到 HdlIndex::References 的 4 参重载：
-    // 端口/net 与 module/instance 走同一条文本级路径，这里只做 Location 序列化。
+    // net（signal）走 scope-aware 路径（限定 module、排除同名例化端口标签），
+    // module/port/parameter/instance 保持文本级；这里只做 Location 序列化。
     for (const Location& location :
          index.References(path, line, character, include_declaration)) {
         out.push_back(MakeLocation(location.path, location.line, location.character,

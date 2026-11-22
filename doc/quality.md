@@ -7,6 +7,7 @@
 | `run_audit.ps1` | 全流程：vcvars 自举 → 编译数据库新鲜度校验 → clang-tidy → MSVC `/analyze` → 汇总 |
 | `make_clang_db.py` | cl.exe 命令行 → clang 可消费的编译数据库；`--verify <TU>` 做单 TU 语法检查 |
 | `run_clang_tidy.py` | 逐 TU 跑 clang-tidy；`FPGA_LSP_AUDIT_DIR` 可指定输出目录；`--checks=-*,performance-*` 只跑某一维度（注意 `-*,` 前缀，否则会叠加默认集） |
+| `clang_tidy_gate.py` | **clang-tidy 棘轮门禁**（CTest `docs_clang_tidy` / `ctest -L tidy`，退出码 0/1）：根 `.clang-tidy` 的缺陷优先 check 集 + `clang_tidy_baseline.json` 基线比对——**基线外新诊断即失败**，基线项消失只提示收紧；`--only/--jobs/--timeout` 可调。`--update-baseline` 重写基线，**只能人工确认后使用**（见下节纪律）。必须经 `with_vcvars.cmd` 运行 |
 | `run_msvc_analyze.ps1` | MSVC `/analyze`（含 analyzer control 自检段，证明分析器真的生效） |
 | `summarize.py` | 去重口径聚合、模块密度、字面量感知的函数长度分布 |
 | `check_tcl_invariant.py` | **Tcl 拼装不变量守卫**：禁止把不可信值裸拼进 `Run(...)` |
@@ -14,6 +15,34 @@
 ```powershell
 pwsh -File tools\audit\run_audit.ps1 -Jobs 16        # 全流程
 python tools\audit\check_tcl_invariant.py            # 只跑不变量守卫（适合 CI）
+ctest -L tidy                                        # clang-tidy 棘轮门禁
+```
+
+### clang-tidy 棘轮门禁（`ctest -L tidy`）
+
+**为什么是棘轮而不是零告警**：审计口径的全量 check 集在本仓库是 1.1 万条诊断量级，
+那种规模只能出报告、不能当门禁（永远红 = 训练人去关掉它）。门禁要回答的是
+"这次改动有没有变差"，所以既有诊断全部记入基线，只拦新增。
+
+* 根 [`.clang-tidy`](../.clang-tidy) 只收**缺陷优先**的 check：`bugprone-*`、
+  `clang-analyzer-*`、`performance-*`、`cert-err33-c`/`cert-err34-c`（`atoi` 家族）等
+  高信号项、`modernize` 的 avoid-c-arrays / use-nullptr / use-override / use-emplace。
+  风格类（`readability-*`、`modernize-use-nodiscard` 1598 条、`performance-enum-size`
+  166 条 …）**不进 gate**；每个关闭项的理由写在文件头的 OFF 列表里。
+  `WarningsAsErrors` 刻意不开——门禁靠基线，不靠"一键全红"。
+* 基线 `tools/audit/clang_tidy_baseline.json` 以 `file|line|check` 唯一化（头文件诊断会在
+  每个包含它的 TU 各报一次，只算一条）。
+* 判定：出现基线外诊断 → **exit 1**（打印 `file:line:col` + check + 消息）；基线项本次
+  已不存在 → 只提示"可收紧基线"，不算失败（`--strict-baseline` 可要求基线精确）；
+  TU 解析失败/超时 → 失败（**无法验证 ≠ 通过**），且此时拒绝 `--update-baseline`。
+* **`--update-baseline` 纪律**：只在两种情况下用 —— ①修掉一批诊断后收紧基线；
+  ②人工逐条确认新增诊断是"接受的技术债"。**禁止为了让门禁变绿而盲目 update**，
+  那等于把棘轮拆掉，正是"连续两轮缺门禁"的同一个病根。
+* 必须经 `with_vcvars.cmd` 运行（clang 前端需要 MSVC STL/CRT 的 include 路径）：
+
+```powershell
+cmd /c tools\audit\with_vcvars.cmd python tools\audit\clang_tidy_gate.py          # 门禁
+cmd /c tools\audit\with_vcvars.cmd python tools\audit\clang_tidy_gate.py --only src/hdl --jobs 4
 ```
 
 ### 两个计数陷阱（不要用原始条数下结论）
@@ -28,6 +57,7 @@ python tools\audit\check_tcl_invariant.py            # 只跑不变量守卫（�
 | 项 | 值 |
 | --- | --- |
 | clang-tidy | **67/67 TU 解析成功，11,154 原始 → 8,234 唯一位置**（2026-11-22，LLVM 23.1.5，0.26.0） |
+| clang-tidy **门禁**基线 | **281 条唯一位置 / 67 TU**（2026-11-22 18:15，LLVM 23.1.5，0.27.0 修复后；修复前 320 条，atoi/静态初始化等已消）。此数只许下降 |
 | MSVC `/analyze` | 62 TU **0 条**（2026-11-19 口径；control 证明生效，但 `CppCoreCheck.dll` 未安装，C26xxx 未覆盖） |
 
 ## 审计证据归档（按日期）

@@ -16,7 +16,7 @@ LintService::LintService(Runner runner, Sink sink, LintServiceOptions options)
 
 LintService::~LintService() { Shutdown(); }
 
-uint64_t LintService::Request(std::string path, std::string uri) {
+uint64_t LintService::Request(const std::string& path, std::string uri) {
     uint64_t generation = 0;
     bool coalesced = false;
     {

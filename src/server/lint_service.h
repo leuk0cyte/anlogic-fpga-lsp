@@ -54,7 +54,7 @@ public:
     LintService& operator=(const LintService&) = delete;
 
     // 请求重算一个**已打开**文档的 lint（非阻塞）。返回该文件的请求代号。
-    uint64_t Request(std::string path, std::string uri);
+    uint64_t Request(const std::string& path, std::string uri);
 
     // 放弃某文件（didClose）：清掉 pending，并让在跑的轮次结果作废。
     void Cancel(const std::string& path);

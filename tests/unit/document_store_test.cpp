@@ -383,4 +383,47 @@ TEST(DocumentStore, GetTextByPathFindsBufferForClientStyleUri) {
     EXPECT_EQ(store.GetTextByPath("y:/proj/src/top.v").value_or(""), "module top;\nendmodule\n");
     EXPECT_EQ(store.GetTextByPath("Y:\\proj\\src\\top.v").value_or(""), "module top;\nendmodule\n");
 }
+
+// P1-2（2026-11-22 性能审计）：path→uri 索引 + 共享只读文本。
+//   * 命中只做一次哈希查表（不再遍历所有打开文档 + 每文档 normalize_path）；
+//   * 同一打开期间热路径拿到的是**同一份**不可变字符串（零整文件拷贝）；
+//   * didChange 整串替换：旧 shared_ptr 仍持有旧内容，不会悬垂/被撕裂；
+//   * didClose 之后路径索引失效，回落磁盘（用注入 reader 验证）。
+TEST(DocumentStore, PathIndexAndSharedText) {
+    DocumentStore store;
+    const std::string path = "Y:/proj/src/top.v";
+    const std::string uri = "file:///y%3A/proj/src/top.v";
+    store.Open(uri, "v1", 1, "verilog", path);
+
+    const std::shared_ptr<const std::string> first = store.GetTextByPathShared(path);
+    ASSERT_TRUE(first != nullptr);
+    EXPECT_EQ(*first, "v1");
+    // 不同写法（小写盘符 / 反斜杠）解析到同一 path_key，拿到同一份共享文本。
+    const std::shared_ptr<const std::string> again =
+        store.GetTextByPathShared("Y:\\proj\\src\\top.v");
+    ASSERT_TRUE(again != nullptr);
+    EXPECT_EQ(first.get(), again.get()) << "命中路径索引时应零拷贝（同一 shared_ptr）";
+
+    ContentChange change;
+    change.has_range = false;
+    change.text = "v2";
+    ASSERT_TRUE(store.Change(uri, {change}, 2));
+    const std::shared_ptr<const std::string> second = store.GetTextByPathShared(path);
+    ASSERT_TRUE(second != nullptr);
+    EXPECT_EQ(*second, "v2");
+    EXPECT_NE(first.get(), second.get()) << "didChange 必须整串替换（旧共享文本保持有效）";
+    EXPECT_EQ(*first, "v1") << "旧快照不能被后续编辑改写";
+    EXPECT_EQ(store.GetVersionByPath(path).value_or(-1), 2);
+    EXPECT_EQ(store.GetVersionByPath("y:/proj/src/top.v").value_or(-1), 2);
+
+    // didClose 之后路径索引必须失效：回落磁盘（注入 reader 模拟磁盘内容）。
+    store.SetDiskReader([](std::string_view) -> std::optional<std::string> {
+        return std::string("from-disk");
+    });
+    ASSERT_TRUE(store.Close(uri));
+    const std::shared_ptr<const std::string> from_disk = store.GetTextByPathShared(path);
+    ASSERT_TRUE(from_disk != nullptr);
+    EXPECT_EQ(*from_disk, "from-disk");
+    EXPECT_FALSE(store.GetVersionByPath(path).has_value());
+}
 }  // namespace

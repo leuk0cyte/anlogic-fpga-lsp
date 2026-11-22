@@ -11,6 +11,8 @@
 
 #include "mcp/tools.h"
 
+#include <map>
+#include <mutex>
 #include <utility>
 
 namespace fpgalsp::mcp {
@@ -529,7 +531,18 @@ Json ToolToJson(const Tool& tool) {
     return out;
 }
 
-std::vector<Json> VisibleTools(bool allow_flow, bool allow_write) {
+const std::vector<Json>& VisibleTools(bool allow_flow, bool allow_write) {
+    // P2：每进程每个 (allow_flow, allow_write) 组合只构建一次（options 在进程内不变）。
+    // 返回只读引用；调用方若把数组放进响应 Json，仍会拷贝一次（HandlerResult 只装
+    // Json），但省掉了每次"为 48 个工具重新 ToolToJson + 深拷贝 schema"的构造开销。
+    struct Cache {
+        std::mutex mutex;
+        std::map<std::pair<bool, bool>, std::vector<Json>> entries;
+    };
+    static Cache cache;
+    const std::pair<bool, bool> key{allow_flow, allow_write};
+    std::lock_guard<std::mutex> lock(cache.mutex);
+    if (const auto it = cache.entries.find(key); it != cache.entries.end()) return it->second;
     std::vector<Json> out;
     out.reserve(AllTools().size());
     for (const Tool& tool : AllTools()) {
@@ -537,7 +550,7 @@ std::vector<Json> VisibleTools(bool allow_flow, bool allow_write) {
         if (tool.requires_flag == "write" && !allow_write) continue;
         out.push_back(ToolToJson(tool));
     }
-    return out;
+    return cache.entries.emplace(key, std::move(out)).first->second;
 }
 
 }  // namespace fpgalsp::mcp

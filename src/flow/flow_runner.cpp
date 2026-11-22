@@ -38,6 +38,7 @@
 #include "flow/flow_status.h"  // GUI 6 步：flow.status 统计表 + 步骤标记
 #include "flow/probe.h"
 #include "platform/encoding.h"
+#include "platform/never_throw.h"
 #include "reports/reports_aggregate.h"
 #include "td/td_device.h"
 #include "td/td_output.h"
@@ -637,9 +638,9 @@ struct FlowRunner::Impl {
             const std::string stop = Join(RunDirOf(name), ".stop.f");
             if (IsFile(stop)) {
                 // 统一写服务：stop 标记在 <prj>_Runs/<run>/ 下（kRun）；失败照旧忽略。
-                (void)platform::writes::Remove(
+                platform::IgnoreResult(platform::writes::Remove(
                     owner->project_.dir, stop, false,
-                    platform::writes::Options{.caller = "flow.stop_flag"});
+                    platform::writes::Options{.caller = "flow.stop_flag"}));
             }
         }
     }
@@ -843,14 +844,14 @@ struct FlowRunner::Impl {
                     const std::string backup = fpgalsp::platform::state_dir(owner->project_.dir) +
                                                "/probe/user.cfg.stale.bak";
                     // 统一写服务：Copy（源=工程内生成文件，目标=状态目录 kState；自动建目录）。
-                    (void)platform::writes::Copy(
+                    platform::IgnoreResult(platform::writes::Copy(
                         owner->project_.dir, user_cfg, backup,
-                        platform::writes::Options{.caller = "flow.user_cfg_backup"});
+                        platform::writes::Options{.caller = "flow.user_cfg_backup"}));
                     // 统一删除：chip_debugger/*.cfg 是登记过的生成文件，writes::Remove 允许；
                     // 用户 .al/.adc/.sdc 仍一律拒绝。
-                    (void)platform::writes::Remove(
+                    platform::IgnoreResult(platform::writes::Remove(
                         owner->project_.dir, user_cfg, false,
-                        platform::writes::Options{.caller = "flow.user_cfg_remove"});
+                        platform::writes::Options{.caller = "flow.user_cfg_remove"}));
                     Emit("log", run_name + ": 生成 user.cfg 失败（" + user_cfg_error +
                                     "），已把旧文件移到 " + backup +
                                     "；本次由 TD 按 user.mdn 自动建 watcher");
@@ -907,7 +908,11 @@ struct FlowRunner::Impl {
         //   * `syn rtl`（= Optimize RTL，Read Design 之后）只做 mark_debug/insert；
         //   * `syn gate`（= Optimize Gate，结束后）才带上**采样深度/时钟/disable** 的配置。
         // GUI 里"完成 Optimize Gate 后才能设置深度/时钟"，所以把 `-cwc` 只挂在 gate 之后。
-        std::string insert_body = "insert_debugger {" + debugger_dir + "}";
+        // S-02：`insert_debugger {<dir>}` 的目录来自工程路径（不可信）。历史上裸拼
+        // `"insert_debugger {" + dir + "}"`，路径里的 `}` 能提前闭合花括号。改走
+        // TclQuoteGrouped：正常路径输出仍是 `{<dir>}`（逐字节不变），含 `}` 时退化成
+        // 转义引号形态。
+        std::string insert_body = "insert_debugger " + td::TclQuoteGrouped(debugger_dir);
         {
             const probe::ProbeBuildConfig build = probe::ReadProbeBuildConfig(owner->project_);
             // ⚠ `-cwc` 只给 **syn** 的 rtl/gate 步：watcher 是 gate 之后由 TD 建立的。
@@ -932,7 +937,8 @@ struct FlowRunner::Impl {
                 }
                 const std::string config_path = Join(RunDir(), "probe_config.cwc");
                 if (!cwc_text.empty() && WriteTextFile(owner->project_.dir, config_path, cwc_text)) {
-                    insert_body += " -cwc {" + config_path + "}";
+                    // S-02：同 insert_debugger —— 路径过 TclQuoteGrouped（正常路径逐字节不变）。
+                    insert_body += " -cwc " + td::TclQuoteGrouped(config_path);
                     gate_cwc_path = config_path;
                     Emit("log", run_name + ": 探针构建参数 clock=" +
                                     (build.has_clock ? build.clock : std::string("<from cwc>")) +
@@ -980,8 +986,9 @@ struct FlowRunner::Impl {
             probe_hook_state[run_name] = applied;
         }
         if (applied) {
-            Emit("log", run_name + ": 探针钩子已设置（insert_debugger {" + debugger_dir +
-                            "}" + (run_name == "phy_1" ? " + bitgen 后 setup_debugger" : "") + "）");
+            Emit("log", run_name + ": 探针钩子已设置（insert_debugger " +
+                            td::TclQuoteGrouped(debugger_dir) +
+                            (run_name == "phy_1" ? " + bitgen 后 setup_debugger" : "") + "）");
         }
     }
 
@@ -993,17 +1000,17 @@ struct FlowRunner::Impl {
         for (const char* step : {"opt_place", "opt_route", "bitgen"}) {
             for (const char* suffix : {".begin.f", ".end.f", ".error.f"}) {
                 // 统一写服务：步骤标记在 <prj>_Runs/phy_1/（kRun）；失败照旧忽略。
-                (void)platform::writes::Remove(
+                platform::IgnoreResult(platform::writes::Remove(
                     project_dir, phy + "/." + step + suffix, false,
-                    platform::writes::Options{.caller = "flow.reset_step_marker"});
+                    platform::writes::Options{.caller = "flow.reset_step_marker"}));
             }
         }
         // 统一写服务：watcher 旁路目录（递归=旧 remove_all）与旧 bit（kRun）。
-        (void)platform::writes::Remove(project_dir, phy + "/cw", true,
-                                       platform::writes::Options{.caller = "flow.reset_cw"});
-        (void)platform::writes::Remove(
+        platform::IgnoreResult(platform::writes::Remove(project_dir, phy + "/cw", true,
+                                       platform::writes::Options{.caller = "flow.reset_cw"}));
+        platform::IgnoreResult(platform::writes::Remove(
             project_dir, phy + "/" + project_name() + ".bit", false,
-            platform::writes::Options{.caller = "flow.reset_bit"});
+            platform::writes::Options{.caller = "flow.reset_bit"}));
     }
 
     std::string project_name() const { return owner->project_.name; }
@@ -1019,9 +1026,9 @@ struct FlowRunner::Impl {
             for (const char* step : {"read_design", "opt_rtl", "opt_gate"}) {
                 for (const char* suffix : {".begin.f", ".end.f", ".error.f"}) {
                     // 统一写服务：syn 步骤标记（kRun）；失败照旧忽略。
-                    (void)platform::writes::Remove(
+                    platform::IgnoreResult(platform::writes::Remove(
                         owner->project_.dir, syn + "/." + step + suffix, false,
-                        platform::writes::Options{.caller = "flow.reset_step_marker"});
+                        platform::writes::Options{.caller = "flow.reset_step_marker"}));
                 }
             }
         }
@@ -1046,9 +1053,9 @@ struct FlowRunner::Impl {
         for (auto it = first; it != steps.end(); ++it) {
             for (const char* suffix : {".begin.f", ".end.f", ".error.f"}) {
                 // 统一写服务：run 的步骤标记（kRun）；失败照旧忽略。
-                (void)platform::writes::Remove(
+                platform::IgnoreResult(platform::writes::Remove(
                     owner->project_.dir, dir + "/." + *it + suffix, false,
-                    platform::writes::Options{.caller = "flow.reset_step_marker"});
+                    platform::writes::Options{.caller = "flow.reset_step_marker"}));
             }
         }
         if (run_name == "syn_1") {
@@ -1056,12 +1063,12 @@ struct FlowRunner::Impl {
             ResetDownstreamPhy();
         } else {
             // phy 任一步重跑都会让 watcher 旁路/位流作废（bitgen 会重新生成）
-            (void)platform::writes::Remove(
+            platform::IgnoreResult(platform::writes::Remove(
                 owner->project_.dir, dir + "/cw", true,
-                platform::writes::Options{.caller = "flow.reset_cw"});
-            (void)platform::writes::Remove(
+                platform::writes::Options{.caller = "flow.reset_cw"}));
+            platform::IgnoreResult(platform::writes::Remove(
                 owner->project_.dir, dir + "/" + project_name() + ".bit", false,
-                platform::writes::Options{.caller = "flow.reset_bit"});
+                platform::writes::Options{.caller = "flow.reset_bit"}));
         }
         // 统计表里"这一步及下游"的耗时行也要清掉：CollectFlowSteps 会用"表里有耗时"
         // 把 pending 升级成 done，只删标记不动表的话，右键 Reset and Run 跑完 Read Design
@@ -1073,9 +1080,9 @@ struct FlowRunner::Impl {
             const std::string text = ReadTextFile(path);
             const std::string stripped = StripFlowStatusFromMarker(text, step);
             if (stripped != text) {
-                (void)platform::writes::Write(owner->project_.dir, path, stripped,
+                platform::IgnoreResult(platform::writes::Write(owner->project_.dir, path, stripped,
                                               platform::writes::Options{
-                                                  .caller = "flow.status_table"});
+                                                  .caller = "flow.status_table"}));
             }
         }
     }
@@ -1536,19 +1543,15 @@ struct FlowRunner::Impl {
             probe_hook_state.clear();
         }
 
-        std::thread heartbeat_thread;
-        // ⚠⚠ 必须用 RAII 保证 join：Worker 里有**7 处**提前 return
-        //   （import_device 失败 / open_project 失败 / run 失败 / 取消 …），
-        //   任何一处直接 return 都会让局部的 joinable std::thread 在析构时
-        //   std::terminate() -> Windows __fastfail -> 进程以 0xC0000409 崩掉。
-        //   这不是 EH/编译选项问题，是 std::thread 的语言层面契约。
-        struct JoinOnExit {
-            std::thread& thread;
-            ~JoinOnExit() {
-                if (thread.joinable()) thread.join();
-            }
-        };
-        JoinOnExit join_guard{heartbeat_thread};
+        // A-2：用 std::jthread 取代"std::thread + JoinOnExit guard"。
+        //   Worker 里有 **7 处**提前 return（import_device 失败 / open_project 失败 /
+        //   run 失败 / 取消 …），任何一处直接 return 都会让局部的 joinable std::thread
+        //   在析构时 std::terminate() -> Windows __fastfail -> 进程以 0xC0000409 崩掉。
+        //   以前靠一个手写 guard 保证 join，而那个 guard 自身**隐式可拷贝**（被按值
+        //   传递/lambda 捕获时析构跑两次 -> 第二次 join 抛 std::system_error -> terminate）。
+        //   现在 "析构必 join" 从约定变成类型保证：jthread 的析构自动 join，guard 不需要存在。
+        //   ⚠ 不用 jthread 的 stop_token（停止仍走 heartbeat_stop + td::CancelToken）。
+        std::jthread heartbeat_thread;
         try {
             {
                 std::string joined;
@@ -1582,7 +1585,7 @@ struct FlowRunner::Impl {
 
             if (owner->options_.heartbeat_seconds > 0.0) {
                 const std::uint64_t generation = heartbeat_generation.load();
-                heartbeat_thread = std::thread([this, generation, stages]() {
+                heartbeat_thread = std::jthread([this, generation, stages]() {
                     // 看门狗线程同样不允许把异常带出去（它会在 Kill 会话后继续跑）
                     try {
                         Heartbeat(generation, stages);
@@ -1865,9 +1868,17 @@ jsonrpc::Json FlowRunner::StartInternal(const std::vector<std::string>& stages, 
         try {
             impl_->Worker(run_id, normalised, effective_jobs, single_step);
         } catch (const std::exception& exc) {
-            impl_->SafeFinishError(std::string("unexpected: ") + exc.what());
+            // catch 处理器本身也必须 never-throw：SafeFinishError 里构造字符串可能抛，
+            // 一旦抛出就会越过 std::thread 边界 -> std::terminate。
+            try {
+                impl_->SafeFinishError(std::string("unexpected: ") + exc.what());
+            } catch (...) {
+            }
         } catch (...) {
-            impl_->SafeFinishError("unexpected non-std exception");
+            try {
+                impl_->SafeFinishError("unexpected non-std exception");
+            } catch (...) {
+            }
         }
     });
 

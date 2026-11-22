@@ -544,6 +544,83 @@ std::mutex g_project_cache_mutex;
 std::map<std::string, GlobalProjectEntry> g_project_cache;
 constexpr std::size_t kProjectCacheMax = 8;
 
+// -----------------------------------------------------------------------------
+// P1-3（2026-11-22 性能审计）：`ResolveAl(<工程名>)` 的反查缓存
+// -----------------------------------------------------------------------------
+//  旧实现每次工具调用都 `DiscoverProjects(root_, 6)` 递归扫全工作区，再对**每个**
+//  .al 完整 `ParseAl` —— 大工作区里每次调用数十毫秒，且与工具本身成本无关。
+//  这里把 (root, 小写名字) -> .al 的结果缓存 5 s（命中零扫描），并复用已有的
+//  工程列表缓存 `CachedProjectListEntries` / 解析缓存 `CachedParsedProject`，
+//  消除"为比对名字先 ParseAl 一遍、随后项目又解析一遍"的双重解析。
+//  失效点：写工具改 .al 之后走 `DropCachedProject`（清空本缓存）+ 5 s TTL 兜底。
+struct AlNameEntry {
+    std::chrono::steady_clock::time_point at{};
+    std::string al;  // 空 = 负缓存（这段时间内确实找不到）
+};
+
+std::mutex g_al_name_mutex;
+std::map<std::string, AlNameEntry> g_al_name_cache;
+constexpr std::chrono::seconds kAlNameTtl{5};
+constexpr std::size_t kAlNameCacheMax = 128;
+
+void ClearAlNameCache() {
+    std::lock_guard<std::mutex> lock(g_al_name_mutex);
+    g_al_name_cache.clear();
+}
+
+// 定义在下方（进程级 .al 解析缓存）：这里只用于"名字比对"，避免重复 ParseAl。
+std::shared_ptr<const project::Project> CachedParsedProject(const std::string& al_path);
+
+// 返回匹配的 .al（未命中返回空串 = 不存在）。语义与旧循环完全一致：
+// 先比较 .al 内的工程名（大小写不敏感），再比较文件名。
+std::string ResolveAlByNameCached(const std::string& root, const std::string& lowered) {
+    const std::string key = LowerAscii(normalize_path(root)) + "|" + lowered;
+    const auto now = std::chrono::steady_clock::now();
+    {
+        std::lock_guard<std::mutex> lock(g_al_name_mutex);
+        if (const auto it = g_al_name_cache.find(key); it != g_al_name_cache.end()) {
+            if (now - it->second.at < kAlNameTtl) return it->second.al;
+        }
+    }
+
+    std::string found;
+    // ① 先查带 TTL/stamp 校验的工程列表缓存（连接级共享，通常零扫描）。
+    const Json projects = CachedProjectListEntries(root);
+    if (projects.is_array()) {
+        for (const Json& item : projects) {
+            if (!item.is_object()) continue;
+            const auto name_it = item.find("name");
+            const auto al_it = item.find("al");
+            if (al_it == item.end() || !al_it->is_string()) continue;
+            const std::string al = al_it->get<std::string>();
+            const std::string name =
+                (name_it != item.end() && name_it->is_string()) ? name_it->get<std::string>() : "";
+            if (LowerAscii(name) == lowered || LowerAscii(BaseName(al)) == lowered) {
+                found = al;
+                break;
+            }
+        }
+    }
+    // ② 列表缓存按 100 条截断；未命中时回落到全量扫描（保持旧语义，不误报 not found）。
+    if (found.empty()) {
+        for (const std::string& al : project::DiscoverProjects(root, 6)) {
+            const std::shared_ptr<const project::Project> parsed = CachedParsedProject(al);
+            const std::string name = parsed != nullptr ? parsed->name : std::string();
+            if (LowerAscii(name) == lowered || LowerAscii(BaseName(al)) == lowered) {
+                found = al;
+                break;
+            }
+        }
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(g_al_name_mutex);
+        if (g_al_name_cache.size() >= kAlNameCacheMax) g_al_name_cache.clear();
+        g_al_name_cache[key] = AlNameEntry{now, found};
+    }
+    return found;
+}
+
 std::shared_ptr<const project::Project> CachedParsedProject(const std::string& al_path) {
     const std::string key = normalize_path(al_path);
     std::int64_t mtime_ns = 0;
@@ -581,8 +658,13 @@ std::shared_ptr<const project::Project> CachedParsedProject(const std::string& a
 
 // .al 被写工具改过后必须丢掉进程级缓存，否则其它连接会继续看到旧名字/旧文件表。
 void DropCachedProject(const std::string& al_path) {
-    std::lock_guard<std::mutex> lock(g_project_cache_mutex);
-    g_project_cache.erase(normalize_path(al_path));
+    {
+        std::lock_guard<std::mutex> lock(g_project_cache_mutex);
+        g_project_cache.erase(normalize_path(al_path));
+    }
+    // P1-3：工程改名/新增/删除后，"工程名 -> .al" 反查缓存必须一起失效，
+    // 否则 5 s 内 ResolveAl(name) 还指向旧路径（写工具都会走 DropCachedProject）。
+    ClearAlNameCache();
 }
 
 // Python fnmatch.fnmatch 的子集（* 与 ?）。MCP 的 glob 参数只用到这个程度。
@@ -793,13 +875,9 @@ std::string Bridge::ResolveAl(const std::string& value) const {
     }
 
     const std::string lowered = LowerAscii(trimmed);
-    for (const std::string& al : project::DiscoverProjects(root_, 6)) {
-        const project::Project parsed = project::ParseAl(al);
-        if (LowerAscii(parsed.name) == lowered ||
-            LowerAscii(BaseName(al)) == lowered) {
-            return al;
-        }
-    }
+    // P1-3：带缓存的"工程名 -> .al"反查（5 s TTL + 写后失效）。未命中时错误文案不变。
+    const std::string named_al = ResolveAlByNameCached(root_, lowered);
+    if (!named_al.empty()) return named_al;
     throw ToolError("Project not found: " + trimmed);
 }
 

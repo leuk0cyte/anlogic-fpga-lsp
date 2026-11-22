@@ -14,9 +14,11 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <stdexcept>
 #include <string>
 
 #include "platform/encoding.h"
+#include "platform/never_throw.h"
 #include "platform/path.h"
 #include "platform/write_service.h"
 
@@ -282,6 +284,69 @@ TEST_F(WriteServiceTest, CopyAcrossRootsAndIntoRegisteredProjectDirs) {
     EXPECT_FALSE(fpgalsp::platform::writes::Copy(project_, project_ + "/chip_debugger/user.cfg",
                                                  project_ + "/whatever/x.log", {})
                      .ok);
+}
+
+// P2（2026-11-22 性能审计）：state_dir 被 memoize 之后，**策略不能退化**。
+// 这段刻意在同一个 project_dir 上连续做"允许 -> 拒绝 -> 拒绝 -> 允许"，
+// 确保缓存的 state/project/temp root 不会把越界路径或工程内 `.fpgalsp` 放行。
+TEST_F(WriteServiceTest, CachedStateDirKeepsPolicyDenials) {
+    // 第一次：合法状态目录写（触发并填充 state_dir 缓存）
+    const std::string ok_target = state_ + "/cache/first.json";
+    ASSERT_TRUE(Write(project_, ok_target, "{\"a\":1}", {.caller = "test.cache"}).ok);
+    // 越界：工程目录之外、也不在任何允许 root 下 -> 必须仍然拒绝
+    std::string error;
+    Root root = Root::kState;
+    EXPECT_FALSE(Classify(project_, base_ + "/outside/x.txt", &root, &error));
+    EXPECT_FALSE(Write(project_, base_ + "/outside/x.txt", "x", {.caller = "test.cache"}).ok);
+    // 工程内 `.fpgalsp` 段 -> 必须仍然拒绝（与 state 目录缓存无关）
+    EXPECT_FALSE(Classify(project_, project_ + "/.fpgalsp/cache/x.json", &root, &error));
+    EXPECT_NE(error.find(".fpgalsp"), std::string::npos) << error;
+    // 第二次合法写仍然成功（缓存没有把状态目录判错）
+    const std::string again = state_ + "/cache/second.json";
+    const auto second = Write(project_, again, "{\"b\":2}", {.caller = "test.cache"});
+    EXPECT_TRUE(second.ok) << second.error;
+    EXPECT_EQ(second.root, Root::kState);
+    EXPECT_EQ(Read(again), "{\"b\":2}");
+}
+
+
+// =============================================================================
+//  A-3 / A-4：never_throw.h —— 显式忽略与吞异常边界
+// =============================================================================
+//  `[[nodiscard]] Result` 让"忘记处理写入失败"在编译期报（这条无法在运行期测），
+//  这里钉住配套的两个运行时契约：IgnoreResult 接受 Result 且自身不抛；
+//  NeverThrow 把异常挡在边界内、保留 noexcept，并不把异常变成"崩溃"。
+TEST(NeverThrow, IgnoreResultAcceptsResultWithoutThrowing) {
+    using fpgalsp::platform::IgnoreResult;
+    fpgalsp::platform::writes::Result ok;
+    ok.ok = true;
+    ok.path = "x";
+    EXPECT_NO_THROW(IgnoreResult(ok));
+
+    fpgalsp::platform::writes::Result failed;
+    failed.ok = false;
+    failed.path = "C:/tmp/x";
+    failed.error = "policy denied";
+    EXPECT_NO_THROW(IgnoreResult(failed));
+    // 右值同样可用（调用点普遍是 IgnoreResult(writes::EnsureDir(...)) 的写法）
+    EXPECT_NO_THROW(IgnoreResult(fpgalsp::platform::writes::Result{}));
+}
+
+TEST(NeverThrow, SwallowsExceptionsAndKeepsNoexceptContract) {
+    using fpgalsp::platform::NeverThrow;
+    bool ran = false;
+    EXPECT_NO_THROW(NeverThrow([&] { ran = true; }, "test.ok"));
+    EXPECT_TRUE(ran);
+    ran = false;
+    EXPECT_NO_THROW(NeverThrow(
+        [&] {
+            ran = true;
+            throw std::runtime_error("cache corrupted");
+        },
+        "test.analysis_cache"));
+    EXPECT_TRUE(ran) << "边界必须执行完函数体（不是提前 return）";
+    EXPECT_NO_THROW(NeverThrow([] { throw 42; }, "test.unknown"));  // 非 std::exception 也吞
+    static_assert(noexcept(NeverThrow([] {})), "NeverThrow 必须是 noexcept（保持原函数契约）");
 }
 
 }  // namespace

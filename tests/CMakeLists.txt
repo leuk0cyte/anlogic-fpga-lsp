@@ -431,3 +431,55 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/tools/audit/check_raw_file_writes.py")
         message(STATUS "文档门禁: 已注册 docs_no_raw_writes")
     endif()
 endif()
+
+# =============================================================================
+#  clang-tidy 棘轮门禁（ctest -L tidy / -L docs 都会跑）
+# =============================================================================
+#  背景（2026-11-22 现代化静态审计结论）：上一轮遗留的 `atoi` 家族
+#  （cert-err34-c）、超长函数等退化项，根因是**连续两轮没有门禁** —— 静态分析
+#  只在"人记得跑"的时候跑。这里把它固化成棘轮：
+#      根 `.clang-tidy` 定义"查什么"（缺陷优先的小 check 集）；
+#      `tools/audit/clang_tidy_gate.py` 与基线比对：**新增诊断 → 失败**，
+#      既有诊断进 tools/audit/clang_tidy_baseline.json，只许减少。
+#  基线只能人工确认后 `--update-baseline` 更新，禁止为了让门禁变绿而盲目 update
+#  （那等于把棘轮拆掉，见 doc/quality.md）。
+#
+#  为什么必须经 tools/audit/with_vcvars.cmd：
+#      clang-tidy 走 clang 前端，需要 MSVC STL/CRT 的 include 路径，而本机 cl.exe
+#      只在 vcvars64 之后才在 PATH 上；裸跑会因为找不到 <string_view> 等头文件
+#      产生成片的假诊断（不是代码问题）。
+#  为什么 PATH 上找不到 clang-tidy 也要注册：
+#      脚本自己会在 PATH / CLANG_TIDY / scoop 安装位置里找，找不到时给出明确中文
+#      提示并 exit 1 —— 这类环境缺口应当显式失败，而不是被静默跳过。
+#
+#  ⚠ 命令形态：`cmd /c <with_vcvars.cmd> <python> <script> ...`
+#    批处理的 %* 会原样转发参数；CMake 只在含空格时才给参数加引号，本机仓库路径
+#    无空格（Y:\fpga-lsp-cpp），所以最终命令行是不带引号的 `cmd /c Y:/.../with_vcvars.cmd ...`
+#    —— 已实测可用（`cmd /c "prog args"` 的引号剥除规则反而容易吃掉参数）。
+if(EXISTS "${CMAKE_SOURCE_DIR}/tools/audit/clang_tidy_gate.py")
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(NOT Python3_Interpreter_FOUND)
+        message(STATUS "clang-tidy 门禁: 未找到 Python3 解释器，跳过注册 docs_clang_tidy")
+    else()
+        # CTest 在 Windows 上会给 cmd 的参数再套一层引号，`cmd /c "<路径>"` 会被
+        # 引号剥除规则吃掉（实测 `The syntax of the command is incorrect.`）。
+        # 因此 CTest 只跑普通 python：脚本自己检测 INCLUDE，缺 MSVC 环境时经
+        # tools/audit/with_vcvars.cmd 自举重启（见 clang_tidy_gate.py 的
+        # `_bootstrap_vcvars_if_needed`）。
+        add_test(
+            NAME docs_clang_tidy
+            COMMAND "${Python3_EXECUTABLE}"
+                    "${CMAKE_SOURCE_DIR}/tools/audit/clang_tidy_gate.py"
+                    --root "${CMAKE_SOURCE_DIR}"
+                    --jobs 8
+        )
+        set_tests_properties(docs_clang_tidy PROPERTIES
+            LABELS "docs;tidy"
+            TIMEOUT 1800
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+            # 全机 96 核也只用 8 个并行 TU：门禁不该把开发机的编译并行度抢光。
+            RUN_SERIAL TRUE
+        )
+        message(STATUS "clang-tidy 门禁: 已注册 docs_clang_tidy（ctest -L tidy）")
+    endif()
+endif()
