@@ -1365,3 +1365,57 @@ with download:true confirm:true, or re-run stages:[\"all\"]"}`。
 ```
 
 插件 45/45、集成套件除 3 条历史遗留（completion 标签数 / copy symbol path / doctor）外全 PASS。
+
+### 第三十二轮：右键 Reset and Run 改成**真的只跑这一步**
+
+用户反馈（0.21.7 之后，命令已经能跑起来了）：
+1. 右键 Read Design → Reset and Run，运行中后面两步（Optimize RTL / Optimize Gate）还是 done；
+2. 本来应该只跑 Read Design，但 syn 三步全跑了。
+
+**根因**：`StartFromStep` 一直是"reset 整条 run + launch 整条 run"：
+
+```
+ResetDownstreamOf(run)        // 清掉 syn 三步 + phy 全部标记
+Start({"syn"})                // launch_runs syn_1  -> 三步全跑
+```
+
+所以（1）下游两步在跑完后必然又变 done（运行中也被带着跑），（2）Read Design 一步的点击
+实际跑了三步。TD 的 CLI 里确实支持单步：
+
+```
+launch_runs syn_1 -step read_design -jobs N     # 只跑这一步
+```
+
+但它要求这一步"还没跑过"，否则 `PRJ-8816 ERROR: Step read_design is already run.`
+而且 —— 这轮踩到的坑 —— **TD 在 `open_project` 时就把步骤状态读进内存**：
+
+| 顺序 | 结果 |
+| --- | --- |
+| 先 `file delete` 标记，再 `open_project` + `launch_runs -step` | ✅ 正常只跑那一步 |
+| `open_project` 之后才 `file delete`，再 `launch_runs -step` | ❌ PRJ-8816 "already run" |
+
+（两种顺序都在 CorpusAlpha 上用 TD 的 Tcl 实测过；`reset_runs` 不接受 `-step`（USR-8011），
+`reset_run` 在 CLI 里根本不存在（invalid command name），所以标记只能由我们删。）
+
+**新语义**（`fpga_flow_run_step` / 插件右键 "Reset and Run This Flow Step"）：
+
+1. 在 **open_project 之前**清掉"这一步及其之后"的标记（前面的步骤产物保留）；
+   syn 任一步都会让整个 phy run 作废（标记 + watcher 旁路 + 旧 bit）；
+2. `launch_runs <run> -step <step>` —— 只有这一步跑；
+3. 下游步骤保持 not run（插件树里显示 `not run`），不会再被带着跑；
+4. phy 的 sidecar 只在跑到 bitgen 时写（place/route 单步时写会拿旧 bid 的几何）；
+5. 单步 phy 不做 `save_best_bits`；单步模式也不再"探针清单比网表新就自动补 syn"。
+
+**实测**：
+
+```
+corpus_delta:  step=read_design -> 只 read_design，10 s，opt_rtl/opt_gate 变 not run，phy 全部清空
+corpus_delta:  step=opt_rtl     -> read_design 保留，只 opt_rtl，44 s，opt_gate 仍是 not run
+CorpusAlpha 真 VS Code 集成套件：
+  [PASS] reset and run re-ran ONLY the selected step            2.9s
+  [PASS] downstream steps are cleared to "not run" (no re-run)  opt_rtl=0 opt_gate=0
+  [PASS] FPGA Flow output shows the step run progress           ✓ Read Design finished after 2.9s
+```
+
+插件 45/45、`ctest` 64/64；集成套件只剩 3 条历史遗留（completion 标签数 / copy symbol path /
+doctor，与本轮无关）。

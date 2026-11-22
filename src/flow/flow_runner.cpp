@@ -702,14 +702,25 @@ struct FlowRunner::Impl {
         return newest;
     }
 
-    bool WaitForRunStart(const std::string& run_name, double timeout_seconds) {
+    // step 非空 = 单步模式：等"这个步骤自己的 .begin.f"出现，而不是等"任意 .begin.f"
+    //（单步时前面的步骤标记还在，用 RunStarted 会立刻返回 true，等于没等）。
+    bool WaitForRunStart(const std::string& run_name, double timeout_seconds,
+                         const std::string& step = {}) {
         const double deadline = Now() + timeout_seconds;
+        const auto started = [&]() {
+            const std::vector<std::string> names = ListDir(RunDirOf(run_name));
+            if (step.empty()) return RunStarted(names);
+            const auto has = [&names](const std::string& name) {
+                return std::find(names.begin(), names.end(), name) != names.end();
+            };
+            return has("." + step + ".begin.f") || has("." + step + ".end.f");
+        };
         while (Now() < deadline) {
             if (!IsRunning() || Cancelled()) return false;
-            if (RunStarted(ListDir(RunDirOf(run_name)))) return true;
+            if (started()) return true;
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
         }
-        return RunStarted(ListDir(RunDirOf(run_name)));
+        return started();
     }
 
     // -------------------------------------------------------------------------
@@ -993,26 +1004,68 @@ struct FlowRunner::Impl {
         }
     }
 
-    Failure RunStage(const std::string& run_name, int jobs) {
-        ClearStopFlags();
-        // GUI 语义：运行 syn（Read Design / Optimize RTL / Optimize Gate）后，
-        // phy 的三步必须回到 "not run" —— 因为它们依赖 syn 的产物，旧产物已经作废。
-        // 实现：删掉 phy_1 的步骤标记与 watcher 产物（bit 也不再可信）。
+    // 单步运行前的清标记：只清"这一步及其之后"的步骤标记（前面的步骤产物要留着，
+    // 否则 Read Design 都得跟着重跑），并让下游 run 的产物作废。
+    // 为什么不用 TD 的命令：`reset_runs` 不接受 `-step`（实测 USR-8011），`reset_run`
+    // 在 CLI 里根本不存在（invalid command name），所以标记只能由我们按 GUI 语义删。
+    void ClearStepMarkersFrom(const std::string& run_name, const std::string& step) {
+        std::vector<std::string> steps;
         if (run_name == "syn_1") {
-            ResetDownstreamPhy();
+            steps = {"read_design", "opt_rtl", "opt_gate"};
+        } else if (run_name == "phy_1") {
+            steps = {"opt_place", "opt_route", "bitgen"};
+        } else {
+            return;
         }
-        Emit("progress", "reset_runs {" + run_name + "}");
-        // B7 / S-01：run_name 目前都是内部常量（syn_1/phy_1），但仍按"不可信"处理，
-        // 走 TclQuoteGrouped —— 正常名字输出与旧实现逐字节相同（`{ syn_1 }`）。
-        Record(RunCommand("reset_runs " + td::TclQuoteGrouped(" " + run_name + " "), 120.0));
+        const auto first = std::find(steps.begin(), steps.end(), step);
+        if (first == steps.end()) return;
+        std::error_code ec;
+        const std::string dir = RunDirOf(run_name);
+        for (auto it = first; it != steps.end(); ++it) {
+            for (const char* suffix : {".begin.f", ".end.f", ".error.f"}) {
+                std::filesystem::remove(std::filesystem::path(dir + "/." + *it + suffix), ec);
+            }
+        }
+        if (run_name == "syn_1") {
+            // 综合中间产物变了 -> 整个 phy run 作废（标记、watcher 旁路、旧 bit）
+            ResetDownstreamPhy();
+        } else {
+            // phy 任一步重跑都会让 watcher 旁路/位流作废（bitgen 会重新生成）
+            std::filesystem::remove_all(std::filesystem::path(dir + "/cw"), ec);
+            std::filesystem::remove(std::filesystem::path(dir + "/" + project_name() + ".bit"), ec);
+        }
+    }
 
-        // ⚠ 必须放在 reset_runs **之后**：reset 会把 run 重新初始化，钩子要在
-        //   launch 之前重新挂上（set_param 本身幂等，见 EnsureProbeHook 的短路）。
+    Failure RunStage(const std::string& run_name, int jobs, const std::string& step = {}) {
+        ClearStopFlags();
+        if (step.empty()) {
+            // GUI 语义：运行 syn（Read Design / Optimize RTL / Optimize Gate）后，
+            // phy 的三步必须回到 "not run" —— 因为它们依赖 syn 的产物，旧产物已经作废。
+            // 实现：删掉 phy_1 的步骤标记与 watcher 产物（bit 也不再可信）。
+            if (run_name == "syn_1") {
+                ResetDownstreamPhy();
+            }
+            Emit("progress", "reset_runs {" + run_name + "}");
+            // B7 / S-01：run_name 目前都是内部常量（syn_1/phy_1），但仍按"不可信"处理，
+            // 走 TclQuoteGrouped —— 正常名字输出与旧实现逐字节相同（`{ syn_1 }`）。
+            Record(RunCommand("reset_runs " + td::TclQuoteGrouped(" " + run_name + " "), 120.0));
+        } else {
+            // 单步：标记已在 Worker 里、open_project **之前**清过了（TD 打开工程时就把
+            // 步骤状态读进内存，见 Worker 里的注释），这里直接按 -step 启动即可。
+            Emit("progress", "run step " + step);
+        }
+
+        // ⚠ 必须放在 reset 之后：reset 会把 run 重新初始化，钩子要在 launch 之前重新挂上
+        //   （set_param 本身幂等，见 EnsureProbeHook 的短路）。
         EnsureProbeHook(run_name);
 
-        Emit("progress", "launch_runs {" + run_name + "} -jobs " + std::to_string(jobs));
-        const std::string launch = "launch_runs " + td::TclQuoteGrouped(" " + run_name + " ") +
-                                   " -jobs " + std::to_string(jobs);
+        std::string launch = "launch_runs " + td::TclQuoteGrouped(" " + run_name + " ");
+        if (!step.empty()) launch += " -step " + step;
+        launch += " -jobs " + std::to_string(jobs);
+        Emit("progress", step.empty()
+                             ? ("launch_runs {" + run_name + "} -jobs " + std::to_string(jobs))
+                             : ("launch_runs {" + run_name + "} -step " + step + " -jobs " +
+                                std::to_string(jobs)));
         std::string out = RunCommand(launch, 300.0);
         RememberRunLog(run_name, out);
         // ⚠ 这里只能用 HasFatal（只看 ERROR），不能用 HasError：
@@ -1036,7 +1089,7 @@ struct FlowRunner::Impl {
                             ErrorLines(out, 3));
         }
 
-        if (!WaitForRunStart(run_name, owner->options_.start_timeout_seconds)) {
+        if (!WaitForRunStart(run_name, owner->options_.start_timeout_seconds, step)) {
             return Fail(run_name +
                         " did not start: no run trace (.read_design.begin.f / run.log) appeared. "
                         "The most common cause is an empty device_name in settings.cfg (PRJ-8001) "
@@ -1109,7 +1162,10 @@ struct FlowRunner::Impl {
 
             // phy 完成后用**新**位流的 ERAM + 我们指定的 clock/depth 写回 sidecar
             // （批量 launch_runs 不写 compiled.cwc，而 capture 需要它）。
-            if (HasProbeMdn(owner->project_)) {
+            // 单步模式只有跑到 bitgen 时才算"位流完成"：只跑 place/route 时写 sidecar
+            // 会拿旧 bid 的几何去配新 db，反而制造不一致。
+            const bool phy_final_step = step.empty() || step == "bitgen";
+            if (phy_final_step && HasProbeMdn(owner->project_)) {
                 const jsonrpc::Json written =
                     gate_cwc_path.empty()
                         ? probe::WriteCompiledCwcAfterPhy(owner->project_)
@@ -1130,7 +1186,7 @@ struct FlowRunner::Impl {
 
             // ⚠ 只有**确实配了探针**（chip_debugger 下有非空 *.mdn）的工程才强制；
             //   没配探针的普通工程必须继续成功 —— 回归红线。
-            if (HasProbeMdn(owner->project_) && !watcher_built &&
+            if (phy_final_step && HasProbeMdn(owner->project_) && !watcher_built &&
                 (!watcher_present || watcher_net_count == 0)) {
                 // 优先带出 `KIT-*`：那才是"探针为什么没进去"的真正诊断。
                 // RUN-/PRJ-/ARC- 这些运行时噪声（start command / Waiting for run）只会误导。
@@ -1413,7 +1469,13 @@ struct FlowRunner::Impl {
     // -------------------------------------------------------------------------
     // worker
     // -------------------------------------------------------------------------
-    void Worker(const std::string& run_id, std::vector<std::string> stages, int jobs) {
+    void Worker(const std::string& run_id, std::vector<std::string> stages, int jobs,
+                const std::string& single_step) {
+        // 单步模式：只跑那一步（`launch_runs <run> -step <step>`），不再整条 run 重跑。
+        const bool syn_step = single_step == "read_design" || single_step == "opt_rtl" ||
+                              single_step == "opt_gate";
+        const bool phy_step = single_step == "opt_place" || single_step == "opt_route" ||
+                              single_step == "bitgen";
         const std::string dir = Join(owner->options_.flow_root, run_id);
         SetRunDir(dir);
         if (owner->options_.write_run_logs) (void)MakeDirs(dir);
@@ -1484,6 +1546,18 @@ struct FlowRunner::Impl {
                 return;
             }
 
+            // ⚠ 单步的标记清理必须发生在 **open_project 之前**：TD 在打开工程时就把
+            //   "这一步跑过没有"读进内存了，之后再删 `.end.f` 只会得到
+            //   `PRJ-8816 ERROR: Step read_design is already run.`（2026-11-22 实测：
+            //   同一会话里先 open_project 再 file delete 仍然报 PRJ-8816，
+            //   退出后先删标记再 open_project 就正常跑）。
+            if (!single_step.empty()) {
+                const std::string run_for_step = syn_step ? "syn_1" : "phy_1";
+                ClearStepMarkersFrom(run_for_step, single_step);
+                Emit("progress", "reset step " + single_step +
+                                     " (downstream steps cleared; earlier steps kept)");
+            }
+
             if (stages.size() == 1 && stages[0] == "route") {
                 if (Failure failure = RunRouteOnly(); failure.failed) {
                     FinishError(failure.reason);
@@ -1501,18 +1575,25 @@ struct FlowRunner::Impl {
                 for (const std::string& stage : stages) {
                     if (stage == "syn") {
                         SetStage("syn");
-                        if (Failure failure = RunStage("syn_1", jobs); failure.failed) {
+                        if (Failure failure =
+                                RunStage("syn_1", jobs, syn_step ? single_step : std::string());
+                            failure.failed) {
                             FinishError(failure.reason);
                             return;
                         }
                     } else if (stage == "phy") {
                         SetStage("phy");
-                        if (Failure failure = RunStage("phy_1", jobs); failure.failed) {
+                        if (Failure failure =
+                                RunStage("phy_1", jobs, phy_step ? single_step : std::string());
+                            failure.failed) {
                             FinishError(failure.reason);
                             return;
                         }
-                        Emit("progress", "save_best_bits");
-                        Record(RunCommand("save_best_bits", 300.0));
+                        // 单步跑 phy 的一步时不做 save_best_bits（位流还没生成完整）
+                        if (single_step.empty()) {
+                            Emit("progress", "save_best_bits");
+                            Record(RunCommand("save_best_bits", 300.0));
+                        }
                     }
                 }
             }
@@ -1655,6 +1736,11 @@ void FlowRunner::SetClockForTest(std::function<double()> clock) {
 }
 
 jsonrpc::Json FlowRunner::Start(const std::vector<std::string>& stages, int jobs) {
+    return StartInternal(stages, jobs, std::string());
+}
+
+jsonrpc::Json FlowRunner::StartInternal(const std::vector<std::string>& stages, int jobs,
+                                        const std::string& single_step) {
     std::lock_guard<std::mutex> start_lock(impl_->start_mutex);
     std::vector<std::string> normalised = NormaliseStages(stages);
     // ------------------------------------------------------------------
@@ -1665,7 +1751,10 @@ jsonrpc::Json FlowRunner::Start(const std::vector<std::string>& stages, int jobs
     // 5–10 分钟：insert_debugger 用的是旧的 gate 网表，watcher 不会重建。
     // 实测（干净上下文 agent，2026-11-21）：只跑 phy → 位流成功但 `cw/` 里没有 watcher。
     // 与其让它踩一次，不如这里直接补 syn，并在返回里说明（stagesRequested/stages）。
-    std::string auto_added = impl_->PromoteSynWhenProbesDirty(normalised);
+    // 单步模式下*只*跑那一步：不要因为"探针清单比 gate 网表新"就擅自补 syn，
+    // 否则右键 Read Design 会变成"syn 三步 + phy 全跑"，与用户预期完全相反。
+    std::string auto_added = single_step.empty() ? impl_->PromoteSynWhenProbesDirty(normalised)
+                                                  : std::string();
     if (normalised.empty()) {
         jsonrpc::Json out = jsonrpc::Json::object();
         out["ok"] = false;
@@ -1709,7 +1798,7 @@ jsonrpc::Json FlowRunner::Start(const std::vector<std::string>& stages, int jobs
 
     if (impl_->thread.joinable()) impl_->thread.join();
     const int effective_jobs = jobs > 0 ? jobs : 6;
-    impl_->thread = std::thread([this, run_id, normalised, effective_jobs]() {
+    impl_->thread = std::thread([this, run_id, normalised, effective_jobs, single_step]() {
         // ⚠⚠ 这个 catch-all 是**强制**的，不是为了"优雅"：
         //   异常一旦逃出 std::thread 的函数体就会 std::terminate()，而 Windows 上
         //   terminate 走 __fastfail(FAST_FAIL_FATAL_APP_EXIT) -> 进程以 0xC0000409 崩掉。
@@ -1717,7 +1806,7 @@ jsonrpc::Json FlowRunner::Start(const std::vector<std::string>& stages, int jobs
         //   td::TdSession::ReadUntil 会 throw TdError（见 PYTHON-BUGS P-16）。
         //   后台线程 + 外部中断的场景（stall 看门狗、heartbeat、未来任何 worker）同理。
         try {
-            impl_->Worker(run_id, normalised, effective_jobs);
+            impl_->Worker(run_id, normalised, effective_jobs, single_step);
         } catch (const std::exception& exc) {
             impl_->SafeFinishError(std::string("unexpected: ") + exc.what());
         } catch (...) {
@@ -1774,11 +1863,17 @@ jsonrpc::Json FlowRunner::StartFromStep(const std::string& step, bool force, int
             return out;
         }
     }
-    // Reset run：清掉该 run 及其下游的步骤标记，再从该 run 重新跑。
-    impl_->ResetDownstreamOf(found->run);
-    jsonrpc::Json started = Start({std::string(found->run) == "syn_1" ? "syn" : "phy"}, jobs);
+    // 单步语义（与 TD GUI 的 "Run this step" 一致）：
+    //   只清"这一步及其下游"的步骤标记 -> `launch_runs <run> -step <step>` 只跑这一步。
+    // ⚠ 不能像以前那样 reset 整条 run 再 launch：那会把下游步骤一起重跑（实测用户
+    //   右键 Read Design 时 syn 三步全跑），下游也不会显示 not run。
+    // 前面的步骤产物保留（Read Design 的产物是 Opt RTL 的输入），下游 run 由
+    // ClearStepMarkersFrom 里的 ResetDownstreamPhy 作废。
+    jsonrpc::Json started =
+        StartInternal({std::string(found->run) == "syn_1" ? "syn" : "phy"}, jobs, found->name);
     started["step"] = std::string(found->name);
     started["force"] = force;
+    started["singleStep"] = true;
     return started;
 }
 

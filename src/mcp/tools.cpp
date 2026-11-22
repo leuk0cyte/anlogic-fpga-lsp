@@ -140,9 +140,9 @@ const std::vector<Tool>& AllTools() {
              "flow_run", "flow"},
         Tool{"fpga_flow_run_step",
              "Run or reset one GUI flow step",
-             "Per-step control that mirrors the TD GUI Flow view: right-click a step -> Run (skip when it already finished) or Reset run (always rerun from that step). Steps map to the GUI list: read_design / opt_rtl / opt_gate (syn) and opt_place / opt_route / bitgen (phy).\n"
-             "Preconditions: --allow-flow; no other flow running. Cost: same as the owning stage (syn ~2-5 min, phy 5-15 min); returns immediately (async) - call fpga_flow_wait in the SAME session.\n"
-             "Behaviour: force:false and the step already has its .end marker -> {ok:true, skipped:true}; force:true -> clears that step and every downstream step marker (running syn resets the three phy steps to not-run) and reruns the owning stage.\n"
+             "Per-step control that mirrors the TD GUI Flow view: right-click a step -> Run (skip when it already finished) or Reset and Run (rerun just that step). Steps map to the GUI list: read_design / opt_rtl / opt_gate (syn) and opt_place / opt_route / bitgen (phy).\n"
+             "Preconditions: --allow-flow; no other flow running. Cost: one TD step (read_design seconds, opt_rtl/opt_gate ~1 min, place/route/bitgen minutes); returns immediately (async) - call fpga_flow_wait in the SAME session.\n"
+             "Behaviour: force:false and the step already has its .end marker -> {ok:true, skipped:true}; force:true -> clears ONLY that step and the steps after it (earlier steps keep their products), then runs `launch_runs <run> -step <step>` - so exactly one step runs and the downstream steps show as not run. A syn step also invalidates the whole phy run (markers, watcher sidecar, bitstream).\n"
              "Example: {\"step\":\"opt_gate\",\"force\":false}",
              Schema({{"project", Str("Optional .al path, project directory, or project name. Default: active project.")},
                                      {"step", Str("GUI step name: read_design / opt_rtl / opt_gate / opt_place / opt_route / bitgen.")},

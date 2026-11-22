@@ -266,11 +266,11 @@ class FlowController {
             callArgs: [{ step, force: force === true, jobs }],
             header: `▶ ${mode} ${name} (${step}${force ? ', force' : ''}, jobs=${jobs})`,
             busyHint: 'An FPGA flow is already running on the server.',
-            // Reset run 的语义是"整条 run 重跑"（GUI 的 reset run 也一样）：
-            // 先清掉本 run 的全部步骤标记，再逐步跑完 —— 所以下游两步会先变 not run，
-            // 完成后再变回 done。把这句话写进输出通道，省得以为"reset 没生效"。
+            // Reset run 的语义（2026-11-22 按用户反馈改成单步）：只清掉"这一步及其下游"
+            // 的步骤标记，然后 `launch_runs <run> -step <step>` **只跑这一步**；
+            // 前面的步骤产物保留（后续步骤需要它们），所以下游两步会一直显示 not run。
             note: force
-                ? `${name}: ${runName} is reset as a whole - the step marks are cleared first and light up again as each step finishes.`
+                ? `${name}: only this step runs - ${runName} step marks from ${step} on are cleared first (earlier steps keep their products).`
                 : undefined,
         });
     }

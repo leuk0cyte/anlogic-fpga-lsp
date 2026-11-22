@@ -553,19 +553,20 @@ exports.run = async function () {
                 opt_rtl: markerTime('.opt_rtl.end.f'),
                 opt_gate: markerTime('.opt_gate.end.f'),
             };
-            check('reset run re-ran the whole syn run (all three step marks rewritten)',
-                after.read_design > before.read_design
-                && after.opt_rtl > before.opt_rtl
-                && after.opt_gate > before.opt_gate,
-                `${elapsed}s  opt_gate ${before.opt_gate} -> ${after.opt_gate}`);
+            check('reset and run re-ran ONLY the selected step',
+                after.read_design > before.read_design,
+                `${elapsed}s  read_design ${before.read_design} -> ${after.read_design}`);
+            check('downstream steps are cleared to "not run" (no re-run)',
+                after.opt_rtl === 0 && after.opt_gate === 0,
+                `opt_rtl=${after.opt_rtl} opt_gate=${after.opt_gate}`);
             check('FPGA Flow output shows the step run header',
                 outputLines.some((line) => /reset run Read Design/.test(line)),
                 outputLines.filter((line) => /reset run|Read Design/.test(line)).slice(0, 2).join(' | '));
             check('FPGA Flow output names the running extension version',
                 outputLines.some((line) => /fpga-lsp \d+\.\d+\.\d+/.test(line)),
                 outputLines.find((line) => /fpga-lsp \d+\.\d+\.\d+/.test(line)) || 'no version tag');
-            check('FPGA Flow output shows per-step progress',
-                outputLines.some((line) => /Completed steps|Optimize Gate/.test(line)),
+            check('FPGA Flow output shows the step run progress',
+                outputLines.some((line) => /run step read_design|Read Design finished|reset step/.test(line)),
                 outputLines.slice(-3).join(' | '));
             check('flow controller returns to idle after the run',
                 !!controller && controller.active === undefined, '');
