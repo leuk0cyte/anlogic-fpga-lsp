@@ -15,6 +15,7 @@
 const net = require('net');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 const vscode = require('vscode');
 const { LanguageClient, TransportKind } = require('vscode-languageclient/node');
 
@@ -437,6 +438,25 @@ function activate(context) {
     };
     renderAgentBadge();
 
+    // P2-C (audit §7 #7): digest of the last reports payload the UI painted. `reportsChanged`
+    // pushes arrive in bursts; an identical payload must not repaint the tree / status line.
+    let lastReportsDigest = '';
+    const reportsDigest = (payload) => {
+        try {
+            return crypto.createHash('sha1').update(JSON.stringify(payload || null)).digest('hex');
+        } catch (_) {
+            return '';
+        }
+    };
+    /** Status-bar WNS from a `summary` payload we already have (no extra round trip). */
+    const applyReportsStatus = (summary) => {
+        const ps = summary && summary.flowStatus && summary.flowStatus.setup
+            ? summary.flowStatus.setup.wns_ps
+            : undefined;
+        statusState.wns = Number.isFinite(Number(ps)) ? (Number(ps) / 1000).toFixed(3) : undefined;
+        renderStatus();
+    };
+
     const refreshStatus = async () => {
         try {
             const info = await getProjectInfo();
@@ -448,16 +468,9 @@ function activate(context) {
         renderStatus();
         try {
             const summary = await reportsService.getSummary();
-            const ps = summary && summary.flowStatus && summary.flowStatus.setup
-                ? summary.flowStatus.setup.wns_ps
-                : undefined;
-            if (Number.isFinite(Number(ps))) {
-                statusState.wns = (Number(ps) / 1000).toFixed(3);
-            } else {
-                statusState.wns = undefined;
-            }
+            lastReportsDigest = reportsDigest(summary);
+            applyReportsStatus(summary);
         } catch (_) { /* no reports yet */ }
-        renderStatus();
     };
     renderStatus();
 
@@ -714,6 +727,12 @@ function activate(context) {
         }
     };
 
+    // P2-C (audit 2026-11-22/perf2 §7 #4): this report is debug plumbing: one
+    // `fpgalsp.debugHighlight` RPC + one write of `logs/highlight.txt` **per opened HDL file**
+    // (50 files = 50 RPC + 50 disk writes on the project volume). It is now opt-in
+    // (`fpgaLsp.debug.highlightReport`, default false); the command always writes on demand.
+    const highlightReportEnabled = () => config().get('debug.highlightReport') === true;
+
     const writeHighlightReport = async (document) => {
         if (!document || !/\.(v|vh|sv|svh|vhd|vhdl)$/i.test(document.uri.path)) return;
         try {
@@ -759,6 +778,8 @@ function activate(context) {
     for (const document of vscode.workspace.textDocuments) ensureHdlLanguage(document);
     context.subscriptions.push(vscode.workspace.onDidOpenTextDocument((document) => {
         ensureHdlLanguage(document);
+        // P2-C: no RPC and no disk write per opened file unless the debug setting says so.
+        if (!highlightReportEnabled()) return;
         setTimeout(() => writeHighlightReport(document).catch(() => undefined), 2500);
     }));
 
@@ -1279,7 +1300,13 @@ function activate(context) {
 
     const readReports = async () => {
         try {
-            return await rpc.request(METHODS.reports, {}) || {};
+            // P2-C (audit §7 #6): `compareStrategies` only needs `strategies.available`, which
+            // the server decorates onto **every** payload (src/server/commands.cpp: the
+            // `strategies` / `flow` / `project` block is added after the section mask). Asking
+            // for the full report cost 1.05 MB + 1.6 ms `JSON.parse` for a handful of names;
+            // `{section:'summary'}` answers the same list in ~1.7 KB. Old servers that ignore
+            // `section` still return the full report, so this degrades to the previous behaviour.
+            return await reportsService.getSummary() || {};
         } catch (_) {
             return {};
         }
@@ -1956,6 +1983,67 @@ function activate(context) {
         }));
     }
 
+    // ------------------------------------------------- P2-C: coalesced reports refresh
+    // `fpgaLsp/reportsChanged` used to fan out **per event**: one `fpgalsp.info` round trip
+    // (refreshStatus), one reports tree fetch and one panel refresh -- only the panel half was
+    // debounced. A flow that pushes N notifications therefore made ~2N requests. Now the whole
+    // burst collapses into one debounced refresh that fetches `{section:'summary'}` **once**,
+    // feeds the tree + status line from that payload, and skips every repaint when the payload
+    // is byte-identical to what the UI already shows.
+    const REPORTS_REFRESH_DEBOUNCE_MS = 200; // > the panel's own 150 ms window
+    let reportsRefreshTimer;
+    let reportsRefreshRunning = false;
+
+    const refreshReportsOnce = async () => {
+        reportsService.invalidate();
+        let summary;
+        try {
+            summary = await reportsService.getSummary();
+        } catch (_) {
+            summary = undefined;
+        }
+        if (!summary || typeof summary !== 'object') {
+            // Server refused the summary: fall back to the slow path, still once per burst.
+            refreshStatus().catch(() => undefined);
+            return;
+        }
+        const digest = reportsDigest(summary);
+        if (digest && digest === lastReportsDigest) {
+            diag('reportsChanged: payload unchanged, no repaint');
+            return;
+        }
+        lastReportsDigest = digest;
+        // Tree + status line read the payload we just fetched (no extra request, one parse).
+        if (reportsTreeProvider) reportsTreeProvider.applyReports(summary);
+        applyReportsStatus(summary);
+        // A visible panel repaints from the same payload; the sections it shows are re-fetched
+        // through the shared single-flight service (its own 150 ms debounce still applies).
+        if (reportsPanel && reportsPanel.visible) {
+            reportsPanel.requestRefresh({ force: true, summary });
+        }
+    };
+
+    const scheduleReportsRefresh = () => {
+        if (reportsRefreshTimer) clearTimeout(reportsRefreshTimer);
+        reportsRefreshTimer = setTimeout(() => {
+            reportsRefreshTimer = undefined;
+            if (reportsRefreshRunning) return;
+            reportsRefreshRunning = true;
+            refreshReportsOnce().catch(() => undefined).finally(() => { reportsRefreshRunning = false; });
+        }, REPORTS_REFRESH_DEBOUNCE_MS);
+        if (reportsRefreshTimer && typeof reportsRefreshTimer.unref === 'function') {
+            reportsRefreshTimer.unref();
+        }
+    };
+    context.subscriptions.push({
+        dispose: () => {
+            if (reportsRefreshTimer) {
+                clearTimeout(reportsRefreshTimer);
+                reportsRefreshTimer = undefined;
+            }
+        },
+    });
+
     // ------------------------------------------------------------------- startup
 
     client.start().then(async () => {
@@ -1982,27 +2070,18 @@ function activate(context) {
                 statusState.flow = done ? '' : ((event && (event.stage || 'running')) || 'running');
                 renderStatus();
             });
-            // D2: the server's report store changed (flow wrote new reports / a watched report
-            // file was touched). Drop the cached payloads so the next fetch is fresh, and repaint
-            // **only a visible panel** -- and only once per burst (the panel debounces 150 ms).
-            // Hidden panels re-read when they are opened, so there is nothing to do for them.
+            // D2 + P2-C: the server's report store changed (flow wrote new reports / a watched
+            // report file was touched). Every notification only arms a single 200 ms debounce;
+            // the refresh itself runs once per burst (invalidate -> one `summary` fetch -> tree,
+            // status line and visible panel all read the same payload). Hidden panels re-read
+            // when they are opened, so they are not touched here.
             let reportsChangedCount = 0;
             client.onNotification(METHODS.reportsChanged, () => {
                 reportsChangedCount += 1;
-                reportsService.invalidate();
-                if (reportsPanel && reportsPanel.visible) {
-                    reportsPanel.requestRefresh({ force: true });
-                }
-                // S3: the Reports *tree* used to keep showing stale data forever -- only the
-                // webview was repainted. The tree goes through the same single-flight service,
-                // so this cannot double the request count.
-                if (reportsTreeProvider) {
-                    reportsTreeProvider.refresh().catch(() => undefined);
-                }
-                refreshStatus().catch(() => undefined);
                 if (reportsChangedCount <= 3 || reportsChangedCount % 20 === 0) {
                     diag(`reportsChanged (#${reportsChangedCount})`);
                 }
+                scheduleReportsRefresh();
             });
             // Phase 2: the server tells us when its HDL index changed. Targeted updates first;
             // an unknown/newer payload shape degrades to an immediate full refresh.
@@ -2039,7 +2118,8 @@ function activate(context) {
             probeTree.refresh().then((state) => { renderProbeItem(state); return state; }),
         ]);
         const activeDocument = vscode.window.activeTextEditor && vscode.window.activeTextEditor.document;
-        if (activeDocument) writeHighlightReport(activeDocument).catch(() => undefined);
+        // P2-C: the start-up highlight report is debug-only (setting defaults to false).
+        if (activeDocument && highlightReportEnabled()) writeHighlightReport(activeDocument).catch(() => undefined);
     }).catch((err) => {
         const message = (err && err.message) || String(err);
         diag('START FAILED: ' + (err && err.stack ? err.stack : message));

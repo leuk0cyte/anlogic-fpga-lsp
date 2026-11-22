@@ -1,4 +1,4 @@
-# 交付状态（当前：2026-11-22，扩展 0.28.1）
+# 交付状态（当前：2026-11-23，扩展 0.29.0）
 
 ## 构建与测试
 
@@ -6,7 +6,7 @@
 | --- | --- |
 | **全新目录干净构建** | configure 29 s → build 3.3 min → **844 个目标全部成功**（Release + 全量 LTO）；无 LTO 的 `windows-msvc-dev` 全新目录 **56 s**（2026-11-20 实测；增量构建见 build.md） |
 | **`ctest` 全量** | **71/71 通过**（其中 `unit` 46、`e2e` 5、`td` 5，其余为 `formatgate`/`lintgate`/`gate`/`generator`/`mcp`/`docs`/`parity` 门禁）；`docs_clang_tidy` **默认不注册**（`-DFPGA_LSP_ENABLE_TIDY_GATE=ON` 才加入，约 +145 s）；preset 默认 **8 路并行**，实测约 **90 s** |
-| **原生产物** | `build/bin/fpgalsp-native.exe`（0.28.1，**7,066,112 B**，全量 LTCG；SHA256 `9928CD4C…DE66B6`） |
+| **原生产物** | `build/bin/fpgalsp-native.exe`（0.29.0，**7,073,792 B**，全量 LTCG；SHA256 `51A2DB65…02C53B`） |
 | **单元测试规模** | 46 个 gtest target |
 
 > 构建/测试的并行度分析（为什么 192 线程帮不上忙、时间精确花在哪、日常该用哪个 preset）见
@@ -1791,3 +1791,35 @@ TD 自己的 `td_*.log/.logw`、`minidump-*.dmp` 仍由 `TdSession` 归位到 `<
 > 2026-11-22 调整：clang-tidy 棘轮门禁（`docs_clang_tidy`，约 +145 s）**默认不再进 CTest**，
 > 由 `-DFPGA_LSP_ENABLE_TIDY_GATE=ON` 显式注册（或直接跑 `tools/audit/clang_tidy_gate.py`）。
 > 因此默认 `ctest` 回到 **71/71**；需要静态分析回归时按 `doc/quality.md` 的命令打开。
+
+---
+
+## 第四十二轮（2026-11-22/23，0.29.0）：端到端性能优化（团队模式，实测驱动）
+
+三个子 agent 独立审计（`doc/audit/2026-11-22/perf2/`：LSP-HOTPATH / MCP-TD / PLUGIN-E2E，
+全部实测、同机同构建），随后直接落地 10 项优化。汇总与改前/改后数字见
+[`perf2/README.md`](audit/2026-11-22/perf2/README.md)。
+
+**基线实测**：一次真实按键后端 **9.6 ms**（CorpusAlpha）/ **10.7 ms**（CorpusBeta，52 文件）；
+MCP 传输层只有 0.075 ms；插件一次按键只发 1 条 didChange（239 B），但后端回 31.8–63.6 KB 相同诊断；
+一次保存 24 条 / 78 KB；`fpga_flow_status` 20.91 ms；reports 全量 1.10 MB。
+
+**落地项（改前 → 改后，实测）**
+- 诊断"内容未变即不发"（`PublishDiagnostics` 在 sanitize 前用 `SameDiagnosticList` 短路）：
+  didChange 1.73 ms/31.7 KB → **0.56 ms/0 B**；CorpusBeta 3.61 ms/62.5 KB 同类下降；保存不再整工程重播
+- `fpga_flow_status` 改走 ReportStore（`kArtifacts` 掩码，输出逐字段不变）：**20.91 → 0.48 ms**
+- `fpga_references` 32 项 generation-keyed LRU：**9.80 → 0.54 ms**
+- `workspace_symbols` limit 下推：**5.86 → 4.16 ms**（剩余为索引 O(N) 扫描，记入待办）
+- `WrapToolResult` 默认档去掉整树深拷贝
+- documentSymbol 结果缓存（索引快照身份 + 文档版本）：同版本重复 **1.13 → 0.84 ms**
+- 插件：删除 `debugHighlight` 调试遗留（每文件 1 RPC + 1 次写盘）；reports 走 `summary` 分节
+  （**1.10 MB → 1.7 KB**）；reportsChanged 合并去抖 + 内容摘要短路（6 事件 → **1 请求/0 重绘**）；
+  moduleTree 摘要短路（保留展开状态）
+
+**未做（下一轮）**：semanticTokens 每键全量 tokenize（5.4 ms，占按键 51%，需行级增量）、
+completion 候选缓存、TD 设备表落盘（冷调用 574 → ~170 ms）、保存后 stamp 校验、worker 池 2→4。
+
+**验证**：dev/release `ctest` **71/71**；插件 `node test/run.js` **64/64**；
+新测试：`BridgeTest.FlowStatusArtifactsSurviveTheReportStorePath`、
+`WorkspaceSymbolsWindowMatchesFullList`、`ReferencesCacheIsGenerationKeyed`、
+`McpResultRepresentationTest.DefaultTierTruncatesLargeArrayPayload / StructuredTierKeepsFullPayloadUnchanged`。

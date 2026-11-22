@@ -132,7 +132,11 @@ class ReportsPanel {
      *
      * D1: paints the `summary` skeleton first, then loads the table sections the visible tabs
      * need (qor + area eagerly, timing only once its tab is opened) and patches them in.
-     * @param {{force?: boolean}} [options]
+     *
+     * P2-C: `options.summary` lets the caller pass a payload it already fetched (the
+     * `reportsChanged` handler does exactly that), so a burst refresh costs **one**
+     * `fpgaLsp/reports` request instead of two.
+     * @param {{force?: boolean, summary?: object}} [options]
      */
     async refresh(options) {
         if (!this.panel) return undefined;
@@ -146,17 +150,21 @@ class ReportsPanel {
         const token = source ? source.token : undefined;
 
         let reports;
-        try {
-            reports = await this.reportsService.fetch({ section: 'summary', force, token });
-        } catch (err) {
-            if (err && err.cancelled) {
-                this.stats.cancelled += 1;
-                return this.reports; // superseded by a newer refresh
+        if (opts.summary && typeof opts.summary === 'object') {
+            reports = opts.summary;
+        } else {
+            try {
+                reports = await this.reportsService.fetch({ section: 'summary', force, token });
+            } catch (err) {
+                if (err && err.cancelled) {
+                    this.stats.cancelled += 1;
+                    return this.reports; // superseded by a newer refresh
+                }
+                reports = {
+                    ok: false,
+                    error: `fpga-lsp reports request failed: ${err && err.message ? err.message : String(err)}`,
+                };
             }
-            reports = {
-                ok: false,
-                error: `fpga-lsp reports request failed: ${err && err.message ? err.message : String(err)}`,
-            };
         }
         if (seq !== this._seq || !this.panel) return reports; // closed / superseded while awaiting
         this.reports = reports && typeof reports === 'object' ? reports : { ok: false };

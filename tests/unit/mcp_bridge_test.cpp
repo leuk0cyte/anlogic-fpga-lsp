@@ -19,6 +19,7 @@
 #include <memory>
 #include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "mcp/bridge.h"
@@ -1158,4 +1159,140 @@ TEST_F(BridgeTest, ResourcesExposeReadOnlyProjectViews) {
     ASSERT_TRUE(files.has_value());
     EXPECT_NE(files->find("\"ok\""), std::string::npos);
     EXPECT_FALSE(bridge->ReadResource("fpgalsp://project/unknown").has_value());
+}
+
+// ------------------------------------------------- P2-B：MCP 侧性能优化的行为锁
+
+// ①`flow_status` 改走 ReportStore 的 kArtifacts 快照（不再每次全量 BuildReports）。
+// 掩码收窄必须是**纯性能**改动：在临时副本上造一个 runs 目录后，artifacts 段仍要给出
+// runs/bit/route_db，而且快照复用不能改内容（两次调用逐字节一致）。
+TEST_F(BridgeTest, FlowStatusArtifactsSurviveTheReportStorePath) {
+    TempProjectCopy copy;
+    const fs::path runs = fs::path(copy.Root()) / "demo_project_Runs";
+    std::error_code ec;
+    fs::create_directories(runs / "syn_1", ec);
+    fs::create_directories(runs / "phy_1", ec);
+    {
+        std::ofstream bit(runs / "phy_1" / "demo_project_pr.bit", std::ios::binary);
+        bit << "BIT";
+        std::ofstream db(runs / "phy_1" / "demo_project_pr.db", std::ios::binary);
+        db << "DB";
+    }
+
+    fpgalsp::mcp::BridgeOptions options;
+    options.root = copy.Root();
+    fpgalsp::mcp::Bridge bridge(options);
+
+    const Json first = bridge.Call("flow_status", Json::object());
+    ASSERT_TRUE(first.at("ok").get<bool>()) << first.dump(1);
+    const Json& artifacts = first.at("artifacts");
+    ASSERT_TRUE(artifacts.is_object());
+    ASSERT_TRUE(artifacts.at("runs").is_array()) << artifacts.dump(1);
+    ASSERT_EQ(artifacts.at("runs").size(), 2u) << "syn_1 / phy_1 都该被列出来";
+    // ListSubdirectories 已排序 -> phy_1 在前
+    EXPECT_EQ(artifacts.at("runs").at(0).at("name").get<std::string>(), "phy_1");
+    EXPECT_TRUE(artifacts.at("bit").at("exists").get<bool>());
+    EXPECT_NE(artifacts.at("bit").at("path").get<std::string>().find(".bit"), std::string::npos);
+    EXPECT_TRUE(artifacts.at("route_db").at("exists").get<bool>());
+
+    // 第二次调用命中 ReportStore 快照：artifacts 必须逐字节一致（快照不可变）
+    const Json second = bridge.Call("flow_status", Json::object());
+    EXPECT_EQ(second.at("artifacts").dump(), artifacts.dump());
+}
+
+// ②`workspace_symbols` 把 offset/limit 下推到扫描层之后，分页窗口必须与"全量结果的对应
+// 区间"逐字段相同，`total` 仍是命中总数（不是本页条数），越界 offset 给空页但保留
+// total/nextOffset（分页契约）。
+TEST_F(BridgeTest, WorkspaceSymbolsWindowMatchesFullList) {
+    Json all_args = Json::object();
+    all_args["query"] = "";
+    all_args["limit"] = 1000;
+    const Json all = Call("workspace_symbols", all_args);
+    ASSERT_TRUE(all.at("ok").get<bool>());
+    const Json& full = all.at("symbols");
+    ASSERT_GT(full.size(), 12u) << "语料符号数太少，验证不了窗口";
+
+    struct Window {
+        int limit;
+        int offset;
+    };
+    for (const Window window : {Window{1, 0}, Window{3, 2}, Window{7, 5}, Window{40, 9}}) {
+        Json args = Json::object();
+        args["query"] = "";
+        args["limit"] = window.limit;
+        args["offset"] = window.offset;
+        const Json page = Call("workspace_symbols", args);
+        ASSERT_TRUE(page.at("ok").get<bool>()) << page.dump(1);
+
+        const std::size_t begin = static_cast<std::size_t>(window.offset);
+        const std::size_t expected =
+            begin >= full.size()
+                ? 0u
+                : std::min<std::size_t>(static_cast<std::size_t>(window.limit), full.size() - begin);
+        ASSERT_EQ(page.at("symbols").size(), expected);
+        EXPECT_EQ(page.at("total").get<std::size_t>(), full.size());
+        EXPECT_EQ(page.at("nextOffset").get<std::size_t>(), begin + expected);
+        for (std::size_t i = 0; i < expected; ++i) {
+            EXPECT_EQ(page.at("symbols").at(i).dump(), full.at(begin + i).dump())
+                << "offset=" << window.offset << " i=" << i;
+        }
+    }
+
+    Json beyond = Json::object();
+    beyond["query"] = "";
+    beyond["limit"] = 5;
+    beyond["offset"] = 100000;
+    const Json empty_page = Call("workspace_symbols", beyond);
+    ASSERT_TRUE(empty_page.at("ok").get<bool>());
+    EXPECT_TRUE(empty_page.at("symbols").empty());
+    EXPECT_EQ(empty_page.at("total").get<std::size_t>(), full.size());
+    EXPECT_EQ(empty_page.at("nextOffset").get<std::size_t>(), 100000u);
+}
+
+// ③`references` 32 项 LRU 缓存。必须：
+//   (a) 命中路径与冷路径逐字节一致；
+//   (b) include_declaration 不同的请求不串味；
+//   (c) 索引 generation 变化后立刻失效（否则会返回旧引用 —— 这是这条缓存唯一的真风险）。
+TEST_F(BridgeTest, ReferencesCacheIsGenerationKeyed) {
+    TempProjectCopy copy;
+    fpgalsp::mcp::BridgeOptions options;
+    options.root = copy.Root();
+    fpgalsp::mcp::Bridge bridge(options);
+
+    Json arguments = Json::object();
+    arguments["file"] = "src/system/pwm_gen.v";
+    arguments["line"] = 30;    // `module pwm_gen #(`（1-based）
+    arguments["column"] = 8;   // 指向模块名
+    const Json cold = bridge.Call("references", arguments);
+    ASSERT_TRUE(cold.at("ok").get<bool>()) << cold.dump(1);
+    const std::size_t cold_count = cold.at("references").size();
+    ASSERT_GE(cold_count, 2u) << "定义 + top.v 里的例化，至少 2 条";
+
+    // (a) 同一请求第二次 = 缓存命中，结果必须逐字节一致
+    const Json hit = bridge.Call("references", arguments);
+    EXPECT_EQ(hit.dump(), cold.dump());
+
+    // (b) 不同 include_declaration 必须是不同条目
+    Json without_decl = arguments;
+    without_decl["include_declaration"] = false;
+    const Json no_decl = bridge.Call("references", without_decl);
+    EXPECT_LE(no_decl.at("references").size(), cold_count);
+    EXPECT_EQ(bridge.Call("references", without_decl).dump(), no_decl.dump());
+    // 回到 true：仍必须是原来那份（说明没被 false 那条覆盖）
+    EXPECT_EQ(bridge.Call("references", arguments).dump(), cold.dump());
+
+    // (c) 索引变化 -> generation 推进 -> 缓存失效。
+    // 在 top.v 末尾追加一个例化 pwm_gen 的新模块（合法 Verilog；临时副本，不影响别人）。
+    {
+        const fs::path top_v = fs::path(copy.Root()) / "src" / "top.v";
+        std::ofstream append(top_v, std::ios::app);
+        append << "\nmodule pwm_ref_probe(input clk);\n"
+                  "  pwm_gen u_pwm_ref_probe (.clk(clk));\n"
+                  "endmodule\n";
+    }
+    // 没有 watcher 时 IndexService 按 250 ms TTL 做 stamp 懒校验，要跨过一个窗口。
+    std::this_thread::sleep_for(std::chrono::milliseconds(400));
+    const Json refreshed = bridge.Call("references", arguments);
+    EXPECT_GT(refreshed.at("references").size(), cold_count)
+        << "文件变了以后 references 必须重算，不能命中旧 generation 的缓存";
 }

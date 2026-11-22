@@ -486,6 +486,12 @@ private:
     std::map<std::string, std::map<std::string, lsp::DiagnosticList>> diag_analysis_;
     std::map<std::string, lsp::DiagnosticList> diag_lint_;
     std::map<std::string, std::set<std::string>> published_;
+    // 每键去抖：`PublishDiagnostics` 的**输入**上一次发布的内容（uri -> 诊断）。
+    // 为什么不是比较 wire JSON：sanitize + ToJson 本身就是 1.5–3.4 ms/键的开销
+    // （CorpusBeta 实测），要在**生成之前**就用 SameDiagnosticList 短路掉。
+    // last_published_input_known_ 区分"从未发布过"（首次必须发，哪怕诊断为空）。
+    std::map<std::string, lsp::DiagnosticList> last_published_input_;
+    std::set<std::string> last_published_input_known_;
     // A9：pull diagnostics 的数据源 —— 服务端**最近一次 push publishDiagnostics**
     // 发出的 wire 形状数组（uri -> diagnostics[]）。在 PublishDiagnostics 里同步写，
     // textDocument/diagnostic / workspace/diagnostic 只读它（push 行为一行未改）。
@@ -538,6 +544,17 @@ private:
     // 索引构建只读 DocumentStore 的快照 / 磁盘，不在 worker 线程里跑（handler 很轻）。
     std::mutex hdl_mutex_;
     std::map<std::string, HdlIndexEntry> hdl_cache_;
+    // documentSymbol 结果缓存（P2-A 实测：每键无条件重算 1.12 ms / 24.9 KB）。
+    // 键 = 文件路径；命中条件 = 索引快照是同一个 shared_ptr（同一代）+ 文档版本相同。
+    // 只缓存 `features::DocumentSymbols` 的纯输出，不缓存诊断/lint 等有副作用的东西。
+    struct DocumentSymbolCacheEntry {
+        std::shared_ptr<const hdl::HdlIndex> index;
+        std::optional<int64_t> version;
+        std::size_t text_size = 0;  // 未打开文档时 version 为空，靠 size 兜底
+        std::shared_ptr<const Json> json;
+    };
+    std::mutex document_symbol_mutex_;
+    std::map<std::string, DocumentSymbolCacheEntry> document_symbol_cache_;
     // 解析缓存按 (path, 内容哈希)，跨工程重建也能命
     std::unique_ptr<hdl::ParseCache> hdl_parse_cache_;
 

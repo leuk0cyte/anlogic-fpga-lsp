@@ -579,14 +579,17 @@ Json McpServer::TruncatePayload(const Json& value, std::size_t limit,
 }
 
 Json McpServer::WrapToolResult(const Json& value_in, std::size_t offset_hint) const {
-    Json value = value_in;
-    // Python: 非 dict/list 的结果包成 {"ok": true, "result": value}
-    if (!value.is_object() && !value.is_array()) {
+    // P2-B④：不再无条件 `Json value = value_in;`（每次调用都整树深拷贝一份结果）。
+    // 载荷只有在"需要改它"的两条分支里才拷贝：非对象/数组的包装、超限截断。
+    // 常见路径（对象/数组、未超限）现在连一次拷贝都不付：`value` 是对 value_in 的引用。
+    Json owned;  // 非 null = 我们改过载荷，`value` 指向它
+    if (!value_in.is_object() && !value_in.is_array()) {
         Json wrapped = Json::object();
         wrapped["ok"] = true;
-        wrapped["result"] = std::move(value);
-        value = std::move(wrapped);
+        wrapped["result"] = value_in;
+        owned = std::move(wrapped);
     }
+    const Json& value = owned.is_null() ? value_in : owned;
 
     // P-B1：只发一份数据。
     //   默认档：紧凑 JSON 放进 text（旧客户端照旧读 text；JSON 空白无语义）。
@@ -604,17 +607,17 @@ Json McpServer::WrapToolResult(const Json& value_in, std::size_t offset_hint) co
         // （纯大字符串/大对象）才回退到旧的"整份丢弃"。
         Json truncated = TruncatePayload(value, kMaxToolResultBytes, offset_hint);
         if (!truncated.is_null()) {
-            value = std::move(truncated);
+            owned = std::move(truncated);
         } else {
             Json too_large = Json::object();
             too_large["ok"] = false;
             too_large["error"] = "Tool result too large; pass a smaller limit";
             too_large["truncated"] = true;
-            value = std::move(too_large);
+            owned = std::move(too_large);
         }
-        text = value.dump(-1, ' ', false, Json::error_handler_t::replace);
+        text = owned.dump(-1, ' ', false, Json::error_handler_t::replace);
         // 裁剪后的载荷仍可能偏大：再走一次协商档判断（结构化时 text 只是摘要）。
-        if (structured_payload && value.is_object()) text = SummaryOf(value);
+        if (structured_payload && owned.is_object()) text = SummaryOf(owned);
     }
 
     Json content = Json::array();
@@ -626,8 +629,15 @@ Json McpServer::WrapToolResult(const Json& value_in, std::size_t offset_hint) co
     Json out = Json::object();
     out["content"] = std::move(content);
     out["isError"] = false;
-    if (structured_payload && value.is_object()) {
-        out["structuredContent"] = std::move(value);
+    if (structured_payload) {
+        // 未截断（且不是原始值包装）时 `owned` 为空、载荷就是 value_in，这里付唯一必需要
+        // 的那一份拷贝（与旧实现在这条分支上的拷贝次数相同）；截断后 `owned` 是我们刚
+        // 建的载荷，直接 move 进响应（零拷贝）。
+        if (!owned.is_null()) {
+            if (owned.is_object()) out["structuredContent"] = std::move(owned);
+        } else if (value.is_object()) {
+            out["structuredContent"] = value;
+        }
     }
     return out;
 }

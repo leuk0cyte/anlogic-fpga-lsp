@@ -25,6 +25,7 @@
 | --- | --- |
 | [doc/audit/2026-11-22/](audit/2026-11-22/SUMMARY.md) | **独立审计（团队模式，2026-11-22）**：5 份子审计（后端对等性 / 后端健康度 / 插件 / 文档 / 真机运行期）+ 汇总与 0.22.0 修复记录 |
 | [doc/audit/2026-11-22/static/](audit/2026-11-22/static/README.md) | **静态分析复审（0.26.0，团队模式）**：性能 / 安全 / 现代化三份独立报告（clang-tidy 67 TU 全量证据） |
+| [doc/audit/2026-11-22/perf2/](audit/2026-11-22/perf2/README.md) | **端到端性能审计（0.28.1 → 0.29.0，团队模式）**：LSP 热路径 / MCP+TD / 插件三份实测报告 + 10 项优化前后对比 |
 | [doc/audit/2026-11-18/](audit/2026-11-18/) | Phase B 前基线、B1–B10 阶段报告、Python↔C++ 对拍、性能基准 |
 | [doc/audit/2026-11-19/perf/](audit/2026-11-19/perf/) | 运行时性能剖析（CPU-PROFILE / INDEX / MCP / TD / VSCODE / REPORTS …） |
 | [doc/audit/2026-11-19/fix/](audit/2026-11-19/fix/) | 修复波次（F1–F6、W1–W4）过程记录与协议门禁结果 |

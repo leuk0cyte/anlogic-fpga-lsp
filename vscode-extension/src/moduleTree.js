@@ -6,6 +6,7 @@
 
 'use strict';
 
+const crypto = require('crypto');
 const vscode = require('vscode');
 const { METHODS, VSCodeCommands } = require('./protocol');
 
@@ -147,8 +148,10 @@ class ModuleTreeProvider {
         this._seq = 0;
         this._debounce = undefined;
         this._cancellation = undefined;
-        /** @type {{requests:number, debounced:number, ignored:number, inPlace:number}} */
-        this.stats = { requests: 0, debounced: 0, ignored: 0, inPlace: 0 };
+        /** P2-C: content digest of the tree currently shown (`''` = nothing painted yet). */
+        this._digest = '';
+        /** @type {{requests:number, debounced:number, ignored:number, inPlace:number, skipped:number}} */
+        this.stats = { requests: 0, debounced: 0, ignored: 0, inPlace: 0, skipped: 0 };
         this._onDidChangeTreeData = new vscode.EventEmitter();
         this.onDidChangeTreeData = this._onDidChangeTreeData.event;
     }
@@ -221,6 +224,9 @@ class ModuleTreeProvider {
         const modules = Array.isArray(event.modules) ? event.modules : [];
         if (event.full !== true && modules.length && this._applyModuleUpdates(modules)) {
             this.stats.inPlace += 1;
+            // Keep the digest in sync with what is now painted, so a subsequent full refresh
+            // carrying the same (patched) content is a no-op instead of a rebuild.
+            this._digest = this._treeDigest(this.payload);
             this._syncMessage();
             this._onDidChangeTreeData.fire(undefined);
             return 'in-place';
@@ -314,6 +320,24 @@ class ModuleTreeProvider {
     }
 
     /**
+     * P2-C: content hash of the hierarchy (not of the raw JSON envelope), used to skip the
+     * repaint when the server answers with exactly the tree we already show.
+     */
+    _treeDigest(payload) {
+        if (!payload || payload.ok === false || !payload.root) return '';
+        try {
+            return crypto.createHash('sha1').update(JSON.stringify({
+                ok: payload.ok,
+                al: payload.al || '',
+                project: payload.project || '',
+                root: payload.root,
+            })).digest('hex');
+        } catch (_) {
+            return '';
+        }
+    }
+
+    /**
      * Fetch `fpgaLsp/moduleTree` and rebuild the tree.
      * @param {string} [uri] optional document URI that decides which project is used.
      * @param {{reason?: string}} [options]
@@ -349,7 +373,19 @@ class ModuleTreeProvider {
         if (this.payload.ok === false || !this.payload.root) {
             this.rootNode = undefined;
             this.error = this.payload.error || 'no Anlogic .al project found';
+            this._digest = '';
         } else {
+            const digest = this._treeDigest(this.payload);
+            if (digest && digest === this._digest && this.rootNode) {
+                // P2-C (audit §7 #5): the server re-sent the same hierarchy. Keep the existing
+                // nodes -- expansion state and lazily loaded children survive -- and skip the
+                // whole-tree repaint (`fire(undefined)` rebuilds every expanded node).
+                this.stats.skipped += 1;
+                this.loading = false;
+                this._syncMessage();
+                return this.payload;
+            }
+            this._digest = digest;
             this.rootNode = this._wrap(this.payload.root, undefined, 'root');
             this.error = undefined;
         }
@@ -363,6 +399,7 @@ class ModuleTreeProvider {
         this.loading = false;
         this.payload = { ok: false, error: error ? String(error.message || error) : 'language server unavailable' };
         this.rootNode = undefined;
+        this._digest = '';
         this.error = this.payload.error;
         this._syncMessage();
         this._onDidChangeTreeData.fire(undefined);

@@ -59,11 +59,14 @@
 
 #pragma once
 
+#include <cstdint>
+#include <list>
 #include <map>
 #include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "constraints/port.h"
@@ -261,6 +264,32 @@ class Bridge : public ToolDispatcher {
     std::unique_ptr<server::LspServer> feature_server_;
     // 报告解析/快照缓存（P-D1）。附着模式指向 host 的实例，独立模式自建。
     std::unique_ptr<server::ReportStore> owned_report_store_;
+
+    // P2-B③：`references` 结果缓存（32 项 LRU）。
+    //
+    // 为什么可以缓存：审计实测 `fpga_references` p50 9.80 ms / CPU 8.59 ms，而"第二次"
+    // 完全等于 p50（≈10.1 ms）—— 零缓存，每次都把整索引重扫一遍；同索引同光标位置的
+    // `fpga_definition` 只要 0.28 ms。
+    //
+    // **失效语义（必须挂在索引上，否则会返回旧引用）**：
+    //   键 = (al_path, IndexService::stats().generation, 索引快照地址, path, line,
+    //         character, include_declaration)
+    //   · `generation` 每安装一份新快照 +1（index_service.h:62），所以任何 HDL 文件变化
+    //     （增量更新）、`.al` 变化（全量重建）、InvalidateAll 都会让 generation 变 → 旧键
+    //     再也命中不到，等价于整体失效。
+    //   · 快照地址是**保守兜底**：万一日后 IndexService 被换成新实例（generation 归零），
+    //     不同堆地址也不会撞键。
+    //   · `IndexService::Get()` 在 watcher 未激活时按 (path, mtime, size) 做 TTL 懒校验，
+    //     所以"外部改了文件但没发事件"的场景同样会推进 generation（worst case 250 ms 窗口，
+    //     与 LSP 侧符号工具一致）。
+    // 缓存的是**已截断的完整输出**（ok + references），所以命中路径与冷路径字节一致。
+    struct ReferencesCacheEntry {
+        std::string key;
+        Json value;
+    };
+    static constexpr std::size_t kReferencesCacheCapacity = 32;
+    // 头部 = 最近使用（LRU）；容量很小，命中走线性扫描（≤32 次字符串比较，纳秒级）。
+    std::list<ReferencesCacheEntry> references_cache_;
 };
 
 }  // namespace fpgalsp::mcp

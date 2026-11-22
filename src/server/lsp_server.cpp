@@ -1511,6 +1511,31 @@ void LspServer::PublishDiagnostics(std::string_view path,
                                    const lsp::DiagnosticList& diagnostics) {
     const std::string uri = platform::path_to_uri(path);
 
+    // P2-A（实测）：didChange 每敲一个字都会走到这里重发**整份**诊断 —— CorpusAlpha 上
+    // 1.73 ms / 31.7 KB，CorpusBeta 上 3.61 ms / 62.5 KB，而内容往往一字未变（编辑不在
+    // 有诊断的那几行）。于是每个"便宜"的请求（hover/folding/inlayHint）都被它拖到
+    // 1.6–3.6 ms，客户端还要重解析 60 KB 并整表替换 Problems。
+    //
+    // 这里在 **sanitize + ToJson 之前**用 SameDiagnosticList 短路：内容没变就既不生成
+    // wire 也不发通知（pull 缓存 latest_diagnostics_ 里已经是同一份）。
+    // 首次发布必须发（哪怕空数组）——用 last_published_input_known_ 区分"从未发过"。
+    {
+        std::scoped_lock lock(state_mutex_);
+        auto& last = last_published_input_[uri];
+        if (last_published_input_known_.contains(uri) && SameDiagnosticList(last, diagnostics)) {
+            return;  // 内容完全相同：不发、不 sanitize、不序列化
+        }
+        last = diagnostics;
+        last_published_input_known_.insert(uri);
+        // 未打开/已关闭的文件越来越多时别无限长（保守上限；正常远小于此）。
+        if (last_published_input_.size() > 4096) {
+            last_published_input_.clear();
+            last_published_input_known_.clear();
+            last_published_input_[uri] = diagnostics;
+            last_published_input_known_.insert(uri);
+        }
+    }
+
     // 发布前统一 sanitize（对应 Python _sanitize），并摘掉内部用的 data["path"]，
     // 保证喂给编辑器的是纯 LSP 形状。**全量发布、不截断**。
     Json wire = Json::array();

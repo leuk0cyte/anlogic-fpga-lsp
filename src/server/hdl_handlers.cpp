@@ -88,7 +88,40 @@ Json LspServer::FeatureDocumentSymbols(std::string_view path) {
     if (project == nullptr) return Json::array();
     const auto index = IndexForProject(*project);
     if (!index) return Json::array();
-    return features::DocumentSymbols(*index, path);
+
+    // P2-A（实测）：documentSymbol 每键无条件重算 1.13 ms / 24.9 KB，而输入只有
+    // (索引快照, 路径, 文档版本)。缓存命中条件用**索引快照的 shared_ptr 身份**
+    // （同一代索引）+ 文档版本；未打开的文档没有版本，退回文件大小做兜底。
+    // 快照 identity 是安全的：缓存持有 shared_ptr，指针在条目存活期间不会被复用。
+    const std::string key(path);
+    const std::optional<int64_t> version = docs_.GetVersion(platform::path_to_uri(key));
+    std::size_t text_size = 0;
+    if (!version.has_value()) {
+        std::error_code ec;
+        text_size = static_cast<std::size_t>(std::filesystem::file_size(key, ec));
+        if (ec) text_size = 0;
+    }
+    {
+        std::scoped_lock lock(document_symbol_mutex_);
+        const auto it = document_symbol_cache_.find(key);
+        if (it != document_symbol_cache_.end() && it->second.index.get() == index.get() &&
+            it->second.version == version && it->second.text_size == text_size) {
+            return *it->second.json;  // 1 份小 JSON 拷贝 vs 1.13 ms 重算
+        }
+    }
+    Json symbols = features::DocumentSymbols(*index, path);
+    {
+        std::scoped_lock lock(document_symbol_mutex_);
+        if (document_symbol_cache_.size() >= 64) document_symbol_cache_.clear();
+        DocumentSymbolCacheEntry& entry = document_symbol_cache_[key];
+        entry.index = index;
+        entry.version = version;
+        entry.text_size = text_size;
+        // 存 shared_ptr：miss 时只发生 1 次拷贝（下面 return 走 move），
+        // 避免"存进 map 拷一份 + 返回再拷一份"。
+        entry.json = std::make_shared<const Json>(std::move(symbols));
+        return *entry.json;
+    }
 }
 
 HandlerResult LspServer::HandleDocumentSymbol(const Json& params) {

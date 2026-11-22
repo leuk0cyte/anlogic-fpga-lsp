@@ -722,3 +722,63 @@ TEST(McpResourceTest, UnknownResourceIsInvalidParams) {
     ASSERT_TRUE(response->contains("error"));
     EXPECT_EQ(response->at("error").at("code").get<int>(), -32602);
 }
+
+// ------------------------------------------------- P2-B④：结果包装不再整树深拷贝
+//
+// `WrapToolResult` 以前第一行就是 `Json value = value_in;`（每次调用整树深拷贝一份结果），
+// 而绝大多数调用根本不改载荷。现在只有"原始值包装"和"超限截断"两条分支才拷贝。
+// 下面两条用例锁住语义：截断结果逐字段不变、未截断的对象原样进 structuredContent。
+
+TEST(McpResultRepresentationTest, DefaultTierTruncatesLargeArrayPayload) {
+    FakeDispatcher dispatcher;
+    McpServerOptions options;  // 默认档：client_supports_structured = false
+    options.allow_flow = true;
+    McpServer server(dispatcher, options);
+
+    Json items = Json::array();
+    for (int i = 0; i < 20000; ++i) {
+        Json item = Json::object();
+        item["i"] = i;
+        item["text"] = "0123456789012345678901234567890123456789";
+        items.push_back(std::move(item));
+    }
+    Json value = Json::object();
+    value["ok"] = true;
+    value["items"] = std::move(items);
+
+    const Json wrapped = server.WrapToolResult(value);
+    EXPECT_FALSE(wrapped.at("isError").get<bool>());
+    EXPECT_FALSE(wrapped.contains("structuredContent")) << "默认档不能重复发第二份";
+    const std::string text = wrapped.at("content").at(0).at("text").get<std::string>();
+    const Json parsed = Json::parse(text);
+    EXPECT_TRUE(parsed.at("truncated").get<bool>());
+    EXPECT_EQ(parsed.at("total").get<int>(), 20000);
+    EXPECT_EQ(parsed.at("itemsField").get<std::string>(), "items");
+    EXPECT_LT(parsed.at("items").size(), 20000u);
+    EXPECT_TRUE(parsed.at("ok").get<bool>());
+    // 载荷只被 const& 持有：调用后输入既不能被裁也不能被搬空。
+    EXPECT_EQ(value.at("items").size(), 20000u);
+}
+
+TEST(McpResultRepresentationTest, StructuredTierKeepsFullPayloadUnchanged) {
+    FakeDispatcher dispatcher;
+    McpServerOptions options;
+    options.allow_flow = true;
+    options.client_supports_structured = true;
+    McpServer server(dispatcher, options);
+
+    Json value = Json::object();
+    value["ok"] = true;
+    value["name"] = "demo_project";
+    Json items = Json::array();
+    items.push_back(1);
+    items.push_back(2);
+    value["items"] = std::move(items);
+    const std::string expected = value.dump();
+
+    const Json wrapped = server.WrapToolResult(value);
+    ASSERT_TRUE(wrapped.contains("structuredContent"));
+    EXPECT_EQ(wrapped.at("structuredContent").dump(), expected) << "载荷必须逐字段原样过去";
+    EXPECT_EQ(wrapped.at("content").at(0).at("text").get<std::string>(), "ok");
+    EXPECT_FALSE(wrapped.contains("truncated"));
+}

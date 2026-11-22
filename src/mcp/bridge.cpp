@@ -1578,33 +1578,52 @@ Json Bridge::WorkspaceSymbolsTool(const Json& arguments) {
     }
 
     const hdl::HdlIndex& index = EnsureHdlIndex(proj);
-    const Json result = server::features::WorkspaceSymbols(index, query);
+    // P2-B②：`limit` / `offset` 下推。
+    // 以前是 `features::WorkspaceSymbols(index, query)`：它先把**全部**命中转成 LSP 形状的
+    // JSON 数组（features.cpp:281），这里再逐条重建成 MCP 形状，最后才在**重建之后**截断
+    // limit。审计实测（query="e"）：limit=50 5.86 ms、limit=200 16.01 ms，而 limit=1000 与
+    // 5000 的耗时与字节数都不再增长 —— 成本全在"扫全集 + 建两遍 JSON 树"，不在发多少。
+    // 现在直接取索引的中间表示 `SearchSymbols`（仍是一次 O(N) 扫描，但只搬 struct，不再
+    // 建 JSON），并且只把 [offset, offset+limit) 这一段转成 MCP 形状。
+    // 契约不变：顺序、字段、以及 `total`/`nextOffset` 的**触发条件**都与全量版本一致
+    // （`total` 仍是命中总数而不是本页条数，所以分页语义不会被压成"没有下一页"）。
+    const std::vector<hdl::WorkspaceSymbol> matches = index.SearchSymbols(query);
+    const std::size_t total = matches.size();
 
     Json symbols = Json::array();
-    int skipped = 0;
     int count = 0;
-    for (const Json& symbol : result) {
-        if (skipped < offset) {
-            ++skipped;
-            continue;
-        }
-        // ⚠ 不能写 `if (count++ >= limit) break;`：那会在 break 时也自增，
-        // nextOffset 会多 1（分页错位一位）。先判断再自增。
-        if (count >= limit) break;
+    // ⚠ 不能写 `if (count++ >= limit) break;`：那会在 break 时也自增，
+    // nextOffset 会多 1（分页错位一位）。先判断再自增。
+    for (std::size_t i = static_cast<std::size_t>(offset); i < total && count < limit; ++i) {
+        const hdl::WorkspaceSymbol& symbol = matches[i];
+        // 位置仍然经 features 的 location 形状（uri + 0-based range）交给 LocationJson：
+        // uri 编解码走同一条实现，保证 file/relative/range 与老路径逐字节一致。
+        Json start = Json::object();
+        start["line"] = symbol.span.line;
+        start["character"] = symbol.span.start_character;
+        Json end = Json::object();
+        end["line"] = symbol.span.line;
+        end["character"] = symbol.span.end_character;
+        Json range = Json::object();
+        range["start"] = std::move(start);
+        range["end"] = std::move(end);
+        Json location = Json::object();
+        location["uri"] = platform::path_to_uri(symbol.path);
+        location["range"] = std::move(range);
+
         Json item = Json::object();
-        item["name"] = symbol.value("name", std::string());
-        item["kind"] = SymbolKindName(symbol.value("kind", 0));
-        item["containerName"] = symbol.value("containerName", std::string());
-        item["location"] =
-            symbol.contains("location") ? LocationJson(symbol["location"], proj) : Json(nullptr);
+        item["name"] = symbol.name;
+        item["kind"] = SymbolKindName(symbol.kind);
+        item["containerName"] = symbol.container;
+        item["location"] = LocationJson(location, proj);
         symbols.push_back(std::move(item));
         ++count;
     }
     Json out = Json::object();
     out["ok"] = true;
     out["symbols"] = std::move(symbols);
-    if (offset > 0 || static_cast<int>(result.size()) > offset + count) {
-        out["total"] = result.size();
+    if (offset > 0 || total > static_cast<std::size_t>(offset) + static_cast<std::size_t>(count)) {
+        out["total"] = total;
         out["nextOffset"] = offset + count;
     }
     return out;
@@ -1646,6 +1665,33 @@ Json Bridge::ReferencesTool(const Json& arguments) {
     }
 
     const hdl::HdlIndex& index = EnsureHdlIndex(proj);
+
+    // P2-B③：32 项 LRU。键的语义见 bridge.h 里 references_cache_ 的注释
+    // （generation 主导失效，快照地址做保守兜底）。
+    std::string cache_key;
+    cache_key.reserve(proj.al_path.size() + path.size() + 48);
+    cache_key += proj.al_path;
+    cache_key += '\x1f';
+    cache_key += std::to_string(index_service_ != nullptr ? index_service_->stats().generation : 0);
+    cache_key += '\x1f';
+    cache_key += std::to_string(reinterpret_cast<std::uintptr_t>(&index));
+    cache_key += '\x1f';
+    cache_key += path;
+    cache_key += '\x1f';
+    cache_key += std::to_string(line);
+    cache_key += ',';
+    cache_key += std::to_string(column);
+    cache_key += include_declaration ? '\x01' : '\x00';
+
+    for (auto hit = references_cache_.begin(); hit != references_cache_.end(); ++hit) {
+        if (hit->key != cache_key) continue;
+        // 命中：拷一份返回（载荷上限 500 条，拷贝是几十 µs 量级，远低于重扫的 9.8 ms），
+        // 再把它提到 LRU 头部。
+        Json cached = hit->value;
+        references_cache_.splice(references_cache_.begin(), references_cache_, hit);
+        return cached;
+    }
+
     const Json result = server::features::References(index, path, line, column, include_declaration);
 
     Json references = Json::array();
@@ -1657,6 +1703,8 @@ Json Bridge::ReferencesTool(const Json& arguments) {
     Json out = Json::object();
     out["ok"] = true;
     out["references"] = std::move(references);
+    if (references_cache_.size() >= kReferencesCacheCapacity) references_cache_.pop_back();
+    references_cache_.push_front(ReferencesCacheEntry{cache_key, out});
     return out;
 }
 
@@ -3767,8 +3815,22 @@ Json Bridge::JobCancelTool(const Json& arguments) {
 
 Json Bridge::FlowStatus(const Json& arguments) {
     const project::Project& proj = ProjectFor(arguments);
-    const reports::ReportsBundle bundle = reports::BuildReports(proj);
-    const Json data = bundle.ToJson();
+    // P2-B①：走 ReportStore（与 project_reports 同一入口 = 同一份快照缓存）。
+    // 以前每次轮询（agent 典型 2 s 一次）都 `reports::BuildReports(proj)` 全量重建
+    // qor/timing/area/flow —— 审计实测 p50 20.91 ms / 服务端 CPU 18.75 ms，而响应只有
+    // 1,561 B，真正用到的只有 `artifacts` 一段。
+    //
+    // 掩码收窄成 kArtifacts 是**安全的**：`ReportsBundle::ToJson()` 的 `artifacts`
+    // 来自 `CollectArtifacts(project)`，与 mask 无关（reports_aggregate.cpp:248-254 总是
+    // 产出该键，`runs_found=false` 时固定给 {"runs": []}），所以输出逐字段不变；
+    // 省掉的是 qor/timing/area/flow 的读盘 + 解析。
+    //
+    // 失效语义：ReportStore 自己按 (path, mtime, size) 逐文件 stamp + runs 目录 stamp
+    // 校验，变了就丢解析结果并重发快照 —— 与 project_reports / LSP 的 fpgaLsp/reports
+    // 共用同一套语义，所以新跑完一次 flow 后这里立刻能看到新产物。
+    const auto snapshot = Reports().Get(proj, reports::sections::kArtifacts);
+    const Json empty_data = Json::object();
+    const Json& data = snapshot != nullptr ? snapshot->data : empty_data;
 
     Json out = Json::object();
     out["ok"] = true;
