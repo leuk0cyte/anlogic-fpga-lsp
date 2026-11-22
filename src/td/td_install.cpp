@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "platform/path.h"
+#include "platform/write_service.h"
 
 namespace fpgalsp::td {
 namespace {
@@ -431,16 +432,15 @@ void WriteCache(const TdEnv& env, const TdChoice& choice) {
     const std::string dir = CacheDir();
     const std::string path = CachePath();
     if (dir.empty() || path.empty()) return;
-    std::error_code ec;
-    std::filesystem::create_directories(dir, ec);  // 已存在时 ec 为 0，可直接忽略
-    std::ofstream out(path, std::ios::binary | std::ios::trunc);
-    if (!out) return;
-    out << "# fpgalsp TD install discovery cache (auto-generated; delete to force a rescan)\n";
-    out << "root=" << choice.root << "\n";
-    out << "exe=" << choice.exe << "\n";
-    out << "version=" << choice.version << "\n";
-    out << "source=" << choice.source << "\n";
-    out << "saved_at=" << NowSeconds() << "\n";
+    std::string text;
+    text += "# fpgalsp TD install discovery cache (auto-generated; delete to force a rescan)\n";
+    text += "root=" + choice.root + "\n";
+    text += "exe=" + choice.exe + "\n";
+    text += "version=" + choice.version + "\n";
+    text += "source=" + choice.source + "\n";
+    text += "saved_at=" + std::to_string(NowSeconds()) + "\n";
+    (void)platform::writes::Write(std::string(), path, text,
+                                  platform::writes::Options{.caller = "td.install_cache"});
 }
 
 void ClearCache() {

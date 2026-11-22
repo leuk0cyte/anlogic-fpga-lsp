@@ -472,7 +472,7 @@ TEST_F(IdeFeaturesTest, SetProjectNameWithoutProjectTagFails) {
 // -----------------------------------------------------------------------------
 
 TEST_F(IdeFeaturesTest, WriteTextFileAtomicReplacesContent) {
-    const std::string path = WriteFile("proj/atomic.txt", "old");
+    const std::string path = WriteFile("proj/atomic.al", "old");
     EXPECT_TRUE(WriteTextFileAtomic(path, "new-content"));
     EXPECT_EQ(ReadFile(path), "new-content");
     EXPECT_FALSE(std::filesystem::exists(path + ".fpgalsp-tmp"));

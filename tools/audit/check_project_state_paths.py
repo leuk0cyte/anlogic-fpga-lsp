@@ -30,6 +30,7 @@ ALLOWLIST = {
     "src/mcp/bridge.cpp": "全库扫描时跳过 .fpgalsp；另有 .fpgalsp-tmp 原子写临时后缀",
     "src/project/al_project.cpp": "扫描工程文件时跳过 .fpgalsp 目录",
     "src/platform/path.cpp": "状态目录的唯一实现处（正常应无字面量；保留以免误删兼容逻辑时报错）",
+    "src/platform/write_service.cpp": "统一写服务：错误信息里会提到 .fpgalsp 策略（不是写工程目录）",
 }
 
 ALLOWED_SUFFIX = re.compile(r"\.fpgalsp-(tmp|bak)")

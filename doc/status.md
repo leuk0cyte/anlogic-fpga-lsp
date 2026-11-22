@@ -1,13 +1,13 @@
-# 交付状态（当前：2026-11-22，扩展 0.23.0）
+# 交付状态（当前：2026-11-22，扩展 0.24.0）
 
 ## 构建与测试
 
 | 项目 | 数据 |
 | --- | --- |
 | **全新目录干净构建** | configure 29 s → build 3.3 min → **844 个目标全部成功**（Release + 全量 LTO）；无 LTO 的 `windows-msvc-dev` 全新目录 **56 s**（2026-11-20 实测；增量构建见 build.md） |
-| **`ctest` 全量** | **69/69 通过**（其中 `unit` 45、`e2e` 5、`td` 5，其余为 `formatgate`/`lintgate`/`gate`/`generator`/`mcp`/`docs`/`parity` 门禁）；preset 默认 **8 路并行**，实测约 **60–75 s**（串行 92–104 s） |
-| **原生产物** | `build/bin/fpgalsp-native.exe`（0.23.0，**6,980,608 B**，全量 LTCG；SHA256 `E26EF489…C7BFAC`） |
-| **单元测试规模** | 45 个 gtest target |
+| **`ctest` 全量** | **71/71 通过**（其中 `unit` 46、`e2e` 5、`td` 5，其余为 `formatgate`/`lintgate`/`gate`/`generator`/`mcp`/`docs`/`parity` 门禁）；preset 默认 **8 路并行**，实测约 **75 s**（串行 92–104 s） |
+| **原生产物** | `build/bin/fpgalsp-native.exe`（0.24.0，**7,009,792 B**，全量 LTCG；SHA256 `4DC18604…221C06`） |
+| **单元测试规模** | 46 个 gtest target |
 
 > 构建/测试的并行度分析（为什么 192 线程帮不上忙、时间精确花在哪、日常该用哪个 preset）见
 > [doc/build.md](build.md) 的「并行度：192 线程用在了哪里」。
@@ -1585,3 +1585,42 @@ semanticTokens/range}`、`completionItem/resolve`、`willSaveWaitUntil`、`$/set
 全部返回真实数据；`documentLink` 23 条无"假缺失"；删 `.fpgalsp` 后 `didSave` 不再重建。
 
 **仍未做**：7 个 MCP 工具无人工 UI 入口；`fpgaLsp.mcp.allowFlow` 默认值是否改 `false` 待产品决定。
+
+---
+
+## 第三十六轮（2026-11-22，0.24.0）：统一写入服务（Write Service）
+
+**用户反馈**：写缓存/日志/工程文件的代码散落在 flow / probe / analysis / server / mcp / td 各处，
+以后要改"写哪、怎么写、写坏了怎么办"很容易漏改；应该统一成一个方法。
+`.fpgalsp` 反复出现就是这类问题的症状（一处硬编码就绕过了所有约定）。
+
+**后端（0.24.0）**
+
+* 新增 `src/platform/write_service.{h,cpp}`：**唯一写入口** `writes::Write(project_dir, path, bytes,
+  {.dry_run,.backup,.caller})` / `writes::AppendLine` / `writes::Classify`。
+* 四类 root（按目标路径自动分类，越界带原因拒绝）：
+  `kState`（`state_dir`，可建目录）、`kProject`（只允许 `*.al/*.adc/*.sdc`、`chip_debugger/*.mdn|*.cfg`；
+  不替用户新建目录）、`kRun`（`<prj>_Runs/**`，可建目录）、`kTemp`（临时目录下含 fpgalsp 的 scratch）；
+  任何 `.fpgalsp` 段 / `..` / NUL / 未知根一律拒绝。
+* 原子写（`.tmp-<pid>-<seq>` → rename + `MoveFileEx` 兜底 + 3 次重试）、备份到 `<state>/backup/`、
+  审计 `<state>/logs/writes.jsonl`（`FPGALSP_WRITE_AUDIT=0` 关）、never-throw。
+* 已迁移 17 处写入：analysis 缓存、probe（mdn/config/cwc/缓存/trigger cwc）、flow_runner
+  （run 文件/`.stop.f`/`flow.status`/`last_flow.json`）、flow_logic 与 ide_features 与 bridge 的
+  `.al` 写、td_install 安装缓存、td_diagnostics 器件缓存、mcp_tcp 端点文件。
+* 门禁 `docs_no_raw_writes`（`tools/audit/check_raw_file_writes.py`：`src/` 里的 `write_file_utf8(` 与
+  `std::ofstream` 只允许出现在 write_service / encoding / log）+ 单测 `tests/unit/write_service_test.cpp`
+  （8 条：`.fpgalsp`、白名单、越界、dry-run、备份、原子覆盖、AppendLine、run 目录）。
+
+**插件（0.24.0）**
+
+* 新增 `vscode-extension/src/writeService.js`：`writeStateFile` / `writeProjectFile`
+  （白名单 `.vscode/mcp.json`、`.mcp.json`、`*.al`，可备份）/ `appendLog` / `appendText`；
+  同样的 root 策略 + 原子写 + dryRun + never-throw。
+* 迁移 `highlight.txt`、`.vscode/mcp.json` 安装、`launchCheck` 扩展日志；`test/run.js` 加门禁
+  （裸写只允许 writeService.js），新增 9 条测试 → **58/58**。
+
+**验证**：`ctest --preset windows-msvc-release` **71/71**（75 s）；插件 **58/58**；
+真机 CorpusAlpha：单步 `read_design` 正常（3 s，下游 pending）、`didSave` 后**不再**出现 `<工程>/.fpgalsp`；
+`<state>/logs/writes.jsonl` 可见 `td.install_cache`（temp）、`flow.file`（state）等真实条目。
+
+**未做（可选项）**：Phase 4 —— 测试用内存 FS、写指标进 `fpgalsp.metrics`、MCP 写工具的 dry-run UI。

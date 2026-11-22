@@ -122,3 +122,6 @@ fpgalsp_add_unit_test(verible_style fpga_lsp::verible_bridge fpga_lsp::server)
 # documentHighlight / selectionRange / pull diagnostics / willSave / $setTrace /
 # completionItem.resolve / semanticTokens.range）
 fpgalsp_add_unit_test(features_optional fpga_lsp::server fpga_lsp::hdl)
+
+# 统一写服务：路径策略（.fpgalsp/白名单/越界）+ 原子写 + 备份 + dry-run + 审计开关
+fpgalsp_add_unit_test(write_service)

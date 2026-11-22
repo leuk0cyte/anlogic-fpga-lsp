@@ -52,6 +52,7 @@ public:
     ~ScopedTempDir() {
         std::error_code ec;
         fs::remove_all(fs::path(path_), ec);
+        fs::remove_all(fs::path(path_ + "_state"), ec);  // flow/cache 状态目录（在工程目录外）
     }
     ScopedTempDir(const ScopedTempDir&) = delete;
     ScopedTempDir& operator=(const ScopedTempDir&) = delete;
@@ -191,8 +192,10 @@ struct Harness {
         // 假会话：立刻杀，测的是"取消防火"本身（真实 TD 用宽限期，见 FlowOptions）
         options.cancel_kill_grace_seconds = 0.0;
         options.timeout_seconds = 5.0;
-        options.flow_root = temp.path() + "/.fpgalsp/flow";
-        options.cache_root = temp.path() + "/.fpgalsp/cache";
+        // 真实状态下 flow/cache 在系统临时目录（不在工程目录里）；单测同样放工程目录外，
+        // 名字带 "fpgalsp" 才会被写服务的 kTemp 规则接受。
+        options.flow_root = temp.path() + "_state/flow";
+        options.cache_root = temp.path() + "_state/cache";
         // 单测里没有真实 TD 安装，直接指定 db 名，跳过 DbCandidates 探测
         options.explicit_db = "ef2_4.db";
         const fpgalsp::project::Project local = project;
@@ -469,7 +472,7 @@ TEST(FlowRunner, RouteOnlyReusesNewestPlacementDb) {
     }
     // 缓存文件要写出来
     EXPECT_TRUE(fs::is_regular_file(
-        fs::path(harness.project.dir + "/.fpgalsp/cache/last_flow.json")));
+        fs::path(harness.temp.path() + "_state/cache/last_flow.json")));
 }
 
 // -----------------------------------------------------------------------------

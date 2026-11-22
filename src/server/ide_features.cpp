@@ -42,6 +42,7 @@
 
 #include "platform/encoding.h"
 #include "platform/path.h"
+#include "platform/write_service.h"
 
 namespace fpgalsp::server::ide {
 namespace {
@@ -444,32 +445,12 @@ Json SearchHierarchy(const hdl::HdlIndex& index, std::string_view query, int lim
 // =============================================================================
 
 bool WriteTextFileAtomic(const std::string& path, std::string_view content) {
-    const std::string temp = path + ".fpgalsp-tmp";
-    if (!platform::write_file_utf8(temp, content)) return false;
-
-    std::error_code ec;
-    fs::rename(ToPath(temp), ToPath(path), ec);
-    if (!ec) return true;
-
-    // Windows 上"rename 到已存在的目标"可能直接失败：先把原文件挪开再替换，
-    // 第二次 rename 也失败时把原文件放回去（保证"失败 = 原文件仍可用"）。
-    const std::string backup = path + ".fpgalsp-bak";
-    std::error_code ignored;
-    fs::remove(ToPath(backup), ignored);
-    fs::rename(ToPath(path), ToPath(backup), ec);
-    if (ec) {
-        fs::remove(ToPath(temp), ignored);
-        return false;
-    }
-    fs::rename(ToPath(temp), ToPath(path), ec);
-    if (ec) {
-        std::error_code restore_ec;
-        fs::rename(ToPath(backup), ToPath(path), restore_ec);
-        fs::remove(ToPath(temp), ignored);
-        return false;
-    }
-    fs::remove(ToPath(backup), ignored);
-    return true;
+    // 统一写服务：工程文件（.al）-> 策略 + 备份 + 原子写 + 审计。
+    // 工程目录取 .al 所在目录（这些调用点的目标都是 .al）。
+    return platform::writes::Write(
+               platform::path_dirname(path), path, content,
+               platform::writes::Options{.caller = "ide.project_file", .backup = true})
+        .ok;
 }
 
 std::string ProjectRelativePath(const std::string& path, const std::string& project_dir) {

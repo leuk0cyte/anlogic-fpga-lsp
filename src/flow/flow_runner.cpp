@@ -14,6 +14,7 @@
 #include "flow/flow_runner.h"
 
 #include "platform/path.h"  // state_dir()（Wave 3 / W1：状态目录可外移）
+#include "platform/write_service.h"
 
 #include <algorithm>
 #include <atomic>
@@ -132,11 +133,13 @@ double Mtime(std::string_view path) {
     return std::chrono::duration<double>(system_time.time_since_epoch()).count();
 }
 
-bool WriteTextFile(std::string_view path, std::string_view text) {
+bool WriteTextFile(std::string_view project_dir, std::string_view path,
+                   std::string_view text) {
     if (path.empty()) return false;
-    std::error_code ec;
-    fs::create_directories(fs::path(std::string(path)).parent_path(), ec);
-    return platform::write_file_utf8(path, text);
+    // 统一写服务（状态目录/run 目录策略 + 原子写 + 审计）。
+    const platform::writes::Result result = platform::writes::Write(
+        project_dir, path, text, platform::writes::Options{.caller = "flow.file"});
+    return result.ok;
 }
 
 std::string ReadTextFile(std::string_view path) {
@@ -640,7 +643,7 @@ struct FlowRunner::Impl {
     void WriteStopFiles() {
         for (const std::string& name : ListSubdirs(RunsRoot())) {
             if (name == "best_result") continue;
-            (void)WriteTextFile(Join(RunDirOf(name), ".stop.f"), "stop\n");
+            (void)WriteTextFile(owner->project_.dir, Join(RunDirOf(name), ".stop.f"), "stop\n");
         }
     }
 
@@ -853,7 +856,7 @@ struct FlowRunner::Impl {
 
         // 写一个钩子脚本；失败返回空字符串（调用方只留痕、不判死）。
         const auto write_hook = [this](const std::string& path, const std::string& body) {
-            if (WriteTextFile(path, body)) return true;
+            if (WriteTextFile(owner->project_.dir, path, body)) return true;
             Emit("log", "无法写入钩子脚本 " + path + "，退回 TD 默认的裸调用（可能是静默空操作）");
             return false;
         };
@@ -922,7 +925,7 @@ struct FlowRunner::Impl {
                                                          &config_info, /*include_eram=*/true);
                 }
                 const std::string config_path = Join(RunDir(), "probe_config.cwc");
-                if (!cwc_text.empty() && WriteTextFile(config_path, cwc_text)) {
+                if (!cwc_text.empty() && WriteTextFile(owner->project_.dir, config_path, cwc_text)) {
                     insert_body += " -cwc {" + config_path + "}";
                     gate_cwc_path = config_path;
                     Emit("log", run_name + ": 探针构建参数 clock=" +
@@ -1048,7 +1051,11 @@ struct FlowRunner::Impl {
             if (!std::filesystem::is_regular_file(std::filesystem::path(path), table_ec)) continue;
             const std::string text = ReadTextFile(path);
             const std::string stripped = StripFlowStatusFromMarker(text, step);
-            if (stripped != text) (void)platform::write_file_utf8(path, stripped);
+            if (stripped != text) {
+                (void)platform::writes::Write(owner->project_.dir, path, stripped,
+                                              platform::writes::Options{
+                                                  .caller = "flow.status_table"});
+            }
         }
     }
 
@@ -1338,7 +1345,7 @@ struct FlowRunner::Impl {
 
         const std::string cache = owner->options_.cache_root;
         if (MakeDirs(cache)) {
-            (void)WriteTextFile(Join(cache, "last_flow.json"),
+            (void)WriteTextFile(owner->project_.dir, Join(cache, "last_flow.json"),
                                 jsonrpc::Serialize(payload, /*compact=*/false));
         }
 

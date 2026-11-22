@@ -24,6 +24,8 @@ const { resolveServer, resolveServerRoot: locateServerRoot } = require('./src/lo
 const { STATE_ENV, resolveStateDir } = require('./src/stateDir');
 const { readMcpEndpoint, endpointAlive } = require('./src/mcpEndpoint');
 const { checkPython, appendLog, flushLogSync } = require('./src/launchCheck');
+// 统一写服务：所有文件写入都走这里（state root 策略 + 原子写 + never-throw），见 src/writeService.js。
+const { writeStateFile, writeProjectFile } = require('./src/writeService');
 const {
     ModuleTreeProvider,
     resolveTarget,
@@ -271,7 +273,7 @@ function activate(context) {
     // everything about the launch goes to <state>/logs/extension.log (state = 系统 temp), because
     // "Server process exited with code N" alone is impossible to act on.
     const extLog = path.join(stateDir, 'logs', 'extension.log');
-    const diag = (message) => appendLog(extLog, message);
+    const diag = (message) => appendLog(cwd, 'extension', message);
     diag(`activate ext=${context.extensionPath} kind=${server.kind} source=${server.source} ` +
         `${isNative ? 'exe=' + server.exe : 'serverRoot=' + serverRoot} cwd=${cwd}`);
     if (isNative) {
@@ -740,12 +742,16 @@ function activate(context) {
                 'If semantic tokens are 0 but languageId is verilog: grammar coloring should still work;',
                 'check the theme scope colors with "Developer: Inspect Editor Tokens and Scopes".',
             ].join('\n');
-            const dir = path.join(stateDir, 'logs');
-            fs.mkdirSync(dir, { recursive: true });
-            fs.writeFileSync(path.join(dir, 'highlight.txt'), report);
-            diag('highlight report written: ' + path.join(dir, 'highlight.txt'));
+            const written = writeStateFile(cwd, 'logs/highlight.txt', report, { caller: 'highlight.report' });
+            if (!written.ok) {
+                diag('highlight report failed: ' + written.error);
+                return false;
+            }
+            diag('highlight report written: ' + written.path);
+            return true;
         } catch (err) {
             diag('highlight report failed: ' + ((err && err.stack) || err));
+            return false;
         }
     };
 
@@ -761,7 +767,10 @@ function activate(context) {
             vscode.window.showWarningMessage('FPGA: open a .v/.vhd file first');
             return;
         }
-        await writeHighlightReport(editor.document);
+        if (await writeHighlightReport(editor.document) === false) {
+            vscode.window.showErrorMessage('FPGA: could not write the highlight report (see FPGA: Show Logs).');
+            return;
+        }
         const file = path.join(stateDir, 'logs', 'highlight.txt');
         const opened = await vscode.workspace.openTextDocument(file);
         await vscode.window.showTextDocument(opened, { preview: true });
@@ -872,9 +881,8 @@ function activate(context) {
                 { label: 'Portable workspace (.mcp.json for Cline/Claude)', format: 'portable' },
             ], { title: 'Install MCP configuration' });
             if (!choice) return;
-            const target = choice.format === 'vscode'
-                ? path.join(root, '.vscode', 'mcp.json')
-                : path.join(root, '.mcp.json');
+            const relative = choice.format === 'vscode' ? '.vscode/mcp.json' : '.mcp.json';
+            const target = path.join(root, relative);
             const workspaceDefinition = buildWorkspaceMcpServerOptions({
                 serverRoot,
                 pythonPath: python(),
@@ -904,12 +912,19 @@ function activate(context) {
             } else {
                 mcpData.mcpServers = Object.assign({}, mcpData.mcpServers || {}, generated.mcpServers);
             }
-            fs.mkdirSync(path.dirname(target), { recursive: true });
-            fs.writeFileSync(target, JSON.stringify(mcpData, null, 2) + '\n', 'utf8');
-            const document = await vscode.workspace.openTextDocument(target);
+            // 统一写服务：白名单 + 原子写 + 旧文件备份（<file>.fpgalsp-bak）；失败返回可读原因，
+            // 不再把 fs 异常直接抛到命令层。
+            const written = writeProjectFile(root, relative, JSON.stringify(mcpData, null, 2) + '\n',
+                { backup: true, caller: 'mcp.install' });
+            if (!written.ok) {
+                vscode.window.showErrorMessage(
+                    `FPGA: could not write the MCP configuration (${written.error}).`);
+                return;
+            }
+            const document = await vscode.workspace.openTextDocument(written.path);
             await vscode.window.showTextDocument(document);
             vscode.window.showInformationMessage(
-                `FPGA: MCP configuration written to ${target}. Run MCP: List Servers (or refresh tools in Copilot) to load it.`);
+                `FPGA: MCP configuration written to ${written.path}. Run MCP: List Servers (or refresh tools in Copilot) to load it.`);
         } catch (err) {
             vscode.window.showErrorMessage(`FPGA: ${(err && err.message) || err}`);
         }

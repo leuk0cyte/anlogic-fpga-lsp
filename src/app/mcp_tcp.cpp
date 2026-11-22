@@ -21,6 +21,7 @@
 #include "mcp/bridge.h"
 #include "mcp/mcp_server.h"
 #include "platform/log.h"
+#include "platform/write_service.h"
 #include "platform/path.h"
 #include "platform/version.h"
 #include "server/lsp_server.h"
@@ -98,20 +99,11 @@ std::string WriteMcpEndpoint(unsigned short port, const std::string& root,
         static_cast<std::int64_t>(std::chrono::duration_cast<std::chrono::seconds>(
                                       std::chrono::system_clock::now().time_since_epoch())
                                       .count());
-    const std::string temp = path + ".tmp";
-    {
-        std::ofstream out(temp, std::ios::binary | std::ios::trunc);
-        if (!out) return {};
-        out << endpoint.dump(1, ' ');
-        if (!out) return {};
-    }
-    std::error_code ec;
-    std::filesystem::rename(temp, path, ec);
-    if (ec) {
-        std::filesystem::remove(path, ec);
-        std::filesystem::rename(temp, path, ec);
-    }
-    return ec ? std::string() : path;
+    // 统一写服务：状态目录 + 原子写 + 审计（2026-11-22 写服务改造）。
+    const platform::writes::Result written =
+        platform::writes::Write(root, path, endpoint.dump(1, ' '),
+                                platform::writes::Options{.caller = "mcp.endpoint"});
+    return written.ok ? path : std::string();
 }
 
 void RemoveMcpEndpoint(const std::string& path) {

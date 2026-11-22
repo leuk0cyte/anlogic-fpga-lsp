@@ -7,6 +7,7 @@ add_library(fpga_lsp_platform STATIC
     path.cpp
     log.cpp
     encoding.cpp
+    write_service.cpp
 )
 
 add_library(fpga_lsp::platform ALIAS fpga_lsp_platform)

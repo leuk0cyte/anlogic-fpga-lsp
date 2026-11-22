@@ -47,7 +47,7 @@
 ### 2. 安装扩展并重载
 
 ```powershell
-code --install-extension Y:\fpga-lsp-cpp\vscode-extension\fpga-lsp-anlogic-0.23.0.vsix
+code --install-extension Y:\fpga-lsp-cpp\vscode-extension\fpga-lsp-anlogic-0.24.0.vsix
 ```
 
 安装后按提示 **Reload**，或执行 `Developer: Reload Window`。
@@ -351,6 +351,22 @@ mark_debug { WHG/pwm_reg0_i[0] … WHG/pwm_reg7_i[15] }
 
 要点：扩展只对接原生 `fpgalsp-native.exe`（由 `npm run bundle:server` 从
 `../build/bin` 塞进 `server/bin`），打包前需先构建出该 exe。
+
+### 文件写入统一走 writeService
+
+插件的**所有文件写入**都必须经过 `src/writeService.js`（与后端 `platform::write_service` 对称），
+业务代码里不再直接 `fs.writeFileSync` / `fs.appendFileSync` / `createWriteStream`：
+
+- **路径策略**：状态类写入只允许落在 `stateRootFor(workspaceRoot)`（即 `%TEMP%\fpgalsp\<工程名>-<hash8>`，
+  与 `src/stateDir.js` / 后端 `platform::state_dir()` 同一个目录）之下；工程文件只允许显式白名单
+  （`.vscode/mcp.json`、`.mcp.json`、`*.al`）。绝对路径、`..`、NUL 以及任何含 `.fpgalsp` 的路径段
+  一律拒绝。
+- **原子写**：同目录 `.tmp-<pid>-<seq>` → `rename`，失败重试 3 次并清理临时文件；`opts.backup`
+  覆盖工程文件时先把旧内容写成 `<file>.fpgalsp-bak`。
+- **never-throw**：所有 API 返回 `{ ok, path, error }`，失败只回报原因；`opts.dryRun` 只校验不落盘。
+
+门禁：`node test/run.js` 的 `write gate` 测试会扫描 `extension.js` 与 `src/*.js`，
+`fs.*` 裸写只允许出现在 `src/writeService.js`，新增写入绕过服务会直接测试失败。
 
 ---
 

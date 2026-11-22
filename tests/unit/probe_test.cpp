@@ -188,7 +188,8 @@ TEST(ProbeMdn, ReadAndWriteRoundTrip) {
     EXPECT_EQ(config.signals.size(), 8u);
 
     std::string error;
-    ASSERT_TRUE(fpgalsp::probe::WriteMdn(path, {"WHG/pwm_reg0_i[0]"}, &error)) << error;
+    ASSERT_TRUE(fpgalsp::probe::WriteMdn(temp.path(), path, {"WHG/pwm_reg0_i[0]"}, &error))
+        << error;
     const MdnConfig after = fpgalsp::probe::ReadMdn(path);
     ASSERT_TRUE(after.ok);
     ASSERT_EQ(after.signals.size(), 1u);

@@ -25,6 +25,7 @@
 
 #include "flow/hardware_lease.h"
 #include "platform/encoding.h"
+#include "platform/write_service.h"
 #include "td/tcl_quote.h"
 #include "td/td_device.h"
 #include "td/td_output.h"
@@ -452,15 +453,18 @@ std::string RenderMdn(std::string_view original, const std::vector<std::string>&
     return out;
 }
 
-bool WriteMdn(const std::string& path, const std::vector<std::string>& signals,
-              std::string* error) {
-    const std::size_t slash = path.find_last_of('/');
-    if (slash != std::string::npos) {
-        (void)fpgalsp::platform::ensure_directory(path.substr(0, slash));
-    }
+bool WriteMdn(const std::string& project_dir, const std::string& path,
+              const std::vector<std::string>& signals, std::string* error) {
     const std::string original = IsFile(path) ? ReadText(path) : std::string();
-    if (!fpgalsp::platform::write_file_utf8(path, RenderMdn(original, signals))) {
-        if (error) *error = "cannot write " + Slashes(path);
+    // 首次配置时 <project>/chip_debugger 可能还不存在：目录创建沿用旧行为（写文件仍走服务）。
+    const std::string mdn_dir = fpgalsp::platform::path_dirname(path);
+    if (!mdn_dir.empty()) (void)fpgalsp::platform::ensure_directory(mdn_dir);
+    // 统一写服务：chip_debugger/*.mdn 属于登记的工程用户文件（策略 + 原子写 + 审计）。
+    const fpgalsp::platform::writes::Result written = fpgalsp::platform::writes::Write(
+        project_dir, path, RenderMdn(original, signals),
+        fpgalsp::platform::writes::Options{.caller = "probe.mdn"});
+    if (!written.ok) {
+        if (error) *error = "cannot write " + Slashes(path) + ": " + written.error;
         return false;
     }
     return true;
@@ -1417,7 +1421,10 @@ bool WriteProbeBuildConfig(const project::Project& project, const ProbeBuildConf
     }
     // 空 vector = 删除这一行（WriteProbeBuildConfig 总是整份重写，天然清掉旧的 disable）
     if (!config.disabled.empty()) text += "disabled=" + JoinCsv(config.disabled) + "\n";
-    return fpgalsp::platform::write_file_utf8(ProbeConfigPath(project), text);
+    return fpgalsp::platform::writes::Write(
+               project.dir, ProbeConfigPath(project), text,
+               fpgalsp::platform::writes::Options{.caller = "probe.config"})
+        .ok;
 }
 
 std::string BuildCwcFromConfig(const project::Project& project, const MdnConfig& mdn,
@@ -1915,7 +1922,10 @@ jsonrpc::Json WriteCompiledCwcFromGate(const project::Project& project,
     std::error_code ec;
     std::filesystem::create_directories(
         std::filesystem::path(CompiledCwc(project)).parent_path(), ec);
-    if (!fpgalsp::platform::write_file_utf8(CompiledCwc(project), text)) {
+    if (!fpgalsp::platform::writes::Write(
+                project.dir, CompiledCwc(project), text,
+                fpgalsp::platform::writes::Options{.caller = "probe.cwc"})
+             .ok) {
         out["reason"] = "cannot write " + CompiledCwc(project);
         return out;
     }
@@ -2086,7 +2096,10 @@ bool WriteUserCfgFromMdn(const project::Project& project, std::string* error) {
         std::filesystem::copy_file(user_cfg, backup,
                                    std::filesystem::copy_options::overwrite_existing, ec);
     }
-    if (!fpgalsp::platform::write_file_utf8(user_cfg, text)) {
+    if (!fpgalsp::platform::writes::Write(
+                project.dir, user_cfg, text,
+                fpgalsp::platform::writes::Options{.caller = "probe.user_cfg"})
+             .ok) {
         if (error != nullptr) *error = "cannot write " + user_cfg;
         return false;
     }
@@ -2177,7 +2190,10 @@ jsonrpc::Json WriteCompiledCwcAfterPhy(const project::Project& project) {
     std::error_code ec;
     std::filesystem::create_directories(
         std::filesystem::path(CompiledCwc(project)).parent_path(), ec);
-    if (!fpgalsp::platform::write_file_utf8(CompiledCwc(project), text)) {
+    if (!fpgalsp::platform::writes::Write(
+                project.dir, CompiledCwc(project), text,
+                fpgalsp::platform::writes::Options{.caller = "probe.cwc"})
+             .ok) {
         out["reason"] = "cannot write " + CompiledCwc(project);
         return out;
     }
@@ -2405,7 +2421,9 @@ bool QueryWatcherMap(const td::TdChoice& td, const project::Project& project, Wa
     if (map->nodes.empty() && map->instances.empty()) {
         return fail("report_cwc_status produced no parseable watcher rows");
     }
-    (void)fpgalsp::platform::write_file_utf8(cache_path, SerializeWatcherMap(key, *map));
+    (void)fpgalsp::platform::writes::Write(
+        project.dir, cache_path, SerializeWatcherMap(key, *map),
+        fpgalsp::platform::writes::Options{.caller = "probe.watcher_cache"});
     return true;
 }
 
@@ -2563,7 +2581,9 @@ std::string QuerySampleClockFromGateDb(const td::TdChoice& td, const project::Pr
         // 借用 error 之外的通道不合适；实例清单由调用方通过 info 拿到（见 Capture）。
         *error = std::string();
     }
-    (void)fpgalsp::platform::write_file_utf8(cache_path, key + "\n" + clock + "\n");
+    (void)fpgalsp::platform::writes::Write(
+        project.dir, cache_path, key + "\n" + clock + "\n",
+        fpgalsp::platform::writes::Options{.caller = "probe.clock_cache"});
     return clock;
 }
 
@@ -2633,7 +2653,12 @@ std::string EnsureCwcForInstance(const td::TdChoice& td, const project::Project&
     if (text.empty()) return fail(impl_error.empty() ? "cannot build cwc for " + instance : impl_error);
     const std::string path = StateProbeDir(project) + "/cwc_" + instance + ".cwc";
     (void)fpgalsp::platform::ensure_directory(StateProbeDir(project));
-    if (!fpgalsp::platform::write_file_utf8(path, text)) return fail("cannot write " + path);
+    if (!fpgalsp::platform::writes::Write(
+                project.dir, path, text,
+                fpgalsp::platform::writes::Options{.caller = "probe.instance_cwc"})
+             .ok) {
+        return fail("cannot write " + path);
+    }
     if (info != nullptr) *info = impl_info;
     return path;
 }
@@ -2693,7 +2718,10 @@ jsonrpc::Json EnsureCompiledCwc(const project::Project& project,
     std::error_code ec;
     std::filesystem::create_directories(
         std::filesystem::path(CompiledCwc(project)).parent_path(), ec);
-    if (!fpgalsp::platform::write_file_utf8(CompiledCwc(project), text)) {
+    if (!fpgalsp::platform::writes::Write(
+                project.dir, CompiledCwc(project), text,
+                fpgalsp::platform::writes::Options{.caller = "probe.cwc"})
+             .ok) {
         out["reason"] = "cannot write " + CompiledCwc(project);
         return out;
     }
@@ -3041,7 +3069,7 @@ jsonrpc::Json Configure(const project::Project& project, const std::vector<std::
         return out;
     }
     std::string error;
-    if (!WriteMdn(MdnPath(project), after, &error)) {
+    if (!WriteMdn(project.dir, MdnPath(project), after, &error)) {
         out["reason"] = error;
         return out;
     }
@@ -3797,7 +3825,10 @@ jsonrpc::Json Capture(const td::TdChoice& td, const project::Project& project,
                 fpgalsp::platform::state_dir(project.dir) + "/probe";
             (void)fpgalsp::platform::ensure_directory(trigger_dir);
             const std::string target = trigger_dir + "/trigger_" + Timestamp() + ".cwc";
-            if (fpgalsp::platform::write_file_utf8(target, patched)) {
+            if (fpgalsp::platform::writes::Write(
+                    project.dir, target, patched,
+                    fpgalsp::platform::writes::Options{.caller = "probe.trigger_cwc"})
+                .ok) {
                 cwc_path2 = target;
                 out["trigger_cwc"] = target;
             } else {

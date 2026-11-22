@@ -116,8 +116,10 @@ MdnConfig ReadMdn(const std::string& path);
 // 没有 mark_debug 行时追加到末尾。传入空 signals 等价于删掉这条命令。
 std::string RenderMdn(std::string_view original, const std::vector<std::string>& signals);
 
-bool WriteMdn(const std::string& path, const std::vector<std::string>& signals,
-              std::string* error);
+// project_dir 用于统一写服务（platform::write_service）的 root 策略/审计；
+// .mdn 属于登记的工程用户文件，写入前会做路径校验与原子写。
+bool WriteMdn(const std::string& project_dir, const std::string& path,
+              const std::vector<std::string>& signals, std::string* error);
 
 // -----------------------------------------------------------------------------
 // phy_1/cw/compiled.cwc —— ChipWatcher 编译产物（探针是否真的进了 bit 的证据）

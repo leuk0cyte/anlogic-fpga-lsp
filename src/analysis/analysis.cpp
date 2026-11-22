@@ -41,6 +41,7 @@
 
 #include "platform/encoding.h"
 #include "platform/path.h"
+#include "platform/write_service.h"
 #include "td/td_diagnostics.h"  // EnsureDevice
 #include "td/td_install.h"      // FindTd / TdChoice
 #include "td/td_output.h"       // HasError
@@ -549,10 +550,10 @@ Json Run(const project::Project& project, std::string_view td_explicit, const Lo
 
     // 只有完整跑完才写缓存（与 Python 一致：提前 return 的分支不落盘）
     if (!cache.empty()) {
-        platform::ensure_directory(cache);
-        platform::write_file_utf8(cache + "/analysis.json",
-                                  result.dump(-1, ' ', /*ensure_ascii=*/false,
-                                              Json::error_handler_t::replace));
+        (void)platform::writes::Write(
+            project.dir, cache + "/analysis.json",
+            result.dump(-1, ' ', /*ensure_ascii=*/false, Json::error_handler_t::replace),
+            platform::writes::Options{.caller = "analysis.cache"});
     }
     {
         const int violations = result["drc"].value("violations", 0);

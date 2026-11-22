@@ -83,6 +83,7 @@ const { createLmTools, registerLmTools } = require('../src/lmTools');
 const { renderConstraintHtml } = require('../src/constraintHtml');
 const { ReportsPanel } = require('../src/reportsPanel');
 const { appendLog, flushLogSync } = require('../src/launchCheck');
+const writeService = require('../src/writeService');
 
 // ------------------------------------------------------------------ tiny test harness
 
@@ -1175,24 +1176,30 @@ test('module tree: indexChanged without a patchable module refreshes immediately
 
 
 // F6/R8: `appendLog()` is called from event handlers, so it must never do synchronous disk I/O.
+// The bytes themselves go through src/writeService.js (state root + policy + never-throw).
 test('launch log: appendLog is buffered and flushes asynchronously', async () => {
     const fs = require('fs');
     const os = require('os');
     const path = require('path');
+    const { STATE_ENV } = require('../src/stateDir');
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fpgal-log-'));
+    const previous = process.env[STATE_ENV];
+    process.env[STATE_ENV] = path.join(dir, 'state');
     try {
-        const file = path.join(dir, 'nested', 'extension.log');
-        appendLog(file, 'first line');
+        const file = path.join(dir, 'state', 'logs', 'extension.log');
+        appendLog(dir, 'extension', 'first line');
         eq(fs.existsSync(file), false, 'no synchronous write from the caller');
         await new Promise((resolve) => setTimeout(resolve, 80));
         eq(fs.existsSync(file), true, 'flushed on a later tick');
         includes(fs.readFileSync(file, 'utf8'), 'first line');
 
         // flushLogSync() drains the tail (shutdown / fatal path).
-        appendLog(file, 'tail line');
+        appendLog(dir, 'extension', 'tail line');
         flushLogSync();
         includes(fs.readFileSync(file, 'utf8'), 'tail line');
     } finally {
+        if (previous === undefined) delete process.env[STATE_ENV];
+        else process.env[STATE_ENV] = previous;
         fs.rmSync(dir, { recursive: true, force: true });
     }
 });
@@ -1460,6 +1467,223 @@ test('state dir: resolves under system temp and is passed to the server env', as
     eq(logIndex >= 0, true, 'must still pass --log explicitly');
     eq(String(options.args[logIndex + 1]).includes('.fpgalsp'), false,
         'mcp log must not be written into the workspace');
+});
+
+// ---------------------------------------------------------------------------
+// 统一写服务（src/writeService.js）——与后端 platform::write_service 对称：
+// root 策略 + 原子写 + never-throw + dryRun。门禁测试在本节最后。
+// ---------------------------------------------------------------------------
+
+function makeWriteSandbox() {
+    const fs = require('fs');
+    const os = require('os');
+    const path = require('path');
+    const { STATE_ENV } = require('../src/stateDir');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fpgal-writeservice-'));
+    const stateRoot = path.join(dir, 'state-root');
+    const previous = process.env[STATE_ENV];
+    process.env[STATE_ENV] = stateRoot;
+    return {
+        dir,
+        stateRoot,
+        restore() {
+            if (previous === undefined) delete process.env[STATE_ENV];
+            else process.env[STATE_ENV] = previous;
+            fs.rmSync(dir, { recursive: true, force: true });
+        },
+    };
+}
+
+test('write service: state writes land under the state root and create parents', () => {
+    const fs = require('fs');
+    const path = require('path');
+    const sandbox = makeWriteSandbox();
+    try {
+        const result = writeService.writeStateFile(sandbox.dir, 'logs/nested/report.txt', 'hello\n');
+        eq(result.ok, true, `write should succeed: ${result.error}`);
+        eq(result.path, path.join(sandbox.stateRoot, 'logs', 'nested', 'report.txt'), 'reported path');
+        eq(fs.readFileSync(result.path, 'utf8'), 'hello\n', 'content written');
+        eq(writeService.stateRootFor(sandbox.dir), path.resolve(sandbox.stateRoot),
+            'stateRootFor mirrors src/stateDir.js (the directory the backend also gets)');
+        eq(path.relative(writeService.stateRootFor(sandbox.dir), result.path).startsWith('..'), false,
+            'reported path is inside the state root');
+    } finally {
+        sandbox.restore();
+    }
+});
+
+test('write service: state paths that escape the root are refused', () => {
+    const fs = require('fs');
+    const path = require('path');
+    const sandbox = makeWriteSandbox();
+    try {
+        const outside = [
+            '../escape.txt',
+            'logs/../../escape.txt',
+            '/etc/passwd',
+            'C:/Windows/evil.txt',
+            '\\\\server\\share\\evil.txt',
+            'logs/nul\u0000.txt',
+        ];
+        for (const rel of outside) {
+            const result = writeService.writeStateFile(sandbox.dir, rel, 'x');
+            eq(result.ok, false, `must refuse ${JSON.stringify(rel)}`);
+            ok(result.error.length > 0, 'refusal carries a reason');
+        }
+        eq(fs.existsSync(path.join(sandbox.dir, 'escape.txt')), false, 'nothing escaped the state root');
+        eq(fs.existsSync(path.join(sandbox.stateRoot, 'escape.txt')), false, 'nothing escaped into the root');
+    } finally {
+        sandbox.restore();
+    }
+});
+
+test('write service: any .fpgalsp path segment is refused', () => {
+    const fs = require('fs');
+    const path = require('path');
+    const sandbox = makeWriteSandbox();
+    try {
+        const stateCases = ['.fpgalsp/log.txt', 'logs/.fpgalsp/report.txt', 'logs/old.fpgalsp/x.txt'];
+        for (const rel of stateCases) {
+            const result = writeService.writeStateFile(sandbox.dir, rel, 'x');
+            eq(result.ok, false, `state must refuse ${rel}`);
+            includes(result.error, '.fpgalsp', 'reason names the forbidden segment');
+        }
+        const project = writeService.writeProjectFile(sandbox.dir, '.fpgalsp/mcp.json', '{}');
+        eq(project.ok, false, 'project writes must refuse a .fpgalsp segment too');
+        includes(project.error, '.fpgalsp');
+        eq(fs.existsSync(path.join(sandbox.dir, '.fpgalsp')), false, 'no .fpgalsp directory is created');
+    } finally {
+        sandbox.restore();
+    }
+});
+
+test('write service: dryRun validates without touching the disk', () => {
+    const fs = require('fs');
+    const path = require('path');
+    const sandbox = makeWriteSandbox();
+    try {
+        const state = writeService.writeStateFile(sandbox.dir, 'logs/plan.txt', 'x', { dryRun: true });
+        eq(state.ok, true, `dry run should succeed: ${state.error}`);
+        eq(state.dryRun, true, 'result is flagged dry-run');
+        eq(fs.existsSync(state.path), false, 'dry run writes nothing');
+        eq(fs.existsSync(sandbox.stateRoot), false, 'dry run creates no directories');
+
+        const project = writeService.writeProjectFile(sandbox.dir, '.vscode/mcp.json', '{}',
+            { dryRun: true, backup: true });
+        eq(project.ok, true, `project dry run should succeed: ${project.error}`);
+        eq(fs.existsSync(path.join(sandbox.dir, '.vscode')), false, 'project dry run creates no directories');
+    } finally {
+        sandbox.restore();
+    }
+});
+
+test('write service: atomic overwrite replaces the file and leaves no temp files', () => {
+    const fs = require('fs');
+    const path = require('path');
+    const sandbox = makeWriteSandbox();
+    try {
+        const first = writeService.writeStateFile(sandbox.dir, 'logs/data.txt', 'old');
+        eq(first.ok, true, first.error);
+        const second = writeService.writeStateFile(sandbox.dir, 'logs/data.txt', 'new');
+        eq(second.ok, true, second.error);
+        eq(fs.readFileSync(second.path, 'utf8'), 'new', 'existing file is replaced');
+        const leftovers = fs.readdirSync(path.dirname(second.path)).filter((name) => name.startsWith('.tmp-'));
+        eq(leftovers.length, 0, 'no temporary file survives a successful write');
+    } finally {
+        sandbox.restore();
+    }
+});
+
+test('write service: project writes are limited to the explicit whitelist', () => {
+    const fs = require('fs');
+    const path = require('path');
+    const sandbox = makeWriteSandbox();
+    try {
+        for (const rel of ['src/top.v', 'package.json', '.vscode/settings.json', 'notes.txt']) {
+            const result = writeService.writeProjectFile(sandbox.dir, rel, 'x');
+            eq(result.ok, false, `must refuse project file ${rel}`);
+            includes(result.error, 'whitelist', 'reason names the whitelist');
+        }
+        eq(fs.existsSync(path.join(sandbox.dir, 'src')), false, 'refused writes create nothing');
+
+        const allowed = writeService.writeProjectFile(sandbox.dir, 'constraints/pin.al', '<al/>');
+        eq(allowed.ok, true, `*.al must be allowed: ${allowed.error}`);
+        eq(fs.readFileSync(allowed.path, 'utf8'), '<al/>');
+    } finally {
+        sandbox.restore();
+    }
+});
+
+test('write service: .vscode/mcp.json is written atomically with a .fpgalsp-bak backup', () => {
+    const fs = require('fs');
+    const path = require('path');
+    const sandbox = makeWriteSandbox();
+    try {
+        const target = path.join(sandbox.dir, '.vscode', 'mcp.json');
+        fs.mkdirSync(path.dirname(target), { recursive: true });
+        fs.writeFileSync(target, '{"servers":{"old":{}}}\n', 'utf8');
+        const result = writeService.writeProjectFile(sandbox.dir, '.vscode/mcp.json',
+            '{"servers":{"new":{}}}\n', { backup: true, caller: 'test.mcp' });
+        eq(result.ok, true, `mcp.json write should succeed: ${result.error}`);
+        eq(fs.readFileSync(target, 'utf8'), '{"servers":{"new":{}}}\n', 'new config written');
+        const backup = `${target}.fpgalsp-bak`;
+        eq(result.backup, backup, 'backup path is reported');
+        eq(fs.readFileSync(backup, 'utf8'), '{"servers":{"old":{}}}\n', 'backup keeps the previous bytes');
+    } finally {
+        sandbox.restore();
+    }
+});
+
+test('write service: appendLog appends under the state logs dir and never throws', () => {
+    const fs = require('fs');
+    const path = require('path');
+    const sandbox = makeWriteSandbox();
+    try {
+        const first = writeService.appendLog(sandbox.dir, 'extension', 'one');
+        eq(first.ok, true, first.error);
+        const second = writeService.appendLog(sandbox.dir, 'extension.log', 'two');
+        eq(second.path, path.join(sandbox.stateRoot, 'logs', 'extension.log'), 'one sink per name');
+        const other = writeService.appendLog(sandbox.dir, 'mcp', 'separate');
+        eq(fs.readFileSync(first.path, 'utf8'), 'one\ntwo\n', 'lines append in order; .log is not doubled');
+        eq(fs.readFileSync(other.path, 'utf8'), 'separate\n', 'different names use different files');
+
+        const bad = writeService.appendLog(sandbox.dir, '../evil', 'x');
+        eq(bad.ok, false, 'a traversing log name is refused');
+        ok(bad.error.length > 0, 'refusal carries a reason');
+
+        // IO failure must come back as ok=false, never as an exception.
+        writeService.writeStateFile(sandbox.dir, 'logs/blocker', 'this is a file, not a directory');
+        const failedAppend = writeService.appendLog(sandbox.dir, 'blocker/child', 'x');
+        eq(failedAppend.ok, false, 'append under a file-as-directory fails');
+        ok(failedAppend.error.length > 0, 'failure carries a reason');
+        const failedWrite = writeService.writeStateFile(sandbox.dir, 'logs/blocker/child.txt', 'x');
+        eq(failedWrite.ok, false, 'write under a file-as-directory fails');
+    } finally {
+        sandbox.restore();
+    }
+});
+
+// 门禁（防复发）：以后新增的写文件代码必须走 writeService。扫描范围：extension.js 与
+// src/*.js（test/** 是测试夹具，故意不扫；白名单只有 src/writeService.js 一个文件）。
+test('write gate: raw fs write APIs live only in src/writeService.js', () => {
+    const fs = require('fs');
+    const path = require('path');
+    const extensionRoot = path.join(__dirname, '..');
+    const files = ['extension.js'].concat(
+        fs.readdirSync(path.join(extensionRoot, 'src'))
+            .filter((name) => name.endsWith('.js'))
+            .map((name) => path.join('src', name)));
+    const rawWrite = /fs\.(?:writeFileSync|appendFileSync|createWriteStream)\s*\(/;
+    const violations = [];
+    for (const relative of files) {
+        if (relative.replace(/\\/g, '/') === 'src/writeService.js') continue;
+        const source = fs.readFileSync(path.join(extensionRoot, relative), 'utf8');
+        source.split(/\r?\n/).forEach((line, index) => {
+            if (rawWrite.test(line)) violations.push(`${relative}:${index + 1}: ${line.trim()}`);
+        });
+    }
+    eq(violations.length, 0,
+        `raw file writes must go through src/writeService.js:\n  ${violations.join('\n  ')}`);
 });
 
 // ---------------------------------------------------------------------------

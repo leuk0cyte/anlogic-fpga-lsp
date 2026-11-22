@@ -411,3 +411,23 @@ if(EXISTS "Y:/fpga-lsp/fpgalsp/reports.py")
 else()
     message(STATUS "对等门禁: 跳过注册（未找到 Python 参考实现 Y:/fpga-lsp）")
 endif()
+
+# =============================================================================
+#  统一写入门禁（ctest -L docs）：src/ 里禁止绕过 platform::write_service 直接写文件
+# =============================================================================
+#  2026-11-22：写缓存/日志/工程文件的代码散落各处，改"写哪/怎么写"必漏改
+#  （工程根反复长出 .fpgalsp 就是一处硬编码）。统一入口 + 机械门禁防复发。
+if(EXISTS "${CMAKE_SOURCE_DIR}/tools/audit/check_raw_file_writes.py")
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(Python3_Interpreter_FOUND)
+        add_test(
+            NAME docs_no_raw_writes
+            COMMAND "${Python3_EXECUTABLE}"
+                    "${CMAKE_SOURCE_DIR}/tools/audit/check_raw_file_writes.py"
+                    --root "${CMAKE_SOURCE_DIR}"
+        )
+        set_tests_properties(docs_no_raw_writes PROPERTIES
+            LABELS "docs" TIMEOUT 60)
+        message(STATUS "文档门禁: 已注册 docs_no_raw_writes")
+    endif()
+endif()

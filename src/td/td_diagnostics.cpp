@@ -20,6 +20,7 @@
 #include "platform/encoding.h"
 #include "platform/log.h"
 #include "platform/path.h"
+#include "platform/write_service.h"
 #include "td/td_device.h"
 #include "td/td_session.h"
 #include "td/tcl_quote.h"
@@ -321,8 +322,8 @@ std::optional<std::string> ReadDeviceCache(const std::string& path, const std::s
     }
 }
 
-void UpdateDeviceCache(const std::string& path, const std::string& key,
-                       const std::optional<std::string>& db) {
+void UpdateDeviceCache(const project::Project& project, const std::string& path,
+                       const std::string& key, const std::optional<std::string>& db) {
     if (path.empty()) return;
     try {
         nlohmann::json root = nlohmann::json::object();
@@ -345,21 +346,9 @@ void UpdateDeviceCache(const std::string& path, const std::string& key,
             root.erase(key);
             if (root.empty()) return;  // 不留空文件
         }
-        std::error_code ec;
-        const std::filesystem::path file(path);
-        std::filesystem::create_directories(file.parent_path(), ec);
-        if (ec) return;
-        const std::string temp = path + ".tmp";
-        if (!platform::write_file_utf8(temp, root.dump())) return;
-        std::filesystem::rename(temp, file, ec);
-        if (ec) {
-            std::filesystem::remove(file, ec);
-            std::filesystem::rename(temp, file, ec);
-            if (ec) {
-                std::error_code ignored;
-                std::filesystem::remove(temp, ignored);
-            }
-        }
+        // 统一写服务：状态目录 + 原子写 + 审计（2026-11-22 写服务改造）。
+        (void)platform::writes::Write(project.dir, path, root.dump(),
+                                      platform::writes::Options{.caller = "td.device_cache"});
     } catch (...) {
         // 写缓存失败 = 静默放弃；下一轮还是全量试错（行为不变）
     }
@@ -440,7 +429,7 @@ EnsureDeviceResult EnsureDevice(const project::Project& project, TdSession& sess
                 return result;
             }
             // 缓存条目被 TD 拒绝（升级 / db 不再支持该器件）：删掉它，回退全量试错。
-            UpdateDeviceCache(cache_path, cache_key, std::nullopt);
+            UpdateDeviceCache(project, cache_path, cache_key, std::nullopt);
             platform::default_logger().debug("import_device: cached db rejected: " + *cached);
         }
     }
@@ -462,7 +451,7 @@ EnsureDeviceResult EnsureDevice(const project::Project& project, TdSession& sess
                 result.ok = true;
                 result.db = candidate;
                 // 记住成功候选（best-effort；写失败不影响本轮结果）
-                if (cache_enabled) UpdateDeviceCache(cache_path, cache_key, result.db);
+                if (cache_enabled) UpdateDeviceCache(project, cache_path, cache_key, result.db);
                 return result;
             }
         } catch (const std::exception& exc) {

@@ -16,6 +16,8 @@
 #include <re2/re2.h>
 
 #include "platform/encoding.h"
+#include "platform/path.h"
+#include "platform/write_service.h"
 #include "td/td_output.h"
 
 namespace fpgalsp::flow {
@@ -500,7 +502,10 @@ bool RewriteProjectPath(const std::string& al_path, const std::string& new_root)
         if (c == '\\') c = '/';
     }
     text.replace(begin, end - begin, root);
-    return platform::write_file_utf8(al_path, text);
+    // 统一写服务：工程文件（.al）由 service 做策略/备份/原子写；失败时原文件保持不变。
+    return platform::writes::Write(platform::path_dirname(al_path), al_path, text,
+                                   platform::writes::Options{.caller = "flow.project_path"})
+        .ok;
 }
 
 

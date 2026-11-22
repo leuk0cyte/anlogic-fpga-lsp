@@ -41,6 +41,7 @@
 #include "platform/encoding.h"
 #include "platform/log.h"
 #include "platform/path.h"
+#include "platform/write_service.h"
 #include "project/al_project.h"
 #include "reports/reports_aggregate.h"
 #include "server/features_rename_util.h"
@@ -4329,16 +4330,13 @@ Json Bridge::InstantiationTool(const Json& arguments) {
 namespace {
 
 // 原子写：同目录临时文件 + rename 覆盖。失败返回 false（不抛）。
-bool WriteFileAtomic(const std::string& path, const std::string& content) {
-    const std::string temp = path + ".fpgalsp-tmp";
-    if (!platform::write_file_utf8(temp, content)) return false;
-    std::error_code ec;
-    fs::rename(fs::u8path(temp), fs::u8path(path), ec);
-    if (ec) {
-        fs::remove(fs::u8path(temp), ec);
-        return false;
-    }
-    return true;
+bool WriteFileAtomic(const std::string& project_dir, const std::string& path,
+                     const std::string& content) {
+    // 统一写服务：工程文件（.al）-> 策略 + 原子写 + 审计；失败时原文件保持不变。
+    return platform::writes::Write(
+               project_dir, path, content,
+               platform::writes::Options{.caller = "bridge.project_file"})
+        .ok;
 }
 
 std::string NormaliseSlashes(std::string text) {
@@ -4403,18 +4401,18 @@ Json Bridge::ProjectRenameTool(const Json& arguments) {
         return out;
     }
 
-    if (!WriteFileAtomic(proj.al_path, updated)) {
+    if (!WriteFileAtomic(proj.dir, proj.al_path, updated)) {
         throw ToolError("Cannot write " + proj.al_path);
     }
 
     // 验证：重新解析，只允许项目名变化
     const project::Project after = project::ParseAl(proj.al_path);
     if (after.name != name) {
-        (void)WriteFileAtomic(proj.al_path, original);  // 回滚
+        (void)WriteFileAtomic(proj.dir, proj.al_path, original);  // 回滚
         throw ToolError("Verification failed: project name is still '" + after.name + "' (rolled back)");
     }
     if (after.files.size() != proj.files.size()) {
-        (void)WriteFileAtomic(proj.al_path, original);  // 回滚
+        (void)WriteFileAtomic(proj.dir, proj.al_path, original);  // 回滚
         throw ToolError("Verification failed: file list changed unexpectedly (rolled back)");
     }
 
@@ -4531,7 +4529,7 @@ Json Bridge::ProjectAddSourceTool(const Json& arguments) {
     const std::string updated =
         original.substr(0, insert_at) + block + original.substr(insert_at);
 
-    if (!WriteFileAtomic(proj.al_path, updated)) {
+    if (!WriteFileAtomic(proj.dir, proj.al_path, updated)) {
         throw ToolError("Cannot write " + proj.al_path);
     }
 
@@ -4542,7 +4540,7 @@ Json Bridge::ProjectAddSourceTool(const Json& arguments) {
         if (LowerText(NormaliseSlashes(item.rel)) == rel_lower) found = true;
     }
     if (!found || after.files.size() != proj.files.size() + 1) {
-        (void)WriteFileAtomic(proj.al_path, original);  // 回滚
+        (void)WriteFileAtomic(proj.dir, proj.al_path, original);  // 回滚
         throw ToolError("Verification failed: the new source is not in the .al (rolled back)");
     }
 
