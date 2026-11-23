@@ -212,6 +212,19 @@ verible_lint_rules_all        (lint 规则聚合库，必须 /WHOLEARCHIVE 链�
 > 非 LTO 二进制（正常是 ~7.1 MB）。如果发现 `build/bin/fpgalsp-native.exe` 突然变大，
 > 用 `cmake --preset windows-msvc-release` 重新配置后重编即可恢复。
 
+### VS 里"重新生成 / 删除缓存"会清空共享目录（已经踩过两次）
+
+- VS 的 **「重新生成」(Rebuild)** 会先 **clean**：实测它把 `build/` 的 `CMakeCache.txt` 和
+  `bin\*.exe` 全删了，随后因为 preset 里的 `"jobs": 0` 转成 MSBuild 的 `/m:0` 报
+  **`The <jobs> value requires a positive integer argument.`** —— 结果就是"目录被清空 + 构建失败"。
+  → 已从 `CMakePresets.json` 的 `buildPresets` 里删掉 `jobs`（Ninja 用默认并行度，VS 也不再多传）。
+- 如果之前选过 **`windows-msvc-debug`** preset，它原来和 `windows-msvc-dev` 共用 `build-dev/`，
+  于是 `build-dev/` 被重配成 **Debug**（日常迭代的 Release 缓存被顶掉）。
+  → 现在 Debug 走独立目录 **`build-debug/`**，`build-dev/` 只归 `windows-msvc-dev`。
+- 建议：**在 VS 里只用 `windows-msvc-dev` / `windows-msvc-release` 两个 preset**，
+  并且**不要对共享目录按"重新生成"**（用"生成"，或者命令行 `cmake --build --preset ...`）。
+  一定要 Rebuild 时，先切到自己的目录（`build-<topic>/`）。
+
 ### 打开 VS 时曾经报的两个错（已修）
 
 | 报错 | 原因 | 修法 |

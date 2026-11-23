@@ -34,6 +34,7 @@
       "displayName": "Windows / MSVC Debug",
       "description": "调试构建：/MTd + /Od + 调试信息",
       "inherits": "windows-msvc-base",
+      "binaryDir": "${sourceDir}/build-dev",
       "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
     },
     {
@@ -85,12 +86,12 @@
     }
   ],
   "buildPresets": [
-    { "name": "windows-msvc-debug", "displayName": "Build: MSVC Debug", "configurePreset": "windows-msvc-debug", "configuration": "Debug", "jobs": 0 },
-    { "name": "windows-msvc-release", "displayName": "Build: MSVC Release", "configurePreset": "windows-msvc-release", "configuration": "Release", "jobs": 0 },
-    { "name": "windows-msvc-relwithdebinfo", "displayName": "Build: MSVC RelWithDebInfo", "configurePreset": "windows-msvc-relwithdebinfo", "configuration": "RelWithDebInfo", "jobs": 0 },
-    { "name": "windows-msvc-release-lto", "displayName": "Build: MSVC Release + LTO", "configurePreset": "windows-msvc-release-lto", "configuration": "Release", "jobs": 0 },
-    { "name": "windows-msvc-dev", "displayName": "Build: MSVC Release（无 LTO）", "configurePreset": "windows-msvc-dev", "configuration": "Release", "jobs": 0 },
-    { "name": "windows-msvc", "displayName": "Build: MSVC Release (默认)", "configurePreset": "windows-msvc", "configuration": "Release", "jobs": 0 }
+    { "name": "windows-msvc-debug", "displayName": "Build: MSVC Debug", "configurePreset": "windows-msvc-debug", "configuration": "Debug" },
+    { "name": "windows-msvc-release", "displayName": "Build: MSVC Release", "configurePreset": "windows-msvc-release", "configuration": "Release" },
+    { "name": "windows-msvc-relwithdebinfo", "displayName": "Build: MSVC RelWithDebInfo", "configurePreset": "windows-msvc-relwithdebinfo", "configuration": "RelWithDebInfo" },
+    { "name": "windows-msvc-release-lto", "displayName": "Build: MSVC Release + LTO", "configurePreset": "windows-msvc-release-lto", "configuration": "Release" },
+    { "name": "windows-msvc-dev", "displayName": "Build: MSVC Release（无 LTO）", "configurePreset": "windows-msvc-dev", "configuration": "Release" },
+    { "name": "windows-msvc", "displayName": "Build: MSVC Release (默认)", "configurePreset": "windows-msvc", "configuration": "Release" }
   ],
   "testPresets": [
     { "name": "windows-msvc-debug", "displayName": "Test: MSVC Debug", "configurePreset": "windows-msvc-debug", "configuration": "Debug", "output": { "outputOnFailure": true }, "execution": { "jobs": 8 }, "environment": { "TMP": "${sourceDir}/build/Testing/tmp", "TEMP": "${sourceDir}/build/Testing/tmp" } },
