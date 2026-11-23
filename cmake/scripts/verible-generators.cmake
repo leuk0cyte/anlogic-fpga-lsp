@@ -197,6 +197,9 @@ set(VG_PARSE_INTERFACE_H    "${_gp}/verilog-parse-interface.h")
 set(VG_MOVED_TAB_CC         "${_gp}/verilog-moved.tab.cc")
 set(VG_FINAL_TAB_CC         "${_gp}/verilog-final.tab.cc")
 set(VG_COMMAND_FILE_YY_CC   "${_ga}/command-file.yy.cc")
+# 生成物校验戳（G1/G3 各一个）：flex 输出必须带自己的 lexer 前缀，见 verify_flex 注释。
+set(VG_VERILOG_YY_CHECK      "${_gp}/verilog.yy.cc.verified")
+set(VG_COMMAND_FILE_YY_CHECK "${_ga}/command-file.yy.cc.verified")
 
 # 导出给需要使用生成物的模块
 set(VERIBLE_GEN_VERILOG_PARSER_DIR "${_gp}" CACHE INTERNAL "生成物: verilog/parser 目录")
@@ -268,6 +271,18 @@ add_custom_command(
     VERBATIM
 )
 
+# G1-check：生成物必须带 verilog 自己的前缀（详见 verible-patch.cmake 的 verify_flex）
+add_custom_command(
+    OUTPUT  "${VG_VERILOG_YY_CHECK}"
+    COMMAND "${CMAKE_COMMAND}" -DMODE=verify_flex
+            "-DIN=${VG_VERILOG_YY_CC}" "-DEXPECT=verilogFlexLexer"
+            -P "${_patch_script}"
+    COMMAND "${CMAKE_COMMAND}" -E touch "${VG_VERILOG_YY_CHECK}"
+    DEPENDS "${VG_VERILOG_YY_CC}" "${_patch_script}"
+    COMMENT "Verible G1-check: verilog.yy.cc 前缀校验"
+    VERBATIM
+)
+
 # =============================================================================
 #  G2: verilog.y -> .tab.hh / .tab.cc / .output / .dot
 # =============================================================================
@@ -298,6 +313,18 @@ add_custom_command(
     DEPENDS "${VERIBLE_SRC_DIR}/verible/common/analysis/command_file.lex"
             "${WIN_FLEX}"
     COMMENT "Verible G3: win_flex command_file.lex -> command-file.yy.cc"
+    VERBATIM
+)
+
+# G3-check：同上（两个 flex 输出互相覆盖时，这里会先报出可读的错误）
+add_custom_command(
+    OUTPUT  "${VG_COMMAND_FILE_YY_CHECK}"
+    COMMAND "${CMAKE_COMMAND}" -DMODE=verify_flex
+            "-DIN=${VG_COMMAND_FILE_YY_CC}" "-DEXPECT=veribleCommandFileFlexLexer"
+            -P "${_patch_script}"
+    COMMAND "${CMAKE_COMMAND}" -E touch "${VG_COMMAND_FILE_YY_CHECK}"
+    DEPENDS "${VG_COMMAND_FILE_YY_CC}" "${_patch_script}"
+    COMMENT "Verible G3-check: command-file.yy.cc 前缀校验"
     VERBATIM
 )
 
@@ -504,6 +531,8 @@ if(NOT TARGET verible_generated)
             "${VG_MOVED_TAB_CC}"
             "${VG_FINAL_TAB_CC}"
             "${VG_COMMAND_FILE_YY_CC}"
+            "${VG_VERILOG_YY_CHECK}"        # G1 前缀校验（必须先跑生成）
+            "${VG_COMMAND_FILE_YY_CHECK}"   # G3 前缀校验
         COMMENT "Verible: 全部生成物（G1–G6）"
         VERBATIM
     )

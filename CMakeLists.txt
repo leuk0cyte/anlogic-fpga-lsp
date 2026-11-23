@@ -17,7 +17,11 @@ cmake_minimum_required(VERSION 3.24)
 # 失败信息是 CMake 内部的：
 #     CMakeTestCCompiler.cmake:65: error: #error "The CMAKE_C_COMPILER is set to a C++ compiler"
 # 对用户毫无指导意义。所以在 project() 之前就把话说清楚。
-if(NOT DEFINED CMAKE_C_COMPILER AND NOT DEFINED CMAKE_CXX_COMPILER)
+# ⚠ Visual Studio 生成器（MSBuild）**不会**在 configure 前设置 CMAKE_C/CXX_COMPILER
+#   （它自己挑 MSVC），所以这条守卫必须放行 VS 生成器，否则"用 VS 打开工程"会被
+#   这里拦下（用户实际遇到的就是这个 + Dependencies.cmake 的 ALIAS 报错）。
+if(NOT CMAKE_GENERATOR MATCHES "Visual Studio" AND
+   NOT DEFINED CMAKE_C_COMPILER AND NOT DEFINED CMAKE_CXX_COMPILER)
     message(FATAL_ERROR
         "\n"
         "  未指定编译器。本项目仅支持 MSVC，且必须显式指定 C 与 C++ 编译器。\n"

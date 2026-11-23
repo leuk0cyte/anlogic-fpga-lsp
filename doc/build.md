@@ -194,6 +194,45 @@ verible_lint_rules_all        (lint 规则聚合库，必须 /WHOLEARCHIVE 链�
 > Verible 也未打标签——因此无法自动回答"落后哪些 CVE"。建议补
 > `thirdparty/*/UPSTREAM-VERSION.txt`（上游 tag + commit + 同步日期）。
 
+## 用 Visual Studio 打开这个工程
+
+两种方式，**都不要再让 VS 用默认的 `build/` 覆盖发布构建**：
+
+1. **推荐：用 preset（Ninja）**
+   VS 的「打开文件夹」会读 `CMakePresets.json`，直接选 `windows-msvc-dev`（日常）
+   或 `windows-msvc-release`（发布）。这两条 preset 已经把 `cl` / 静态 CRT / C++23 / LTO 都写齐了。
+
+2. **用 VS 自己的生成器（MSBuild，`Visual Studio 18 2026`）**
+   也可以，已修到能 configure + 生成 + 编译出 `fpgalsp-native.exe`（0.36.0 实测）。
+   代价：MSBuild 下没有 Ninja 的 target 级并行，且 `/MP` 会额外开线程，比 Ninja 慢不少；
+   构建目录请**显式指定到别处**（例如 `build-vs/`），不要指向 `build/`。
+
+> ⚠ **VS 默认会往 `build/` 里 configure**（并把它改成 Debug、关掉 LTO）。真发生过：
+> 共享 `build/` 的 cache 变成 `CMAKE_BUILD_TYPE=Debug`，随后发布构建产出一个 21 MB 的
+> 非 LTO 二进制（正常是 ~7.1 MB）。如果发现 `build/bin/fpgalsp-native.exe` 突然变大，
+> 用 `cmake --preset windows-msvc-release` 重新配置后重编即可恢复。
+
+### 打开 VS 时曾经报的两个错（已修）
+
+| 报错 | 原因 | 修法 |
+| --- | --- | --- |
+| `set_target_properties can not be used on an ALIAS target`（`cmake/Dependencies.cmake:185`） | `ctre::ctre` 是 `add_library(ctre::ctre ALIAS ctre)`，CMake 不允许对 ALIAS 设属性 | 用 `get_target_property(... ALIASED_TARGET)` 找到真实 target 再设 |
+| `未指定编译器。本项目仅支持 MSVC...`（`CMakeLists.txt:21`） | VS 生成器在 configure 前**不会**设置 `CMAKE_C/CXX_COMPILER`（它自己挑 MSVC），被这条守卫拦下 | 守卫放行 `Visual Studio` 生成器 |
+
+### 生成物自检（G1/G3）
+
+`win_flex` 的两份输出（`verilog.yy.cc` / `command-file.yy.cc`）曾经**互相覆盖**过：`verilog.yy.cc`
+里出现了 `#define yyFlexLexer veribleCommandFileFlexLexer`，症状是一串看不懂的
+`LNK2005: veribleCommandFilealloc/free/... 已在 ... 中定义`。
+
+现在生成后立刻校验前缀（`verible-patch.cmake` 的 `verify_flex` 模式），失败会直接说清楚：
+
+```
+代码生成校验失败：<build>/verible/gen/verible/verilog/parser/verilog.yy.cc
+  期望 '#define yyFlexLexer verilogFlexLexer'，实际 '... veribleCommandFileFlexLexer'
+  修法：删除该构建目录下的 verible/gen 后重新构建
+```
+
 ## 构建目录纪律：共享 `build/` 只放已验证状态
 
 **多人/多 agent 同时往一个构建目录写，必然互相踩。** 本项目已实际发生过两次：

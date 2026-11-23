@@ -181,9 +181,23 @@ add_subdirectory("${FPGA_LSP_THIRDPARTY_DIR}/compile-time-regular-expressions"
 
 # ctre 的 C++ 标准要跟本项目保持一致（ctre 自己默认只要求 C++20，且它把自己
 # 的 C++ 标准需求写成了接口属性，会覆盖本项目的 C++23 设置）
+
+#
+# ⚠ CMake 不允许对 **ALIAS target** 调 `set_target_properties` —— VS 生成器（MSBuild）
+#   下会直接报 `set_target_properties can not be used on an ALIAS target`（Ninja 下
+#   因为 target 形态不同没有触发，但这是真实的 CMake 约束，不是生成器差异）。
+#   `ctre::ctre` 在 ctre 的 CMakeLists 里是 `add_library(ctre::ctre ALIAS ctre)`，
+#   所以先用 `ALIASED_TARGET` 找到真实 target 再设属性。
 if(TARGET ctre::ctre)
-    set_target_properties(ctre::ctre PROPERTIES INTERFACE_COMPILE_FEATURES "")
-    target_compile_features(ctre::ctre INTERFACE cxx_std_23)
+    get_target_property(_fpga_lsp_ctre_aliased ctre::ctre ALIASED_TARGET)
+    set(_fpga_lsp_ctre_target ctre::ctre)
+    if(_fpga_lsp_ctre_aliased)
+        set(_fpga_lsp_ctre_target "${_fpga_lsp_ctre_aliased}")
+    endif()
+    set_target_properties(${_fpga_lsp_ctre_target} PROPERTIES INTERFACE_COMPILE_FEATURES "")
+    target_compile_features(${_fpga_lsp_ctre_target} INTERFACE cxx_std_23)
+    unset(_fpga_lsp_ctre_aliased)
+    unset(_fpga_lsp_ctre_target)
 endif()
 
 # 项目统一别名：fpga_lsp::ctre

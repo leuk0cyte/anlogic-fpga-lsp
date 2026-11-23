@@ -150,6 +150,38 @@ if(DEFINED OUT AND NOT DEFINED OUTPUT)
     set(OUTPUT "${OUT}")
 endif()
 
+# -----------------------------------------------------------------------------
+#  verify_flex：校验 win_flex 产出里带的是**它自己的** lexer 前缀。
+#  背景（真实事故）：两个 flex 输出互相覆盖过 —— build/ 的 verilog.yy.cc 里出现
+#  `#define yyFlexLexer veribleCommandFileFlexLexer`，症状是链接期一串看不懂的
+#  LNK2005（veribleCommandFilealloc/free/... 在两个 lexer 库里重复定义）。
+#  在生成后立刻断言前缀，能把这类"生成物坏了"的问题挡在编译之前。
+#  用法：cmake -DMODE=verify_flex -DIN=<生成文件> -DEXPECT=<前缀> -P 本文件
+# -----------------------------------------------------------------------------
+if(ACTION STREQUAL "verify_flex")
+    if(NOT DEFINED INPUT OR "${INPUT}" STREQUAL "")
+        message(FATAL_ERROR "verify_flex: 缺少 -DIN=<生成文件>")
+    endif()
+    if(NOT DEFINED EXPECT OR "${EXPECT}" STREQUAL "")
+        message(FATAL_ERROR "verify_flex: 缺少 -DEXPECT=<期望的 yyFlexLexer 前缀>")
+    endif()
+    if(NOT EXISTS "${INPUT}")
+        message(FATAL_ERROR "verify_flex: 文件不存在：${INPUT}")
+    endif()
+    file(READ "${INPUT}" _verify_text)
+    if(NOT _verify_text MATCHES "define[ \t]+yyFlexLexer[ \t]+${EXPECT}")
+        string(REGEX MATCH "define[ \t]+yyFlexLexer[ \t]+[A-Za-z_0-9]+" _verify_got
+               "${_verify_text}")
+        message(FATAL_ERROR
+            "verible 代码生成校验失败：${INPUT}\n"
+            "  期望 '#define yyFlexLexer ${EXPECT}'，实际 '${_verify_got}'。\n"
+            "  这是 flex 输出被互相覆盖的典型症状（G1/G3 并行生成时发生）。\n"
+            "  修法：删除该构建目录下的 verible/gen 后重新构建：\n"
+            "      rmdir /s /q <build>\\verible\\gen")
+    endif()
+    return()
+endif()
+
 foreach(_required IN ITEMS ACTION INPUT OUTPUT)
     if(NOT DEFINED ${_required} OR "${${_required}}" STREQUAL "")
         message(FATAL_ERROR
