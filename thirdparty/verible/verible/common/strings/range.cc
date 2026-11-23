@@ -30,6 +30,13 @@ std::string_view make_string_view_range(std::string_view::const_iterator begin,
   return std::string_view(&*begin, length);
 }
 
+// [fpgalsp patch] 指针重载（见头文件注释）。
+std::string_view make_string_view_range(const char *begin, const char *end) {
+  const std::ptrdiff_t length = end - begin;
+  CHECK_GE(length, 0) << "Malformed string bounds.";
+  return std::string_view(begin, static_cast<size_t>(length));
+}
+
 std::pair<int, int> SubstringOffsets(std::string_view substring,
                                      std::string_view superstring) {
   return SubRangeIndices(substring, superstring);

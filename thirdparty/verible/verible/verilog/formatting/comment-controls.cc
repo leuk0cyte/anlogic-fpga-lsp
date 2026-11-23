@@ -124,7 +124,8 @@ void FormatWhitespaceWithDisabledByteRanges(
     std::ostream &stream, verible::LineTerminatorStyle line_terminator_style) {
   VLOG(3) << __FUNCTION__;
   CHECK(verible::IsSubRange(space_text, text_base));
-  const int start = std::distance(text_base.begin(), space_text.begin());
+  // [fpgalsp patch] text_base / space_text 是两个不同 view → 指针相减
+  const int start = static_cast<int>(space_text.data() - text_base.data());
   const int end = start + space_text.length();
   ByteOffsetSet enabled_ranges{{start, end}};  // initial interval set mask
   enabled_ranges.Difference(disabled_ranges);

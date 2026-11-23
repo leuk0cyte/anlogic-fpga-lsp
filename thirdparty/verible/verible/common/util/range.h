@@ -102,12 +102,31 @@ bool BoundsEqual(const LRange &l, const RRange &r) {
 template <class SubRange, class SuperRange>
 std::pair<int, int> SubRangeIndices(const SubRange &subrange,
                                     const SuperRange &superrange) {
-  const int max = std::distance(superrange.begin(), superrange.end());
-  const int begin = std::distance(superrange.begin(), subrange.begin());
-  const int end = std::distance(superrange.begin(), subrange.end());
-  CHECK(IsSubRange(subrange, superrange))
-      << "got: (" << begin << ',' << end << "), max: " << max;
-  return {begin, end};
+  // [fpgalsp patch] subrange 与 superrange 常常是两个不同的 string_view 对象，
+  //   跨 view 的迭代器相减在 MSVC Debug 下会断言。支持 data()/size() 的类型改用
+  //   指针相减；其它 Range 类型保留原来的迭代器实现。
+  if constexpr (requires {
+                  std::data(subrange);
+                  std::size(subrange);
+                  std::data(superrange);
+                  std::size(superrange);
+                }) {
+    const auto *const super_begin = std::data(superrange);
+    const int max = static_cast<int>(std::size(superrange));
+    const int begin = static_cast<int>(std::data(subrange) - super_begin);
+    const int end =
+        static_cast<int>(std::data(subrange) + std::size(subrange) - super_begin);
+    CHECK(IsSubRange(subrange, superrange))
+        << "got: (" << begin << ',' << end << "), max: " << max;
+    return {begin, end};
+  } else {
+    const int max = std::distance(superrange.begin(), superrange.end());
+    const int begin = std::distance(superrange.begin(), subrange.begin());
+    const int end = std::distance(superrange.begin(), subrange.end());
+    CHECK(IsSubRange(subrange, superrange))
+        << "got: (" << begin << ',' << end << "), max: " << max;
+    return {begin, end};
+  }
 }
 
 }  // namespace verible

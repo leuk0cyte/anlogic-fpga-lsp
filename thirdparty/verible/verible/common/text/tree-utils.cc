@@ -312,7 +312,9 @@ bool PruneTreeFromRight(ConcreteSyntaxTree *tree,
   switch (kind) {
     case SymbolKind::kLeaf: {
       auto *leaf = down_cast<SyntaxTreeLeaf *>(tree->get());
-      return std::distance(offset, leaf->get().text().end()) > 0;
+      // [fpgalsp patch] offset 来自 Contents()，leaf 的 text 是另一个 view：
+      //   跨 view 的 distance 在 MSVC Debug 下断言。改指针比较。
+      return leaf->get().text().data() + leaf->get().text().size() > &*offset;
     }
     case SymbolKind::kNode: {
       auto &node = down_cast<SyntaxTreeNode &>(*tree->get());

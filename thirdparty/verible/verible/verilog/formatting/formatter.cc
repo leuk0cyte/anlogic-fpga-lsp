@@ -389,8 +389,11 @@ static void DeterminePartitionExpansion(
   const auto PreserveSpaces = [&ftoken_range, &full_text,
                                preformatted_tokens]() {
     const ByteOffsetSet new_disable_range{{DisableByteOffsetRange(
-        verible::make_string_view_range(ftoken_range.front().Text().begin(),
-                                        ftoken_range.back().Text().end()),
+        // [fpgalsp patch] 跨 token view → 指针
+        verible::make_string_view_range(
+            ftoken_range.front().Text().data(),
+            ftoken_range.back().Text().data() +
+                ftoken_range.back().Text().size()),
         full_text)}};
     verible::PreserveSpacesOnDisabledTokenRanges(preformatted_tokens,
                                                  new_disable_range, full_text);
@@ -745,8 +748,7 @@ class ContinuationCommentAligner {
       const verible::FormattedToken &token, int *column) {
     switch (token.before.action) {
       case verible::SpacingDecision::kPreserve: {
-        if (token.before.preserved_space_start !=
-            verible::string_view_null_iterator()) {
+        if (token.before.preserved_space_start != nullptr) {
           const std::string_view leading = token.OriginalLeadingSpaces();
           const auto last_nl = leading.find_last_of('\n');
           if (last_nl == std::string_view::npos) {

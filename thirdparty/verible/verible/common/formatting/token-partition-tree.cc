@@ -187,13 +187,15 @@ class BlankLineSeparatorDetector {
                           .TokensRange()
                           .front()
                           .token->text()
-                          .begin()) {}
+                          .data()) {}
 
   bool operator()(const TokenPartitionTree &node) {
     const auto range = node.Value().TokensRange();
     if (range.empty()) return false;
-    const auto begin = range.front().token->text().begin();
-    const auto end = range.back().token->text().end();
+    // [fpgalsp patch] 跨 token view 的区间 → 指针
+    const char *const begin = range.front().token->text().data();
+    const char *const end =
+        range.back().token->text().data() + range.back().token->text().size();
     const auto gap = make_string_view_range(previous_end_, begin);
     // A blank line between partitions contains 2+ newlines.
     const bool new_bound = std::count(gap.begin(), gap.end(), '\n') >= 2;
@@ -204,7 +206,8 @@ class BlankLineSeparatorDetector {
  private:
   // Keeps track of the end of the previous partition, which is the start
   // of each inter-partition gap (string_view).
-  std::string_view::const_iterator previous_end_;
+  // [fpgalsp patch] 用 const char* 表示位置（跨 view 的迭代器不可比较/相减）
+  const char *previous_end_ = nullptr;
 };
 
 // Subdivides the 'bounds' range into sub-ranges broken up by blank lines.
@@ -253,8 +256,10 @@ static std::string_view StringSpanOfPartitionRange(
   const auto back_range = range.back().Value().TokensRange();
   CHECK(!front_range.empty());
   CHECK(!back_range.empty());
-  return make_string_view_range(front_range.front().Text().begin(),
-                                back_range.back().Text().end());
+  // [fpgalsp patch] 跨 token view → 指针
+  return make_string_view_range(front_range.front().Text().data(),
+                                back_range.back().Text().data() +
+                                    back_range.back().Text().size());
 }
 
 bool AnyPartitionSubRangeIsDisabled(TokenPartitionRange range,
@@ -286,8 +291,10 @@ void AdjustIndentationAbsolute(TokenPartitionTree *tree, int amount) {
 
 std::string_view StringSpanOfTokenRange(const FormatTokenRange &range) {
   if (range.empty()) return {};
-  return make_string_view_range(range.front().Text().begin(),
-                                range.back().Text().end());
+  // [fpgalsp patch] 跨 token view → 指针
+  return make_string_view_range(range.front().Text().data(),
+                                range.back().Text().data() +
+                                    range.back().Text().size());
 }
 
 void IndentButPreserveOtherSpacing(TokenPartitionRange partition_range,

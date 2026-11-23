@@ -441,7 +441,8 @@ void TreeUnwrapper::CatchUpToCurrentLeaf(const TokenInfo &leaf_token) {
   while (!NextUnfilteredToken()->isEOF()) {
     EatSpaces();
     // compare const char* addresses:
-    if (NextUnfilteredToken()->text().begin() != leaf_token.text().begin()) {
+    // [fpgalsp patch] 跨 view 的迭代器相等比较在 MSVC Debug 下断言；比指针。
+    if (NextUnfilteredToken()->text().data() != leaf_token.text().data()) {
       VLOG(4) << "token: " << VerboseToken(*NextUnfilteredToken());
       AdvanceLastVisitedLeaf();
     } else {
@@ -1582,8 +1583,11 @@ static void AttachSeparatorToPreviousOrNextPartition(
     if (!previous_partition->Value().TokensRange().empty()) {
       const auto &previous_token =
           previous_partition->Value().TokensRange().back();
-      std::string_view original_text_between = verible::make_string_view_range(
-          previous_token.Text().end(), separator->Text().begin());
+      // [fpgalsp patch] 两个不同 token 的 view → 指针
+      std::string_view original_text_between =
+          verible::make_string_view_range(
+              previous_token.Text().data() + previous_token.Text().size(),
+              separator->Text().data());
       if (!absl::StrContains(original_text_between, '\n')) {
         VLOG(5) << "  merge into previous partition.";
         verible::MergeLeafIntoPreviousLeaf(partition);
@@ -1598,8 +1602,11 @@ static void AttachSeparatorToPreviousOrNextPartition(
   if (next_partition != nullptr) {
     if (!next_partition->Value().TokensRange().empty()) {
       const auto &next_token = next_partition->Value().TokensRange().front();
-      std::string_view original_text_between = verible::make_string_view_range(
-          separator->Text().end(), next_token.Text().begin());
+      // [fpgalsp patch] 两个不同 token 的 view → 指针
+      std::string_view original_text_between =
+          verible::make_string_view_range(
+              separator->Text().data() + separator->Text().size(),
+              next_token.Text().data());
       if (!absl::StrContains(original_text_between, '\n')) {
         VLOG(5) << "  merge into next partition.";
         verible::MergeLeafIntoNextLeaf(partition);
@@ -3271,7 +3278,8 @@ void TreeUnwrapper::Visit(const verible::SyntaxTreeLeaf &leaf) {
   UpdateInterLeafScanner(tag);
 
   // Sanity check that NextUnfilteredToken() is aligned to the current leaf.
-  CHECK(NextUnfilteredToken()->text().begin() == leaf.get().text().begin());
+  // [fpgalsp patch] 只比较位置，用指针
+  CHECK(NextUnfilteredToken()->text().data() == leaf.get().text().data());
 
   // Start a new partition in the following cases.
   // In most other cases, do nothing.

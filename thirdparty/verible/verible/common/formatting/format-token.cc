@@ -78,7 +78,7 @@ std::ostream &operator<<(std::ostream &stream, const InterTokenInfo &t) {
          << "\n  break_penalty: " << t.break_penalty
          << "\n  break_decision: " << t.break_decision
          << "\n  preserve_space?: "
-         << (t.preserved_space_start != string_view_null_iterator()) << "\n}";
+         << (t.preserved_space_start != nullptr) << "\n}";
   return stream;
 }
 
@@ -143,13 +143,6 @@ InterTokenDecision::InterTokenDecision(const InterTokenInfo &info)
       action(ConvertSpacing(info.break_decision)),
       preserved_space_start(info.preserved_space_start) {}
 
-// [fpgalsp patch] 参数改成 const char*：begin 来自 preserved_space_start（原始缓冲的
-//   某个 view），end 来自当前 token 的 view —— 跨 view 的 make_string_view_range 会
-//   做迭代器相减，MSVC Debug 下断言。调用方用 RawPointer() 转换。
-static const char *RawPointer(std::string_view::const_iterator it) {
-  return it == string_view_null_iterator() ? nullptr : &*it;
-}
-
 static std::string_view OriginalLeadingSpacesRange(const char *begin,
                                                    const char *end) {
   if (begin == nullptr) {
@@ -163,14 +156,14 @@ static std::string_view OriginalLeadingSpacesRange(const char *begin,
 }
 
 std::string_view FormattedToken::OriginalLeadingSpaces() const {
-  return OriginalLeadingSpacesRange(RawPointer(before.preserved_space_start),
+  return OriginalLeadingSpacesRange(before.preserved_space_start,
                                     token->text().data());
 }
 
 std::ostream &FormattedToken::FormattedText(std::ostream &stream) const {
   switch (before.action) {
     case SpacingDecision::kPreserve: {
-      if (before.preserved_space_start != string_view_null_iterator()) {
+      if (before.preserved_space_start != nullptr) {
         // Calculate string_view range of pre-existing spaces, and print that.
         stream << OriginalLeadingSpaces();
       } else {
@@ -197,13 +190,13 @@ std::ostream &operator<<(std::ostream &stream, const FormattedToken &token) {
 }
 
 std::string_view PreFormatToken::OriginalLeadingSpaces() const {
-  return OriginalLeadingSpacesRange(RawPointer(before.preserved_space_start),
+  return OriginalLeadingSpacesRange(before.preserved_space_start,
                                     token->text().data());
 }
 
 size_t PreFormatToken::LeadingSpacesLength() const {
   if (before.break_decision == SpacingOptions::kPreserve &&
-      before.preserved_space_start != string_view_null_iterator()) {
+      before.preserved_space_start != nullptr) {
     return OriginalLeadingSpaces().length();
   }
   // in other cases (append, wrap), take the spaces_required value.
@@ -211,7 +204,7 @@ size_t PreFormatToken::LeadingSpacesLength() const {
 }
 
 int PreFormatToken::ExcessSpaces() const {
-  if (before.preserved_space_start == string_view_null_iterator()) return 0;
+  if (before.preserved_space_start == nullptr) return 0;
   const std::string_view leading_spaces = OriginalLeadingSpaces();
   int delta = 0;
   if (!absl::StrContains(leading_spaces, "\n")) {
@@ -235,14 +228,15 @@ std::ostream &operator<<(std::ostream &stream, const PreFormatToken &t) {
 }
 
 void ConnectPreFormatTokensPreservedSpaceStarts(
-    std::string_view::const_iterator buffer_start,
+    const char *buffer_start,
     std::vector<PreFormatToken> *format_tokens) {
   VLOG(4) << __FUNCTION__;
-  CHECK(buffer_start != string_view_null_iterator());
+  CHECK(buffer_start != nullptr);
   for (auto &ftoken : *format_tokens) {
     ftoken.before.preserved_space_start = buffer_start;
     VLOG(4) << "space: " << VisualizeWhitespace(ftoken.OriginalLeadingSpaces());
-    buffer_start = ftoken.Text().end();
+    // [fpgalsp patch] const char* 版本：末尾 = data() + size()
+    buffer_start = ftoken.Text().data() + ftoken.Text().size();
   }
   // This does not cover the spacing between the last token and EOF.
 }

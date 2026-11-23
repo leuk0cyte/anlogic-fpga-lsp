@@ -83,8 +83,10 @@ struct InterTokenInfo {
   // tokens, for the sake of preserving space.
   // Together with the current token, they can form a string_view representing
   // pre-existing space from the original buffer.
-  std::string_view::const_iterator preserved_space_start =
-      string_view_null_iterator();
+  // [fpgalsp patch] 原来用默认构造的 string_view 迭代器当"未设置"哨兵：与真实 view
+  //   的迭代器比较在 MSVC Debug 下断言（跨 view 迭代器不可比较）。改 const char* +
+  //   nullptr（与本文件 TODO 的建议一致）。
+  const char *preserved_space_start = nullptr;
 
   InterTokenInfo() = default;
   InterTokenInfo(const InterTokenInfo &) = default;
@@ -166,7 +168,7 @@ std::ostream &operator<<(std::ostream &stream, const PreFormatToken &token);
 // inter-token (space) text.
 // Note that this does not cover the space between the last token and EOF.
 void ConnectPreFormatTokensPreservedSpaceStarts(
-    std::string_view::const_iterator buffer_start,
+    const char *buffer_start,
     std::vector<verible::PreFormatToken> *format_tokens);
 
 // Marks formatting-disabled ranges of tokens so that their original spacing is
@@ -207,8 +209,10 @@ struct InterTokenDecision {
   SpacingDecision action = SpacingDecision::kPreserve;
 
   // When preserving spaces before this token, start from this offset.
-  std::string_view::const_iterator preserved_space_start =
-      string_view_null_iterator();
+  // [fpgalsp patch] 原来用默认构造的 string_view 迭代器当"未设置"哨兵：与真实 view
+  //   的迭代器比较在 MSVC Debug 下断言（跨 view 迭代器不可比较）。改 const char* +
+  //   nullptr（与本文件 TODO 的建议一致）。
+  const char *preserved_space_start = nullptr;
 
   InterTokenDecision() = default;
 

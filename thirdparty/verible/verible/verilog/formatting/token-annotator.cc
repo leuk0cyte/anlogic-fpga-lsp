@@ -851,8 +851,13 @@ static WithReason<SpacingOptions> BreakDecisionBetween(
     // Check if there are any newlines between these tokens' texts.
     // Caution: when testing this case, must provide valid text between
     // tokens to avoid reading uninitialized memory.
-    auto preceding_whitespace = verible::make_string_view_range(
-        left.token->text().end(), right.token->text().begin());
+    // [fpgalsp patch] left/right 是不同 token 的 view，跨 view 的迭代器相减在
+    //   MSVC Debug 下断言；用指针构造同一段空白。
+    const char *const left_end =
+        left.token->text().data() + left.token->text().size();
+    auto preceding_whitespace = std::string_view(
+        left_end,
+        static_cast<size_t>(right.token->text().data() - left_end));
 
     auto pos = preceding_whitespace.find_first_of('\n', 0);
     if (pos == std::string_view::npos) {
@@ -865,8 +870,13 @@ static WithReason<SpacingOptions> BreakDecisionBetween(
 
   if (left.format_token_enum == FTT::comment_block ||
       right.format_token_enum == FTT::comment_block) {
-    auto preceding_whitespace = verible::make_string_view_range(
-        left.token->text().end(), right.token->text().begin());
+    // [fpgalsp patch] left/right 是不同 token 的 view，跨 view 的迭代器相减在
+    //   MSVC Debug 下断言；用指针构造同一段空白。
+    const char *const left_end =
+        left.token->text().data() + left.token->text().size();
+    auto preceding_whitespace = std::string_view(
+        left_end,
+        static_cast<size_t>(right.token->text().data() - left_end));
 
     auto pos = preceding_whitespace.find_first_of('\n', 0);
     if (pos != std::string_view::npos) {
@@ -1017,13 +1027,13 @@ void AnnotateFormattingInformation(
     const FormatStyle &style, const verible::TextStructureView &text_structure,
     std::vector<verible::PreFormatToken> *format_tokens) {
   // This interface just forwards the relevant information from text_structure.
-  AnnotateFormattingInformation(style, text_structure.Contents().begin(),
+  AnnotateFormattingInformation(style, text_structure.Contents().data(),
                                 text_structure.SyntaxTree().get(),
                                 text_structure.EOFToken(), format_tokens);
 }
 
 void AnnotateFormattingInformation(
-    const FormatStyle &style, std::string_view::const_iterator buffer_start,
+    const FormatStyle &style, const char *buffer_start,
     const verible::Symbol *syntax_tree_root,
     const verible::TokenInfo &eof_token,
     std::vector<verible::PreFormatToken> *format_tokens) {
@@ -1031,7 +1041,7 @@ void AnnotateFormattingInformation(
     return;
   }
 
-  if (buffer_start != verible::string_view_null_iterator()) {
+  if (buffer_start != nullptr) {
     // For unit testing, tokens' text snippets don't necessarily originate
     // from the same contiguous string buffer, so skip this step.
     ConnectPreFormatTokensPreservedSpaceStarts(buffer_start, format_tokens);

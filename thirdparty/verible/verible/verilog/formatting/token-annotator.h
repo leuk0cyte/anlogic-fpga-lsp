@@ -43,7 +43,7 @@ void AnnotateFormattingInformation(
 //   syntax_tree_root: syntax tree used for context-sensitive behavior.
 //   eof_token: EOF token pointing to the end of the unformatted string.
 void AnnotateFormattingInformation(
-    const FormatStyle &style, std::string_view::const_iterator buffer_start,
+    const FormatStyle &style, const char *buffer_start,
     const verible::Symbol *syntax_tree_root,
     const verible::TokenInfo &eof_token,
     std::vector<verible::PreFormatToken> *format_tokens);
