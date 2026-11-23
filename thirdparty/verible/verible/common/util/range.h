@@ -18,6 +18,7 @@
 #ifndef VERIBLE_COMMON_UTIL_RANGE_H_
 #define VERIBLE_COMMON_UTIL_RANGE_H_
 
+#include <iterator>
 #include <utility>
 
 #include "verible/common/util/logging.h"
@@ -31,7 +32,22 @@ namespace verible {
 // This can be used to check string_view ranges and their invariants.
 template <class SubRange, class SuperRange>
 bool IsSubRange(const SubRange &sub, const SuperRange &super) {
-  return sub.begin() >= super.begin() && sub.end() <= super.end();
+  // [fpgalsp patch] 原来是 `sub.begin() >= super.begin() && sub.end() <=
+  // super.end()`。sub 与 super 常常是**两个不同的 string_view 对象**（例如
+  // TokenInfo::text_ 与它所属的 buffer），跨 view 比较迭代器在 MSVC 的受检迭代器
+  // （Debug, _ITERATOR_DEBUG_LEVEL=2）下会直接断言
+  //   "cannot compare incompatible string_view iterators"
+  // 而 libstdc++ 不检查，所以 Linux 上一直没暴露。改用 data()+size() 算指针区间，
+  // 语义等价；不支持 data()/size() 的 range 类型仍走原来的迭代器比较。
+  if constexpr (requires { std::data(sub); std::size(sub); std::data(super); std::size(super); }) {
+    const auto *const sub_begin = std::data(sub);
+    const auto *const super_begin = std::data(super);
+    const auto *const sub_end = sub_begin + std::size(sub);
+    const auto *const super_end = super_begin + std::size(super);
+    return sub_begin >= super_begin && sub_end <= super_end;
+  } else {
+    return sub.begin() >= super.begin() && sub.end() <= super.end();
+  }
 }
 
 // Returns true if the end points of the two ranges are equal, i.e. they point
@@ -45,7 +61,12 @@ bool IsSubRange(const SubRange &sub, const SuperRange &super) {
 // Could have also been named IntervalEqual.
 template <class LRange, class RRange>
 bool BoundsEqual(const LRange &l, const RRange &r) {
-  return l.begin() == r.begin() && l.end() == r.end();
+  // [fpgalsp patch] 同上：跨 string_view 的迭代器相等比较会触发 MSVC Debug 断言。
+  if constexpr (requires { std::data(l); std::size(l); std::data(r); std::size(r); }) {
+    return std::data(l) == std::data(r) && std::size(l) == std::size(r);
+  } else {
+    return l.begin() == r.begin() && l.end() == r.end();
+  }
 }
 
 // TODO(fangism): bool RangesOverlap(l, r);

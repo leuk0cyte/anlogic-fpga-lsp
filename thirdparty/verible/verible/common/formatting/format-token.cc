@@ -143,22 +143,28 @@ InterTokenDecision::InterTokenDecision(const InterTokenInfo &info)
       action(ConvertSpacing(info.break_decision)),
       preserved_space_start(info.preserved_space_start) {}
 
-static std::string_view OriginalLeadingSpacesRange(
-    std::string_view::const_iterator begin,
-    std::string_view::const_iterator end) {
-  if (begin == string_view_null_iterator()) {
+// [fpgalsp patch] 参数改成 const char*：begin 来自 preserved_space_start（原始缓冲的
+//   某个 view），end 来自当前 token 的 view —— 跨 view 的 make_string_view_range 会
+//   做迭代器相减，MSVC Debug 下断言。调用方用 RawPointer() 转换。
+static const char *RawPointer(std::string_view::const_iterator it) {
+  return it == string_view_null_iterator() ? nullptr : &*it;
+}
+
+static std::string_view OriginalLeadingSpacesRange(const char *begin,
+                                                   const char *end) {
+  if (begin == nullptr) {
     VLOG(4) << "no original space range";
-    return make_string_view_range(end, end);  // empty range
+    return std::string_view(end, 0);  // empty range
   }
   // The original spacing points into the original string buffer, and may span
   // multiple whitespace tokens.
   VLOG(4) << "non-null original space range";
-  return make_string_view_range(begin, end);
+  return std::string_view(begin, static_cast<size_t>(end - begin));
 }
 
 std::string_view FormattedToken::OriginalLeadingSpaces() const {
-  return OriginalLeadingSpacesRange(before.preserved_space_start,
-                                    token->text().begin());
+  return OriginalLeadingSpacesRange(RawPointer(before.preserved_space_start),
+                                    token->text().data());
 }
 
 std::ostream &FormattedToken::FormattedText(std::ostream &stream) const {
@@ -191,8 +197,8 @@ std::ostream &operator<<(std::ostream &stream, const FormattedToken &token) {
 }
 
 std::string_view PreFormatToken::OriginalLeadingSpaces() const {
-  return OriginalLeadingSpacesRange(before.preserved_space_start,
-                                    token->text().begin());
+  return OriginalLeadingSpacesRange(RawPointer(before.preserved_space_start),
+                                    token->text().data());
 }
 
 size_t PreFormatToken::LeadingSpacesLength() const {

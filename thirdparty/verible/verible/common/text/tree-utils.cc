@@ -98,10 +98,13 @@ std::string_view StringSpanOfSymbol(const Symbol &lsym, const Symbol &rsym) {
   const auto *left = GetLeftmostLeaf(lsym);
   const auto *right = GetRightmostLeaf(rsym);
   if (left != nullptr && right != nullptr) {
-    const auto range_begin = left->get().text().begin();
-    const auto range_end = right->get().text().end();
-    return std::string_view(&*range_begin,
-                            std::distance(range_begin, range_end));
+    // [fpgalsp patch] 两个叶子的 text() 是不同 view：跨 view 做迭代器相减在 MSVC Debug
+    //   会断言。改指针运算（语义相同：同一个底层缓冲区的连续区间）。
+    const char *const range_begin = left->get().text().data();
+    const char *const range_end =
+        right->get().text().data() + right->get().text().size();
+    return std::string_view(range_begin,
+                            static_cast<size_t>(range_end - range_begin));
   }
   return "";
 }

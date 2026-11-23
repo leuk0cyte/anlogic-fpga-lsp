@@ -51,15 +51,18 @@ void FilterTokenStreamViewInPlace(const TokenFilterPredicate &keep,
   view->swap(temp);  // old stream view deleted at end-of-scope
 }
 
+// [fpgalsp patch] 原来拿 view 里 token 的 text() 迭代器与 range 的迭代器比较：跨 view 的
+//   迭代器比较在 MSVC Debug 下会断言（"cannot compare incompatible string_view
+//   iterators"）。改 const char* 指针比较，语义等价。
 static bool TokenLocationLess(const TokenSequence::const_iterator &token_iter,
-                              std::string_view::const_iterator offset) {
-  return token_iter->text().begin() < offset;
+                              const char *offset) {
+  return token_iter->text().data() < offset;
 }
 
 TokenViewRange TokenViewRangeSpanningOffsets(const TokenStreamView &view,
                                              std::string_view range) {
-  const auto lower = range.begin();
-  const auto upper = range.end();
+  const char *const lower = range.data();
+  const char *const upper = range.data() + range.size();
   const auto left =
       std::lower_bound(view.cbegin(), view.cend(), lower, &TokenLocationLess);
   const auto right =

@@ -81,13 +81,18 @@ class TokenInfo {
   void set_text(std::string_view t) { text_ = t; }
 
   // Return position of this token's text start relative to a base buffer.
+  //
+  // [fpgalsp patch] 原来写 std::distance(base.begin(), text_.begin())：base 与 text_ 是
+  //   两个不同的 string_view 对象，跨 view 做迭代器减法在标准里是 UB，MSVC 的受检
+  //   迭代器（Debug, _ITERATOR_DEBUG_LEVEL=2）会直接断言
+  //   "cannot subtract incompatible string_view iterators"。改指针相减，语义相同。
   int left(std::string_view base) const {
-    return std::distance(base.begin(), text_.begin());
+    return static_cast<int>(text_.data() - base.data());
   }
 
   // Return position of this token's text end relative to a base buffer.
   int right(std::string_view base) const {
-    return std::distance(base.begin(), text_.end());
+    return static_cast<int>(text_.data() + text_.size() - base.data());
   }
 
   // Advances the text range along the same memory buffer to span the

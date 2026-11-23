@@ -396,8 +396,10 @@ ColumnPositionTree ScanPartitionForAlignmentCells_WithNonTreeTokens(
 
     // Collect tokens excluded from SyntaxTree (delimiters and comments)
     CHECK(!ftokens.empty());
-    CHECK(ftokens.front().Text().begin() <= first_tree_token.text().begin());
-    CHECK(ftokens.back().Text().end() >= last_tree_token.text().end());
+    // [fpgalsp patch] 跨 string_view 的迭代器比较在 MSVC Debug 下断言；用指针。
+    CHECK(ftokens.front().Text().data() <= first_tree_token.text().data());
+    CHECK(ftokens.back().Text().data() + ftokens.back().Text().size() >=
+          last_tree_token.text().data() + last_tree_token.text().size());
 
     FormatTokenRange::const_iterator ftoken_it = ftokens.begin();
     // Find leading non-tree tokens range end

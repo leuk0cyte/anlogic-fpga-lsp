@@ -223,7 +223,9 @@ class TextStructureView {
       TokenStreamView::const_iterator *next_token_view_iter,
       DeferredExpansion *expansion, TokenSequence *combined_tokens,
       std::vector<int> *token_view_indices,
-      std::string_view::const_iterator offset);
+      // [fpgalsp patch] 原来是 std::string_view::const_iterator：调用方传的是 contents_ 的
+      //   迭代器，跨 view 比较在 MSVC Debug 下断言。改 const char*（指针运算，语义等价）。
+      const char *offset);
 
   // Resets all fields. Only needed in tests.
   void Clear();

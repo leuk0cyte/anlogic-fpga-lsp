@@ -72,9 +72,12 @@ void TextStructureView::Clear() {
   contents_ = contents_.substr(0, 0);  // clear
 }
 
-static bool TokenLocationLess(const TokenInfo &token,
-                              const std::string_view::const_iterator offset) {
-  return token.text().begin() < offset;
+// [fpgalsp patch] 参数原来是 `std::string_view::const_iterator`：调用方传的是
+//   contents_ 的迭代器，而这个谓词拿 token 自己的 text() view 的迭代器去比 —— MSVC 的
+//   受检迭代器（Debug）会断言 "cannot compare incompatible string_view iterators"。
+//   改成 `const char*`：语义等价，Debug 下不再断言。
+static bool TokenLocationLess(const TokenInfo &token, const char *offset) {
+  return token.text().data() < offset;
 }
 
 // Makes an iterator-writable copy of items_view without using const_cast.
@@ -105,9 +108,9 @@ TextStructureView::GetLineTokenMap() const {
     const auto &offset_map = GetLineColumnMap().GetBeginningOfLineOffsets();
     for (const auto offset : offset_map) {
       // TODO(fangism): linear search might be as competitive as binary search
-      token_iter =
-          std::lower_bound(token_iter, tokens_.cend(),
-                           Contents().begin() + offset, &TokenLocationLess);
+      token_iter = std::lower_bound(token_iter, tokens_.cend(),
+                                   Contents().data() + offset,
+                                   &TokenLocationLess);
       lazy_line_token_map_.push_back(token_iter);
     }
     // Add an end() iterator so map has N+1 entries.
@@ -121,7 +124,7 @@ TextStructureView::GetLineTokenMap() const {
 
 TokenRange TextStructureView::TokenRangeSpanningOffsets(size_t lower,
                                                         size_t upper) const {
-  const auto text_base = Contents().begin();
+  const char *const text_base = Contents().data();
   // Range is found with two binary searches.
   // TODO(fangism): Is there a way to make this work with a single call
   // to std::equal_range()?
@@ -150,8 +153,12 @@ LineColumnRange TextStructureView::GetRangeForToken(
 
 LineColumnRange TextStructureView::GetRangeForText(
     std::string_view text) const {
-  const auto from = std::distance(Contents().begin(), text.begin());
-  const auto to = std::distance(Contents().begin(), text.end());
+  // [fpgalsp patch] text 是独立的 string_view，跨 view 做迭代器相减在 MSVC Debug 会
+  //   断言（cannot subtract incompatible string_view iterators）。改指针相减。
+  const auto from =
+      static_cast<std::int64_t>(text.data() - Contents().data());
+  const auto to = static_cast<std::int64_t>(text.data() + text.size() -
+                                            Contents().data());
   CHECK_GE(from, 0) << '"' << text << '"';
   CHECK_LE(to, static_cast<int64_t>(Contents().length())) << '"' << text << '"';
   return {GetLineColAtOffset(from), GetLineColAtOffset(to)};
@@ -257,7 +264,10 @@ void TextStructureView::TrimTokensToSubstring(int left_offset,
     const std::string_view substr(
         contents_.substr(left_offset, right_offset - left_offset));
     TokenInfo &last(trimmed_stream.back());
-    const int overhang = std::distance(substr.end(), last.text().end());
+    // [fpgalsp patch] 同上：substr 与 last.text() 是两个不同的 view。
+    const int overhang = static_cast<int>((last.text().data() +
+                                           last.text().size()) -
+                                          (substr.data() + substr.size()));
     if (!IsSubRange(last.text(), substr)) {
       VLOG(2) << "last token overhangs end by " << overhang << ": " << last;
       std::string_view trimmed_tail_token(last.text());
@@ -340,21 +350,28 @@ absl::Status TextStructureView::FastTokenRangeConsistencyCheck() const {
   VLOG(2) << __FUNCTION__;
   // Check the ranges of the first and last element of the critical arrays.
   // A more thorough full-check would scan every single token.
-  const auto lower_bound = contents_.begin();
-  const auto upper_bound = contents_.end();
+  // [fpgalsp patch] 原来用 `std::string_view::const_iterator` 做**跨 view** 比较
+  //   （`lower_bound` 来自 contents_，`first.text().cbegin()` 来自 token 自己的 view）。
+  //   libstdc++ 上没问题，但 MSVC 的受检迭代器（Debug 构建）会断言
+  //   "cannot compare incompatible string_view iterators for equality" —— 两个迭代器
+  //   属于不同的 string_view 对象，即使指向同一块内存也不允许比较。
+  //   改用 `const char*` 指针比较：语义等价，Debug 下不再断言。
+  const char *const contents_begin = contents_.data();
+  const char *const contents_end = contents_.data() + contents_.size();
   if (!tokens_.empty()) {
     // Check that extremities of first and last token lie inside contents_.
     const TokenInfo &first = tokens_.front();
-    if (!first.isEOF() && lower_bound > first.text().cbegin()) {
+    if (!first.isEOF() && contents_begin > first.text().data()) {
       return absl::InternalError(absl::StrCat(
           "Token offset points before beginning of string contents.  delta=",
-          std::distance(first.text().cbegin(), lower_bound)));
+          first.text().data() - contents_begin));
     }
     const TokenInfo *last = FindLastNonEOFToken(tokens_);
-    if (last != nullptr && last->text().cend() > upper_bound) {
+    if (last != nullptr &&
+        last->text().data() + last->text().size() > contents_end) {
       return absl::InternalError(absl::StrCat(
           "Token offset points past end of string contents.  delta=",
-          std::distance(upper_bound, last->text().cend())));
+          last->text().data() + last->text().size() - contents_end));
     }
     if (!tokens_view_.empty()) {
       // Check that TokenSequence iterators point into tokens_.
@@ -395,11 +412,14 @@ absl::Status TextStructureView::FastLineRangeConsistencyCheck() const {
   VLOG(2) << __FUNCTION__;
   const auto &lines = Lines();
   if (!lines.empty()) {
-    if (lines.front().cbegin() != contents_.cbegin()) {
+    // [fpgalsp patch] 同上：行文本是独立的 string_view 对象，跨 view 比较迭代器会触发
+    //   MSVC Debug 断言。改比较指针 + 长度。
+    if (lines.front().data() != contents_.data()) {
       return absl::InternalError(
           "First line does not match beginning of text.");
     }
-    if (lines.back().cend() != contents_.cend()) {
+    if (lines.back().data() + lines.back().size() !=
+        contents_.data() + contents_.size()) {
       return absl::InternalError("Last line does not match end of text.");
     }
   }
@@ -410,18 +430,19 @@ absl::Status TextStructureView::SyntaxTreeConsistencyCheck() const {
   VLOG(2) << __FUNCTION__;
   // Check that first and last token in syntax_tree_ point to text
   // inside contents_.
-  const std::string_view::const_iterator lower_bound = contents_.begin();
-  const std::string_view::const_iterator upper_bound =
-      lower_bound + contents_.length();
+  // [fpgalsp patch] 同样是跨 view 的迭代器比较 → 改指针（见上）。
+  const char *const lower_bound = contents_.data();
+  const char *const upper_bound = contents_.data() + contents_.length();
   if (syntax_tree_ != nullptr) {
     const SyntaxTreeLeaf *left = GetLeftmostLeaf(*syntax_tree_);
     if (!left) return absl::OkStatus();
     const SyntaxTreeLeaf *right = GetRightmostLeaf(*syntax_tree_);
-    if (lower_bound > left->get().text().cbegin()) {
+    if (lower_bound > left->get().text().data()) {
       return absl::InternalError(
           "Left-most tree leaf points before beginning of contents.");
     }
-    if (right->get().text().cend() > upper_bound) {
+    const std::string_view right_text = right->get().text();
+    if (right_text.data() + right_text.size() > upper_bound) {
       return absl::InternalError(
           "Right-most tree leaf points past end of contents.");
     }
@@ -474,21 +495,21 @@ void TextStructureView::ConsumeDeferredExpansion(
     TokenStreamView::const_iterator *next_token_view_iter,
     DeferredExpansion *expansion, TokenSequence *combined_tokens,
     std::vector<int> *token_view_indices,
-    std::string_view::const_iterator offset) {
+    const char *offset) {
   auto token_iter = *next_token_iter;
   auto token_view_iter = *next_token_view_iter;
   // Find the position up to each expansion point.
+  // [fpgalsp patch] 原来是跨 view 的 std::distance（MSVC Debug 断言）；改指针比较。
   *next_token_iter = std::lower_bound(
       token_iter, tokens_.cend(), offset,
-      [](const TokenInfo &token, std::string_view::const_iterator target) {
-        return std::distance(target, token.text().begin()) < 0;
+      [](const TokenInfo &token, const char *target) {
+        return token.text().data() < target;
       });
   CHECK(*next_token_iter != tokens_.cend());
   *next_token_view_iter = std::lower_bound(
       token_view_iter, tokens_view_.cend(), offset,
-      [](TokenStreamView::const_reference token_ref,
-         std::string_view::const_iterator target) {
-        return std::distance(target, token_ref->text().begin()) < 0;
+      [](TokenStreamView::const_reference token_ref, const char *target) {
+        return token_ref->text().data() < target;
       });
   CHECK(*next_token_view_iter != tokens_view_.cend());
 
@@ -503,10 +524,10 @@ void TextStructureView::ConsumeDeferredExpansion(
   TextStructureView &sub_data = ABSL_DIE_IF_NULL(subanalysis)->MutableData();
   const std::string_view sub_data_text(sub_data.Contents());
   CHECK(!IsSubRange(sub_data_text, contents_));
-  CHECK_EQ(sub_data_text, std::string_view(&*offset, sub_data_text.length()));
-  CHECK(offset >= contents_.begin());
+  CHECK_EQ(sub_data_text, std::string_view(offset, sub_data_text.length()));
+  CHECK(offset >= contents_.data());
   sub_data.RebaseTokensToSuperstring(contents_, sub_data_text,
-                                     std::distance(contents_.begin(), offset));
+                                     static_cast<int>(offset - contents_.data()));
 
   // Translate token_view's iterators into array indices.
   if (!sub_data.tokens_.empty() && sub_data.tokens_.back().isEOF()) {
@@ -549,7 +570,7 @@ void TextStructureView::ExpandSubtrees(NodeExpansionMap *expansions) {
   auto token_iter = tokens_.cbegin();
   auto token_view_iter = tokens_view_.cbegin();
   for (auto &expansion_entry : *expansions) {
-    const auto offset = Contents().begin() + expansion_entry.first;
+    const char *const offset = Contents().data() + expansion_entry.first;
     ConsumeDeferredExpansion(&token_iter, &token_view_iter,
                              &expansion_entry.second, &combined_tokens,
                              &combined_token_view_indices, offset);

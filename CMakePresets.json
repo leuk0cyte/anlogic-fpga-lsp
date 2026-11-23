@@ -32,9 +32,9 @@
     {
       "name": "windows-msvc-debug",
       "displayName": "Windows / MSVC Debug",
-      "description": "调试构建：/MTd + /Od + 调试信息",
+      "description": "调试构建：/MTd + /Od + 调试信息。输出到 build-debug/（不要和 windows-msvc-dev 共用 build-dev/，否则选一次 Debug 就把日常迭代缓存顶掉）。",
       "inherits": "windows-msvc-base",
-      "binaryDir": "${sourceDir}/build-dev",
+      "binaryDir": "${sourceDir}/build-debug",
       "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
     },
     {
