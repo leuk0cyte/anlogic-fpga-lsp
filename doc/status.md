@@ -1962,3 +1962,34 @@ ReportStore stamp 校验热 5.14 ms / 失效 10–12 ms；TD 会话第二次 `di
 **撤回**：冷构建 `flow.status` 单次读（收益 ~0.2 ms，但输出不再与无缓存构建逐字节一致）——整文件回滚。
 
 **验证**：dev/release ctest 71/71 + docs_clang_tidy 通过（基线 142 条）；插件 **67/67**；四个 python 门禁 PASS。
+
+---
+
+## 第五十轮（2026-11-24，0.36.2）：切工程后 ChipWatcher 不刷新（多根工作区）
+
+**用户报告**：VS Code 打开多个文件夹（多根工作区）时，切换 `.al` 工程后 chipwatcher 边栏不自动刷新。
+
+**根因**：`fpgaLsp.selectProject` 只刷新了模块树与流程树：
+
+```js
+await Promise.allSettled([moduleProvider.refresh(activeDocumentUri()), flowProvider.refresh()]);
+```
+
+ChipWatcher（探针树 / 状态栏 / 编辑区探针面板）和报告树都没被重取。单文件夹工作区里，
+切工程后往往会有"活动编辑器变更 / 保存 / indexChanged"等事件顺带刷新探针树；
+**多根工作区**下这些事件通常不属于当前工程（`ownsFile` 判定为 false），于是边栏一直停在
+上一个工程的探针清单，只能手动点刷新。
+
+**修法**：新增 `refreshProjectScopedViews(reason)`，一次刷新所有"按当前工程解析"的视图：
+模块树、流程树、报告树、ChipWatcher 探针树（并同步状态栏）、打开着的探针面板与 syn/phy 报告面板，
+并 `reportsService.invalidate()` 让报告缓存（15 s 前是 1.5 s TTL 的整包缓存）整体失效。
+调用点两处：`fpgaLsp.selectProject` 命令、`fpgaLsp.projectFile` 配置变更（多根工作区里常通过
+folder/workspace 设置切工程）。
+
+**回归测试**：`test/run.js` 新增
+`extension: switching the .al project refreshes ChipWatcher (multi-root regression)`：
+模拟两个工程 + 选中第二个 → 断言 `setProject` 只发一次、**探针树的 state 被换成新对象**
+（不是只靠打开着的面板或其它视图刷新）、报告重新拉取。已做**反向验证**：把探针树刷新人为关掉，
+该用例会红（67 passed / 1 failed），说明它确实盯住了这个缺陷。
+
+插件测试 68/68。

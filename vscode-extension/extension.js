@@ -608,6 +608,15 @@ function activate(context) {
             || event.affectsConfiguration('fpgaLsp.mcp.allowWrite');
         if (affectsMcp && mcpEmitter) mcpEmitter.fire();
         renderAgentBadge();
+        // 用户可能在设置里（或按多根工作区的 folder 设置）换 `fpgaLsp.projectFile` ——
+        // 这同样是“换工程”，所有按工程解析的视图都要重取，否则 ChipWatcher 边栏会停在
+        // 上一个工程的探针清单。函数声明有提升，但它内部会重新读一次配置，所以放到微任务里跑，
+        // 保证 VS Code 已经把新值写进配置。
+        if (event.affectsConfiguration('fpgaLsp.projectFile')) {
+            setTimeout(() => {
+                refreshProjectScopedViews('projectFile-changed').catch(() => undefined);
+            }, 0);
+        }
     }));
 
     // ------------------------------------------------------------ hints
@@ -1233,7 +1242,9 @@ function activate(context) {
             await config().update('projectFile', al, vscode.ConfigurationTarget.Workspace);
         } catch (_) { /* read-only workspace: runtime override already applied */ }
         vscode.window.showInformationMessage(`FPGA: selected project ${picked.project.name}`);
-        await Promise.allSettled([moduleProvider.refresh(activeDocumentUri()), flowProvider.refresh()]);
+        // 切工程 = 换了一整套“按工程解析”的数据：模块树 / 流程树 / 报告树 / ChipWatcher 全部重取
+        // （多根工作区里没有活动编辑器事件兜底，见 refreshProjectScopedViews 的注释）。
+        await refreshProjectScopedViews('select-project');
         if (mcpEmitter) mcpEmitter.fire();
     });
 
@@ -1529,6 +1540,35 @@ function activate(context) {
         const state = await probePanel.openInEditor();
         renderProbeItem(state);
     };
+
+    // 切换 .al 工程后，**所有“按当前工程解析”的视图**都要重取：模块树 / 流程树 / 报告树 /
+    // ChipWatcher（探针树 + 状态栏 + 打开着的面板）。
+    //
+    // 为什么必须显式做：以前 `fpgaLsp.selectProject` 只刷新了模块树和流程树。单文件夹工作区里
+    // 还能被“活动编辑器变更 / 保存 / indexChanged”等事件顺带刷新，但**多根工作区**下这些事件
+    // 往往不属于当前工程（`ownsFile` 判定为 false），于是 ChipWatcher 边栏会一直停在上一个
+    // 工程的探针清单，直到手动刷新面板。（用户报告：多文件夹工作区里切 .al，chipwatcher 不刷新。）
+    async function refreshProjectScopedViews(reason) {
+        try {
+            reportsService.invalidate();  // 报告缓存是“当前工程”的，切工程后必须整体失效
+        } catch (_) { /* reports 缓存不可用时忽略 */ }
+        const jobs = [];
+        if (moduleProvider) jobs.push(moduleProvider.refresh(activeDocumentUri()));
+        if (flowProvider) jobs.push(flowProvider.refresh());
+        if (reportsTreeProvider) jobs.push(reportsTreeProvider.refresh());
+        if (probeTree) {
+            jobs.push(probeTree.refresh().then((state) => {
+                renderProbeItem(state);
+                return state;
+            }));
+        }
+        if (probePanel) jobs.push(probePanel.refresh());
+        for (const panel of Object.values(reportsPanels || {})) {
+            if (panel) jobs.push(panel.refresh());
+        }
+        await Promise.allSettled(jobs);
+        diag(`project-scoped views refreshed (${reason})`);
+    }
 
     // 树里点一条总线 = 翻转它的 disabled 状态（不弹输入框）。
     // 从命令面板/FPGA Actions 进来（没有参数）时先让用户选一条总线。

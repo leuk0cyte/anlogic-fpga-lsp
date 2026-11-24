@@ -2594,3 +2594,84 @@ test('update project: command wiring writes the failure to the FPGA LSP output c
         await extension.deactivate();
     }
 });
+
+test('extension: switching the .al project refreshes ChipWatcher (multi-root regression)', async () => {
+    // 回归（用户报告）：多文件夹工作区里切换 .al 工程，chipwatcher 边栏不自动刷新。
+    // 以前 `fpgaLsp.selectProject` 只刷新模块树和流程树；ChipWatcher 的探针树/状态栏完全
+    // 没被重取，多根工作区里又没有“活动编辑器事件”兜底，于是边栏一直停在上一个工程的清单。
+    const path = require('path');
+    const extension = require('../extension.js');
+    const context = {
+        extensionPath: path.join(__dirname, '..'),
+        subscriptions: [],
+        workspaceState: { get: () => undefined, update: () => Promise.resolve() },
+        globalState: { get: () => undefined, update: () => Promise.resolve() },
+    };
+
+    const calls = { projects: 0, probeStatus: 0, setProject: 0, reports: 0 };
+    FakeLanguageClient.responses = {
+        'fpgaLsp/moduleTree': async () => sampleModuleTree(),
+        'fpgaLsp/reports': async () => {
+            calls.reports += 1;
+            return sampleReports();
+        },
+        'workspace/executeCommand': async (payload) => {
+            const command = (payload && payload.command) || '';
+            if (command === 'fpgalsp.info') return sampleInfo;
+            if (command === 'fpgalsp.projects') {
+                calls.projects += 1;
+                return {
+                    ok: true,
+                    projects: [
+                        { name: 'alpha', al: 'Y:/ws/a/alpha.al', top: 'alpha_top', device: 'EG4', hdl: 3 },
+                        { name: 'beta', al: 'Y:/ws/b/beta.al', top: 'beta_top', device: 'EG4', hdl: 4 },
+                    ],
+                };
+            }
+            if (command === 'fpgalsp.setProject') {
+                calls.setProject += 1;
+                return { ok: true };
+            }
+            if (command === 'fpgalsp.probeStatus') {
+                calls.probeStatus += 1;
+                return sampleProbeStatus();
+            }
+            if (command === 'fpgalsp.runFlow') return { ok: true, runId: 'r1', stages: [] };
+            return { ok: true };
+        },
+    };
+
+    const previousQuickPick = mock.window.showQuickPick;
+    mock.window.showQuickPick = async (items) => {
+        // 选第二个工程（beta），模拟“切到另一个 .al”
+        return Array.isArray(items) && items.length > 1 ? items[1] : undefined;
+    };
+
+    extension.activate(context);
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    try {
+        const probeProvider = mock.__state.treeDataProviders['fpgaLsp.probeView'];
+        ok(probeProvider, 'ChipWatcher tree data provider registered');
+        await probeProvider.refresh();
+        const before = calls.probeStatus;
+        ok(before >= 1, 'probeStatus fetched during activation');
+        const stateBefore = probeProvider.state;
+
+        await mock.commands.executeCommand('fpgaLsp.selectProject');
+
+        eq(calls.setProject, 1, 'setProject RPC issued once');
+        ok(calls.probeStatus > before,
+            `ChipWatcher re-fetched after project switch (before=${before}, after=${calls.probeStatus})`);
+        // 关键断言：**探针树本身**被重取（只靠打开着的面板/其它视图刷新不算修好）。
+        ok(probeProvider.state !== stateBefore,
+            'ChipWatcher tree state replaced by a fresh probeStatus after project switch');
+        // 报告缓存也要失效并重取（报告同样是“按工程”的数据）
+        ok(calls.reports >= 1, 'reports re-fetched after project switch');
+        const info = mock.__state.messages.info[mock.__state.messages.info.length - 1];
+        ok(info, 'selection reported');
+        includes(String(info.message), 'selected project beta');
+    } finally {
+        mock.window.showQuickPick = previousQuickPick;
+        await extension.deactivate();
+    }
+});
