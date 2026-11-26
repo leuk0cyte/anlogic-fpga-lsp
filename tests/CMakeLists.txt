@@ -541,13 +541,3 @@ if(NOT DEFINED ENV{FPGA_LSP_PYTHON_ROOT})
     endforeach()
     message(STATUS "tests: 参考实现门禁需要 FPGA_LSP_PYTHON_ROOT —— 标记为跳过")
 endif()
-
-# -----------------------------------------------------------------------------
-#  unit.td_install 需要一个真实 TD 安装目录；公开 CI 上没有 -> 标记 Not Run。
-# -----------------------------------------------------------------------------
-if(NOT DEFINED ENV{FPGA_LSP_TD_DIR})
-    if(TEST unit.td_install)
-        set_tests_properties(unit.td_install PROPERTIES DISABLED TRUE)
-        message(STATUS "tests: unit.td_install 需要本机 TD（FPGA_LSP_TD_DIR）—— 标记为跳过")
-    endif()
-endif()

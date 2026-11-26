@@ -353,6 +353,9 @@ TEST(TdFind, ReturnsNulloptWhenNothingFound) {
 
 TEST(TdInstallReal, FindsThisMachineInstall) {
     const auto choice = FindTd();
+    if (!choice.has_value()) {
+        GTEST_SKIP() << "本机没有 TD 安装（CI 上正常）；这条用例只在装了 TD 的机器上跑";
+    }
     ASSERT_TRUE(choice.has_value()) << "本机应能找到 TD 安装";
     EXPECT_NE(choice->exe.find("td_commands_prompt.exe"), std::string::npos);
     // ⚠ 不要在这里硬编码 TD 版本/build 号 —— TD 升级一次（如 2026.2.210.850 →
@@ -370,6 +373,9 @@ TEST(TdInstallReal, FindsThisMachineInstall) {
 //   第一次调用必须真的扫盘（from_cache=false），第二次必须命中缓存。
 //   这里刻意先删缓存文件，避免与同机其它测试进程互相影响。
 TEST(TdInstallReal, SecondLookupIsServedFromCache) {
+    if (!FindTd().has_value()) {
+        GTEST_SKIP() << "本机没有 TD 安装（CI 上正常）";
+    }
     std::error_code ec;
     const std::filesystem::path temp = std::filesystem::temp_directory_path(ec);
     if (ec) GTEST_SKIP() << "无法定位系统临时目录";
