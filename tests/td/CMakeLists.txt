@@ -113,4 +113,17 @@ if(TARGET fpga_lsp::flow)
         TIMEOUT 1800
         RUN_SERIAL TRUE
     RESOURCE_LOCK "td-process")
-endif()
+endif()
+
+# -----------------------------------------------------------------------------
+#  release 分支：这些用例需要真实 TD 安装 + 自备工程（会真跑综合/布线）。
+#  未设置 FPGA_LSP_TEST_PROJECT 时标记为跳过。
+# -----------------------------------------------------------------------------
+if(NOT DEFINED ENV{FPGA_LSP_TEST_PROJECT})
+    message(STATUS "tests/td: 未设置 FPGA_LSP_TEST_PROJECT —— 真机 TD 用例标记为跳过")
+    foreach(_td IN ITEMS td.flow td.diagnostics td.session td.bench)
+        if(TEST ${_td})
+            set_tests_properties(${_td} PROPERTIES DISABLED TRUE)
+        endif()
+    endforeach()
+endif()

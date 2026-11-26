@@ -128,4 +128,22 @@ set_tests_properties(e2e.mcp_auth PROPERTIES
     RUN_SERIAL TRUE
 )
 
-message(STATUS "tests/e2e: 已注册 e2e.mcp_auth（ctest -L e2e）")
+message(STATUS "tests/e2e: 已注册 e2e.mcp_auth（ctest -L e2e）")
+
+# -----------------------------------------------------------------------------
+#  release 分支：这些用例需要一个**自备的 .al 工程**（以及本机 TD 安装）。
+#  公开仓库不带内部工程语料，因此未设置 FPGA_LSP_TEST_PROJECT 时标记为跳过
+#  （ctest 里显示 Not Run，而不是把'缺数据'报成失败）。
+#
+#      $env:FPGA_LSP_TEST_PROJECT = 'C:/path/to/your/project'
+#      ctest -L e2e --output-on-failure
+# -----------------------------------------------------------------------------
+if(NOT DEFINED ENV{FPGA_LSP_TEST_PROJECT})
+    message(STATUS "tests/e2e: 未设置 FPGA_LSP_TEST_PROJECT —— e2e 用例标记为跳过")
+    foreach(_e2e IN ITEMS e2e.lsp_smoke e2e.mcp_smoke e2e.mcp_flow_smoke
+                            e2e.mcp_concurrency e2e.mcp_auth)
+        if(TEST ${_e2e})
+            set_tests_properties(${_e2e} PROPERTIES DISABLED TRUE)
+        endif()
+    endforeach()
+endif()
