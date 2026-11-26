@@ -12,6 +12,7 @@
 # ---- 内部内容：即使有人用 `git archive` 打包 main，也不带出去 ----
 doc/license-risk-assessment.md export-ignore
 doc/release-process.md export-ignore
+doc/publish-readiness.md export-ignore
 doc/audit export-ignore
 tests/gate-corpus/corpus_alpha export-ignore
 tests/fixtures/reports export-ignore
