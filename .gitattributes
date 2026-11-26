@@ -2,7 +2,7 @@
 #  .gitattributes —— 仓库导出/换行策略
 # =============================================================================
 #  注意：本文件**不做**泄漏隔离。真正隔离"内部语料 / 公开版本"的是**分支**：
-#    * main     ：私有，含真实企业工程语料（tests/gate-corpus/corpus_alpha）与
+#    * main     ：私有，含真实企业工程语料（tests/gate-corpus/<corpus>）与
 #                 doc/audit 原始转储 —— **永不公开**（见 doc/license-risk-assessment.md）
 #    * release  ：公开版本，由 `.agents/worktrees/release` 这个独立 worktree 维护；
 #                 语料/审计/个人信息在那边**不跟踪**（见 doc/release-process.md）
@@ -14,7 +14,7 @@ doc/license-risk-assessment.md export-ignore
 doc/release-process.md export-ignore
 doc/publish-readiness.md export-ignore
 doc/audit export-ignore
-tests/gate-corpus/corpus_alpha export-ignore
+tests/gate-corpus/<corpus> export-ignore
 tests/fixtures/reports export-ignore
 tests/golden export-ignore
 tests/td/fixtures export-ignore

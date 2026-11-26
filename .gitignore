@@ -96,7 +96,7 @@ tests/gate-corpus/**/log/
 #  换语料时请用合成语料生成脚本（见 release 的 README 说明），不要从 main 拷贝。
 
 # ---- 真实企业工程语料（公司所有，绝对不可开源）----
-tests/gate-corpus/corpus_alpha/
+tests/gate-corpus/<corpus>/
 
 # ---- 带厂商版权头 / 内部绝对路径的真实报告夹具 ----
 tests/fixtures/reports/
