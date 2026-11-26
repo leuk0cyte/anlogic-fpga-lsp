@@ -2,23 +2,38 @@
 
 > 阶段 0（解析）/ 阶段 1（lint、formatter）三条门禁、以及 HDL 索引 / TD / Flow 的对比测试都默认使用本目录。
 
+
+> **公开版本说明（重要）**
+>
+> 本目录**不再包含真实工程语料**。上游的 `corpus_alpha/`（一份企业内部 FPGA 工程的副本，
+> 含他人版权头、员工工号与产品参数）已从公开版本中移除 —— 未经授权不能分发。
+>
+> 保留下来的只有：
+> * `verible_lint_testdata/` —— vendored Verible 自带的 lint 测试集（Apache-2.0）；
+> * `error-cases/` —— 手工构造的语法错误样例（本仓库原创）。
+>
+> 依赖"真实工程语料"的用例（`unit.hdl_index` 的 `HdlCorpus.*`、`unit.constraint_symbols`、
+> `e2e.*`、`td.*`、`parity.*` 等）在缺语料时会 **skip / Not Run**，而不是失败。
+> 想跑它们：把自己的一份 `.al` 工程放到 `%WORKSPACE%/corpus_alpha/`，或设置
+> `FPGA_LSP_TEST_PROJECT=<工程目录>`（详见 `tests/fixtures/README.md`）。
+
 ## ⚠️ 最重要的一条：不要在本目录里直接跑 TD
 
 `corpus_alpha/demo_project.al` 的根节点写着：
 
 ```xml
-<Project Version="3" Minor="2" Path="C:/work/CorpusAlpha">
+<Project Version="3" Minor="2" Path="C:/work/CorpusAlpha">  <!-- 示例：自备语料的 .al 根节点写法 -->
 ```
 
 这个 `Path` **不是**"只是元数据"。实测（`reports-parse`，阶段 4-δ）：
 
 - TD `open_project` 之后会拿 `Path` 指向的目录当**工程根**
 - 于是 `*_Runs`、`.fpgalsp/` 会落在**那里**，而不是你复制出来的临时目录
-- 也就是说：**在本目录里直接跑 `runFlow` 会写到 `C:/work/CorpusAlpha`（另一个真实工程）**
+- 也就是说：**在本目录里直接跑 `runFlow` 会写到 `Path` 指向的那个目录**（自备语料时请自行确认它不是你的真实工程）
 
 2026-11-18 曾发生过一次：`e2e.lsp_smoke` 的 `runFlow → cancelFlow` 把 `.stop.f` 与
 半成品 run 写进了别处，导致 `td.flow` 的 `RunsASynthesisToCompletion` 读到被取消的
-run、`bundle.files.area` 找不到而假失败。当时 `C:/work/CorpusAlpha` 侥幸没被写
+run、`bundle.files.area` 找不到而假失败。当时那个 `Path` 目录侥幸没被写
 （最新文件时间仍是 2026/11/9），但那是运气，不是设计。
 
 ### 因此：任何要跑 TD 的测试必须做三件事
@@ -35,7 +50,7 @@ run、`bundle.files.area` 找不到而假失败。当时 `C:/work/CorpusAlpha` �
 
 | 子目录 | 来源 | 用途 |
 | --- | --- | --- |
-| `corpus_alpha/` | `C:/work/CorpusAlpha` 的副本（20 个 `.v` + IP 生成的 `pll_gen.v` + `pll_gen.vhd`） | 真实工程语料 |
+| `corpus_alpha/` | **本仓库不提供**（上游曾放一份企业工程副本，已按合规要求移除）。需要时自备：`FPGA_LSP_TEST_PROJECT` 或放到 `%WORKSPACE%/corpus_alpha/` | gate/compare 类用例的可选输入 |
 | `verible_lint_testdata/` | vendored Verible 的 lint testdata（73 个 `.sv`） | SystemVerilog 特性覆盖 |
 | `error-cases/` | 手工构造（8 个故意语法错误的 `.sv`） | 验证 failsafe 与错误恢复 |
 
