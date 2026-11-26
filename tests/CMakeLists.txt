@@ -483,3 +483,16 @@ if(FPGA_LSP_ENABLE_TIDY_GATE AND EXISTS "${CMAKE_SOURCE_DIR}/tools/audit/clang_t
         message(STATUS "clang-tidy 门禁: 已注册 docs_clang_tidy（ctest -L tidy）")
     endif()
 endif()
+
+# -----------------------------------------------------------------------------
+#  release 分支：parity.* 需要**参考实现**（%PYREF%）与**自备工程语料**，公开仓库里都没有。
+#  未设置环境变量时标记为 Not Run（ctest 显示 Not Run，而不是失败）。
+# -----------------------------------------------------------------------------
+if(NOT DEFINED ENV{FPGA_LSP_PYTHON_ROOT} OR NOT DEFINED ENV{FPGA_LSP_TEST_PROJECT})
+    foreach(_parity IN ITEMS parity.reports parity.constraints)
+        if(TEST ${_parity})
+            set_tests_properties(${_parity} PROPERTIES DISABLED TRUE)
+        endif()
+    endforeach()
+    message(STATUS "tests: parity.* 需要参考实现 + 自备语料 —— 标记为跳过")
+endif()
