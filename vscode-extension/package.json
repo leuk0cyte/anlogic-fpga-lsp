@@ -3,7 +3,7 @@
     "displayName": "Anlogic FPGA LSP (TangDynasty)",
     "description": "Language support and IDE views for Anlogic TD FPGA projects: ADC pin constraints, SDC, project .al, Verilog index, TD-backed diagnostics, module hierarchy, syn/phy flow control and QoR/timing/area reports.",
     "version": "0.36.3",
-    "publisher": "fpga-lsp",
+    "publisher": "leuk0cyte",
     "license": "AGPL-3.0-or-later",
     "engines": {
         "vscode": "^1.80.0"
@@ -913,11 +913,11 @@
     },
     "repository": {
         "type": "git",
-        "url": "https://github.com/leuk0cyte/fpga-lsp.git"
+        "url": "https://github.com/leuk0cyte/anlogic-fpga-lsp.git"
     },
-    "homepage": "https://github.com/leuk0cyte/fpga-lsp#readme",
+    "homepage": "https://github.com/leuk0cyte/anlogic-fpga-lsp#readme",
     "bugs": {
-        "url": "https://github.com/leuk0cyte/fpga-lsp/issues"
+        "url": "https://github.com/leuk0cyte/anlogic-fpga-lsp/issues"
     },
     "devDependencies": {
         "vscode-oniguruma": "^2.0.1",

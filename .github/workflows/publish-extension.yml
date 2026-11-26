@@ -1,0 +1,113 @@
+name: publish-extension
+
+# 发布 VS Code 扩展（Marketplace Trusted Publishing）。
+#
+# 触发：push 一个 `v*` tag（例如 v0.36.3）。
+# 需要（一次性配置）：
+#   1) Marketplace → 你的 publisher → Trusted Publishing → Create：
+#        Provider        : GitHub Actions
+#        Repository owner: leuk0cyte
+#        Repository      : anlogic-fpga-lsp
+#        Workflow        : publish-extension.yml
+#        Environment     : 留空（或用 production，并把下面 environment 一起改）
+#      创建后会给出 **client id / tenant id**。
+#   2) GitHub 仓库 → Settings → Secrets and variables → Actions 里加：
+#        VSCE_ENTRA_CLIENT_ID   = <client id>
+#        VSCE_ENTRA_TENANT_ID   = <tenant id>
+#      （这是 Trusted Publishing 的凭据，不是 PAT；vsce 会用它走 OIDC 换 token）
+#
+# 也可以在本地手动发布：cd vscode-extension && npx @vscode/vsce publish --packagePath <vsix>
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to publish (e.g. v0.36.3)'
+        required: false
+
+env:
+  CARGO_TERM_COLOR: never
+
+permissions:
+  # Trusted Publishing 走 OIDC，需要 id-token；checkout 需要 contents:read
+  id-token: write
+  contents: read
+
+jobs:
+  publish:
+    name: Build native server + package + publish
+    runs-on: windows-2022
+    timeout-minutes: 120
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Check version consistency
+        shell: pwsh
+        run: |
+          $pkg = Get-Content vscode-extension/package.json -Raw | ConvertFrom-Json
+          python tests/check_versions.py
+          Write-Host "publishing version $($pkg.version)"
+
+      - name: Configure (native server)
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          cmake -S . -B build -G Ninja ^
+            -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl ^
+            -DCMAKE_BUILD_TYPE=Release ^
+            -DFPGA_LSP_VERIBLE_ENABLED=ON ^
+            -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF ^
+            -DFPGA_LSP_VERIBLE_ALLOW_LTO=OFF
+
+      - name: Build native server
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          cmake --build build --target fpgalsp-native
+
+      - name: Install extension deps
+        working-directory: vscode-extension
+        run: npm install --omit=dev --no-audit --no-fund
+
+      - name: Bundle native exe into the extension
+        working-directory: vscode-extension
+        shell: pwsh
+        run: |
+          $env:FPGA_LSP_NATIVE_EXE = (Resolve-Path '..\build\bin\fpgalsp-native.exe').Path
+          node scripts/bundle-server.js $env:FPGA_LSP_NATIVE_EXE
+
+      - name: Package VSIX
+        working-directory: vscode-extension
+        shell: pwsh
+        run: |
+          npx --yes @vscode/vsce@4 package
+          Get-ChildItem *.vsix | ForEach-Object { Write-Host "packaged $($_.Name) ($([math]::Round($_.Length/1MB,2)) MB)" }
+
+      - name: Verify VSIX contains license notices
+        working-directory: vscode-extension
+        shell: pwsh
+        run: |
+          $vsix = Get-ChildItem *.vsix | Select-Object -First 1
+          $tmp = Join-Path $env:TEMP 'vsix-check'
+          Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
+          Expand-Archive $vsix.FullName -DestinationPath $tmp
+          foreach ($f in 'extension\LICENSE.txt','extension\THIRD-PARTY-NOTICES.md','extension\server\bin\fpgalsp-native.exe') {
+            if (-not (Test-Path (Join-Path $tmp $f))) { throw "VSIX missing $f" }
+          }
+          Write-Host 'VSIX contains LICENSE / THIRD-PARTY-NOTICES / native exe'
+
+      - name: Publish to Marketplace (Trusted Publishing)
+        working-directory: vscode-extension
+        env:
+          VSCE_ENTRA_CLIENT_ID: ${{ secrets.VSCE_ENTRA_CLIENT_ID }}
+          VSCE_ENTRA_TENANT_ID: ${{ secrets.VSCE_ENTRA_TENANT_ID }}
+        shell: pwsh
+        run: |
+          $vsix = (Get-ChildItem *.vsix | Select-Object -First 1).FullName
+          npx --yes @vscode/vsce@4 publish --packagePath $vsix

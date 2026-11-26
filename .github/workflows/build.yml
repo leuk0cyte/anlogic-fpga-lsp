@@ -1,0 +1,55 @@
+name: build
+
+# CI：配置 + 全量构建 + 单测（不发布）。
+#   * 发布走 .github/workflows/publish-extension.yml（tag 触发）
+#   * 这里的目标是"任何人 clone 下来能验证一棵干净的树"
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Windows / MSVC / Ninja
+    runs-on: windows-2022
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        shell: pwsh
+        run: |
+          cmake --version
+          ninja --version
+          $env:VSCMD_ARG_TGT_ARCH
+
+      - name: Configure
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          cmake -S . -B build -G Ninja ^
+            -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl ^
+            -DCMAKE_BUILD_TYPE=Release ^
+            -DFPGA_LSP_VERIBLE_ENABLED=ON ^
+            -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF ^
+            -DFPGA_LSP_VERIBLE_ALLOW_LTO=OFF
+
+      - name: Build
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          cmake --build build
+
+      - name: ctest
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          ctest --test-dir build -E docs_clang_tidy --output-on-failure
