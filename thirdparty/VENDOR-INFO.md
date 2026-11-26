@@ -18,8 +18,6 @@
 | `simdutf/` | https://github.com/simdutf/simdutf | `82f457ff` | UTF-8 ↔ UTF-16（LSP 位置换算）9.4.0 |
 | `googletest/` | https://github.com/google/googletest | `a46a6012` | 单测框架 1.18.0 |
 | `compile-time-regular-expressions/` | https://github.com/hanickadot/compile-time-regular-expressions | `62b06068` | 编译期正则（仅字面量模式） |
-| `asio/` | https://github.com/chriskohlhoff/asio | `190a8d8d` | standalone Asio（异步 I/O、定时器、取消） |
-| `jcxxgen/` | 随 Verible 上游的代码生成器（独立出树以便 CMake 自举） | `a32481d7` | `lsp-protocol.yaml` → `lsp-protocol.h` |
 
 ## Verible 的裁剪（`verible/`）
 
@@ -51,3 +49,17 @@
    生成器层面的回归还要跑 `ctest -L generator`（14 条断言，含锚点计数基线）。
 3. **升级 abseil 要与 Verible 对齐**：Verible 的 shim 只兼容特定 `absl` 版本区间，
    跨大版本容易触发 ODR 问题（详见 `README.md` 的风险画像一节）。
+
+## Removed before publication (2026-11-26)
+
+为了满足公开发布时的许可证与合规要求，以下**不参与编译**的子目录被删除：
+
+| 目录 | 原因 |
+| --- | --- |
+| `simdutf/benchmarks/` | 内含 **OSL-3.0**（FSF 认定与 GPL 不兼容）与 LGPL-2.1-only 的对比实现，且有 "research purposes only" 与无授权文件（H1） |
+| `json/tests/` | 内含 **GPL-3.0-only** 文件（`imapdl/filterbr.py`，H2），与 AGPL-3.0-**or-later** 的表述冲突 |
+| `json/docs/` | 内含 4 个 `SIL OFL-1.1` 字体（.woff2），本仓库无 OFL 声明（H2） |
+| `asio/` | **未被任何 target 使用**（构建实际用的是 Verible 自带的 asio 用法），保留只会产生 BSL-1.0 的署名义务（M4） |
+| `jcxxgen/` | **未被使用**（构建用 `verible/common/lsp/jcxxgen.cc`），且原记录来源写错（M4） |
+
+以上删除都不影响构建：`simdutf` 的 `SIMDUTF_BENCHMARKS`、`json` 的 `JSON_BuildTests` 在 `cmake/Dependencies.cmake` 里本来就是 OFF。
