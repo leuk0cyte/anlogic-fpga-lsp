@@ -529,11 +529,22 @@ if(NOT TARGET verible_lint_rules_all)
         endif()
         list(REMOVE_DUPLICATES _whole_archive_libs)
         if(MSVC)
+            # ⚠ 不能每个库都加一条 "/WHOLEARCHIVE:<绝对路径>"：60+ 条选项拼进链接
+            # 命令行后，在 CI 的长路径（D:\a\<repo>\<repo>\build\lib\...）下会超过
+            # Windows 的 32767 字符上限，链接器报 "The command line is too long."。
+            # 改写成响应文件（每行一条 /WHOLEARCHIVE:），再用 @<rsp> 传进去。
+            set(_wholearchive_rsp
+                "${CMAKE_BINARY_DIR}/verible-wholearchive.rsp")
+            set(_wholearchive_lines "")
             foreach(_lib IN LISTS _whole_archive_libs)
                 target_link_libraries(verible_lint_rules_all INTERFACE "${_lib}")
-                target_link_options(verible_lint_rules_all INTERFACE
-                    "/WHOLEARCHIVE:$<TARGET_FILE:${_lib}>")
+                string(APPEND _wholearchive_lines
+                    "/WHOLEARCHIVE:$<TARGET_FILE:${_lib}>" "\n")
             endforeach()
+            file(GENERATE OUTPUT "${_wholearchive_rsp}"
+                 CONTENT "${_wholearchive_lines}")
+            target_link_options(verible_lint_rules_all INTERFACE
+                "@${_wholearchive_rsp}")
         else()
             target_link_libraries(verible_lint_rules_all INTERFACE ${_whole_archive_libs})
         endif()
@@ -599,13 +610,19 @@ if(NOT TARGET verible_parser_libs)
     # alwayslink 等价物：把这些归档整个链进来（仅 MSVC）
     # 同时显式 link 一次，建立构建依赖，保证 .lib 在链接前已生成（否则 LNK1356）。
     if(MSVC)
+        # 同样走响应文件：命令行长度是硬上限（Windows 32767 字符），
+        # 不能赌"现在只有 3 个库"。
+        set(_parser_wa_rsp "${CMAKE_BINARY_DIR}/verible-parser-wholearchive.rsp")
+        set(_parser_wa_lines "")
         foreach(_wa IN LISTS _VERIBLE_WHOLEARCHIVE_TARGETS)
             if(TARGET ${_wa})
                 target_link_libraries(verible_parser_libs INTERFACE "${_wa}")
-                target_link_options(verible_parser_libs INTERFACE
-                    "/WHOLEARCHIVE:$<TARGET_FILE:${_wa}>")
+                string(APPEND _parser_wa_lines
+                    "/WHOLEARCHIVE:$<TARGET_FILE:${_wa}>" "\n")
             endif()
         endforeach()
+        file(GENERATE OUTPUT "${_parser_wa_rsp}" CONTENT "${_parser_wa_lines}")
+        target_link_options(verible_parser_libs INTERFACE "@${_parser_wa_rsp}")
     endif()
 endif()
 
