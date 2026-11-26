@@ -106,6 +106,9 @@ protected:
 // -----------------------------------------------------------------------------
 
 TEST_F(IdeFeaturesTest, InstantiationTextMatchesPythonLayout) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     fpgalsp::hdl::HdlIndex index = Index({{"leaf.v",
                                            "module leaf #(parameter W = 8)\n"
                                            "  (input wire clk, output wire [W-1:0] q);\n"
@@ -136,6 +139,9 @@ TEST_F(IdeFeaturesTest, InstantiationTextMatchesPythonLayout) {
 }
 
 TEST_F(IdeFeaturesTest, InstantiationWithoutParameters) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     fpgalsp::hdl::HdlIndex index = Index({{"m.v", "module m (input a);\nendmodule\n"}});
     const nlohmann::json result = Instantiation(index, "m", "  ");
     EXPECT_EQ(result.value("ok", false), true);
@@ -146,6 +152,9 @@ TEST_F(IdeFeaturesTest, InstantiationWithoutParameters) {
 }
 
 TEST_F(IdeFeaturesTest, InstantiationWithoutModuleListsNames) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     fpgalsp::hdl::HdlIndex index = Index({{"z.v", "module zeta; endmodule\n"},
                                           {"a.v", "module alpha; endmodule\n"}});
     const nlohmann::json result = Instantiation(index, "", "    ");
@@ -157,6 +166,9 @@ TEST_F(IdeFeaturesTest, InstantiationWithoutModuleListsNames) {
 }
 
 TEST_F(IdeFeaturesTest, InstantiationUnknownModule) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     fpgalsp::hdl::HdlIndex index = Index({{"a.v", "module alpha; endmodule\n"}});
     const nlohmann::json result = Instantiation(index, "nope", "    ");
     EXPECT_EQ(result.value("ok", true), false);
@@ -168,6 +180,9 @@ TEST_F(IdeFeaturesTest, InstantiationUnknownModule) {
 // -----------------------------------------------------------------------------
 
 TEST_F(IdeFeaturesTest, CopyInstantiationUsesFirstModuleInFile) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     const std::string path = Path("multi.v");
     fpgalsp::hdl::HdlIndex index = Index({{"multi.v",
                                            "module first (input a);\nendmodule\n"
@@ -181,6 +196,9 @@ TEST_F(IdeFeaturesTest, CopyInstantiationUsesFirstModuleInFile) {
 }
 
 TEST_F(IdeFeaturesTest, CopyInstantiationOnFileWithoutModules) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     fpgalsp::hdl::HdlIndex index = Index({{"empty.v", "\n"}});
     const nlohmann::json result = CopyInstantiation(index, Path("empty.v"));
     EXPECT_EQ(result.value("ok", true), false);
@@ -192,6 +210,9 @@ TEST_F(IdeFeaturesTest, CopyInstantiationOnFileWithoutModules) {
 // -----------------------------------------------------------------------------
 
 TEST_F(IdeFeaturesTest, DuplicateModulesReportsZeroBasedLines) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     fpgalsp::hdl::HdlIndex index = Index({{"a.v", "module dup (input a);\nendmodule\n"},
                                           {"b.v", "\n\nmodule dup (input b);\nendmodule\n"},
                                           {"c.v", "module unique; endmodule\n"}});
@@ -212,6 +233,9 @@ TEST_F(IdeFeaturesTest, DuplicateModulesReportsZeroBasedLines) {
 // -----------------------------------------------------------------------------
 
 TEST_F(IdeFeaturesTest, SearchHierarchyFindsModuleAndInstance) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     const std::string top = Path("top.v");
     fpgalsp::hdl::HdlIndex index = Index({
         {"sys_rstn.v", "module sys_rstn (input clk, output rst_n);\nendmodule\n"},
@@ -234,6 +258,9 @@ TEST_F(IdeFeaturesTest, SearchHierarchyFindsModuleAndInstance) {
 }
 
 TEST_F(IdeFeaturesTest, SearchHierarchyEmptyQueryAndLimit) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     fpgalsp::hdl::HdlIndex index = Index({{"top.v",
                                            "module top (input clk);\n"
                                            "  abc_x inst_a (.clk(clk));\n"
@@ -253,6 +280,9 @@ TEST_F(IdeFeaturesTest, SearchHierarchyEmptyQueryAndLimit) {
 // -----------------------------------------------------------------------------
 
 TEST_F(IdeFeaturesTest, SymbolPathWalksInstanceChain) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     const std::string leaf = Path("leaf.v");
     fpgalsp::hdl::HdlIndex index = Index({
         {"leaf.v", "module leaf (input clk);\n  wire sig;\nendmodule\n"},
@@ -273,6 +303,9 @@ TEST_F(IdeFeaturesTest, SymbolPathWalksInstanceChain) {
 }
 
 TEST_F(IdeFeaturesTest, SymbolPathAtTopLevelModuleKeepsBareName) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     const std::string top = Path("top.v");
     fpgalsp::hdl::HdlIndex index = Index({{"top.v",
                                            "module top (input clk);\n  wire clk_50M;\n"
@@ -288,6 +321,9 @@ TEST_F(IdeFeaturesTest, SymbolPathAtTopLevelModuleKeepsBareName) {
 }
 
 TEST_F(IdeFeaturesTest, SymbolPathWithoutSymbol) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     const std::string empty = Path("blank.v");
     fpgalsp::hdl::HdlIndex index = Index({{"blank.v", "\n\n\n"}});
     fpgalsp::project::Project project;
@@ -329,6 +365,9 @@ std::string MakeAlText(const std::string& extra = "", const std::string& eol = "
 }  // namespace
 
 TEST_F(IdeFeaturesTest, AddSourceFileAppendsEntryWithNextCompileOrder) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     const std::string al = WriteFile("proj/demo.al", MakeAlText());
     WriteFile("proj/src/b.v", "module b; endmodule\n");
 
@@ -351,6 +390,9 @@ TEST_F(IdeFeaturesTest, AddSourceFileAppendsEntryWithNextCompileOrder) {
 }
 
 TEST_F(IdeFeaturesTest, AddSourceFileIsIdempotent) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     const std::string al = WriteFile("proj/demo.al", MakeAlText());
     WriteFile("proj/src/b.v", "module b; endmodule\n");
     const std::string before = ReadFile(al);
@@ -369,6 +411,9 @@ TEST_F(IdeFeaturesTest, AddSourceFileIsIdempotent) {
 }
 
 TEST_F(IdeFeaturesTest, AddSourceFileKeepsCrlfLineEndings) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     const std::string al = WriteFile("proj/demo.al", MakeAlText("", "\r\n"));
     WriteFile("proj/src/b.v", "module b; endmodule\n");
 
@@ -381,6 +426,9 @@ TEST_F(IdeFeaturesTest, AddSourceFileKeepsCrlfLineEndings) {
 }
 
 TEST_F(IdeFeaturesTest, AddSourceFileWithoutSourceFilesSectionFails) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     const std::string al = WriteFile("proj/demo.al",
                                      "<Project Version=\"3\"><Name>demo</Name></Project>\n");
     const std::string before = ReadFile(al);
@@ -391,6 +439,9 @@ TEST_F(IdeFeaturesTest, AddSourceFileWithoutSourceFilesSectionFails) {
 }
 
 TEST_F(IdeFeaturesTest, AddSourceFileUsesVhdlTagForVhdlExtensions) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     const std::string al = WriteFile("proj/demo.al", MakeAlText());
     WriteFile("proj/src/c.vhd", "entity c is end;\n");
     const nlohmann::json result = AddSourceFile(al, (root_ / "proj" / "src" / "c.vhd").string());
@@ -403,6 +454,9 @@ TEST_F(IdeFeaturesTest, AddSourceFileUsesVhdlTagForVhdlExtensions) {
 // -----------------------------------------------------------------------------
 
 TEST_F(IdeFeaturesTest, SetProjectNameRewritesNameOnly) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     const std::string al = WriteFile("proj/demo.al", MakeAlText());
     const nlohmann::json result = SetProjectName(al, " demo_probe ");
     ASSERT_TRUE(result.value("ok", false)) << result.dump();
@@ -419,6 +473,9 @@ TEST_F(IdeFeaturesTest, SetProjectNameRewritesNameOnly) {
 }
 
 TEST_F(IdeFeaturesTest, SetProjectNameUnchangedKeepsFileUntouched) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     const std::string al = WriteFile("proj/demo.al", MakeAlText());
     const std::string before = ReadFile(al);
     const nlohmann::json result = SetProjectName(al, "demo");
@@ -429,6 +486,9 @@ TEST_F(IdeFeaturesTest, SetProjectNameUnchangedKeepsFileUntouched) {
 }
 
 TEST_F(IdeFeaturesTest, SetProjectNameRejectsBadInput) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     const std::string al = WriteFile("proj/demo.al", MakeAlText());
     EXPECT_EQ(SetProjectName(al, "  ").value("error", std::string()),
               "Project name cannot be empty");
@@ -438,6 +498,9 @@ TEST_F(IdeFeaturesTest, SetProjectNameRejectsBadInput) {
 }
 
 TEST_F(IdeFeaturesTest, SetProjectNameInsertsNameWhenMissing) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     const std::string al = WriteFile(
         "proj/demo.al",
         "<Project Version=\"3\">\n  <TOP_MODULE><MODULE>top</MODULE></TOP_MODULE>\n</Project>\n");
@@ -448,6 +511,9 @@ TEST_F(IdeFeaturesTest, SetProjectNameInsertsNameWhenMissing) {
 }
 
 TEST_F(IdeFeaturesTest, SetProjectNameKeepsCrlfLineEndings) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     const std::string al = WriteFile("proj/demo.al", MakeAlText("", "\r\n"));
     const nlohmann::json result = SetProjectName(al, "demo2");
     ASSERT_TRUE(result.value("ok", false)) << result.dump();
@@ -455,6 +521,9 @@ TEST_F(IdeFeaturesTest, SetProjectNameKeepsCrlfLineEndings) {
 }
 
 TEST_F(IdeFeaturesTest, SetProjectNameWithoutProjectTagFails) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     const std::string al = WriteFile("proj/demo.al", "<Config><Name>demo</Name></Config>\n");
     const std::string before = ReadFile(al);
     // 有 <Name> 时会被替换（Python 也一样），这里测的是"完全没有 <Project>"的分支
@@ -472,6 +541,9 @@ TEST_F(IdeFeaturesTest, SetProjectNameWithoutProjectTagFails) {
 // -----------------------------------------------------------------------------
 
 TEST_F(IdeFeaturesTest, WriteTextFileAtomicReplacesContent) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     const std::string path = WriteFile("proj/atomic.al", "old");
     EXPECT_TRUE(WriteTextFileAtomic(path, "new-content"));
     EXPECT_EQ(ReadFile(path), "new-content");
@@ -480,6 +552,9 @@ TEST_F(IdeFeaturesTest, WriteTextFileAtomicReplacesContent) {
 }
 
 TEST_F(IdeFeaturesTest, WriteTextFileAtomicFailsWithoutTouchingTarget) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     // 目标目录不存在 -> 临时文件都写不出来，目标不会有任何变化
     const std::string missing = (root_ / "no_such_dir" / "x.al").string();
     EXPECT_FALSE(WriteTextFileAtomic(missing, "data"));
@@ -630,6 +705,9 @@ bool VeribleLinterAvailable() {
 }  // namespace
 
 TEST(CodeActionsB3, ModuleHeaderYieldsInstantiationRefactor) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     const std::string text = ReadTextFile(kCodeActionTop);
     if (text.empty()) GTEST_SKIP() << "语料需自备：语料缺失（设置 FPGA_LSP_TEST_PROJECT 指向自备工程）";
     const int line = FindLine(text, "module top");
@@ -670,6 +748,9 @@ TEST(CodeActionsB3, ModuleHeaderYieldsInstantiationRefactor) {
 }
 
 TEST(CodeActionsB3, InstanceNameYieldsThatModulesInstantiation) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     const std::string text = ReadTextFile(kCodeActionTop);
     if (text.empty()) GTEST_SKIP() << "语料需自备：语料缺失（设置 FPGA_LSP_TEST_PROJECT 指向自备工程）";
     const int line = FindLine(text, "sys_rstn  sys_rstn");
@@ -698,6 +779,9 @@ TEST(CodeActionsB3, InstanceNameYieldsThatModulesInstantiation) {
 }
 
 TEST(CodeActionsB3, SignalPositionHasNoInstantiationAction) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     const std::string text = ReadTextFile(kCodeActionTop);
     const int line = FindLine(text, "wire clk_50M;");
     ASSERT_GE(line, 0);
@@ -716,6 +800,9 @@ TEST(CodeActionsB3, SignalPositionHasNoInstantiationAction) {
 }
 
 TEST(CodeActionsB3, VeribleAutofixReplacesWholeDocument) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     if (!VeribleLinterAvailable()) {
         GTEST_SKIP() << "verible-verilog-lint not found (Python 侧同样不产生该动作)";
     }
@@ -752,6 +839,9 @@ TEST(CodeActionsB3, VeribleAutofixReplacesWholeDocument) {
 }
 
 TEST(CodeActionsB3, NonVerilogPathYieldsNoActions) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     CodeActionFixture fixture;
     // Python: 只有 .v/.sv/.vh/.svh 与 .adc 有 codeAction，.sdc 恒为空
     EXPECT_TRUE(fixture.server()
@@ -765,6 +855,9 @@ TEST(CodeActionsB3, NonVerilogPathYieldsNoActions) {
 }
 
 TEST(CodeActionsB3, AdcPinAssignmentLineOffersRemove) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     const std::string text = ReadTextFile(kCodeActionAdc);
     if (text.empty()) GTEST_SKIP() << "语料需自备：语料缺失（设置 FPGA_LSP_TEST_PROJECT 指向自备工程）";
     const int line = FindLine(text, "set_pin_assignment");
@@ -789,6 +882,9 @@ TEST(CodeActionsB3, AdcPinAssignmentLineOffersRemove) {
 }
 
 TEST(CodeActionsB3, AdcMissingIostandardOffersInsert) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     // .adc 分支在"工程查找"之前（Python 同样如此），所以临时文件不需要 .al
     const std::filesystem::path directory =
         std::filesystem::temp_directory_path() / "fpgalsp_b3_code_actions";

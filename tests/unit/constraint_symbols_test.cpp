@@ -88,7 +88,12 @@ void CollectBlackboxes(const Json& node, std::vector<std::string>* out) {
 //  1. `.adc` 的 documentSymbol（Python: 47 条）
 // =============================================================================
 
+
+
 TEST(AdcSymbols, DocumentSymbolsMatchPythonProbe) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     const std::string text = ReadCorpus("constrains/pin.adc");
     if (text.empty()) GTEST_SKIP() << "语料需自备（设置 FPGA_LSP_TEST_PROJECT 指向自备工程）: " << CorpusPath("constrains/pin.adc");
 
@@ -129,6 +134,9 @@ TEST(AdcSymbols, DocumentSymbolsMatchPythonProbe) {
 }
 
 TEST(AdcSymbols, CommentAndBlankLinesAreNotSymbols) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     const std::string text =
         "# a comment\n"
         "\n"
@@ -145,6 +153,9 @@ TEST(AdcSymbols, CommentAndBlankLinesAreNotSymbols) {
 // =============================================================================
 
 TEST(AdcSymbols, HoverShowsDecodedAttributes) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     const std::string text = ReadCorpus("constrains/pin.adc");
     if (text.empty()) GTEST_SKIP() << "语料需自备（设置 FPGA_LSP_TEST_PROJECT 指向自备工程）";
 
@@ -163,6 +174,9 @@ TEST(AdcSymbols, HoverShowsDecodedAttributes) {
 }
 
 TEST(AdcSymbols, HoverAttributeOrderFollowsFirstAppearance) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     // Python 的 attrs 是 dict：顺序 = **首次出现**，值 = **最后一次**赋值。
     const std::string text =
         "set_pin_assignment\t{ p } \t{ PULLTYPE = NONE; LOCATION = P5; PULLTYPE = PULLUP; }\n";
@@ -177,6 +191,9 @@ TEST(AdcSymbols, HoverAttributeOrderFollowsFirstAppearance) {
 // =============================================================================
 
 TEST(AdcSymbols, CompletionOnCommandKeyword) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     const std::string text = ReadCorpus("constrains/pin.adc");
     if (text.empty()) GTEST_SKIP() << "语料需自备（设置 FPGA_LSP_TEST_PROJECT 指向自备工程）";
 
@@ -196,6 +213,9 @@ TEST(AdcSymbols, CompletionOnCommandKeyword) {
 }
 
 TEST(AdcSymbols, CompletionAttributeKeysAndIoStandards) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     const std::string text = "set_pin_assignment\t{ clk } \t{ LOC =  }\n";
     // 光标落在 `LOC` 上：kind = attr_key -> 7 条 ADC_ATTRS，带 " = " 插入文本
     const Json attr = adc::Completion(text, 0, static_cast<int>(text.find("LOC")));
@@ -219,6 +239,9 @@ TEST(AdcSymbols, CompletionAttributeKeysAndIoStandards) {
 // =============================================================================
 
 TEST(SdcSymbols, DocumentSymbolsMatchPythonProbe) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     const std::string text = ReadCorpus("constrains/top.sdc");
     if (text.empty()) GTEST_SKIP() << "语料需自备（设置 FPGA_LSP_TEST_PROJECT 指向自备工程）";
 
@@ -248,6 +271,9 @@ TEST(SdcSymbols, DocumentSymbolsMatchPythonProbe) {
 // =============================================================================
 
 TEST(SdcSymbols, HoverCommandUsesTdUsage) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     const std::string text = ReadCorpus("constrains/top.sdc");
     if (text.empty()) GTEST_SKIP() << "语料需自备（设置 FPGA_LSP_TEST_PROJECT 指向自备工程）";
 
@@ -275,6 +301,9 @@ TEST(SdcSymbols, HoverCommandUsesTdUsage) {
 // =============================================================================
 
 TEST(SdcSymbols, CompletionOnCommandKeyword) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     const std::string text = ReadCorpus("constrains/top.sdc");
     if (text.empty()) GTEST_SKIP() << "语料需自备（设置 FPGA_LSP_TEST_PROJECT 指向自备工程）";
 
@@ -291,6 +320,9 @@ TEST(SdcSymbols, CompletionOnCommandKeyword) {
 }
 
 TEST(SdcSymbols, CommandTableMatchesPythonData) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     // Python `_complete_sdc` 的候选集大小 = td_commands.json 的命令数（864）
     EXPECT_EQ(sdc::CommandUsages().size(), 864u);
 
@@ -317,6 +349,9 @@ TEST(SdcSymbols, CommandTableMatchesPythonData) {
 // =============================================================================
 
 TEST(HdlPrimitives, CountsMatchPythonProbe) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     // Python 探针：同一位置 814 项 = 21 模块 + 745 器件原语 + 48 关键字
     EXPECT_EQ(fpgalsp::hdl::DevicePrimitives().size(), 745u);
     EXPECT_EQ(fpgalsp::hdl::VerilogKeywords().size(), 48u);
@@ -337,6 +372,9 @@ TEST(HdlPrimitives, CountsMatchPythonProbe) {
 }
 
 TEST(HdlPrimitives, IsDevicePrimitiveIsCaseInsensitive) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     // CorpusAlpha 的 IP 文件（al_ip/pll_gen.v）里实例化的两个原语
     EXPECT_TRUE(fpgalsp::hdl::IsDevicePrimitive("EF2_PHY_PLL"));
     EXPECT_TRUE(fpgalsp::hdl::IsDevicePrimitive("ef2_phy_pll"));
@@ -399,6 +437,9 @@ fpgalsp::hdl::BuildResult BuildSyntheticIpProject() {
 }  // namespace
 
 TEST(ModuleTree, IncludePrimitivesFalseHidesIpPrimitiveBlackboxes) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     fpgalsp::project::Project project;
     project.dir = "Y:/b10_synthetic";
     project.al_path = "Y:/b10_synthetic/p.al";
@@ -428,6 +469,9 @@ TEST(ModuleTree, IncludePrimitivesFalseHidesIpPrimitiveBlackboxes) {
 }
 
 TEST(ModuleTree, RealCorpusMatchesPythonNodeCount) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     // Python 探针（PROBE.md §3.5）：完整 payload 递归计数 = 34 节点，其中 0 个 blackbox；
     // 修复前 C++ 是 36（多出 pll_gen 里的 EF2_LOGIC_BUFG / EF2_PHY_PLL 两个黑盒）。
     const fpgalsp::project::Project project =
@@ -513,6 +557,9 @@ void FindCompletionAnchor(const std::string& text, int* line, int* character) {
 }  // namespace
 
 TEST(FeaturesCompletion, CorpusAnchorIs814ForLspAndMcp) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     CorpusIndex corpus = LoadCorpusIndex();
     ASSERT_GT(corpus.build.index.ModuleCount(), 0u);
 
@@ -560,6 +607,9 @@ TEST(FeaturesCompletion, CorpusAnchorIs814ForLspAndMcp) {
 }
 
 TEST(FeaturesCompletion, PrimitiveCandidateCarriesDetailLikePython) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     // Python: {"label": "EF2_PHY_PLL", "kind": 3, "detail": "Device primitive"}
     const Json result = fpgalsp::server::features::Completion(
         LoadCorpusIndex().build.index, CorpusPath("src/top.v"), "", 0, 0);
@@ -578,6 +628,9 @@ TEST(FeaturesCompletion, PrimitiveCandidateCarriesDetailLikePython) {
 //  B-B1：约束诊断接入 LSP（编辑器 Problems 与 MCP fpga_diagnostics 同源）
 // =============================================================================
 TEST(ConstraintDiagnosticsTest, AdcProblemsAreExposedThroughTheServerHelper) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     std::vector<fpgalsp::constraints::Port> ports;
     fpgalsp::constraints::Port w;
     w.name = "w";
@@ -606,6 +659,9 @@ TEST(ConstraintDiagnosticsTest, AdcProblemsAreExposedThroughTheServerHelper) {
 
 // B-B5：未约束 IO 的覆盖率概览（ADC-COVERAGE，info 级；全部约束时不产生）
 TEST(ConstraintDiagnosticsTest, CoverageSummaryFlagsUnconstrainedPorts) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     std::vector<fpgalsp::constraints::Port> ports;
     for (const char* name : {"a", "b"}) {
         fpgalsp::constraints::Port port;

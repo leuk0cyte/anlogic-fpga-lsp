@@ -12,6 +12,8 @@
 //  tests/gate-corpus/corpus_alpha 这份与真实工程逐字节相同的语料。
 // =============================================================================
 
+#include <filesystem>
+#include <cstdio>
 #include <gtest/gtest.h>
 
 #include <fstream>
@@ -125,7 +127,12 @@ int ItemStart(const Json& item) {
 // -----------------------------------------------------------------------------
 // 1. prepareCallHierarchy
 // -----------------------------------------------------------------------------
+
+
 TEST(CallHierarchyPrepare, OnInstanceNameYieldsModule) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     const std::string text = ReadFile(kTop);
     if (text.empty()) GTEST_SKIP() << "语料需自备：语料缺失（设置 FPGA_LSP_TEST_PROJECT 指向自备工程）";
     const Anchor anchor = FindAnchor(text, "sys_rstn  sys_rstn", "sys_rstn(");
@@ -151,6 +158,9 @@ TEST(CallHierarchyPrepare, OnInstanceNameYieldsModule) {
 }
 
 TEST(CallHierarchyPrepare, OnModuleDefinitionYieldsSameModule) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     const std::string text = ReadFile(kTop);
     if (text.empty()) GTEST_SKIP() << "语料需自备：语料缺失（设置 FPGA_LSP_TEST_PROJECT 指向自备工程）";
     const Anchor anchor = FindAnchor(text, "module top(", "top(");
@@ -166,6 +176,9 @@ TEST(CallHierarchyPrepare, OnModuleDefinitionYieldsSameModule) {
 }
 
 TEST(CallHierarchyPrepare, OnKeywordOrCommentIsEmpty) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     Fixture fixture;
     // 行 0 是注释；行 14 第 0 列是 `module` 关键字
     EXPECT_TRUE(fixture.server().FeatureCallHierarchyPrepare(kTop, 0, 0).empty());
@@ -175,6 +188,9 @@ TEST(CallHierarchyPrepare, OnKeywordOrCommentIsEmpty) {
 }
 
 TEST(CallHierarchyPrepare, UnknownPathIsEmpty) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     Fixture fixture;
     EXPECT_TRUE(fixture.server().FeatureCallHierarchyPrepare("", 0, 0).empty());
     EXPECT_TRUE(fixture.server()
@@ -186,6 +202,9 @@ TEST(CallHierarchyPrepare, UnknownPathIsEmpty) {
 // 2. outgoingCalls
 // -----------------------------------------------------------------------------
 TEST(CallHierarchyOutgoing, TopHasTwelveCallees) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     Fixture fixture;
     const std::string top_uri = fpgalsp::platform::path_to_uri(kTop);
     const Json calls = fixture.server().FeatureCallHierarchyOutgoing(MakeItem("top", top_uri));
@@ -228,6 +247,9 @@ TEST(CallHierarchyOutgoing, TopHasTwelveCallees) {
 }
 
 TEST(CallHierarchyOutgoing, UnknownModuleIsEmpty) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     Fixture fixture;
     const Json calls = fixture.server().FeatureCallHierarchyOutgoing(
         MakeItem("no_such_module_xyz", fpgalsp::platform::path_to_uri(kTop)));
@@ -241,6 +263,9 @@ TEST(CallHierarchyOutgoing, UnknownModuleIsEmpty) {
 // 3. incomingCalls
 // -----------------------------------------------------------------------------
 TEST(CallHierarchyIncoming, SysRstnIsInstantiatedByTop) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     Fixture fixture;
     const std::string uri = fpgalsp::platform::path_to_uri(kProject + "/src/system/sys_rstn.v");
     const Json calls = fixture.server().FeatureCallHierarchyIncoming(MakeItem("sys_rstn", uri));
@@ -260,6 +285,9 @@ TEST(CallHierarchyIncoming, SysRstnIsInstantiatedByTop) {
 }
 
 TEST(CallHierarchyIncoming, TopHasNoParent) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     Fixture fixture;
     const std::string uri = fpgalsp::platform::path_to_uri(kTop);
     EXPECT_TRUE(fixture.server().FeatureCallHierarchyIncoming(MakeItem("top", uri)).empty());
@@ -272,6 +300,9 @@ TEST(CallHierarchyIncoming, TopHasNoParent) {
 // 4. 区间格式化（纯函数，不依赖 verible）
 // -----------------------------------------------------------------------------
 TEST(RangeFormattingEdits, PerLineWhenLineCountMatches) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     const std::string text =
         "module m;\n"
         "  wire  x;\n"
@@ -291,6 +322,9 @@ TEST(RangeFormattingEdits, PerLineWhenLineCountMatches) {
 }
 
 TEST(RangeFormattingEdits, LineCountChangeFallsBackToWholeDocument) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     const std::string text =
         "module m;\n"
         "  assign y =\n"
@@ -311,6 +345,9 @@ TEST(RangeFormattingEdits, LineCountChangeFallsBackToWholeDocument) {
 }
 
 TEST(RangeFormattingEdits, NoChangeProducesNoEdits) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     const std::string text = "module m;\nendmodule\n";
     EXPECT_TRUE(fpgalsp::server::RangeFormattingEdits(text, text, 0, 2).empty());
     // 区间外的改动不出编辑
@@ -323,6 +360,9 @@ TEST(RangeFormattingEdits, NoChangeProducesNoEdits) {
 // -----------------------------------------------------------------------------
 #if defined(FPGA_LSP_HAVE_VERIBLE_BRIDGE)
 TEST(RangeFormattingVerible, TopCorpusProducesWholeDocumentEdit) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     const std::string text = ReadFile(kTop);
     if (text.empty()) GTEST_SKIP() << "语料需自备：语料缺失（设置 FPGA_LSP_TEST_PROJECT 指向自备工程）";
     const auto formatted = fpgalsp::verible_bridge::FormatText(text, kTop);

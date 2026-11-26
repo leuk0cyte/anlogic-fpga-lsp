@@ -64,6 +64,9 @@ struct BridgeTest : public ::testing::Test {
     std::unique_ptr<fpgalsp::mcp::Bridge> bridge;
 
     void SetUp() override {
+        if (!std::filesystem::exists(kCorpusRoot)) {
+            GTEST_SKIP() << "corpus missing (release tree): " << kCorpusRoot;
+        }
         fpgalsp::mcp::BridgeOptions options;
         options.root = kCorpusRoot;
         bridge = std::make_unique<fpgalsp::mcp::Bridge>(options);

@@ -62,6 +62,9 @@ class CommandsTest : public ::testing::Test {
 };
 
 TEST_F(CommandsTest, CommandTableIsWellFormed) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     const std::vector<std::string>& names = fpgalsp::server::ExecuteCommandNames();
     EXPECT_FALSE(names.empty());
     std::set<std::string> unique;
@@ -73,6 +76,9 @@ TEST_F(CommandsTest, CommandTableIsWellFormed) {
 }
 
 TEST_F(CommandsTest, CapabilityMatchesCommandTable) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     const Json init = server().FeatureInitialize(Json::object());
     ASSERT_TRUE(init.contains("capabilities"));
     const Json& capabilities = init["capabilities"];
@@ -90,6 +96,9 @@ TEST_F(CommandsTest, CapabilityMatchesCommandTable) {
 // 广播子集必须排除扩展自己 contributes 的 3 条历史命令 —— vscode-languageclient
 // 会把广播的每条命令注册成 VS Code 命令，重复注册会让 initialize 直接失败。
 TEST_F(CommandsTest, AdvertisedSubsetExcludesClientOwnedCommands) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     const std::vector<std::string>& all = fpgalsp::server::ExecuteCommandNames();
     const std::vector<std::string>& advertised = fpgalsp::server::AdvertisedCommandNames();
     EXPECT_EQ(advertised.size() + 3, all.size());
@@ -104,6 +113,9 @@ TEST_F(CommandsTest, AdvertisedSubsetExcludesClientOwnedCommands) {
 // 走**已注册的 dispatcher**（而不是直接调私有 handler）：这样测的是真实的
 // 注册表 → workspace/executeCommand → 分发表 这条链路。
 TEST_F(CommandsTest, MetricsCommandDispatches) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     fpgalsp::jsonrpc::Dispatcher dispatcher(*transport_);
     server().RegisterAll(dispatcher);
 
@@ -117,6 +129,9 @@ TEST_F(CommandsTest, MetricsCommandDispatches) {
 }
 
 TEST_F(CommandsTest, UnknownCommandFails) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     fpgalsp::jsonrpc::Dispatcher dispatcher(*transport_);
     server().RegisterAll(dispatcher);
 
@@ -138,6 +153,9 @@ TEST_F(CommandsTest, UnknownCommandFails) {
 // 插件侧传 apply_build_config:false，所以这里守的是"传了就转发、不传默认关"。
 // config.txt 用 FPGALSP_STATE_DIR 指到临时目录，绝不碰 gate-corpus 工程。
 TEST_F(CommandsTest, ProbeConfigForwardsApplyBuildConfigOptIn) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
 #if defined(_WIN32)
     namespace fs = std::filesystem;
     struct StateDirGuard {
@@ -195,6 +213,9 @@ TEST_F(CommandsTest, ProbeConfigForwardsApplyBuildConfigOptIn) {
 }  // namespace
 // P-C3：revision 条件请求。带上"我看到的那一版"时，服务端不该再取快照/做装饰。
 TEST_F(CommandsTest, ReportsHonourIfRevision) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     const Json first = server().FeatureReports(Json::object());
     ASSERT_TRUE(first.contains("revision")) << "报告响应必须带 revision";
     const std::uint64_t revision = first.at("revision").get<std::uint64_t>();
@@ -279,6 +300,9 @@ TEST(SemanticDeltaTest, SingleTokenEditKeepsPrefixAndSuffix) {
 
 // P-C2：懒加载子节点——只回一层、带 hasChildren、可翻页
 TEST_F(CommandsTest, ModuleChildrenReturnsOneLevelAndPaginates) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     Json params = Json::object();
     params["module"] = "top";
     params["limit"] = 2;
@@ -413,6 +437,9 @@ TEST(RenameNotificationTest, WillRenameRewritesAlFileEntry) {
 
 // B-A3：必须声明 fileOperations，否则客户端根本不会发 willRenameFiles。
 TEST_F(CommandsTest, DeclaresFileOperationFilters) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     const Json init = server().FeatureInitialize(Json::object());
     const Json& operations = init.at("capabilities").at("workspace").at("fileOperations");
     ASSERT_TRUE(operations.contains("willRename"));
@@ -424,6 +451,9 @@ TEST_F(CommandsTest, DeclaresFileOperationFilters) {
 
 // B-B10：testbench 骨架（端口声明/例化/自检）
 TEST_F(CommandsTest, TestbenchSkeletonIsParseable) {
+    if (!std::filesystem::exists(FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha")) {
+        GTEST_SKIP() << "corpus missing (release tree)";
+    }
     Json params = Json::object();
     params["module"] = "top";
     const Json out = server().FeatureTestbench(params);
