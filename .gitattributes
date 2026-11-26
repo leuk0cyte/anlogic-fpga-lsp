@@ -4,12 +4,14 @@
 #  注意：本文件**不做**泄漏隔离。真正隔离"内部语料 / 公开版本"的是**分支**：
 #    * main     ：私有，含真实企业工程语料（tests/gate-corpus/corpus_alpha）与
 #                 doc/audit 原始转储 —— **永不公开**（见 doc/license-risk-assessment.md）
-#    * release  ：公开版本，由本 worktree 维护；内部语料/审计/个人信息在这里不跟踪
+#    * release  ：公开版本，由 `.agents/worktrees/release` 这个独立 worktree 维护；
+#                 语料/审计/个人信息在那边**不跟踪**（见 doc/release-process.md）
 #  export-ignore 只影响 `git archive`，挡不住 `zip -r`、`Copy-Item -Recurse`，更挡不住
 #  把 main 设成 public —— 所以不要把"泄漏防护"寄托在这个文件上。
 
-# 内部内容：即使有人用 `git archive` 打包 main，也不把语料/审计/评估带走
+# ---- 内部内容：即使有人用 `git archive` 打包 main，也不带出去 ----
 doc/license-risk-assessment.md export-ignore
+doc/release-process.md export-ignore
 doc/audit export-ignore
 tests/gate-corpus/corpus_alpha export-ignore
 tests/fixtures/reports export-ignore
