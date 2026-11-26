@@ -447,7 +447,7 @@ bool WriteTextFileAtomic(const std::string& path, std::string_view content) {
     // 工程目录取 .al 所在目录（这些调用点的目标都是 .al）。
     return platform::writes::Write(
                platform::path_dirname(path), path, content,
-               platform::writes::Options{.caller = "ide.project_file", .backup = true})
+               platform::writes::Options{.backup = true, .caller = "ide.project_file"})
         .ok;
 }
 
