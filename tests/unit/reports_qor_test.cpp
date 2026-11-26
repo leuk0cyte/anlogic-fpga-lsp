@@ -32,6 +32,11 @@ const fpgalsp::reports::QorMetric* FindMetric(const QorReport& report, const std
 
 // 管道表的分组标题：value 为空的那一行是组名，后续行归入该组。
 TEST(ReportsQor, GroupsMetricsUnderEmptyValueHeaders) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     const QorReport report = ParseQor(ReadReportFile(Fixture("eg4_route.qor")), "route");
 
     ASSERT_FALSE(report.metrics.empty());
@@ -52,6 +57,11 @@ TEST(ReportsQor, GroupsMetricsUnderEmptyValueHeaders) {
 
 // "| QoR metrics | value |" 是表头，不能当成一条指标。
 TEST(ReportsQor, SkipsHeaderRows) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     const QorReport report = ParseQor(ReadReportFile(Fixture("eg4_route.qor")), "route");
     EXPECT_EQ(FindMetric(report, "QoR metrics"), nullptr);
     EXPECT_EQ(FindMetric(report, "value"), nullptr);
@@ -63,6 +73,11 @@ TEST(ReportsQor, SkipsHeaderRows) {
 
 // 负值（综合阶段没收敛）必须原样保留，不能被当成"空"跳过。
 TEST(ReportsQor, KeepsNegativeValues) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     const QorReport report = ParseQor(ReadReportFile(Fixture("eg4_gate.qor")), "gate");
     const auto* setup_wns = FindMetric(report, "Setup WNS");
     ASSERT_NE(setup_wns, nullptr);
@@ -74,6 +89,11 @@ TEST(ReportsQor, KeepsNegativeValues) {
 
 // EF2 的 gate.qor 会多出 #lut1 / #f7mux / kept_net / Rent 等分组；解析必须原样带上分组名。
 TEST(ReportsQor, ToleratesFamilySpecificGroups) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     const QorReport report = ParseQor(ReadReportFile(Fixture("ef2_gate.qor")), "gate");
     const auto* luts = FindMetric(report, "#luts");
     ASSERT_NE(luts, nullptr);
@@ -96,6 +116,11 @@ TEST(ReportsQor, ToleratesFamilySpecificGroups) {
 //     |top  |top   |0.25 |...  -> metric{group:"Rent**", key:"top",   value:"top"}
 // 忠实复现；若将来 reports.py 修掉，这里会变红。
 TEST(ReportsQor, RentPipeTableLeaksIntoMetrics) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     const QorReport report = ParseQor(ReadReportFile(Fixture("ef2_gate.qor")), "gate");
     const auto* header = FindMetric(report, "Inst");
     ASSERT_NE(header, nullptr);
@@ -110,6 +135,11 @@ TEST(ReportsQor, RentPipeTableLeaksIntoMetrics) {
 
 // 真实报告里没有建议项时必须是空表（不是"缺失"）。
 TEST(ReportsQor, NoSuggestionsInCleanReports) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     const QorReport report = ParseQor(ReadReportFile(Fixture("eg4_route.qor")), "route");
     EXPECT_TRUE(report.suggestions.empty());
 }
@@ -117,6 +147,11 @@ TEST(ReportsQor, NoSuggestionsInCleanReports) {
 // 手工构造：真实 TD 在某些失败收敛上会打 QOR-xxxx 建议表。
 // 这段文本不是从 TD 抓的，是按 reports.py 的解析契约构造的。
 TEST(ReportsQor, ParsesSuggestionTable) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     const std::string text =
         "-----------------------------------------------------------------\n"
         "| QoR metrics               |         value                   |\n"
@@ -146,6 +181,11 @@ TEST(ReportsQor, ParsesSuggestionTable) {
 // 没有优先级列时 priority 是空串，而不是漏字段。
 // 注意：至少要有 3 个单元格，否则整行被 len(cells) < 3 跳过（Python 行为）。
 TEST(ReportsQor, SuggestionWithoutPriority) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     const std::string text =
         "| QOR-5001 | - Check the false path on clk_a. | net1 |\n";
     const QorReport report = ParseQor(text, "gate");
@@ -157,12 +197,22 @@ TEST(ReportsQor, SuggestionWithoutPriority) {
 
 // 只有 2 个单元格的管道行连建议候选都不算（Python 的 len(cells) < 3 规则）
 TEST(ReportsQor, TwoCellRowIsNotASuggestion) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     const std::string text = "| QOR-5001 | - Check the false path on clk_a. |\n";
     const QorReport report = ParseQor(text, "gate");
     EXPECT_TRUE(report.suggestions.empty());
 }
 
 TEST(ReportsQor, EmptyInputIsNotACrash) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     const QorReport report = ParseQor("", "route");
     EXPECT_TRUE(report.metrics.empty());
     EXPECT_TRUE(report.suggestions.empty());
@@ -176,6 +226,11 @@ TEST(ReportsQor, EmptyInputIsNotACrash) {
 }
 
 TEST(ReportsQor, BinaryGarbageIsNotACrash) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     std::string garbage;
     for (int i = 0; i < 4096; ++i) garbage.push_back(static_cast<char>((i * 37) & 0xFF));
     const QorReport report = ParseQor(garbage, "gate");
@@ -186,6 +241,11 @@ TEST(ReportsQor, BinaryGarbageIsNotACrash) {
 
 // 管道行里 key 为空（"| | value |"）必须跳过，否则会造出空 key 的指标。
 TEST(ReportsQor, SkipsRowsWithEmptyKey) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     const std::string text =
         "| Timing | |\n"
         "|   | value |\n"
@@ -197,6 +257,11 @@ TEST(ReportsQor, SkipsRowsWithEmptyKey) {
 }
 
 TEST(ReportsQor, SuggestionTclSkipsCommentsAndBlankLines) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     const std::string path =
         std::string(::testing::TempDir()) + "/reports_qor_route_qor_suggestion.tcl";
     ASSERT_TRUE(fpgalsp::platform::write_file_utf8(
@@ -218,6 +283,11 @@ TEST(ReportsQor, SuggestionTclSkipsCommentsAndBlankLines) {
 }
 
 TEST(ReportsQor, SuggestTclMissingFileIsEmpty) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     EXPECT_TRUE(ParseSuggestionsTcl("Y:/definitely/not/here.tcl").empty());
 }
 

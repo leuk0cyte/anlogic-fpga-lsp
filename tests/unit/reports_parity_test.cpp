@@ -79,6 +79,11 @@ void DumpJson(const std::string& dir, const std::string& name, const Json& value
 // -----------------------------------------------------------------------------
 
 TEST(ReportsParity, FixtureCorpusIsComplete) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     // 两个器件族都必须有真实报告：只用一族做夹具，PH1/EF2 的资源名差异永远测不出来。
     EXPECT_FALSE(ListFixtures(".qor").empty());
     EXPECT_FALSE(ListFixtures(".area").empty());
@@ -96,6 +101,11 @@ TEST(ReportsParity, FixtureCorpusIsComplete) {
 }
 
 TEST(ReportsParity, EveryPatternCompiles) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     std::string error;
     EXPECT_TRUE(fpgalsp::reports::AllReportPatternsValid(&error)) << error;
 }
@@ -104,6 +114,11 @@ TEST(ReportsParity, EveryPatternCompiles) {
 // ef2_rtl.area 没有 Utilization 段、*_chk.timing / *_exception.timing 没有 Clock Summary，
 // 这些都只有部分字段。所以这里只要求"整批夹具里有内容的占多数"。
 TEST(ReportsParity, EveryFixtureParsesWithoutThrowing) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     using namespace fpgalsp::reports;
 
     int qor_with_metrics = 0;
@@ -149,6 +164,11 @@ TEST(ReportsParity, EveryFixtureParsesWithoutThrowing) {
 // -----------------------------------------------------------------------------
 
 TEST(ReportsParity, DumpJsonWhenRequested) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     const char* dump_dir = std::getenv("FPGALSP_REPORTS_DUMP");
     if (dump_dir == nullptr || *dump_dir == '\0') {
         GTEST_SKIP() << "FPGALSP_REPORTS_DUMP 未设置（正常的 ctest 运行不需要导出）";

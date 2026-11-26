@@ -121,6 +121,11 @@ fpgalsp::project::Project MakeProject(const std::string& dir, const std::string&
 // -----------------------------------------------------------------------------
 
 TEST(ReportsAggregate, BuildsFromFullFlow) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     ScopedTempDir temp("full");
     const std::string name = "CorpusBeta";
     const std::string runs = MakeFullProject(temp, name);
@@ -148,6 +153,11 @@ TEST(ReportsAggregate, BuildsFromFullFlow) {
 
 // v13：分阶段段
 TEST(ReportsAggregate, BuildsStageSections) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     ScopedTempDir temp("stages");
     const std::string name = "CorpusBeta";
     const std::string runs = MakeFullProject(temp, name);
@@ -176,6 +186,11 @@ TEST(ReportsAggregate, BuildsStageSections) {
 
 // flowStatus 有两份语义：顶层带 stage 标签（合并），分阶段不带
 TEST(ReportsAggregate, FlowStatusHasTwoShapes) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     ScopedTempDir temp("flow");
     const std::string name = "CorpusBeta";
     MakeFullProject(temp, name);
@@ -213,6 +228,11 @@ TEST(ReportsAggregate, FlowStatusHasTwoShapes) {
 
 // 顶层 flowStatus 的 setup/hold 来自 status 文件本身（route_flow.status 是 phy 的）
 TEST(ReportsAggregate, TopLevelFlowStatusKeepsTimingNumbers) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     ScopedTempDir temp("flow2");
     const std::string name = "CorpusBeta";
     MakeFullProject(temp, name);
@@ -225,6 +245,11 @@ TEST(ReportsAggregate, TopLevelFlowStatusKeepsTimingNumbers) {
 
 // 只有综合阶段跑过：没有 phy 段，syn 段仍然完整
 TEST(ReportsAggregate, SynOnlyProject) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     ScopedTempDir temp("synonly");
     const std::string name = "demo_project";
     const std::string runs = JoinPath(temp.path(), name + "_Runs");
@@ -251,6 +276,11 @@ TEST(ReportsAggregate, SynOnlyProject) {
 
 // 没有任何 runs 目录：ok=false + error，且 artifacts 只有 runs: []
 TEST(ReportsAggregate, NoRunsDirectory) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     ScopedTempDir temp("noruns");
     const ReportsBundle bundle = BuildReports(MakeProject(temp.path(), "ghost"));
 
@@ -272,6 +302,11 @@ TEST(ReportsAggregate, NoRunsDirectory) {
 
 // runs 目录存在但里面是空的：ok=true，所有报告段缺失，但不崩
 TEST(ReportsAggregate, EmptyRunsDirectory) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     ScopedTempDir temp("emptyruns");
     {
         std::error_code ec;
@@ -296,6 +331,11 @@ TEST(ReportsAggregate, EmptyRunsDirectory) {
 
 // qor_suggestion.tcl 里的 set_param 处方要并进 suggestions（带 file 字段）
 TEST(ReportsAggregate, MergesQorSuggestionTcl) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     ScopedTempDir temp("tcl");
     const std::string name = "CorpusBeta";
     const std::string runs = MakeFullProject(temp, name);
@@ -316,6 +356,11 @@ TEST(ReportsAggregate, MergesQorSuggestionTcl) {
 
 // 畸形报告（二进制垃圾）不能拖垮整包：仍然是 ok=true，只是对应段为空
 TEST(ReportsAggregate, GarbageReportsDoNotBreakTheBundle) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     ScopedTempDir temp("garbage");
     const std::string name = "broken";
     const std::string runs = JoinPath(temp.path(), name + "_Runs");
@@ -344,6 +389,11 @@ TEST(ReportsAggregate, GarbageReportsDoNotBreakTheBundle) {
 
 // JSON 顶层键形状：ok/artifacts/files/generatedAt 必在，未解析的段不出现
 TEST(ReportsAggregate, JsonKeyShape) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     ScopedTempDir temp("shape");
     const std::string name = "CorpusBeta";
     MakeFullProject(temp, name);
@@ -459,6 +509,11 @@ std::string Canon(const fpgalsp::jsonrpc::Json& value) {
 }  // namespace
 
 TEST(ReportsAggregate, SectionMaskSkipsUnrequestedSections) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     ScopedTempDir temp("mask");
     const std::string name = "CorpusBeta";
     MakeFullProject(temp, name);
@@ -484,6 +539,11 @@ TEST(ReportsAggregate, SectionMaskSkipsUnrequestedSections) {
 }
 
 TEST(ReportsAggregate, SectionSubsetEqualsFullBuild) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     ScopedTempDir temp("subset");
     const std::string name = "CorpusBeta";
     MakeFullProject(temp, name);
@@ -510,6 +570,11 @@ TEST(ReportsAggregate, SectionSubsetEqualsFullBuild) {
 }
 
 TEST(ReportsAggregate, SameCacheParsesEachFileOnlyOnce) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     ScopedTempDir temp("once");
     const std::string name = "CorpusBeta";
     MakeFullProject(temp, name);
@@ -539,6 +604,11 @@ TEST(ReportsAggregate, SameCacheParsesEachFileOnlyOnce) {
 //  B-B6：两次 run 的差异（QoR 指标 + 方向 + 汇总）
 // =============================================================================
 TEST(CompareRunsTest, DiffsTwoRunsAndExplainsDirection) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     namespace fs = std::filesystem;
     const fs::path root =
         fs::temp_directory_path() / ("fpgalsp-runs-" + std::to_string(::time(nullptr)));

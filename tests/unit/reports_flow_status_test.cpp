@@ -2,6 +2,7 @@
 //  tests/unit/reports_flow_status_test.cpp —— *_flow.status 解析
 // =============================================================================
 
+#include <filesystem>
 #include <string>
 
 #include <gtest/gtest.h>
@@ -23,6 +24,11 @@ std::string Fixture(const std::string& name) {
 
 // phy 阶段：WNS/TNS 单位是 ps（整数），跟 timing 报告的 ns（浮点）不是一回事。
 TEST(ReportsFlowStatus, ParsesPhyRouteStatus) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     const FlowStatusReport report =
         ParseFlowStatusText(ReadReportFile(Fixture("eg4_route_flow.status")));
 
@@ -40,6 +46,11 @@ TEST(ReportsFlowStatus, ParsesPhyRouteStatus) {
 
 // 负数 WNS 必须能解析（hold 违例时 TD 会打负值）
 TEST(ReportsFlowStatus, ParsesNegativeWns) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     const std::string text =
         "Timing Mode      : estimated\n"
         "Setup            : WNS  -1284ps  TNS    -9104ps  NUM_FEPS    47\n"
@@ -57,6 +68,11 @@ TEST(ReportsFlowStatus, ParsesNegativeWns) {
 }
 
 TEST(ReportsFlowStatus, ParsesFlowStepTable) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     const FlowStatusReport report =
         ParseFlowStatusText(ReadReportFile(Fixture("eg4_route_flow.status")));
 
@@ -89,6 +105,11 @@ TEST(ReportsFlowStatus, ParsesFlowStepTable) {
 // "_flow.status" 的文件名决定步骤归属哪个阶段；单文件解析时不打标签，
 // 由聚合层（BuildReports）回填，避免同一个函数有两套语义。
 TEST(ReportsFlowStatus, StageIsEmptyUntilAggregated) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     const FlowStatusReport report =
         ParseFlowStatusText(ReadReportFile(Fixture("ef2_syn_flow.status")));
     ASSERT_FALSE(report.steps.empty());
@@ -99,6 +120,11 @@ TEST(ReportsFlowStatus, StageIsEmptyUntilAggregated) {
 }
 
 TEST(ReportsFlowStatus, Ef2SynthesisStatus) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     const FlowStatusReport report =
         ParseFlowStatusText(ReadReportFile(Fixture("ef2_syn_flow.status")));
     ASSERT_TRUE(report.setup.has_value());
@@ -110,6 +136,11 @@ TEST(ReportsFlowStatus, Ef2SynthesisStatus) {
 }
 
 TEST(ReportsFlowStatus, EmptyInput) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     const FlowStatusReport report = ParseFlowStatusText("");
     EXPECT_FALSE(report.setup.has_value());
     EXPECT_FALSE(report.hold.has_value());
@@ -126,6 +157,11 @@ TEST(ReportsFlowStatus, EmptyInput) {
 
 // 只有 Timing Mode、没有 Setup/Hold 的截断文件
 TEST(ReportsFlowStatus, TruncatedFile) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     const FlowStatusReport report = ParseFlowStatusText(
         "Top Model        : main\n"
         "Timing Mode      : final\n"
@@ -138,6 +174,11 @@ TEST(ReportsFlowStatus, TruncatedFile) {
 }
 
 TEST(ReportsFlowStatus, BinaryGarbage) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     std::string garbage(1024, '\0');
     for (std::size_t i = 0; i < garbage.size(); ++i) {
         garbage[i] = static_cast<char>(i * 13 + 5);
@@ -148,6 +189,11 @@ TEST(ReportsFlowStatus, BinaryGarbage) {
 }
 
 TEST(ReportsFlowStatus, LooksLikeFlowStatus) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     EXPECT_TRUE(fpgalsp::reports::LooksLikeFlowStatus(ReadReportFile(
         Fixture("eg4_route_flow.status"))));
     EXPECT_FALSE(fpgalsp::reports::LooksLikeFlowStatus("not a status file at all"));

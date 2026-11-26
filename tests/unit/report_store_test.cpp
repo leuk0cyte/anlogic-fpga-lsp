@@ -116,6 +116,11 @@ fpgalsp::project::Project MakeProject(const std::string& dir, const std::string&
 // -----------------------------------------------------------------------------
 
 TEST(ReportStore, RepeatedGetHitsSnapshotWithoutRebuild) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     ScopedTempDir temp("hit");
     const std::string name = "CorpusBeta";
     MakeProjectTree(temp, name);
@@ -138,6 +143,11 @@ TEST(ReportStore, RepeatedGetHitsSnapshotWithoutRebuild) {
 }
 
 TEST(ReportStore, ForceRebuildsAndBumpsRevision) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     ScopedTempDir temp("force");
     const std::string name = "CorpusBeta";
     MakeProjectTree(temp, name);
@@ -160,6 +170,11 @@ TEST(ReportStore, ForceRebuildsAndBumpsRevision) {
 // -----------------------------------------------------------------------------
 
 TEST(ReportStore, FileChangeInvalidatesSnapshotOnNextGet) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     ScopedTempDir temp("change");
     const std::string name = "CorpusBeta";
     const std::string runs = MakeProjectTree(temp, name);
@@ -182,6 +197,11 @@ TEST(ReportStore, FileChangeInvalidatesSnapshotOnNextGet) {
 }
 
 TEST(ReportStore, CheckForChangesDetectsTouchAndIsQuietWhenUnchanged) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     ScopedTempDir temp("check");
     const std::string name = "CorpusBeta";
     const std::string runs = MakeProjectTree(temp, name);
@@ -198,6 +218,11 @@ TEST(ReportStore, CheckForChangesDetectsTouchAndIsQuietWhenUnchanged) {
 }
 
 TEST(ReportStore, InvalidatePathsDropsOnlyThatFile) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     ScopedTempDir temp("invalidate");
     const std::string name = "CorpusBeta";
     const std::string runs = MakeProjectTree(temp, name);
@@ -219,6 +244,11 @@ TEST(ReportStore, InvalidatePathsDropsOnlyThatFile) {
 }
 
 TEST(ReportStore, InvalidateAllClearsEverything) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     ScopedTempDir temp("invalidate-all");
     const std::string name = "CorpusBeta";
     MakeProjectTree(temp, name);
@@ -242,6 +272,11 @@ TEST(ReportStore, InvalidateAllClearsEverything) {
 // -----------------------------------------------------------------------------
 
 TEST(ReportStore, DifferentMasksAreCachedSeparatelyAndMatchFullBuild) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     ScopedTempDir temp("mask");
     const std::string name = "CorpusBeta";
     MakeProjectTree(temp, name);
@@ -268,6 +303,11 @@ TEST(ReportStore, DifferentMasksAreCachedSeparatelyAndMatchFullBuild) {
 }
 
 TEST(ReportStore, MaskedRequestDoesNotParseOtherSections) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     ScopedTempDir temp("lazy");
     const std::string name = "CorpusBeta";
     MakeProjectTree(temp, name);
@@ -293,6 +333,11 @@ TEST(ReportStore, MaskedRequestDoesNotParseOtherSections) {
 // -----------------------------------------------------------------------------
 
 TEST(ReportStore, CorruptReportFilesDoNotThrow) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     ScopedTempDir temp("corrupt");
     const std::string name = "CorpusBeta";
     const std::string runs = MakeProjectTree(temp, name);
@@ -314,6 +359,11 @@ TEST(ReportStore, CorruptReportFilesDoNotThrow) {
 }
 
 TEST(ReportStore, NoRunsDirectoryStillReturnsSnapshot) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     ScopedTempDir temp("no-runs");
     const auto project = MakeProject(temp.path(), "ghost");
 
@@ -329,6 +379,11 @@ TEST(ReportStore, NoRunsDirectoryStillReturnsSnapshot) {
 // -----------------------------------------------------------------------------
 
 TEST(ReportStore, ConcurrentGetsShareOneSnapshot) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     ScopedTempDir temp("concurrent");
     const std::string name = "CorpusBeta";
     MakeProjectTree(temp, name);
@@ -357,6 +412,11 @@ TEST(ReportStore, ConcurrentGetsShareOneSnapshot) {
 }
 
 TEST(ReportStore, ConcurrentColdStartBuildsOnce) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     ScopedTempDir temp("concurrent-cold");
     const std::string name = "CorpusBeta";
     MakeProjectTree(temp, name);
@@ -382,6 +442,11 @@ TEST(ReportStore, ConcurrentColdStartBuildsOnce) {
 // -----------------------------------------------------------------------------
 
 TEST(ReportStore, LargeReportFirstParseVersusCached) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     ScopedTempDir temp("large");
     const std::string name = "CorpusBeta";
     const std::string runs = MakeProjectTree(temp, name);
@@ -427,6 +492,11 @@ TEST(ReportStore, LargeReportFirstParseVersusCached) {
 //  D9：由文件名推断受影响 section（`reportsChanged` 不再构建快照）
 // =============================================================================
 TEST(SectionsForPaths, MapsReportFilesToSectionBits) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     using fpgalsp::server::SectionsForPaths;
     using namespace fpgalsp::reports::sections;
 

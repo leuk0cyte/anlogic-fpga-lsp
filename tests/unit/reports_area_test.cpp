@@ -7,6 +7,7 @@
 //    * EG4/PH1 打 le/logic lut/eram，多一列 le
 // =============================================================================
 
+#include <filesystem>
 #include <map>
 #include <optional>
 #include <string>
@@ -41,6 +42,11 @@ const fpgalsp::reports::AreaModule* FindModule(const AreaReport& report,
 // -----------------------------------------------------------------------------
 
 TEST(ReportsArea, NormResourceFoldsPunctuation) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     EXPECT_EQ(NormAreaResource("#lut"), "lut");
     EXPECT_EQ(NormAreaResource("logic lut"), "logic_lut");
     EXPECT_EQ(NormAreaResource("  LUT6 "), "lut6");
@@ -51,6 +57,11 @@ TEST(ReportsArea, NormResourceFoldsPunctuation) {
 }
 
 TEST(ReportsArea, AreaTotalUsesAliases) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     const std::map<std::string, int> totals = {
         {"lut", 19600}, {"reg", 19600}, {"bram", 64}, {"dsp", 29}, {"io", 188}};
     // lut / logic_lut / ripple 都指向 lut（PH1 打 logic lut，EF2 打 lut）
@@ -65,6 +76,11 @@ TEST(ReportsArea, AreaTotalUsesAliases) {
 }
 
 TEST(ReportsArea, AreaTotalTreatsZeroAsMissing) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     // 复现 Python 的 `if totals.get(key):` —— 0 也算"没有"
     const std::map<std::string, int> totals = {{"slice", 0}, {"lut", 4480}};
     EXPECT_EQ(AreaTotal(totals, "lut"), std::optional<int>(4480));
@@ -75,6 +91,11 @@ TEST(ReportsArea, AreaTotalTreatsZeroAsMissing) {
 // -----------------------------------------------------------------------------
 
 TEST(ReportsArea, Ef2UtilizationRows) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     const AreaReport report = ParseArea(ReadReportFile(Fixture("ef2_gate.area")));
 
     ASSERT_FALSE(report.rows.empty());
@@ -98,6 +119,11 @@ TEST(ReportsArea, Ef2UtilizationRows) {
 }
 
 TEST(ReportsArea, Ef2IoCounts) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     const AreaReport report = ParseArea(ReadReportFile(Fixture("ef2_gate.area")));
     EXPECT_EQ(report.io.at("input"), 26);
     EXPECT_EQ(report.io.at("output"), 21);
@@ -106,6 +132,11 @@ TEST(ReportsArea, Ef2IoCounts) {
 
 // LUT Statistics 段的 #Total_luts / #lut6 只在段名以 LUT 开头时采集
 TEST(ReportsArea, Ef2LutStatisticsCounts) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     const AreaReport report = ParseArea(ReadReportFile(Fixture("ef2_gate.area")));
     ASSERT_FALSE(report.counts.empty());
     EXPECT_EQ(report.counts.at("Total_luts"), 678);
@@ -117,6 +148,11 @@ TEST(ReportsArea, Ef2LutStatisticsCounts) {
 }
 
 TEST(ReportsArea, Ef2HierarchyModules) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     const AreaReport report = ParseArea(ReadReportFile(Fixture("ef2_gate.area")));
     ASSERT_FALSE(report.modules.empty());
 
@@ -147,6 +183,11 @@ TEST(ReportsArea, Ef2HierarchyModules) {
 // 会把整张表丢掉；而且这一阶段连 Utilization 段都没有（只有 Gate Statistics），
 // 所以 rows 也是空的。这里钉住该行为，若将来放宽列数限制，这条会变红（P-10）。
 TEST(ReportsArea, Ef2RtlHierarchyTableIsSkipped) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     const AreaReport report = ParseArea(ReadReportFile(Fixture("ef2_rtl.area")));
     EXPECT_TRUE(report.rows.empty()) << "RTL 阶段没有 Utilization 段";
     EXPECT_TRUE(report.totals.empty());
@@ -161,6 +202,11 @@ TEST(ReportsArea, Ef2RtlHierarchyTableIsSkipped) {
 // -----------------------------------------------------------------------------
 
 TEST(ReportsArea, Eg4UtilizationRows) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     const AreaReport report = ParseArea(ReadReportFile(Fixture("eg4_phy.area")));
     ASSERT_FALSE(report.rows.empty());
     EXPECT_EQ(report.totals.at("lut"), 19600);
@@ -175,6 +221,11 @@ TEST(ReportsArea, Eg4UtilizationRows) {
 }
 
 TEST(ReportsArea, Eg4HierarchyHasExtraLeColumn) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     const AreaReport report = ParseArea(ReadReportFile(Fixture("eg4_phy.area")));
     const auto* top = FindModule(report, "top");
     ASSERT_NE(top, nullptr);
@@ -198,6 +249,11 @@ TEST(ReportsArea, Eg4HierarchyHasExtraLeColumn) {
 
 // 层次表里 Module 列为空（CWC / 黑盒实例）时必须保留空串，且不影响 level 计算。
 TEST(ReportsArea, Eg4EmptyModuleCellIsPreserved) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     const AreaReport report = ParseArea(ReadReportFile(Fixture("eg4_phy.area")));
     const auto* wrapper = FindModule(report, "wrapper_cwc_top");
     ASSERT_NE(wrapper, nullptr);
@@ -209,6 +265,11 @@ TEST(ReportsArea, Eg4EmptyModuleCellIsPreserved) {
 
 // 资源名不在别名表里时，utilization 必须是 null 而不是 0 或 100。
 TEST(ReportsArea, UnknownResourceGetsNullUtilization) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     const std::string text =
         "Utilization Statistics\n"
         "#foo                      3   out of      0    0.00%\n"
@@ -231,6 +292,11 @@ TEST(ReportsArea, UnknownResourceGetsNullUtilization) {
 // -----------------------------------------------------------------------------
 
 TEST(ReportsArea, EmptyInput) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     const AreaReport report = ParseArea("");
     EXPECT_TRUE(report.rows.empty());
     EXPECT_TRUE(report.modules.empty());
@@ -244,6 +310,11 @@ TEST(ReportsArea, EmptyInput) {
 }
 
 TEST(ReportsArea, TruncatedHierarchyTable) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     // 表头后面直接断掉（真实场景：TD 被 Ctrl-C 打断）
     const std::string text =
         "IO Statistics\n"
@@ -260,6 +331,11 @@ TEST(ReportsArea, TruncatedHierarchyTable) {
 }
 
 TEST(ReportsArea, BinaryGarbage) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     std::string garbage(2048, '\0');
     for (std::size_t i = 0; i < garbage.size(); ++i) {
         garbage[i] = static_cast<char>(i * 7 + 3);
@@ -271,6 +347,11 @@ TEST(ReportsArea, BinaryGarbage) {
 
 // 表头/数据行的空格对齐不能靠固定列宽：列宽随实例名长度变化。
 TEST(ReportsArea, AlignmentIsNotFixedWidth) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     const std::string text =
         "Utilization Statistics\n"
         "#lut                     100   out of   1000   10.00%\n"
@@ -292,6 +373,11 @@ TEST(ReportsArea, AlignmentIsNotFixedWidth) {
 
 // 同一资源在 Utilization 段重复出现时，totals 保留最后一次（Python dict 覆盖语义）
 TEST(ReportsArea, DuplicateUtilizationRowsKeepLastTotal) {
+    if (!std::filesystem::is_directory(std::string(FPGA_LSP_SOURCE_DIR) + "/tests/fixtures/reports")) {
+        GTEST_SKIP() << "tests/fixtures/reports is not shipped with this repository "
+                        "(real TD reports removed for licensing); "
+                        "drop your own fixtures there to run this test";
+    }
     const std::string text =
         "Utilization Statistics\n"
         "#lut                     100   out of   1000   10.00%\n"
