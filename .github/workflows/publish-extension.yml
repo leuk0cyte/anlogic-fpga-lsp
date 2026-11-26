@@ -57,13 +57,34 @@ jobs:
       - name: Install winflexbison
         shell: pwsh
         run: |
-          # CMake 的 verible-generators.cmake 需要 win_flex / win_bison / FlexLexer.h。
-          # GH runner 上没有 scoop，用 choco 装；装完把目录导出给下一步。
+          # CMake 的 verible-generators.cmake 需要 win_flex / win_bison / FlexLexer.h，
+          # 而且它在同一目录下找 FlexLexer.h（#include <FlexLexer.h>）。
+          # 注意：choco 的 shim 在 C:\ProgramData\Chocolatey\bin，那里没有头文件，
+          # 所以必须用 choco 的 tools 目录，而不是 Get-Command 的目录。
           choco install winflexbison3 -y --no-progress
-          $dir = Split-Path (Get-Command win_flex.exe).Source
-          if (-not (Test-Path (Join-Path $dir 'FlexLexer.h'))) { throw "FlexLexer.h missing in $dir" }
+          $candidates = @(
+            'C:\ProgramData\chocolatey\lib\winflexbison3\tools',
+            'C:\ProgramData\chocolatey\lib\winflexbison3\tools\win_flex_bison*'
+          )
+          $dir = $null
+          foreach ($c in $candidates) {
+            $resolved = Get-ChildItem -Path $c -Directory -ErrorAction SilentlyContinue |
+                        Where-Object { Test-Path (Join-Path $_.FullName 'FlexLexer.h') } |
+                        Select-Object -First 1
+            if ($resolved) { $dir = $resolved.FullName; break }
+            if (Test-Path (Join-Path $c 'FlexLexer.h')) { $dir = $c; break }
+          }
+          if (-not $dir) {
+            # 兜底：全盘找一次 FlexLexer.h（choco 版本升级后目录名可能变）
+            $hit = Get-ChildItem 'C:\ProgramData\chocolatey\lib\winflexbison3' -Recurse -Filter 'FlexLexer.h' -ErrorAction SilentlyContinue |
+                   Select-Object -First 1
+            if ($hit) { $dir = $hit.DirectoryName }
+          }
+          if (-not $dir) { throw 'winflexbison: FlexLexer.h not found after choco install' }
+          if (-not (Test-Path (Join-Path $dir 'win_flex.exe'))) { throw "win_flex.exe missing in $dir" }
           Add-Content -Path $env:GITHUB_ENV -Value "WINFLEXBISON_DIR=$dir"
           Write-Host "WINFLEXBISON_DIR=$dir"
+          Get-ChildItem $dir | Select-Object -First 5 Name
 
       - name: Configure (native server)
         shell: cmd
