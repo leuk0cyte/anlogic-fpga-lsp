@@ -1,7 +1,7 @@
 // =============================================================================
 //  src/reports/report_text.h —— 报告解析的公共文本工具（never-throw）
 // =============================================================================
-//  对应参考实现：Y:\fpga-lsp\fpgalsp\reports.py 里的 str 操作
+//  对应参考实现：%PYREF%\fpgalsp\reports.py 里的 str 操作
 //      text.split("\n") / line.strip() / line.split() / int() / float() / round(x, 2)
 //
 //  ⚠ 关键约定：本文件所有函数**都不抛异常**。

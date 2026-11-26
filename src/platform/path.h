@@ -2,7 +2,7 @@
 //  src/platform/path.h —— 路径规范化与 URI 互转
 // =============================================================================
 //  对应参考实现：
-//    Y:\fpga-lsp\fpgalsp\project.py :: norm()
+//    %PYREF%\fpgalsp\project.py :: norm()
 //        "Absolute path, forward slashes, no trailing separator."
 //    LSP 的 file URI（file:///Y:/path/to/file.sv，需百分号编码）
 //

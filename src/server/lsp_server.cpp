@@ -1,7 +1,7 @@
 // =============================================================================
 //  src/server/lsp_server.cpp —— LSP 服务主体（生命周期 / 诊断 / TD 会话）
 // =============================================================================
-//  对应参考实现：Y:\fpga-lsp\fpgalsp\server.py
+//  对应参考实现：%PYREF%\fpgalsp\server.py
 //    on_initialize / didOpen / didChange / didSave / didClose
 //    _publish_merged / _clear_td_path / _schedule_td_check / _td_check_worker
 //
@@ -2066,7 +2066,7 @@ std::shared_ptr<td::TdSession> LspServer::CreateSession(const project::Project& 
     // 会话 cwd 必须是 `.al` 所在目录（相对路径才解析得对），而 TD 会把
     // `td_<时间戳>.log/.logw`、`minidump-*.dmp` 写进 cwd —— 于是短会话日志落在
     // **工程根目录**（2026-11-22 运行期审计实测：LSP 的 `fpgalsp.device` 每次都在
-    // `%WORKSPACE%\CorpusAlpha` 留 30 KB 日志）。GUI 自己把它们放在 `<al>/log/`，flow / probe /
+    // `C:/work/CorpusAlpha` 留 30 KB 日志）。GUI 自己把它们放在 `<al>/log/`，flow / probe /
     // MCP bridge 三条路径也都已经传了 log_dir，这里补齐 LSP 这条。
     if (!project.dir.empty()) options.log_dir = platform::path_join(project.dir, "log");
 

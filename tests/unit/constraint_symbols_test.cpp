@@ -90,7 +90,7 @@ void CollectBlackboxes(const Json& node, std::vector<std::string>* out) {
 
 TEST(AdcSymbols, DocumentSymbolsMatchPythonProbe) {
     const std::string text = ReadCorpus("constrains/pin.adc");
-    ASSERT_FALSE(text.empty()) << "语料缺失: " << CorpusPath("constrains/pin.adc");
+    if (text.empty()) GTEST_SKIP() << "语料需自备（设置 FPGA_LSP_TEST_PROJECT 指向自备工程）: " << CorpusPath("constrains/pin.adc");
 
     const Json symbols = adc::DocumentSymbols(text);
     ASSERT_TRUE(symbols.is_array());
@@ -146,7 +146,7 @@ TEST(AdcSymbols, CommentAndBlankLinesAreNotSymbols) {
 
 TEST(AdcSymbols, HoverShowsDecodedAttributes) {
     const std::string text = ReadCorpus("constrains/pin.adc");
-    ASSERT_FALSE(text.empty());
+    if (text.empty()) GTEST_SKIP() << "语料需自备（设置 FPGA_LSP_TEST_PROJECT 指向自备工程）";
 
     const Json hover = adc::Hover(text, 0, 0);
     ASSERT_TRUE(hover.is_object());
@@ -178,7 +178,7 @@ TEST(AdcSymbols, HoverAttributeOrderFollowsFirstAppearance) {
 
 TEST(AdcSymbols, CompletionOnCommandKeyword) {
     const std::string text = ReadCorpus("constrains/pin.adc");
-    ASSERT_FALSE(text.empty());
+    if (text.empty()) GTEST_SKIP() << "语料需自备（设置 FPGA_LSP_TEST_PROJECT 指向自备工程）";
 
     const Json result = adc::Completion(text, 0, 0);
     ASSERT_TRUE(result.is_object());
@@ -220,7 +220,7 @@ TEST(AdcSymbols, CompletionAttributeKeysAndIoStandards) {
 
 TEST(SdcSymbols, DocumentSymbolsMatchPythonProbe) {
     const std::string text = ReadCorpus("constrains/top.sdc");
-    ASSERT_FALSE(text.empty());
+    if (text.empty()) GTEST_SKIP() << "语料需自备（设置 FPGA_LSP_TEST_PROJECT 指向自备工程）";
 
     const Json symbols = sdc::DocumentSymbols(text);
     ASSERT_TRUE(symbols.is_array());
@@ -249,7 +249,7 @@ TEST(SdcSymbols, DocumentSymbolsMatchPythonProbe) {
 
 TEST(SdcSymbols, HoverCommandUsesTdUsage) {
     const std::string text = ReadCorpus("constrains/top.sdc");
-    ASSERT_FALSE(text.empty());
+    if (text.empty()) GTEST_SKIP() << "语料需自备（设置 FPGA_LSP_TEST_PROJECT 指向自备工程）";
 
     const Json hover = sdc::Hover(text, 0, 0);
     ASSERT_TRUE(hover.is_object());
@@ -276,7 +276,7 @@ TEST(SdcSymbols, HoverCommandUsesTdUsage) {
 
 TEST(SdcSymbols, CompletionOnCommandKeyword) {
     const std::string text = ReadCorpus("constrains/top.sdc");
-    ASSERT_FALSE(text.empty());
+    if (text.empty()) GTEST_SKIP() << "语料需自备（设置 FPGA_LSP_TEST_PROJECT 指向自备工程）";
 
     const Json result = sdc::LspCompletion(text, 0, 0);
     ASSERT_TRUE(result.is_object());
@@ -517,7 +517,7 @@ TEST(FeaturesCompletion, CorpusAnchorIs814ForLspAndMcp) {
     ASSERT_GT(corpus.build.index.ModuleCount(), 0u);
 
     const std::string text = ReadCorpus("src/top.v");
-    ASSERT_FALSE(text.empty());
+    if (text.empty()) GTEST_SKIP() << "语料需自备（设置 FPGA_LSP_TEST_PROJECT 指向自备工程）";
     int line = 0;
     int character = 0;
     FindCompletionAnchor(text, &line, &character);

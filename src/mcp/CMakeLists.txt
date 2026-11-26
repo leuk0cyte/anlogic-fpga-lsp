@@ -1,7 +1,7 @@
 # =============================================================================
 #  src/mcp/ —— MCP server（39 个工具，stdio newline-delimited JSON-RPC）
 # =============================================================================
-#  参考实现：Y:\fpga-lsp\fpgalsp\mcp.py（协议）+ mcp_bridge.py（实现）
+#  参考实现：%PYREF%\fpgalsp\mcp.py（协议）+ mcp_bridge.py（实现）
 #
 #  依赖方向：mcp -> {lsp, project, td, reports, constraints, platform, jsonrpc}
 #  刻意**不**依赖 server / hdl：MCP 是独立的对外入口，不该被 LSP 服务层的

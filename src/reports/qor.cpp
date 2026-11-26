@@ -1,7 +1,7 @@
 // =============================================================================
 //  src/reports/qor.cpp —— TD QoR 报告解析
 // =============================================================================
-//  逐行对照 Y:\fpga-lsp\fpgalsp\reports.py::parse_qor（44-98 行）实现。
+//  逐行对照 %PYREF%\fpgalsp\reports.py::parse_qor（44-98 行）实现。
 //  ⚠ 两个循环刻意保持与 Python 完全相同的顺序与判定，包括：
 //     * metrics 循环里 `key.lower() in ("qor metrics","value")` 的跳过规则
 //     * suggestions 循环里"QOR 号起一条、后续同表行追加正文"的状态机

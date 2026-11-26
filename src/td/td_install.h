@@ -1,7 +1,7 @@
 // =============================================================================
 //  src/td/td_install.h —— TD（TangDynasty）安装发现
 // =============================================================================
-//  对应参考实现：Y:\fpga-lsp\fpgalsp\td.py
+//  对应参考实现：%PYREF%\fpgalsp\td.py
 //      version_key / _install_roots / installs / find_td / _normalise_root / _release_of
 //
 //  本机实测可用安装：C:\Anlogic\TD_Release_2026.2_SP1.218.141

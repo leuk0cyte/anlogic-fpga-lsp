@@ -4,7 +4,7 @@
 W3 的承诺：TD single-flight 接线后，5 次连续保存从 **2 轮 → 1 轮**（重复检查被合并），
 且取消/退出后 **没有 `td_commands_prompt.exe` 残留**。
 
-做法（全程只碰 %TEMP% 的工程副本，绝不写 Y:\\CorpusAlpha）：
+做法（全程只碰 %TEMP% 的工程副本，绝不写 C:/work\\CorpusAlpha）：
   1) 把真实工程拷到 %TEMP%\\fpgalsp-gate\\w3\\
   2) 起 native LSP（cwd = 副本），initializationOptions 打开 TD 检查：
      `{fpgaLsp: {tdCheckOnSave: true, enableTd: true}}`
@@ -38,9 +38,20 @@ from goldenlib.client import NativeLspClient, path_to_uri  # noqa: E402
 TD_NAME = "td_commands_prompt.exe"
 
 
+def corpus_source():
+    """工程语料需自备：本仓库不附带任何工程。
+
+    用 FPGA_LSP_TEST_PROJECT 指向一个工程目录（或直接用 --project）。
+    """
+    source = os.environ.get("FPGA_LSP_TEST_PROJECT")
+    if not source:
+        raise SystemExit("需自备工程：请设置 FPGA_LSP_TEST_PROJECT 指向一个工程目录")
+    return source
+
+
 def copy_project(root):
-    source = r"%WORKSPACE%\CorpusAlpha"
-    target = os.path.join(root, "CorpusAlpha")
+    source = corpus_source()
+    target = os.path.join(root, os.path.basename(os.path.normpath(source)))
     if os.path.isdir(target):
         shutil.rmtree(target, ignore_errors=True)
     shutil.copytree(source, target,

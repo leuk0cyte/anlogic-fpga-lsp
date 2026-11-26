@@ -14,7 +14,7 @@ const path = require('path');
 const { resolveServerRoot } = require('../src/locateServer');
 const { METHODS, COMMANDS } = require('../src/protocol');
 
-const PROJECT = process.argv[2] || 'Y:\\CorpusAlpha';
+const PROJECT = process.argv[2] || 'C:/work\\CorpusAlpha';
 const EXT_PATH = process.argv[3] || path.resolve(__dirname, '..');
 const logPath = path.join(PROJECT, '.fpgalsp', 'logs', 'repro-server.log');
 

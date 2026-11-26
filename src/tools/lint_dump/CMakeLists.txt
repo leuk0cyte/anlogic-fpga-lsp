@@ -83,7 +83,7 @@ set(FPGA_LSP_OFFICIAL_LINT "" CACHE FILEPATH
     "官方 verible-verilog-lint 二进制路径（阶段1门禁基准）")
 if(NOT FPGA_LSP_OFFICIAL_LINT)
     set(_default_official_lint
-        "%USERPROFILE%/verible/verible-verilog-lint.exe")
+        "C:/tools/verible/verible-verilog-lint.exe")
     if(EXISTS "${_default_official_lint}")
         set(FPGA_LSP_OFFICIAL_LINT "${_default_official_lint}")
     endif()

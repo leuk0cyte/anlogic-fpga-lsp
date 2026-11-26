@@ -1,7 +1,7 @@
 // =============================================================================
 //  src/td/td_output.h —— TD stdout 解析（纯函数，不触碰进程）
 // =============================================================================
-//  对应参考实现：Y:\fpga-lsp\fpgalsp\td.py
+//  对应参考实现：%PYREF%\fpgalsp\td.py
 //      clean_lines / parse_message_lines / has_error / has_fatal
 //
 //  ⚠ 全部用 re2 实现。TD 日志可达数 MB，std::regex 有栈溢出与指数回溯风险。
@@ -19,10 +19,10 @@
 //  NOTICE_RE     = \b[A-Z][A-Z0-9]{1,5}-\d{3,5}\s*:   （C++ 版新增，见 HasNotice）
 //  SEVERITY      = {"ERROR": 1, "CRITICAL-WARNING": 2, "WARNING": 2, "INFO": 3}
 //
-//  ---- 实测样本（TD 2026.2，%WORKSPACE%\CorpusAlpha 真实工程）----
-//    HDL-1007 : analyze verilog file %WORKSPACE%/CorpusAlpha/src/trans/trans.v
-//    HDL-1007 : elaborate module top in %WORKSPACE%/CorpusAlpha/src/top.v(15)
-//    HDL-7144 CRITICAL-WARNING: instantiate unknown module pll_gen in %WORKSPACE%/CorpusAlpha/src/top.v(66)
+//  ---- 实测样本（TD 2026.2，C:/work/CorpusAlpha 真实工程）----
+//    HDL-1007 : analyze verilog file C:/work/CorpusAlpha/src/trans/trans.v
+//    HDL-1007 : elaborate module top in C:/work/CorpusAlpha/src/top.v(15)
+//    HDL-7144 CRITICAL-WARNING: instantiate unknown module pll_gen in C:/work/CorpusAlpha/src/top.v(66)
 //    HDL-1008 : device name is not set, so there is no need to read *macro.v
 //
 //  其中「无 severity 的 HDL-1007 → INFO(3)」是 0.10.23 的关键修复：若误判成 warning，

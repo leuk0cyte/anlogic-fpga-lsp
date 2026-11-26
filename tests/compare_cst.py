@@ -3,7 +3,7 @@
 #  tests/compare_cst.py —— 阶段 0 门禁：token 序列一致性对比
 # =============================================================================
 #  对比两条完全独立的实现路径：
-#    A) 官方基准:  %USERPROFILE%\verible\verible-verilog-syntax.exe
+#    A) 官方基准:  C:/tools/verible\verible-verilog-syntax.exe
 #                   --printrawtokens <file>
 #    B) 本仓库:    build/bin/cst_dump.exe --rawtokens <file>
 #

@@ -1,7 +1,7 @@
 # `src/server/` 命令与方法实现状态
 
-> 权威协议：`Y:\fpga-lsp\PROTOCOL-V2.md`
-> 参考实现：`Y:\fpga-lsp\fpgalsp\server.py`
+> 权威协议：`%PYREF%\PROTOCOL-V2.md`
+> 参考实现：`%PYREF%\fpgalsp\server.py`
 > 本文件原为 **task-14 验收项**（"已实现 / 占位两栏"）。2026-11-18 Phase B 后
 > **不再有占位命令/空实现**；本文件保留为"方法与命令的落点索引"，逐条证据见
 > `doc/audit/2026-11-18/parity-matrix.md` 与 `doc/audit/2026-11-18/FIX-REPORT.md`。

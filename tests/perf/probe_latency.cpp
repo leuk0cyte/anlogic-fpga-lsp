@@ -12,7 +12,7 @@
 //
 //  用法：
 //      build\bin\perf_latency.exe --project %TEMP%\fpgalsp-perf\latency\scale200
-//      （工程由 tools/perf/latency/latency_driver.py 生成；也可以用 %WORKSPACE%\CorpusAlpha）
+//      （工程由 tools/perf/latency/latency_driver.py 生成；也可以用 C:/work/CorpusAlpha）
 // =============================================================================
 #include <cstdio>
 #include <filesystem>

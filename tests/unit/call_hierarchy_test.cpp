@@ -127,7 +127,7 @@ int ItemStart(const Json& item) {
 // -----------------------------------------------------------------------------
 TEST(CallHierarchyPrepare, OnInstanceNameYieldsModule) {
     const std::string text = ReadFile(kTop);
-    ASSERT_FALSE(text.empty());
+    if (text.empty()) GTEST_SKIP() << "语料需自备：语料缺失（设置 FPGA_LSP_TEST_PROJECT 指向自备工程）";
     const Anchor anchor = FindAnchor(text, "sys_rstn  sys_rstn", "sys_rstn(");
     ASSERT_TRUE(anchor.found);
 
@@ -152,7 +152,7 @@ TEST(CallHierarchyPrepare, OnInstanceNameYieldsModule) {
 
 TEST(CallHierarchyPrepare, OnModuleDefinitionYieldsSameModule) {
     const std::string text = ReadFile(kTop);
-    ASSERT_FALSE(text.empty());
+    if (text.empty()) GTEST_SKIP() << "语料需自备：语料缺失（设置 FPGA_LSP_TEST_PROJECT 指向自备工程）";
     const Anchor anchor = FindAnchor(text, "module top(", "top(");
     ASSERT_TRUE(anchor.found);
 
@@ -324,7 +324,7 @@ TEST(RangeFormattingEdits, NoChangeProducesNoEdits) {
 #if defined(FPGA_LSP_HAVE_VERIBLE_BRIDGE)
 TEST(RangeFormattingVerible, TopCorpusProducesWholeDocumentEdit) {
     const std::string text = ReadFile(kTop);
-    ASSERT_FALSE(text.empty());
+    if (text.empty()) GTEST_SKIP() << "语料需自备：语料缺失（设置 FPGA_LSP_TEST_PROJECT 指向自备工程）";
     const auto formatted = fpgalsp::verible_bridge::FormatText(text, kTop);
     ASSERT_TRUE(formatted.ok) << formatted.error;
 

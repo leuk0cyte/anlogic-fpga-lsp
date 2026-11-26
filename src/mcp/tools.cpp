@@ -2,7 +2,7 @@
 //  src/mcp/tools.cpp —— 48 个工具的 schema 表（逐字来自 Python 参考实现）
 // =============================================================================
 //  ⚠ 本文件的 schema 常量**不要手改**：任何改动都必须先改 Python 版
-//    (Y:\fpga-lsp\fpgalsp\mcp.py 的 TOOLS) 并同步契约，否则
+//    (%PYREF%\fpgalsp\mcp.py 的 TOOLS) 并同步契约，否则
 //    `tests/compare_mcp_schema.py` 会立刻变红 —— 那是故意的。
 //
 //  生成方式（开发期，一次性）：从 fpgalsp.mcp.TOOLS 导出后机械转写，

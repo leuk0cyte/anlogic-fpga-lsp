@@ -81,7 +81,7 @@ set(FPGA_LSP_OFFICIAL_FORMAT "" CACHE FILEPATH
     "官方 verible-verilog-format 二进制路径（阶段1 formatter 门禁基准）")
 if(NOT FPGA_LSP_OFFICIAL_FORMAT)
     set(_default_official_format
-        "%USERPROFILE%/verible/verible-verilog-format.exe")
+        "C:/tools/verible/verible-verilog-format.exe")
     if(EXISTS "${_default_official_format}")
         set(FPGA_LSP_OFFICIAL_FORMAT "${_default_official_format}")
     endif()

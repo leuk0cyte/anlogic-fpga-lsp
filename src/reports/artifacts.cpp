@@ -82,7 +82,7 @@ std::string JoinPath(std::string_view dir, std::string_view name) {
         // ⚠ 这里用 '\\' 而不是 '/'，是**故意的**（见 PYTHON-BUGS P-13）：
         //   Python 侧是 os.path.join(dir, name)，而 os.sep 在 Windows 上是 '\\'。
         //   project.dir 本身来自 norm()，是正斜杠；于是 reports.collect 输出的路径
-        //   实际是 "%WORKSPACE%/proj\\CorpusBeta_Runs\\phy_1\\route.qor" 这种混合形态。
+        //   实际是 "C:/work/proj\\CorpusBeta_Runs\\phy_1\\route.qor" 这种混合形态。
         //   为了 JSON 逐字段一致，这里复现同样的拼接规则。
         //   （Windows 上两种分隔符等价，webview 的 vscode.Uri.file 都能处理。）
         out.push_back('\\');

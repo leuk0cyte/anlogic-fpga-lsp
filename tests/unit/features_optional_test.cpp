@@ -184,7 +184,7 @@ TEST(DocumentLinks, OnlyAlAndExistingFilesGetTarget) {
     EXPECT_TRUE(DocumentLinks("top.v", al_text).empty());
     EXPECT_TRUE(DocumentLinks("pin.adc", al_text).empty());
     // `<Project Path=...>` 是工程根（目录），不是文件链接 —— 真实 .al 里它就在第 3 行，
-    // 不排除会得到一条 "file not found: %WORKSPACE%/CorpusAlpha"（2026-11-22 实测）。
+    // 不排除会得到一条 "file not found: C:/work/CorpusAlpha"（2026-11-22 实测）。
     EXPECT_EQ(links.size(), 2u);
     fs::remove_all(root);
 }

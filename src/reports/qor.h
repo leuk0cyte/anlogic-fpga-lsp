@@ -1,7 +1,7 @@
 // =============================================================================
 //  src/reports/qor.h —— TD QoR 报告解析（*_Runs/<run>/{route,place,gate}.qor）
 // =============================================================================
-//  对应参考实现：Y:\fpga-lsp\fpgalsp\reports.py
+//  对应参考实现：%PYREF%\fpgalsp\reports.py
 //      parse_qor() / parse_suggestions_tcl()
 //
 //  报告形态（TD 2026.2，`|` 分隔的管道表）：

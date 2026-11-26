@@ -238,7 +238,7 @@ $ verible-verilog-lint.exe --ruleset=default file.v
 
 | 子目录 | 来源 | 文件数 | 说明 |
 | --- | --- | --- | --- |
-| `corpus_alpha/` | `%WORKSPACE%\CorpusAlpha` | 21 (`.v`) | 真实 Anlogic 工程 |
+| `corpus_alpha/` | `C:/work/CorpusAlpha` | 21 (`.v`) | 真实 Anlogic 工程 |
 | `verible_lint_testdata/` | vendored Verible lint testdata | 73 (`.sv`) | SV 特性覆盖 |
 | `error-cases/` | 本任务手工构造 | 8 (`.sv`) | 故意语法错误，覆盖错误路径 |
 | **合计** | | **102** | |
@@ -248,7 +248,7 @@ $ verible-verilog-lint.exe --ruleset=default file.v
 ## 5. 对比结果
 
 **被测产物**：`build/bin/lint_dump.exe`（1,693,184 B，MSVC 19.52 / Release / 静态 CRT）
-**基准产物**：`%USERPROFILE%\verible\verible-verilog-lint.exe`
+**基准产物**：`C:/tools/verible\verible-verilog-lint.exe`
 
 ### 5.1 第 1 层：规则清单（链接完整性）
 
@@ -654,7 +654,7 @@ python tests\run_gates.py --json build\gates.json
 
 本门禁的对比有效性依赖以下前提，若前提变化则结论需重新评估：
 
-1. **官方基准二进制固定**：`%USERPROFILE%\verible\verible-verilog-lint.exe`。
+1. **官方基准二进制固定**：`C:/tools/verible\verible-verilog-lint.exe`。
    更换基准需要重新采集全部基线。
 2. **vendored 源码未被改动**：`thirdparty/verible/` 下只有构建系统适配，
    没有修改 `.cc/.h` 业务逻辑（漏链问题通过 CMake 修正，不改源码）。
@@ -676,7 +676,7 @@ python tests\gen_rule_map.py --json build\rule-map.json
 :: 规则清单对比
 python tests\compare_lint.py ^
   --lint-dump build\bin\lint_dump.exe ^
-  --official %USERPROFILE%\verible\verible-verilog-lint.exe ^
+  --official C:/tools/verible\verible-verilog-lint.exe ^
   --rules-file
 ```
 
@@ -685,7 +685,7 @@ python tests\compare_lint.py ^
 ```bat
 python tests\compare_lint.py ^
   --lint-dump build\bin\lint_dump.exe ^
-  --official %USERPROFILE%\verible\verible-verilog-lint.exe ^
+  --official C:/tools/verible\verible-verilog-lint.exe ^
   --diagnose-missing
 ```
 
@@ -705,7 +705,7 @@ python tests\compare_lint.py ^
 ```bat
 python tests\compare_lint.py ^
   --lint-dump build\bin\lint_dump.exe ^
-  --official %USERPROFILE%\verible\verible-verilog-lint.exe ^
+  --official C:/tools/verible\verible-verilog-lint.exe ^
   --corpus   tests\gate-corpus ^
   --pattern  ".v,.sv"
 ```
@@ -715,14 +715,14 @@ python tests\compare_lint.py ^
 ```bat
 :: 自比：必须 100%
 python tests\compare_lint.py --selftest ^
-  --lint-dump %USERPROFILE%\verible\verible-verilog-lint.exe ^
-  --official %USERPROFILE%\verible\verible-verilog-lint.exe ^
+  --lint-dump C:/tools/verible\verible-verilog-lint.exe ^
+  --official C:/tools/verible\verible-verilog-lint.exe ^
   --corpus   tests\gate-corpus
 
 :: 单边变异：必须 < 100%（否则脚本作废）
 python tests\compare_lint.py --selftest ^
-  --lint-dump %USERPROFILE%\verible\verible-verilog-lint.exe ^
-  --official %USERPROFILE%\verible\verible-verilog-lint.exe ^
+  --lint-dump C:/tools/verible\verible-verilog-lint.exe ^
+  --official C:/tools/verible\verible-verilog-lint.exe ^
   --corpus   tests\gate-corpus\corpus_alpha --pattern ".v" "--rules=-no-tabs"
 ```
 

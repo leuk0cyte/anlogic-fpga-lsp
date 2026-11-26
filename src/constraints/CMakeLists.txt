@@ -2,8 +2,8 @@
 #  src/constraints/ —— ADC 引脚约束 + SDC 时序约束
 # =============================================================================
 #  对应参考实现：
-#    Y:\fpga-lsp\fpgalsp\adc.py  (913 行)  ->  adc.h/.cpp
-#    Y:\fpga-lsp\fpgalsp\sdc.py  (1068 行) ->  sdc.h/.cpp
+#    %PYREF%\fpgalsp\adc.py  (913 行)  ->  adc.h/.cpp
+#    %PYREF%\fpgalsp\sdc.py  (1068 行) ->  sdc.h/.cpp
 #
 #  依赖方向：constraints -> lsp（Diagnostic 唯一形状）+ re2（正则）
 #  刻意**不**依赖 td / project / server：这两个解析器是纯文本的，

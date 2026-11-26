@@ -91,7 +91,7 @@ cmake --build build --target cst_dump
 cmake --build build --target cst_dump
 python tests/compare_cst.py `
   --cst-dump build/bin/cst_dump.exe `
-  --official %USERPROFILE%\verible\verible-verilog-syntax.exe `
+  --official C:/tools/verible\verible-verilog-syntax.exe `
   --corpus   tests/gate-corpus `
   --pattern  ".v,.sv" `
   --report   build/gate-report.json
@@ -108,7 +108,7 @@ python tests/compare_cst.py `
 ```powershell
 python tests/compare_cst.py `
   --cst-dump build/bin/cst_dump.exe `
-  --official %USERPROFILE%\verible\verible-verilog-syntax.exe `
+  --official C:/tools/verible\verible-verilog-syntax.exe `
   --corpus   tests/gate-corpus/error-cases `
   --pattern  ".sv"
 ```
@@ -164,7 +164,7 @@ python tests/compare_cst.py `
 3. **flex 与 bison 要一起记录版本。** lexer 是 flex 生成的，
    token 边界直接受 flex 版本影响（见 §4 未覆盖项）。
 4. **官方基准二进制版本要固定。** 本门禁的 ground truth 是
-   `%USERPROFILE%\verible\verible-verilog-syntax.exe`；
+   `C:/tools/verible\verible-verilog-syntax.exe`；
    如果更换基准二进制，整个基线都要重采。
 
 ---

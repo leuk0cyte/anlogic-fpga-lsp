@@ -3,11 +3,11 @@
 """HDL 索引与 Python 参考实现（`fpgalsp/hdl.py`）的**逐字段对比**。
 
 由来：task-17 的验收标准要求"与 Python 逐字段对比一致，或有差异且根因明确"。
-本脚本不参与 ctest（依赖 `Y:\\fpga-lsp` 这个 Python 工程存在），是**手工验证工具**：
+本脚本不参与 ctest（依赖 Python 参考实现工程存在，见 `--python-root`），是**手工验证工具**：
 
     python tests/e2e/compare_hdl_python.py --unit build/bin/unit_hdl_index.exe \\
                                            --corpus tests/gate-corpus/corpus_alpha \\
-                                           --python-root Y:/fpga-lsp
+                                           --python-root <python-reference-repo>
 
 对比字段：
     modules[]   : name / line / character / end_line / ansi_ports / parameters[]
@@ -191,15 +191,21 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--unit", required=True, help="unit_hdl_index.exe 路径")
     parser.add_argument("--corpus", required=True, help="语料目录")
-    parser.add_argument("--python-root", default="Y:/fpga-lsp")
+    parser.add_argument("--python-root", default=None,
+                        help="Python 参考实现仓库（**必填**：本机路径各不相同；"
+                             "也可用环境变量 FPGA_LSP_PYTHON_ROOT）")
     parser.add_argument("--limit", type=int, default=10)
     parser.add_argument("--only-modules", action="store_true", help="只看模块级差异")
     args = parser.parse_args()
 
+    python_root = args.python_root or os.environ.get("FPGA_LSP_PYTHON_ROOT")
+    if not python_root:
+        print("FAIL 缺少参考实现目录：请传 --python-root <dir>（或设 FPGA_LSP_PYTHON_ROOT）")
+        return 2
     corpus = Path(args.corpus).resolve()
     out_json = Path(os.environ.get("TEMP", ".")) / "fpgalsp_hdl_cpp_dump.json"
     cpp = run_cpp_dump(Path(args.unit).resolve(), corpus, out_json)
-    py = run_python_dump(Path(args.python_root), corpus)
+    py = run_python_dump(Path(python_root), corpus)
     return compare(cpp, py, args.limit)
 
 

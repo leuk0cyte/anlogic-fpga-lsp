@@ -21,7 +21,7 @@ const WS = path.join(harness.WORKDIR, 'project').replace(/\\/g, '/');
 
 // IMPORTANT: the extension writes `<workspace>/.fpgalsp/logs/extension.log` on *every* `diag()`
 // call (src/launchCheck.js::appendLog does mkdirSync + appendFileSync). We therefore point the
-// fake workspace at a %TEMP% copy of the corpus, never at %WORKSPACE%\CorpusAlpha (read-only rule).
+// fake workspace at a %TEMP% copy of the corpus, never at C:/work/CorpusAlpha (read-only rule).
 const WORKSPACE = path.join(harness.WORKDIR, 'project');
 if (!require('fs').existsSync(path.join(WORKSPACE, 'demo_project.al'))) {
     throw new Error(`missing temp workspace ${WORKSPACE}; run: node prep_workspace.js`);
@@ -244,7 +244,7 @@ async function main() {
         fs.rmSync(logFile, { force: true });
 
         // Same append, but on the Y: volume (where the real workspace lives). This is what makes
-        // the per-event `diag()` expensive: when the fake workspace pointed at %WORKSPACE%\CorpusAlpha the
+        // the per-event `diag()` expensive: when the fake workspace pointed at C:/work/CorpusAlpha the
         // indexChanged handler measured ~6.5 ms instead of ~0.45 ms.
         const yLog = path.join(harness.REPO, 'tools', 'perf', 'vscode', 'results', '.append-probe.log');
         fs.writeFileSync(yLog, '');

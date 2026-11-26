@@ -1,9 +1,9 @@
 // =============================================================================
 //  src/server/commands.cpp —— 自定义 v2 方法 + workspace/executeCommand 分发
 // =============================================================================
-//  权威协议：Y:\fpga-lsp\PROTOCOL-V2.md（§1 moduleTree / §2 reports / §3 flowStatus
+//  权威协议：%PYREF%\PROTOCOL-V2.md（§1 moduleTree / §2 reports / §3 flowStatus
 //  / §5 命令表 / v6 工程发现 & 多 TD）
-//  参考实现：Y:\fpga-lsp\fpgalsp\server.py
+//  参考实现：%PYREF%\fpgalsp\server.py
 //      on_fpgaLsp_moduleTree / on_fpgaLsp_reports / on_fpgaLsp_flowStatus
 //      on_workspace_executeCommand
 //

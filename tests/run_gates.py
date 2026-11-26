@@ -33,8 +33,8 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 DEFAULT_CST_DUMP = REPO / "build" / "bin" / "cst_dump.exe"
 DEFAULT_LINT_DUMP = REPO / "build" / "bin" / "lint_dump.exe"
-DEFAULT_OFFICIAL_SYNTAX = Path(r"%USERPROFILE%\verible\verible-verilog-syntax.exe")
-DEFAULT_OFFICIAL_LINT = Path(r"%USERPROFILE%\verible\verible-verilog-lint.exe")
+DEFAULT_OFFICIAL_SYNTAX = Path(r"C:/tools/verible\verible-verilog-syntax.exe")
+DEFAULT_OFFICIAL_LINT = Path(r"C:/tools/verible\verible-verilog-lint.exe")
 CORPUS = REPO / "tests" / "gate-corpus"
 
 

@@ -2,7 +2,7 @@
 """生成 perf-td 用的**合成工程**（只写 %TEMP%\\fpgalsp-perf\\td\\）。
 
 为什么要合成工程：
-  * 真实工程 Y:\\CorpusAlpha 是只读的，且 TD 会往 <project>/.fpgalsp/run 写日志；
+  * 真实工程 C:/work\\CorpusAlpha 是只读的，且 TD 会往 <project>/.fpgalsp/run 写日志；
   * 性能测量需要可控的文件大小（13 KB / 100 KB）与可控的 HDL 内容。
 
 三个工程：

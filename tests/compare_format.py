@@ -36,7 +36,7 @@ import sys
 # ---------------------------------------------------------------------------
 SOURCE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_CORPUS = os.path.join(SOURCE_DIR, "tests", "gate-corpus")
-DEFAULT_OFFICIAL = r"%USERPROFILE%\verible\verible-verilog-format.exe"
+DEFAULT_OFFICIAL = r"C:/tools/verible\verible-verilog-format.exe"
 
 # format_dump.exe 的位置：优先私有构建，再退到共享 build。
 _CANDIDATE_OURS = [

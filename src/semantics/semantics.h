@@ -1,7 +1,7 @@
 // =============================================================================
 //  src/semantics/semantics.h —— 语义高亮 / 折叠范围 / token 统计（纯逻辑层）
 // =============================================================================
-//  对应参考实现：Y:\fpga-lsp\fpgalsp\semantics.py
+//  对应参考实现：%PYREF%\fpgalsp\semantics.py
 //      semantic_tokens()            -> SemanticTokens()
 //      encode_tokens()              -> EncodeTokens()
 //      folding_ranges()             -> FoldingRanges()

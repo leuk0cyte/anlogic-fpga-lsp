@@ -3,7 +3,7 @@
 // =============================================================================
 //  语料与期望值来源：
 //    · tests/gate-corpus/corpus_alpha/constrains/top.sdc（真实工程副本）
-//    · Y:\fpga-lsp\tests\test_sdc.py（Python 版自己的单测，行为契约）
+//    · %PYREF%\tests\test_sdc.py（Python 版自己的单测，行为契约）
 //
 //  ⚠ 本文件里有两条测试**故意钉死 Python 缺陷**（P-11 `-period nan`、
 //    P-12 不校验时钟名）。修掉 Python 缺陷时它们会变红 —— 那是预期的。
@@ -285,7 +285,7 @@ TEST(SdcParse, CrlfLineEndings) {
 
 TEST(SdcParse, RealCorpusMatchesPythonGolden) {
     const std::optional<std::string> text = ReadTextFile(kRealSdcPath);
-    ASSERT_TRUE(text.has_value()) << "缺少语料文件 " << kRealSdcPath;
+    if (!text.has_value()) GTEST_SKIP() << "语料需自备，缺少 " << kRealSdcPath;
     const std::vector<Command> commands = fpgalsp::constraints::sdc::Parse(*text);
     ASSERT_EQ(commands.size(), 2u);
 
@@ -512,7 +512,7 @@ TEST(SdcDiagnostics, HandBuiltCommandsAreAccepted) {
 
 TEST(SdcDiagnostics, RealCorpusIsClean) {
     const std::optional<std::string> text = ReadTextFile(kRealSdcPath);
-    ASSERT_TRUE(text.has_value());
+    if (!text.has_value()) GTEST_SKIP() << "语料需自备，缺少 " << kRealSdcPath;
     const auto diagnostics = fpgalsp::constraints::sdc::Diagnostics(
         fpgalsp::constraints::sdc::Parse(*text), Ports(), &kKnownSubset);
     EXPECT_TRUE(diagnostics.empty())
@@ -698,7 +698,7 @@ TEST(SdcContext, SecondLineAndNonePlaces) {
 
 TEST(SdcContext, RealCorpusPositions) {
     const std::optional<std::string> text = ReadTextFile(kRealSdcPath);
-    ASSERT_TRUE(text.has_value());
+    if (!text.has_value()) GTEST_SKIP() << "语料需自备（设置 FPGA_LSP_TEST_PROJECT 指向自备工程）: " << kRealSdcPath;
     const std::string& content = *text;
     const std::string first = content.substr(0, content.find('\n'));
     const int name_at = static_cast<int>(first.find("clk_input"));
@@ -894,7 +894,7 @@ TEST(SdcParity, DumpCorpusJsonWhenRequested) {
         GTEST_SKIP() << "设置 FPGA_LSP_SDC_DUMP=<path> 可导出与 Python 对照的 JSON";
     }
     const std::optional<std::string> text = ReadTextFile(kRealSdcPath);
-    ASSERT_TRUE(text.has_value());
+    if (!text.has_value()) GTEST_SKIP() << "语料需自备（设置 FPGA_LSP_TEST_PROJECT 指向自备工程）: " << kRealSdcPath;
     const auto commands = fpgalsp::constraints::sdc::Parse(*text);
 
     Json out = Json::object();

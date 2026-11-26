@@ -9,7 +9,7 @@
 //    两份"索引 -> JSON"一旦各写一份必然漂移（字段名/0-based/大小写/排序），
 //    所以把**唯一实现**放在这里，features_commands.cpp 只负责解包 params。
 //
-//  参考实现：Y:\fpga-lsp\fpgalsp\ide.py 与 server.py::_instantiation_text /
+//  参考实现：%PYREF%\fpgalsp\ide.py 与 server.py::_instantiation_text /
 //            on_workspace_executeCommand（fpgalsp.* 分支）。
 //
 //  约定：

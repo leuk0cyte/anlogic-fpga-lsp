@@ -1,7 +1,7 @@
 // =============================================================================
 //  src/flow/flow_logic.h —— Flow 引擎里**不碰进程、不碰线程**的判定逻辑
 // =============================================================================
-//  对应参考实现：Y:\fpga-lsp\fpgalsp\flow.py
+//  对应参考实现：%PYREF%\fpgalsp\flow.py
 //      STAGE_NAMES / PHASE_TOKENS / _normalise_stages / _run_started / _run_completed /
 //      _only_run_exit_errors / _error_lines / _summary / heartbeat 的 stall 判定
 //
@@ -178,7 +178,7 @@ std::vector<std::string> ErrorMarkerSteps(const std::vector<std::string>& run_di
 //  ⚠ 任何"复制工程再跑 TD"的路径都**必须**先调用这个：
 //    TD open_project 之后拿 .al 根节点的 Path 当**工程根**，会把 *_Runs / .fpgalsp
 //    写到那个目录。若 Path 指向另一个真实工程，就等于写坏用户数据。
-//    （实测见 tests/gate-corpus/corpus_alpha/demo_project.al：Path="%WORKSPACE%/CorpusAlpha"）
+//    （实测见 tests/gate-corpus/corpus_alpha/demo_project.al：Path="C:/work/CorpusAlpha"）
 //
 //  只改根节点那一个 Path="..."，其余内容原样保留。成功返回 true。
 bool RewriteProjectPath(const std::string& al_path, const std::string& new_root);

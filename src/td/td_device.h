@@ -1,7 +1,7 @@
 // =============================================================================
 //  src/td/td_device.h —— 设备库候选与引脚查询解析
 // =============================================================================
-//  对应参考实现：Y:\fpga-lsp\fpgalsp\td.py
+//  对应参考实现：%PYREF%\fpgalsp\td.py
 //      DB_PREFIXES / _db_candidates / _parse_pipe_table / parse_fio /
 //      parse_clock_io / parse_lvds / parse_cfg_io / _cache_key
 //

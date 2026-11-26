@@ -2,10 +2,10 @@
 //  src/analysis/analysis.h —— 流程后分析（DRC / CDC）+ 工程版本同步
 // =============================================================================
 //  对应参考实现：
-//    * Y:\fpga-lsp\fpgalsp\analysis.py
+//    * %PYREF%\fpgalsp\analysis.py
 //        newest_routed_db / cache_dir / cached / run / _first_error
 //        以及 reports.py 的 parse_drc / parse_cdc
-//    * Y:\fpga-lsp\fpgalsp\server.py::on_workspace_executeCommand
+//    * %PYREF%\fpgalsp\server.py::on_workspace_executeCommand
 //        fpgalsp.runAnalysis  -> run(project, td_info)
 //        fpgalsp.updateProject-> check_project_version + open_project -update
 //

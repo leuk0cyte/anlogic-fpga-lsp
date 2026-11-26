@@ -254,17 +254,24 @@ def td_pids() -> set[int]:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--server", required=True, help="fpgalsp-native.exe 路径")
-    parser.add_argument("--project", default=None, help=".al 工程目录（默认用 gate-corpus/corpus_alpha）")
+    parser.add_argument("--project", default=None,
+                        help=".al 工程目录（**必填**：本仓库不附带工程语料；"
+                             "也可用环境变量 FPGA_LSP_TEST_PROJECT）")
     parser.add_argument("--skip-td", action="store_true", help="跳过 fpgalsp.check（不启动 TD）")
     parser.add_argument("--timeout", type=float, default=300.0, help="TD 检查等待上限（秒）")
     args = parser.parse_args()
 
     repo_root = Path(__file__).resolve().parents[2]
-    project_dir = Path(args.project) if args.project else (
-        repo_root / "tests" / "gate-corpus" / "corpus_alpha"
-    )
+    # 工程语料需自备：本仓库不附带任何工程。优先 --project，其次
+    # FPGA_LSP_TEST_PROJECT；两者都没有就报清晰错误，而不是猜一个路径。
+    requested = args.project or os.environ.get("FPGA_LSP_TEST_PROJECT")
+    if not requested:
+        print("FAIL 缺少工程目录：请传 --project <dir>（或设 FPGA_LSP_TEST_PROJECT）")
+        return 2
+    project_dir = Path(requested)
     project_dir = project_dir.resolve()
-    al_path = project_dir / "demo_project.al"
+    al_candidates = sorted(project_dir.glob("*.al"))
+    al_path = al_candidates[0] if al_candidates else project_dir / "demo_project.al"
     top_v = project_dir / "src" / "top.v"
 
     print(f"server   : {args.server}")
@@ -782,7 +789,7 @@ def main() -> int:
         check(not added and not removed,
               f"语料目录无新增项（新增 {sorted(added)} / 消失 {sorted(removed)}）")
 
-        #  2) `%WORKSPACE%/CorpusAlpha`（语料 .al 里声明的真实工程）在本次运行期间**不能有任何写入**
+        #  2) `C:/work/CorpusAlpha`（语料 .al 里声明的真实工程）在本次运行期间**不能有任何写入**
         #     这是 P-7 的直接防线：一旦隔离失效，TD 会静默回退到那里。
         touched = declared_projects_touched(started_at)
         check(not touched,

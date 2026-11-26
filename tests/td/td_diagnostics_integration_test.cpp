@@ -284,7 +284,7 @@ TEST_F(TdDiagnosticsIntegrationTest, SessionRunnerUsesProjectDirAsWorkDir) {
     //      `.fpgalsp`，所以那条断言是"cwd 不能在工程目录里"。
     //   2) 之后改成 `%TEMP%/fpgalsp/<prj>-<hash>/run`，`.fpgalsp` 没了，但 TD 解析 `.al`
     //      里的相对源文件路径时用的是"工程根"（`.al` 的 `<Project Path>`，失效时退化成
-    //      **进程 cwd**）。工程被移动过（实测 %WORKSPACE%\CorpusBeta，Path 还指着 C:/work/...）就
+    //      **进程 cwd**）。工程被移动过（实测 C:/work/CorpusBeta，Path 还指着 D:/projects/...）就
     //      变成 `cannot open Verilog file '/src/ADC.v'`（HDL-8007）—— Update Project 必失败。
     //
     // 现在的契约：cwd = 工程目录（相对路径才解析得对），但工程根目录**不留 TD 日志**：

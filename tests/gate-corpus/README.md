@@ -7,18 +7,18 @@
 `corpus_alpha/demo_project.al` 的根节点写着：
 
 ```xml
-<Project Version="3" Minor="2" Path="%WORKSPACE%/CorpusAlpha">
+<Project Version="3" Minor="2" Path="C:/work/CorpusAlpha">
 ```
 
 这个 `Path` **不是**"只是元数据"。实测（`reports-parse`，阶段 4-δ）：
 
 - TD `open_project` 之后会拿 `Path` 指向的目录当**工程根**
 - 于是 `*_Runs`、`.fpgalsp/` 会落在**那里**，而不是你复制出来的临时目录
-- 也就是说：**在本目录里直接跑 `runFlow` 会写到 `%WORKSPACE%\CorpusAlpha`（另一个真实工程）**
+- 也就是说：**在本目录里直接跑 `runFlow` 会写到 `C:/work/CorpusAlpha`（另一个真实工程）**
 
 2026-11-18 曾发生过一次：`e2e.lsp_smoke` 的 `runFlow → cancelFlow` 把 `.stop.f` 与
 半成品 run 写进了别处，导致 `td.flow` 的 `RunsASynthesisToCompletion` 读到被取消的
-run、`bundle.files.area` 找不到而假失败。当时 `%WORKSPACE%\CorpusAlpha` 侥幸没被写
+run、`bundle.files.area` 找不到而假失败。当时 `C:/work/CorpusAlpha` 侥幸没被写
 （最新文件时间仍是 2026/11/9），但那是运气，不是设计。
 
 ### 因此：任何要跑 TD 的测试必须做三件事
@@ -35,7 +35,7 @@ run、`bundle.files.area` 找不到而假失败。当时 `%WORKSPACE%\CorpusAlph
 
 | 子目录 | 来源 | 用途 |
 | --- | --- | --- |
-| `corpus_alpha/` | `%WORKSPACE%\CorpusAlpha` 的副本（20 个 `.v` + IP 生成的 `pll_gen.v` + `pll_gen.vhd`） | 真实工程语料 |
+| `corpus_alpha/` | `C:/work/CorpusAlpha` 的副本（20 个 `.v` + IP 生成的 `pll_gen.v` + `pll_gen.vhd`） | 真实工程语料 |
 | `verible_lint_testdata/` | vendored Verible 的 lint testdata（73 个 `.sv`） | SystemVerilog 特性覆盖 |
 | `error-cases/` | 手工构造（8 个故意语法错误的 `.sv`） | 验证 failsafe 与错误恢复 |
 

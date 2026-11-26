@@ -1,7 +1,7 @@
 // =============================================================================
 //  src/hdl/hdl_index.cpp —— HDL 索引实现
 // =============================================================================
-//  参考实现：Y:\fpga-lsp\fpgalsp\hdl.py
+//  参考实现：%PYREF%\fpgalsp\hdl.py
 //    tokenizer            -> 换成 Verible（见 hdl_index.h 的取舍说明）
 //    _match_pair/_split_top/_skip_* -> 逐行移植
 //    _parse_range/_eval_tokens       -> 逐行移植（含 $clog2）

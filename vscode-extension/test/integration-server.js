@@ -8,7 +8,7 @@
 const { spawn } = require('child_process');
 const path = require('path');
 
-const PROJECT = process.argv[2] || 'Y:\\CorpusAlpha';
+const PROJECT = process.argv[2] || 'C:/work\\CorpusAlpha';
 const SERVER_ROOT = process.argv[3] || path.resolve(__dirname, '..', '..');
 const PROTO = require('../src/protocol');
 

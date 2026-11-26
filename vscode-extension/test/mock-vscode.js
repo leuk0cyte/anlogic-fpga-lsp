@@ -481,7 +481,7 @@ const window = {
 const workspace = {
     textDocuments: [],
     workspaceFolders: [{
-        uri: Uri.file('%WORKSPACE%/CorpusAlpha'),
+        uri: Uri.file('C:/work/CorpusAlpha'),
         name: 'CorpusAlpha',
         index: 0,
     }],

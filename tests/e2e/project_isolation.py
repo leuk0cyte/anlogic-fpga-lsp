@@ -7,7 +7,7 @@
 `tests/gate-corpus/corpus_alpha/demo_project.al` 的根节点是：
 
 ```xml
-<Project Version="3" Minor="2" Path="%WORKSPACE%/CorpusAlpha">
+<Project Version="3" Minor="2" Path="C:/work/CorpusAlpha">
 ```
 
 这个 `Path` **不是纯元数据**：TD 的 `open_project` 会拿它当工程根；工程目录里找不到
@@ -58,6 +58,7 @@ with isolated_project("tests/gate-corpus/corpus_alpha") as (tmp_dir, al_path):
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import tempfile
@@ -65,9 +66,13 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator, Sequence
 
-# 语料 .al 根节点 Path 指向的**真实工程**（用于"未被写入"断言）。
-# 与 tests/gate-corpus/corpus_alpha/demo_project.al 保持一致。
-DECLARED_PROJECT_ROOTS = ("%WORKSPACE%/CorpusAlpha",)
+# 语料 .al 根节点 Path 指向的"声明工程根"（用于"未被写入"断言）。
+# 默认空：工程语料需自备，其 .al 里声明的 Path 各不相同，无法预置。
+# 需要该断言的调用方自行传入，或设环境变量 FPGA_LSP_DECLARED_PROJECT_ROOTS
+# （多个路径用 os.pathsep 分隔）。
+DECLARED_PROJECT_ROOTS: tuple[str, ...] = tuple(
+    p for p in os.environ.get("FPGA_LSP_DECLARED_PROJECT_ROOTS", "").split(os.pathsep) if p
+)
 
 DEFAULT_EXCLUDES = (".fpgalsp", "*_Runs")
 

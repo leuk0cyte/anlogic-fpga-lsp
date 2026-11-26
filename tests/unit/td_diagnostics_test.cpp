@@ -1,11 +1,12 @@
 // =============================================================================
 //  tests/unit/td_diagnostics_test.cpp —— TdMessage → Diagnostic 映射
 // =============================================================================
-//  基准行为对照 Y:\fpga-lsp\fpgalsp\td.py 的 run_read_hdl 与 _resolve_file。
+//  基准行为对照 %PYREF%\fpgalsp\td.py 的 run_read_hdl 与 _resolve_file。
 // =============================================================================
 
 #include <gtest/gtest.h>
 
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -357,10 +358,15 @@ TEST(TdReadHdlCommand, EmptyTopDefaultsToTop) {
 // -----------------------------------------------------------------------------
 
 TEST(TdFromOutput, RealFixtureProducesDiagnostics) {
-    const std::string path = std::string(FPGA_LSP_SOURCE_DIR) +
-                             "/tests/td/fixtures/read_hdl_mb252.txt";
+    // 该夹具需自备（release 树不携带真实 TD 输出）。设置环境变量
+    // FPGA_LSP_TD_FIXTURE 指向一份 `read_hdl` 的原始输出，用例才会真正执行。
+    const char* fixture_env = std::getenv("FPGA_LSP_TD_FIXTURE");
+    if (fixture_env == nullptr || *fixture_env == '\0') {
+        GTEST_SKIP() << "FPGA_LSP_TD_FIXTURE not set: pass a read_hdl output file to run this test";
+    }
+    const std::string path = fixture_env;
     if (!std::filesystem::exists(path)) {
-        GTEST_SKIP() << "fixture missing";
+        GTEST_SKIP() << "fixture missing: " << path;
     }
     std::ifstream in(path, std::ios::binary);
     const std::string output{std::istreambuf_iterator<char>(in),
@@ -414,9 +420,13 @@ TEST(TdFromOutput, RealFixtureProducesDiagnostics) {
 TEST(TdFromOutput, BlackBoxMessageUpgradedToWarning) {
     // 真实输出末尾那条：HDL-8007 ERROR: ... is a black box
     // Python 会把它从 ERROR(1) 升级为 Warning(2) 并追加说明
-    const std::string path = std::string(FPGA_LSP_SOURCE_DIR) +
-                             "/tests/td/fixtures/read_hdl_mb252.txt";
-    if (!std::filesystem::exists(path)) GTEST_SKIP() << "fixture missing";
+    // 同上一用例：夹具需自备（FPGA_LSP_TD_FIXTURE 指向一份 read_hdl 原始输出）。
+    const char* fixture_env = std::getenv("FPGA_LSP_TD_FIXTURE");
+    if (fixture_env == nullptr || *fixture_env == '\0') {
+        GTEST_SKIP() << "FPGA_LSP_TD_FIXTURE not set: pass a read_hdl output file to run this test";
+    }
+    const std::string path = fixture_env;
+    if (!std::filesystem::exists(path)) GTEST_SKIP() << "fixture missing: " << path;
     std::ifstream in(path, std::ios::binary);
     const std::string output{std::istreambuf_iterator<char>(in),
                              std::istreambuf_iterator<char>()};

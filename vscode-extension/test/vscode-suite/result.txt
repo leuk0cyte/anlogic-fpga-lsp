@@ -1,6 +1,6 @@
 extension host: 1.144.0
 workspaceFolders: ["y:\\CorpusAlpha"]
-  [PASS] a workspace folder is open  y:\CorpusAlpha
+  [PASS] a workspace folder is open  C:/work/CorpusAlpha
   [PASS] extension found
 extensionPath: Y:\fpga-lsp-cpp\vscode-extension
 version: 0.36.2
@@ -29,7 +29,7 @@ version: 0.36.2
   [PASS] top.v languageId is verilog  verilog
   [PASS] .vhd languageId is vhdl  vhdl
   [PASS] .sv languageId is systemverilog  systemverilog
-  [PASS] highlight diagnostics report written  %USERPROFILE%\AppData\Local\Temp\fpgalsp\CorpusAlpha-a06a6d60\logs\highlight.txt
+  [PASS] highlight diagnostics report written  %TEMP%\fpgalsp\CorpusAlpha-a06a6d60\logs\highlight.txt
   [PASS] report sees verilog language  verilog
   [PASS] server returns semantic tokens for the project file  2094
   code actions raw: [{"title":"Insert instantiation of pwm_gen","kind":{"value":"refactor"},"edit":[[{"$mid":1,"fsPath":"y:\\CorpusAlpha\\src\\top.v","_sep":1,"external":"file:///y%3A/CorpusAlpha/src/top.v","path":"/y:/CorpusAlpha/src/top.v","scheme":"file"},[{"range":[{"line":415,"character":0},{"line":415,"character":0}],"newText":"pwm_gen #(\n    .DEADTIME (DEADTIME)\n) u_pwm_gen (\n    .clk (clk),\n    .rst_n (rst_n),\n    .cnt_period (cnt_period),\n    .cnt_init (cnt_init),\n    .rise_init (rise_init),\n    .pwm_reset (pwm_reset),\n    .mod_a (mod_a),\n    .mod_b (mod_b),\n    .mod_c (mod_c),\n    .pwmlock (pwm
@@ -53,7 +53,7 @@ version: 0.36.2
   [PASS] doctor command opens a status report  # FPGA LSP Doctor
   [PASS] reports panel command works
   [PASS] flow controller exposed for tests
-  [PASS] syn run directory found  y:\CorpusAlpha\demo_project_Runs\syn_1
+  [PASS] syn run directory found  C:/work/CorpusAlpha\demo_project_Runs\syn_1
   [PASS] Reset and Run resolves after the flow finished  {"ok":true}
   [PASS] reset and run re-ran ONLY the selected step  3.0s  read_design 1795375162489.1926 -> 1795487249359.7554
   [PASS] downstream steps are cleared to "not run" (no re-run)  opt_rtl=0 opt_gate=0

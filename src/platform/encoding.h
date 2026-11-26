@@ -2,7 +2,7 @@
 //  src/platform/encoding.h —— 文件读写（UTF-8，never-raise）
 // =============================================================================
 //  对应参考实现：
-//    Y:\fpga-lsp\fpgalsp\reports.py 读外部文件时用 encoding="utf-8",
+//    %PYREF%\fpgalsp\reports.py 读外部文件时用 encoding="utf-8",
 //    errors="replace" —— 非法字节替换成 U+FFFD 而不是抛异常。
 //
 //  额外约定：

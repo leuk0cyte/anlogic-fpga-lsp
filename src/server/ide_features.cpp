@@ -2,10 +2,10 @@
 //  src/server/ide_features.cpp —— IDE 类命令的纯逻辑实现（唯一实现）
 // =============================================================================
 //  对应 Python：
-//    * Y:\fpga-lsp\fpgalsp\ide.py            （symbol_path / duplicate_modules /
+//    * %PYREF%\fpgalsp\ide.py            （symbol_path / duplicate_modules /
 //                                              search_hierarchy / add_source_file /
 //                                              set_project_name）
-//    * Y:\fpga-lsp\fpgalsp\server.py         （_instantiation_text / modules_in_file /
+//    * %PYREF%\fpgalsp\server.py         （_instantiation_text / modules_in_file /
 //                                              on_workspace_executeCommand 的 fpgalsp.* 分支）
 //
 //  ⚠ 契约（raw.json commands[6..14] 是唯一权威）：

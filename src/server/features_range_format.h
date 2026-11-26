@@ -5,7 +5,7 @@
 //  同一个 TU（features_call_hierarchy.cpp）里，避免为 B4 新增 .cpp 再动 CMake
 //  （CMake 归 Lead）。这里只声明**纯函数**，方便以后拆成独立 TU 或直接单测。
 //
-//  对应参考实现：Y:\fpga-lsp\fpgalsp\server.py:1646-1667（on_textDocument_rangeFormatting）
+//  对应参考实现：%PYREF%\fpgalsp\server.py:1646-1667（on_textDocument_rangeFormatting）
 //    * 只对 .v/.sv/.vh/.svh 生效，其它扩展名返回 []
 //    * 先用 Verible 格式化**全文**；行数与原文不同的场合**回落到全文档格式化**
 //      （Python 的 if len(old_rows) != len(new_rows): return on_textDocument_formatting(params)）

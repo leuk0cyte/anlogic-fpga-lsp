@@ -1,7 +1,7 @@
 // =============================================================================
 //  src/mcp/bridge.h —— MCP 工具实现层（把工具调用接到 feature 层）
 // =============================================================================
-//  参考实现：Y:\fpga-lsp\fpgalsp\mcp_bridge.py 的 FpgaMcpBridge（1441 行）
+//  参考实现：%PYREF%\fpgalsp\mcp_bridge.py 的 FpgaMcpBridge（1441 行）
 //
 //  ---- 分层 ----
 //    ToolDispatcher（mcp_server.h）

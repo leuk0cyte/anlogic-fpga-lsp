@@ -41,9 +41,20 @@ class DiagClient(NativeLspClient):
         super()._dispatch(msg)
 
 
+def corpus_source():
+    """工程语料需自备：本仓库不附带任何工程。
+
+    用 FPGA_LSP_TEST_PROJECT 指向一个工程目录（或直接用 --project）。
+    """
+    source = os.environ.get("FPGA_LSP_TEST_PROJECT")
+    if not source:
+        raise SystemExit("需自备工程：请设置 FPGA_LSP_TEST_PROJECT 指向一个工程目录")
+    return source
+
+
 def copy_project(root):
-    source = r"%WORKSPACE%\CorpusAlpha"
-    target = os.path.join(root, "CorpusAlpha")
+    source = corpus_source()
+    target = os.path.join(root, os.path.basename(os.path.normpath(source)))
     if os.path.isdir(target):
         shutil.rmtree(target, ignore_errors=True)
     shutil.copytree(source, target, ignore=shutil.ignore_patterns(".fpgalsp", "*_Runs"))

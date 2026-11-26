@@ -1,8 +1,8 @@
 // =============================================================================
 //  src/reports/timing.cpp —— TD 时序报告解析
 // =============================================================================
-//  逐行对照 Y:\fpga-lsp\fpgalsp\reports.py（102-294 行）实现。
-//  端点映射对照 Y:\fpga-lsp\fpgalsp\timing_map.py。
+//  逐行对照 %PYREF%\fpgalsp\reports.py（102-294 行）实现。
+//  端点映射对照 %PYREF%\fpgalsp\timing_map.py。
 //
 //  ⚠ 移植时刻意保留的 Python 行为（含看起来像 bug 的地方，见 tests/PYTHON-BUGS.md）
 //    1. Statistics 行的正则要求 "Max|Min : SWNS"，而真实报告打的是

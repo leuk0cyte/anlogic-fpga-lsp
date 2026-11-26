@@ -16,7 +16,7 @@ pwsh -File tools/perf/vscode/run_all.ps1      # 约 4 分钟，重写 results/*.
 
 | 脚本 | 作用 | 依赖 |
 | --- | --- | --- |
-| `prep_workspace.js` | 把 `tests/gate-corpus/corpus_alpha` 复制到 `%TEMP%\fpgalsp-perf\vscode\project`（插件会往工作区写 `.fpgalsp/logs/`，**绝不能**指向 `%WORKSPACE%\CorpusAlpha`） | — |
+| `prep_workspace.js` | 把 `tests/gate-corpus/corpus_alpha` 复制到 `%TEMP%\fpgalsp-perf\vscode\project`（插件会往工作区写 `.fpgalsp/logs/`，**绝不能**指向 `C:/work/CorpusAlpha`） | — |
 | `gen_payloads.js` | 生成合成 `fpgaLsp/reports` 载荷：~27 MB（含 raw）、8.4 MB（去 raw）、559 B（summary）+ manifest | — |
 | `bench_reports.js` | `JSON.parse` / `buildReportView` / 每节 `renderReportSection` / 整页 `renderReportsHtml` 的 ms 与内存；并检查 summary 载荷渲染出的是空表 | `--expose-gc` |
 | `bench_events.js` | 事件路径：`applyIndexChanged`（就地/忽略/刷新）、树重建+渲染（36/1000 节点）、`reportsPanel.refresh/_patch`、`reportsTree`/`flowTree`/`FlowController.pollOnce` | `--expose-gc` |

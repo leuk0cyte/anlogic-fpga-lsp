@@ -27,7 +27,7 @@ set(FPGA_LSP_OFFICIAL_SYNTAX "" CACHE FILEPATH
     "官方 verible-verilog-syntax 二进制路径（阶段0门禁基准）")
 if(NOT FPGA_LSP_OFFICIAL_SYNTAX)
     set(_default_official
-        "%USERPROFILE%/verible/verible-verilog-syntax.exe")
+        "C:/tools/verible/verible-verilog-syntax.exe")
     if(EXISTS "${_default_official}")
         set(FPGA_LSP_OFFICIAL_SYNTAX "${_default_official}")
     endif()
@@ -63,7 +63,7 @@ set(FPGA_LSP_OFFICIAL_SYNTAX "" CACHE FILEPATH
     "官方 verible-verilog-syntax 二进制路径（阶段0门禁基准）")
 if(NOT FPGA_LSP_OFFICIAL_SYNTAX)
     set(_default_official
-        "%USERPROFILE%/verible/verible-verilog-syntax.exe")
+        "C:/tools/verible/verible-verilog-syntax.exe")
     if(EXISTS "${_default_official}")
         set(FPGA_LSP_OFFICIAL_SYNTAX "${_default_official}")
     endif()

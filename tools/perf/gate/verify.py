@@ -57,8 +57,8 @@ _ENV_PATH_PATTERNS = (
     # 探针每次 --copy-projects 的临时目录名带 PID（pm-copy-15248 / pm-copy-43312 …），
     # 会原样出现在 fpga_project_update 的 TD 输出里 —— 属于环境差异，不是产品差异。
     (r"pm-copy-\d+", "<copy>"),
-    (r"Y:[\\/]CorpusAlpha", "<project>"),
-    (r"Y:[\\/]sic[\\/]CorpusAlpha", "<declared-project>"),
+    (r"[A-Za-z]:[\\/]CorpusAlpha", "<project>"),
+    (r"[A-Za-z]:[\\/][^\"']*[\\/]CorpusAlpha\b", "<declared-project>"),
     (r"[A-Za-z]:[\\/][^\"']*fpgalsp-gate[\\/]exe[\\/][^\"'\\/]*\.exe", "<exe>"),
     (r"build\\bin\\fpgalsp-native\.exe", "<exe>"),
 )

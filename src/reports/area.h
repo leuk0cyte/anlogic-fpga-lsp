@@ -1,7 +1,7 @@
 // =============================================================================
 //  src/reports/area.h —— TD Area 报告解析（*_Runs/<run>/*.area）
 // =============================================================================
-//  对应参考实现：Y:\fpga-lsp\fpgalsp\reports.py
+//  对应参考实现：%PYREF%\fpgalsp\reports.py
 //      parse_area() / _parse_area_hierarchy() / _norm_resource() / _area_total()
 //
 //  ⚠⚠ 本文件最重要的一条设计约束：**绝不假设固定资源名**

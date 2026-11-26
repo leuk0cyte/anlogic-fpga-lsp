@@ -431,7 +431,7 @@ Json SignatureHelp(const hdl::HdlIndex& index, std::string_view path, std::strin
 // A5 textDocument/documentLink
 // -----------------------------------------------------------------------------
 // `.al` 里 `Path=` 只应链接 `<File>` 元素。`<Project ... Path="Y:/proj">` 是**工程根**
-// （目录），把它当文件链接会得到 24 条里夹一条 "file not found: %WORKSPACE%/CorpusAlpha"（实测）。
+// （目录），把它当文件链接会得到 24 条里夹一条 "file not found: C:/work/CorpusAlpha"（实测）。
 // 判定：属性前面最近的 `<File` 必须在同一个 start tag 内（中间不出现 '>'），且元素名
 // 后紧跟空白/'>'（排除 `<FileInfo`）。
 bool InFileElementTag(std::string_view row, std::size_t attr_pos) {

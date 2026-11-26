@@ -1,7 +1,7 @@
 // =============================================================================
 //  src/lsp/document_store.h —— 打开文档的缓冲区管理（UTF-16 增量同步）
 // =============================================================================
-//  对应参考实现：Y:\fpga-lsp\fpgalsp\server.py
+//  对应参考实现：%PYREF%\fpgalsp\server.py
 //      on_textDocument_didOpen / didChange / didSave / didClose
 //      _apply_incremental
 //

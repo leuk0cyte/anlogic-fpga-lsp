@@ -26,7 +26,7 @@ TdCheckResult TdSessionRunner::Run(const project::Project& project, const Cancel
     //      重新长出 `.fpgalsp`（2026-11-22 实测复现；工程内 `.fpgalsp` 已废弃，Wave 3）。
     //   2) 也不能是 %TEMP% 状态目录：TD 解析 `.al` 里的**相对路径**（`<File Path="src/x.v">`）
     //      用的是"工程根" = `.al` 的 `<Project Path="...">`（存在时）或**进程 cwd**（Path
-    //      失效时）。工程被移动过（实测 %WORKSPACE%\CorpusBeta 的 Path 还指着 C:/work/...）就退化到
+    //      失效时）。工程被移动过（实测 C:/work/CorpusBeta 的 Path 还指着 D:/projects/...）就退化到
     //      cwd，cwd 在 %TEMP% 下会变成 `cannot open Verilog file '/src/ADC.v'`（HDL-8007）。
     //      GUI 的会话 cwd 就是工程目录，这里对齐。
     // TD 自己的 `td_*.log` 会被 RelocateSessionFiles 归位到 `<al>/log/`，工程根目录不留痕。

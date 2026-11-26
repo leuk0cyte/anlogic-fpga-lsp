@@ -136,7 +136,7 @@ TD 在 `open_project -update` 里会输出设计类告警（`HDL-7225 CRITICAL-W
   解析相对源文件路径；我们固定把 TD 会话 cwd 设为 `.al` 所在目录，因此仍会成功，但会额外
   返回 `warning`（提示在 TD GUI 里打开并保存一次以重新记录该路径）。
   这条在 0.26.0 之前的实现里会退化成成片的
-  `HDL-8007 ERROR: cannot open Verilog file '/src/xxx.v'`（实测 `%WORKSPACE%\CorpusBeta`）。
+  `HDL-8007 ERROR: cannot open Verilog file '/src/xxx.v'`（实测 `C:/work/CorpusBeta`）。
 
 ## 六、和后端实现的关系
 

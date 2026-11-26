@@ -10,11 +10,11 @@
 //       不必先搭一个 LspServer 夹具。
 //
 //  对应参考实现（逐条口径，改动前先对照）：
-//    Y:\fpga-lsp\fpgalsp\refs.py::token_at / token_span      -> TextTokenAt
-//    Y:\fpga-lsp\fpgalsp\nav.py::valid_identifier            -> IsValidVerilogIdentifier
-//    Y:\fpga-lsp\fpgalsp\nav.py::block_scopes                -> BlockScopes / EnclosingScope
-//    Y:\fpga-lsp\fpgalsp\verible.py::expand_comment_tabs      -> ExpandCommentTabs
-//    Y:\fpga-lsp\fpgalsp\server.py::_read_text (universal newlines)
+//    %PYREF%\fpgalsp\refs.py::token_at / token_span      -> TextTokenAt
+//    %PYREF%\fpgalsp\nav.py::valid_identifier            -> IsValidVerilogIdentifier
+//    %PYREF%\fpgalsp\nav.py::block_scopes                -> BlockScopes / EnclosingScope
+//    %PYREF%\fpgalsp\verible.py::expand_comment_tabs      -> ExpandCommentTabs
+//    %PYREF%\fpgalsp\server.py::_read_text (universal newlines)
 //                                                             -> NormalizeNewlines
 //
 //  ⚠ 列号口径：Python 的 str 索引是**码点**列，LSP/C++ 是 **UTF-16 码元**列。

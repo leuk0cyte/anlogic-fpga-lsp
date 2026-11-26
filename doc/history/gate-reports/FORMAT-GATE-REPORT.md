@@ -29,7 +29,7 @@
 
 | 端点 | 路径 | 说明 |
 | --- | --- | --- |
-| 官方（基准） | `%USERPROFILE%\verible\verible-verilog-format.exe` | 官方 release 二进制 |
+| 官方（基准） | `C:/tools/verible\verible-verilog-format.exe` | 官方 release 二进制 |
 | 我方 | `build-fmt\bin\format_dump.exe` | 由 `src/tools/format_dump/main.cpp` 构建 |
 
 ---
@@ -80,7 +80,7 @@
 ## 5. 结果
 
 ```
-官方端点 : %USERPROFILE%\verible\verible-verilog-format.exe
+官方端点 : C:/tools/verible\verible-verilog-format.exe
 我方端点 : Y:\fpga-lsp-cpp\build-fmt\bin\format_dump.exe
 语料     : Y:\fpga-lsp-cpp\tests\gate-corpus
 文件数   : 102

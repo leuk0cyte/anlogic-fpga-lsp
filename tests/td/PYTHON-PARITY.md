@@ -1,12 +1,12 @@
 # TD 层与 Python 参考实现的逐字段核对记录
 
-本文档记录 `src/td/` 与 `Y:\fpga-lsp\fpgalsp\td.py` 的等价性核对进度。
+本文档记录 `src/td/` 与 `%PYREF%\fpgalsp\td.py` 的等价性核对进度。
 
 原则：**先核对再实现，核对过程本身留档**。任何一次回归都可以对着本文档逐条复查。
 
-- 参考实现：`Y:\fpga-lsp\fpgalsp\td.py`（757 行）
+- 参考实现：`%PYREF%\fpgalsp\td.py`（757 行）
 - 实测环境：TD Release_2026.2，`C:\Anlogic\TD_Release_2026.2.210.850`
-- 实测工程：`%WORKSPACE%\CorpusAlpha`（`demo_project.al`，20 个 HDL 文件，器件 EF2L45LG144B）
+- 实测工程：`C:/work/CorpusAlpha`（`demo_project.al`，20 个 HDL 文件，器件 EF2L45LG144B）
 - 夹具：`tests/td/fixtures/`
 
 图例：✅ 已核对一致　🔶 部分核对　⬜ 未开始　❗已知偏差（有意保留）
@@ -88,14 +88,14 @@
 | `ERROR_RE` / `FATAL_RE` | ✅ | |
 | `SEVERITY` 映射表 | ✅ | ERROR=1, CRITICAL-WARNING=2, WARNING=2, INFO=3 |
 
-### 4.2 真实语料核对（`tests/gate-corpus` + `%WORKSPACE%\CorpusAlpha`）
+### 4.2 真实语料核对（`tests/gate-corpus` + `C:/work/CorpusAlpha`）
 
 read_hdl 在 20 文件工程上的**真实输出**：
 
 ```
-HDL-1007 : analyze verilog file %WORKSPACE%/CorpusAlpha/src/trans/trans.v
-HDL-1007 : elaborate module top in %WORKSPACE%/CorpusAlpha/src/top.v(15)
-HDL-7144 CRITICAL-WARNING: instantiate unknown module pll_gen in %WORKSPACE%/CorpusAlpha/src/top.v(66)
+HDL-1007 : analyze verilog file C:/work/CorpusAlpha/src/trans/trans.v
+HDL-1007 : elaborate module top in C:/work/CorpusAlpha/src/top.v(15)
+HDL-7144 CRITICAL-WARNING: instantiate unknown module pll_gen in C:/work/CorpusAlpha/src/top.v(66)
 HDL-1008 : device name is not set, so there is no need to read *macro.v
 ```
 
@@ -103,8 +103,8 @@ Python `parse_message_lines` 输出（21 条，节选）：
 
 | code | severity | message | path | line |
 | --- | --- | --- | --- | --- |
-| HDL-1007 | 3 (INFO) | elaborate module top | `%WORKSPACE%/CorpusAlpha/src/top.v` | 15 |
-| HDL-7144 | 2 (WARNING) | instantiate unknown module pll_gen | `%WORKSPACE%/CorpusAlpha/src/top.v` | 66 |
+| HDL-1007 | 3 (INFO) | elaborate module top | `C:/work/CorpusAlpha/src/top.v` | 15 |
+| HDL-7144 | 2 (WARNING) | instantiate unknown module pll_gen | `C:/work/CorpusAlpha/src/top.v` | 66 |
 | HDL-1007 | 3 (INFO) | elaborate module sys_rstn | `.../sys_rstn.v` | 1 |
 
 | 规则 | 状态 |
@@ -330,9 +330,9 @@ def run_read_hdl(...):
 ```
 
 **问题**：`read_hdl -file` 是按 **Verilog** 编译的。当 IP 同时生成了 `.v` 和 `.vhd`
-（本机 `%WORKSPACE%\CorpusAlpha/al_ip/` 下的 `pll_gen` 就是如此），`.vhd` 会被塞进 Verilog 文件列表。
+（本机 `C:/work/CorpusAlpha/al_ip/` 下的 `pll_gen` 就是如此），`.vhd` 会被塞进 Verilog 文件列表。
 
-**实测后果**（TD 2026.2，`%WORKSPACE%\CorpusAlpha`）：
+**实测后果**（TD 2026.2，`C:/work/CorpusAlpha`）：
 
 ```
 HDL-1008 : device name is not set, so there is no need to read *macro.v
@@ -378,7 +378,7 @@ HDL-8007 ERROR: ignore unit pll_gen due to previous errors in <pll_gen.v>
 
 ### 7.3 逐字段对比结果（read_hdl 夹具，不含 IP 生成 HDL）
 
-夹具：`tests/td/fixtures/read_hdl_mb252.txt`（TD 2026.2 真实输出，20 个 HDL 文件）
+夹具：`tests/td/fixtures/read_hdl_corpus_alpha.txt`（TD 2026.2 真实输出，20 个 HDL 文件）
 
 ```
 消息条数 : Python 21 / C++ 21
@@ -391,9 +391,9 @@ clean行数: Python 44 / C++ 44
 节选（C++ 侧输出，与 Python 逐值相同）：
 
 ```
-[ 0] HDL-1007  INFO  elaborate module top                  %WORKSPACE%/CorpusAlpha/src/top.v(15)
-[ 1] HDL-7144  WARN  instantiate unknown module pll_gen    %WORKSPACE%/CorpusAlpha/src/top.v(66)
-[ 2] HDL-1007  INFO  elaborate module sys_rstn             %WORKSPACE%/CorpusAlpha/src/system/sys_rstn.v(1)
+[ 0] HDL-1007  INFO  elaborate module top                  C:/work/CorpusAlpha/src/top.v(15)
+[ 1] HDL-7144  WARN  instantiate unknown module pll_gen    C:/work/CorpusAlpha/src/top.v(66)
+[ 2] HDL-1007  INFO  elaborate module sys_rstn             C:/work/CorpusAlpha/src/system/sys_rstn.v(1)
 ...
 [20] HDL-1007  INFO  elaborate module timeout_check(timeout_T=4400)  Y:/.../timeout_check.v(1)
 ```

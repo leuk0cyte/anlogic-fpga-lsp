@@ -1,7 +1,7 @@
 // =============================================================================
 //  src/reports/flow_status.h —— TD 流程状态报告（*_flow.status / flow.status）
 // =============================================================================
-//  对应参考实现：Y:\fpga-lsp\fpgalsp\reports.py::parse_flow_status_text()
+//  对应参考实现：%PYREF%\fpgalsp\reports.py::parse_flow_status_text()
 //
 //  报告形态（TD 2026.2 phy_1/route_flow.status）：
 //      Location         : D:\...\CorpusBeta_Runs\phy_1

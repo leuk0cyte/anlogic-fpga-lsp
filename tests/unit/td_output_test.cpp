@@ -1,7 +1,7 @@
 // =============================================================================
 //  tests/unit/td_output_test.cpp
 // =============================================================================
-//  语料全部来自 TD 2026.2 在本机 %WORKSPACE%\CorpusAlpha 真实工程的实测输出。
+//  语料全部来自 TD 2026.2 在本机 C:/work/CorpusAlpha 真实工程的实测输出。
 // =============================================================================
 
 #include <gtest/gtest.h>
@@ -16,14 +16,14 @@ namespace {
 using namespace fpgalsp::td;
 
 // ---- 真实 TD 输出片段（原样保留，含 \r\n）----
-// read_hdl 在 %WORKSPACE%\CorpusAlpha 上的实际输出（经 run() 后处理后的形态）
+// read_hdl 在 C:/work/CorpusAlpha 上的实际输出（经 run() 后处理后的形态）
 const char* kRealReadHdl =
-    "RUN-1002 : start command \"read_hdl -file {%WORKSPACE%/CorpusAlpha/src/trans/trans.v} -top top\"\r\n"
+    "RUN-1002 : start command \"read_hdl -file {C:/work/CorpusAlpha/src/trans/trans.v} -top top\"\r\n"
     "HDL-1008 : device name is not set, so there is no need to read *macro.v\r\n"
-    "HDL-1007 : analyze verilog file %WORKSPACE%/CorpusAlpha/src/trans/trans.v\r\n"
-    "HDL-1007 : elaborate module top in %WORKSPACE%/CorpusAlpha/src/top.v(15)\r\n"
+    "HDL-1007 : analyze verilog file C:/work/CorpusAlpha/src/trans/trans.v\r\n"
+    "HDL-1007 : elaborate module top in C:/work/CorpusAlpha/src/top.v(15)\r\n"
     "HDL-7144 CRITICAL-WARNING: instantiate unknown module pll_gen in "
-    "%WORKSPACE%/CorpusAlpha/src/top.v(66)\r\n"
+    "C:/work/CorpusAlpha/src/top.v(66)\r\n"
     "HDL-5007 WARNING: could not find top-level module/unit; aborting hierarchy tree creation\r\n";
 
 // ---- clean_lines ----
@@ -99,7 +99,7 @@ TEST(TdParseReal, ReadHdlRealOutput) {
     EXPECT_EQ(msgs[0].severity, kSeverityInfo);
     EXPECT_EQ(msgs[0].message, "elaborate module top");
     ASSERT_TRUE(msgs[0].path.has_value());
-    EXPECT_EQ(*msgs[0].path, "%WORKSPACE%/CorpusAlpha/src/top.v");
+    EXPECT_EQ(*msgs[0].path, "C:/work/CorpusAlpha/src/top.v");
     ASSERT_TRUE(msgs[0].line.has_value());
     EXPECT_EQ(*msgs[0].line, 15);
 
@@ -107,7 +107,7 @@ TEST(TdParseReal, ReadHdlRealOutput) {
     EXPECT_EQ(msgs[1].code, "HDL-7144");
     EXPECT_EQ(msgs[1].severity, kSeverityWarning);
     EXPECT_EQ(msgs[1].message, "instantiate unknown module pll_gen");
-    EXPECT_EQ(*msgs[1].path, "%WORKSPACE%/CorpusAlpha/src/top.v");
+    EXPECT_EQ(*msgs[1].path, "C:/work/CorpusAlpha/src/top.v");
     EXPECT_EQ(*msgs[1].line, 66);
 
     // 3) WARNING -> 2，无位置
@@ -119,12 +119,12 @@ TEST(TdParseReal, ReadHdlRealOutput) {
 TEST(TdParseReal, ElaborateWithParametersKeepsParams) {
     const std::string text =
         "HDL-1007 : elaborate module AD_ACQ(RAD_ACQ_CNT=5,AMB_ACQ_CNT=10) in "
-        "%WORKSPACE%/CorpusAlpha/src/ad7924/AD_ACQ.v(30)\r\n";
+        "C:/work/CorpusAlpha/src/ad7924/AD_ACQ.v(30)\r\n";
     const auto msgs = ParseMessageLines(text);
     ASSERT_EQ(msgs.size(), 1u);
     EXPECT_EQ(msgs[0].severity, kSeverityInfo);
     EXPECT_EQ(msgs[0].message, "elaborate module AD_ACQ(RAD_ACQ_CNT=5,AMB_ACQ_CNT=10)");
-    EXPECT_EQ(*msgs[0].path, "%WORKSPACE%/CorpusAlpha/src/ad7924/AD_ACQ.v");
+    EXPECT_EQ(*msgs[0].path, "C:/work/CorpusAlpha/src/ad7924/AD_ACQ.v");
     EXPECT_EQ(*msgs[0].line, 30);
 }
 

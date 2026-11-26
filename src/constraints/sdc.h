@@ -1,7 +1,7 @@
 // =============================================================================
 //  src/constraints/sdc.h —— SDC 时序约束（.sdc）解析 / 诊断 / 补全
 // =============================================================================
-//  参考实现：Y:\fpga-lsp\fpgalsp\sdc.py（1068 行）+ CONTRACT.md §"sdc.py"
+//  参考实现：%PYREF%\fpgalsp\sdc.py（1068 行）+ CONTRACT.md §"sdc.py"
 //
 //  **与 Verible 无关**：SDC 是 Tcl 方言，Verible 只懂 SystemVerilog，这里是自己
 //  写的浅层 Tcl 词法器。浅到什么程度（与 Python 版一致）：

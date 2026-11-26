@@ -5,7 +5,7 @@ change and the tree refreshing". This script measures the *wire* half (server + 
 JSON parse of the response) against the production binary, so VSCODE.md can subtract the
 plugin-side numbers measured by bench_events.js / bench_activate.js.
 
-It never writes into the read-only project ``%WORKSPACE%/CorpusAlpha``: the benchmark project is a %TEMP%
+It never writes into the read-only project ``C:/work/CorpusAlpha``: the benchmark project is a %TEMP%
 copy prepared by prep_workspace.js.
 
     python tools/perf/vscode/bench_lsp_roundtrip.py [--iterations 21] [--rounds 3]

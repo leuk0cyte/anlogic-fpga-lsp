@@ -7,7 +7,7 @@
 //    * lint 是**可选能力**：`FPGA_LSP_VERIBLE_ENABLED=OFF` 时整个桥不参与构建，
 //      服务层用 `FPGA_LSP_HAVE_VERIBLE_BRIDGE` 宏决定是否提供 autofix code action。
 //
-//  对应参考实现：Y:\fpga-lsp\fpgalsp\verible.py::Verible.autofix —— Python 调外部
+//  对应参考实现：%PYREF%\fpgalsp\verible.py::Verible.autofix —— Python 调外部
 //  `verible-verilog-lint --autofix=inplace`；这里改成**进程内**跑同一套规则：
 //      VerilogAnalyzer::AnalyzeAutomaticPreprocessFallback
 //        + VerilogLintTextStructure(默认 ruleset)

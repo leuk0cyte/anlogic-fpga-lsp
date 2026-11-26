@@ -21,7 +21,7 @@ Reproduction::
     python tools/audit/probe_lsp.py \
         --python-log   %TEMP%\\probe\\python.log \
         --native-exe   build/bin/fpgalsp-native.exe \
-        --project      %WORKSPACE%/CorpusAlpha \
+        --project      C:/work/CorpusAlpha \
         --out          doc/audit/2026-11-18/parity-lsp/raw.json
 
 The probe is strictly read-only with respect to ``--project``: every server is
@@ -887,8 +887,10 @@ def main(argv=None):
     parser.add_argument("--native-log", default=os.path.join(default_workdir,
                                                              "logs", "native.log"),
                         help="log file for the native server")
-    parser.add_argument("--project", default="%WORKSPACE%/CorpusAlpha",
-                        help="project directory to copy and probe (never written to)")
+    parser.add_argument("--project",
+                        default=os.environ.get("FPGA_LSP_TEST_PROJECT"),
+                        help="project directory to copy and probe (never written to). "
+                             "需自备工程：传 --project 或设 FPGA_LSP_TEST_PROJECT")
     parser.add_argument("--python-repo", default=default_python_repo,
                         help="checkout of the Python reference implementation")
     parser.add_argument("--cpp-root", default=cpp_root,

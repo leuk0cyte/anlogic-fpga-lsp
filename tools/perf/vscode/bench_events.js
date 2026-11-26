@@ -24,7 +24,10 @@ const { FlowController, FALLBACK_POLL_MS } = require(path.join(harness.EXT, 'src
 const { ReportsService } = require(path.join(harness.EXT, 'src', 'reportsService.js'));
 const { ReportsPanel } = require(path.join(harness.EXT, 'src', 'reportsPanel.js'));
 
-const PROJECT_ROOT = '%WORKSPACE%/CorpusAlpha';
+// Fake project root used by the mocked extension APIs. These paths never touch the
+// filesystem, so any stable value works; keep it under the benchmark's %TEMP% workdir
+// so it stays neutral and self-contained.
+const PROJECT_ROOT = path.join(harness.WORKDIR, 'project').replace(/\\/g, '/');
 const AL = `${PROJECT_ROOT}/demo_project.al`;
 
 function parseArgs(argv) {

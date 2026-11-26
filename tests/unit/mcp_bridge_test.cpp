@@ -51,7 +51,14 @@ namespace {
 using fpgalsp::mcp::Json;
 using fpgalsp::mcp::ToolError;
 
-constexpr const char* kCorpusRoot = FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha";
+// 语料需自备：本仓库不附带工程语料。默认取源码树下的 tests/gate-corpus/corpus_alpha；
+// 设置环境变量 FPGA_LSP_TEST_PROJECT 可指向任意自备工程（不改代码即可换语料）。
+std::string CorpusRoot() {
+    const char* from_env = std::getenv("FPGA_LSP_TEST_PROJECT");
+    if (from_env != nullptr && *from_env != '\0') return from_env;
+    return FPGA_LSP_SOURCE_DIR "/tests/gate-corpus/corpus_alpha";
+}
+const std::string kCorpusRoot = CorpusRoot();
 
 struct BridgeTest : public ::testing::Test {
     std::unique_ptr<fpgalsp::mcp::Bridge> bridge;
@@ -1036,13 +1043,13 @@ TEST_F(BridgeTest, AnalysisRunWithoutRoutedDbReturnsActionableError) {
 TEST_F(BridgeTest, ProjectOutsideRootIsRejected) {
     // S-03：--root 是安全边界；绝对路径同样必须落在 root 内
     Json arguments = Json::object();
-    arguments["project"] = "%WORKSPACE%/CorpusAlpha/demo_project.al";
+    arguments["project"] = "C:/work/CorpusAlpha/demo_project.al";
     EXPECT_THROW(Call("project_info", arguments), ToolError);
 }
 
 TEST_F(BridgeTest, ProjectListRootOutsideRootIsRejected) {
     Json arguments = Json::object();
-    arguments["root"] = "%WORKSPACE%";
+    arguments["root"] = "C:/work";
     EXPECT_THROW(Call("project_list", arguments), ToolError);
 }
 

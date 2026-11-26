@@ -111,7 +111,7 @@ def protocol_snapshot(spec, out_path):
     exe = bs.default_native_exe()
     proc = subprocess.run(
         [sys.executable, os.path.join(CPP, "tools", "doc", "audit", "probe_lsp.py"),
-         "--native-exe", exe, "--project", "%WORKSPACE%/CorpusAlpha", "--only", "all",
+         "--native-exe", exe, "--project", "C:/work/CorpusAlpha", "--only", "all",
          "--out", out_path],
         capture_output=True, text=True, cwd=CPP)
     return proc.returncode

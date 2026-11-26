@@ -385,7 +385,7 @@ std::string CdcUnsupportedReason(std::string_view device) {
 }
 
 // .al 根节点的 `Path` 属性 —— TD 拿它当**工程根**解析 `<File Path="src/x.v">` 这类相对路径。
-// 工程被移动/拷贝过之后它还指着旧位置（实测 %WORKSPACE%\CorpusBeta：Path="C:/work/..."），TD 于是退回
+// 工程被移动/拷贝过之后它还指着旧位置（实测 C:/work/CorpusBeta：Path="D:/projects/..."），TD 于是退回
 // 进程 cwd（我们已经把 cwd 设成 `.al` 所在目录，所以能跑通），但用户排障需要知道这件事。
 // 读不到就返回空串（never-throw）。
 std::string ProjectPathAttribute(const std::string& al_path) {
@@ -597,8 +597,8 @@ Json UpdateProject(const project::Project& project, std::string_view td_explicit
         // ⚠ 会话 cwd 必须是 **`.al` 所在目录**，不能是 %TEMP%。
         //   TD 解析 `<File Path="src/xxx.v">` 这类相对路径时用的是"工程根"，而工程根要么是
         //   .al 根节点 `<Project Path="...">` 属性（存在时），要么退化成**进程 cwd**。
-        //   工程被移动/拷贝过之后 Path 属性还指着旧位置（实测 %WORKSPACE%\CorpusBeta：
-        //   Path="%WORKSPACE%/CorpusBeta"），TD 于是拿 cwd 当工程根 ——
+        //   工程被移动/拷贝过之后 Path 属性还指着旧位置（实测 C:/work/CorpusBeta：
+        //   Path="D:/projects/CorpusBeta"），TD 于是拿 cwd 当工程根 ——
         //   cwd 在 %TEMP% 下就变成了 `cannot open Verilog file '/src/ADC.v'`（HDL-8007），
         //   Update Project 每次都失败。GUI 的会话 cwd 就是工程目录，这里保持一致。
         td::TdSessionOptions options;

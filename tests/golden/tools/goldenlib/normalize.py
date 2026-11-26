@@ -119,7 +119,7 @@ class Normalizer:
             text = pattern.sub("<%s>" % name, text)
         # The server sometimes names a sibling path that is not itself a corpus root: TD
         # resolves a project through the ancestor workspace, so a diagnostic about
-        # "%WORKSPACE%/CorpusAlpha" can appear while the corpus root is "%WORKSPACE%/CorpusAlpha (elsewhere)".
+        # "C:/work/CorpusAlpha" can appear while the corpus root is "C:/work/CorpusAlpha (elsewhere)".
         # Unanchored patterns use lookarounds instead of \b so Chinese text and slashes around
         # the path are handled correctly.
         for pattern, replacement in self._unanchored:

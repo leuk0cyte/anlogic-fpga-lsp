@@ -7,7 +7,7 @@
 //          python -c "from fpgalsp import adc; ..."  见文件末尾注释
 //      金标准逐字段覆盖 line/character/port/base/bit/attrs/三类 span，
 //      任何一处与 Python 不一致都会在这里变红。
-//    · 合成用例照搬 Y:\fpga-lsp\tests\test_adc.py（Python 版自己的单测），
+//    · 合成用例照搬 %PYREF%\tests\test_adc.py（Python 版自己的单测），
 //      保证"Python 认为对的行为"在 C++ 里也成立。
 //
 //  ⚠ 本文件里有几条测试是**故意钉死 Python 缺陷**的（P-8/P-9/P-10），
@@ -430,7 +430,7 @@ TEST(AdcParse, VhdlStylePortNameWithUnderscores) {
 
 TEST(AdcParse, RealCorpusMatchesPythonGolden) {
     const std::optional<std::string> text = ReadTextFile(kRealAdcPath);
-    ASSERT_TRUE(text.has_value()) << "缺少语料文件 " << kRealAdcPath;
+    if (!text.has_value()) GTEST_SKIP() << "语料需自备，缺少 " << kRealAdcPath;
     const std::vector<Entry> entries = fpgalsp::constraints::adc::Parse(*text);
 
     std::vector<std::string> golden;
@@ -452,7 +452,7 @@ TEST(AdcParse, RealCorpusMatchesPythonGolden) {
 
 TEST(AdcParse, RealCorpusEntryCounts) {
     const std::optional<std::string> text = ReadTextFile(kRealAdcPath);
-    ASSERT_TRUE(text.has_value());
+    if (!text.has_value()) GTEST_SKIP() << "语料需自备，缺少 " << kRealAdcPath;
     const std::vector<Entry> entries = fpgalsp::constraints::adc::Parse(*text);
     ASSERT_EQ(entries.size(), 47u);  // 53 行里有 6 行空行/纯空白
     for (const Entry& entry : entries) {
@@ -628,7 +628,7 @@ TEST(AdcCoverage, ExtraPortsDuplicatePortsAndPins) {
 
 TEST(AdcCoverage, RealCorpusIsFullyCovered) {
     const std::optional<std::string> text = ReadTextFile(kRealAdcPath);
-    ASSERT_TRUE(text.has_value());
+    if (!text.has_value()) GTEST_SKIP() << "语料需自备（设置 FPGA_LSP_TEST_PROJECT 指向自备工程）: " << kRealAdcPath;
     const auto entries = fpgalsp::constraints::adc::Parse(*text);
     const auto coverage = fpgalsp::constraints::adc::Coverage(entries, TopPorts(), "top");
 
@@ -668,7 +668,7 @@ TEST(AdcCoverage, TopParameterIsIgnoredLikePython) {
     // 文档化行为：Python 的 coverage(entries, ports, top) 里 top 从未被使用。
     // 传什么 top 结果都一样；保留参数只为签名对照。
     const std::optional<std::string> text = ReadTextFile(kRealAdcPath);
-    ASSERT_TRUE(text.has_value());
+    if (!text.has_value()) GTEST_SKIP() << "语料需自备（设置 FPGA_LSP_TEST_PROJECT 指向自备工程）: " << kRealAdcPath;
     const auto entries = fpgalsp::constraints::adc::Parse(*text);
     const auto with_top = fpgalsp::constraints::adc::Coverage(entries, TopPorts(), "top");
     const auto without = fpgalsp::constraints::adc::Coverage(entries, TopPorts());
@@ -937,7 +937,7 @@ TEST(AdcDiagnostics, PulltypeValueIsNeverValidated) {
 
 TEST(AdcDiagnostics, RealCorpusIsClean) {
     const std::optional<std::string> text = ReadTextFile(kRealAdcPath);
-    ASSERT_TRUE(text.has_value());
+    if (!text.has_value()) GTEST_SKIP() << "语料需自备（设置 FPGA_LSP_TEST_PROJECT 指向自备工程）: " << kRealAdcPath;
     const auto diagnostics = fpgalsp::constraints::adc::Diagnostics(
         fpgalsp::constraints::adc::Parse(*text), TopPorts(), nullptr, *text);
     EXPECT_TRUE(diagnostics.empty()) << "真实语料不应有任何诊断；第一条是 "
@@ -1013,7 +1013,7 @@ TEST(AdcCoverageDiagnostic, ExactlyOneSummaryForUnconstrainedProject) {
 
 TEST(AdcCoverageDiagnostic, SilentWhenFullyCovered) {
     const std::optional<std::string> text = ReadTextFile(kRealAdcPath);
-    ASSERT_TRUE(text.has_value());
+    if (!text.has_value()) GTEST_SKIP() << "语料需自备（设置 FPGA_LSP_TEST_PROJECT 指向自备工程）: " << kRealAdcPath;
     const auto entries = fpgalsp::constraints::adc::Parse(*text);
     const auto coverage = fpgalsp::constraints::adc::Coverage(entries, TopPorts());
     EXPECT_FALSE(fpgalsp::constraints::adc::CoverageDiagnostic(coverage, "top").has_value());
@@ -1130,7 +1130,7 @@ TEST(AdcContext, NonePlaces) {
 
 TEST(AdcContext, RealCorpusCursorPositions) {
     const std::optional<std::string> text = ReadTextFile(kRealAdcPath);
-    ASSERT_TRUE(text.has_value());
+    if (!text.has_value()) GTEST_SKIP() << "语料需自备（设置 FPGA_LSP_TEST_PROJECT 指向自备工程）: " << kRealAdcPath;
     const std::string& content = *text;
     const int pin_at = IndexOf(content, "P87") + 1;
     const auto pin = fpgalsp::constraints::adc::Context(content, 0, pin_at);
@@ -1235,7 +1235,7 @@ TEST(AdcParity, DumpCorpusJsonWhenRequested) {
         GTEST_SKIP() << "设置 FPGA_LSP_ADC_DUMP=<path> 可导出与 Python 对照的 JSON";
     }
     const std::optional<std::string> text = ReadTextFile(kRealAdcPath);
-    ASSERT_TRUE(text.has_value());
+    if (!text.has_value()) GTEST_SKIP() << "语料需自备（设置 FPGA_LSP_TEST_PROJECT 指向自备工程）: " << kRealAdcPath;
     const auto entries = fpgalsp::constraints::adc::Parse(*text);
 
     Json out = Json::object();

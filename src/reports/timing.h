@@ -2,8 +2,8 @@
 //  src/reports/timing.h —— TD 时序报告解析（final_timing.rpt / *_pr.timing / *_gate.timing）
 // =============================================================================
 //  对应参考实现：
-//    Y:\fpga-lsp\fpgalsp\reports.py::parse_timing()（102-294 行）
-//    Y:\fpga-lsp\fpgalsp\timing_map.py（begin_at / end_at 端点映射）
+//    %PYREF%\fpgalsp\reports.py::parse_timing()（102-294 行）
+//    %PYREF%\fpgalsp\timing_map.py（begin_at / end_at 端点映射）
 //
 //  报告结构（一份真实报告的分段，见 tests/fixtures/reports/eg4_final_timing.rpt）：
 //

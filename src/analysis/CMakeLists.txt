@@ -1,8 +1,8 @@
 # =============================================================================
 #  src/analysis/ —— 流程后分析（DRC / CDC）+ 工程版本同步
 # =============================================================================
-#  对应参考实现：Y:\fpga-lsp\fpgalsp\analysis.py（run/newest_routed_db/cache）
-#                与 Y:\fpga-lsp\fpgalsp\server.py::on_workspace_executeCommand
+#  对应参考实现：%PYREF%\fpgalsp\analysis.py（run/newest_routed_db/cache）
+#                与 %PYREF%\fpgalsp\server.py::on_workspace_executeCommand
 #                （fpgalsp.updateProject）
 #
 #  约定：

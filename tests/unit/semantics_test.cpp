@@ -386,7 +386,7 @@ TEST(SemanticsEncode, DeltaEncoding) {
 // -----------------------------------------------------------------------------
 TEST(SemanticsCorpus, RealTopModuleMatchesPython) {
     const std::string text = ReadFile(kCorpusTop);
-    ASSERT_FALSE(text.empty()) << "语料缺失: " << kCorpusTop;
+    if (text.empty()) GTEST_SKIP() << "语料需自备，缺少 " << kCorpusTop;
     // ⚠ 必须用全工程索引：端口/例化模块的重分类要靠别的文件里的模块定义
     const HdlIndex index = ProjectIndex(kCorpusProject);
 
@@ -423,7 +423,7 @@ TEST(SemanticsCorpus, RealTopModuleMatchesPython) {
 
 TEST(SemanticsCorpus, RealTopModuleFoldingMatchesPython) {
     const std::string text = ReadFile(kCorpusTop);
-    ASSERT_FALSE(text.empty());
+    if (text.empty()) GTEST_SKIP() << "语料需自备（设置 FPGA_LSP_TEST_PROJECT 指向自备工程）: " << kCorpusTop;
     const std::vector<FoldingRange> ranges = FoldingRanges(text);
     // Python foldingRange 的 24 条区间，**连顺序一起**逐条对齐
     const std::vector<FoldingRange> expected = {
@@ -454,7 +454,7 @@ TEST(SemanticsCorpus, RealTopModuleFoldingMatchesPython) {
 // -----------------------------------------------------------------------------
 TEST(SemanticsCorpus, CrlfTextProducesSameTokens) {
     std::string text = ReadFile(kCorpusTop);
-    ASSERT_FALSE(text.empty());
+    if (text.empty()) GTEST_SKIP() << "语料需自备（设置 FPGA_LSP_TEST_PROJECT 指向自备工程）: " << kCorpusTop;
     std::string lf;
     lf.reserve(text.size());
     for (std::size_t i = 0; i < text.size(); ++i) {

@@ -531,7 +531,7 @@ TEST_F(AlProjectTest, NameFallsBackToFilename) {
 // 真实语料
 // -----------------------------------------------------------------------------
 
-TEST(AlRealCorpus, SixiangxianContainsBareAmpersandAndParses) {
+TEST(AlRealCorpus, DemoProjectContainsBareAmpersandAndParses) {
     const std::string al =
         std::string(FPGA_LSP_SOURCE_DIR) +
         "/tests/gate-corpus/corpus_alpha/demo_project.al";
@@ -550,7 +550,7 @@ TEST(AlRealCorpus, SixiangxianContainsBareAmpersandAndParses) {
     EXPECT_EQ(p.top, "top");
     EXPECT_FALSE(p.speed.has_value());  // <Speed></Speed> 为空
     EXPECT_EQ(p.td_version, "6.2.3.210850");
-    EXPECT_EQ(p.declared_path, "%WORKSPACE%/CorpusAlpha");
+    EXPECT_EQ(p.declared_path, "C:/work/CorpusAlpha");
 
     // 裸 & 被正确解析（不是走兜底）
     ASSERT_EQ(p.files.size(), 23u);

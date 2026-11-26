@@ -76,8 +76,18 @@ get_filename_component(VERIBLE_GEN_ROOT "${VERIBLE_GEN_ROOT}" ABSOLUTE)
 
 # winflexbison 安装目录：优先用显式指定的，否则从 win_flex 路径反推
 if(NOT DEFINED WINFLEXBISON_DIR)
-    set(WINFLEXBISON_DIR "%USERPROFILE%/scoop/apps/winflexbison/current"
+    # release 树去标识化后这里不再写死作者本机路径：先看环境变量，
+    # 再用 LOCALAPPDATA/USERPROFILE 下的标准 scoop 位置，最后允许 -DWINFLEXBISON_DIR= 覆盖。
+    if(DEFINED ENV{WINFLEXBISON_DIR})
+        set(_vg_winflexbison_default "$ENV{WINFLEXBISON_DIR}")
+    elseif(EXISTS "$ENV{LOCALAPPDATA}/scoop/apps/winflexbison/current/win_flex.exe")
+        set(_vg_winflexbison_default "$ENV{LOCALAPPDATA}/scoop/apps/winflexbison/current")
+    else()
+        set(_vg_winflexbison_default "$ENV{USERPROFILE}/scoop/apps/winflexbison/current")
+    endif()
+    set(WINFLEXBISON_DIR "${_vg_winflexbison_default}"
         CACHE PATH "winflexbison 安装目录（含 win_flex.exe / win_bison.exe / FlexLexer.h）")
+    unset(_vg_winflexbison_default)
 endif()
 
 set(WIN_FLEX "${WINFLEXBISON_DIR}/win_flex.exe"

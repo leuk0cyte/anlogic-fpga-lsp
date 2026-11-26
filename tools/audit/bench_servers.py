@@ -27,7 +27,7 @@ Design notes (why the numbers are comparable):
 Usage
 -----
     python tools/audit/bench_servers.py \
-        --iterations 30 --repeats 3 --project %WORKSPACE%/CorpusAlpha \
+        --iterations 30 --repeats 3 --project C:/work/CorpusAlpha \
         --out doc/audit/2026-11-18/performance/bench.json
 """
 
@@ -884,8 +884,9 @@ def environment_snapshot(project):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--project", default=r"%WORKSPACE%/CorpusAlpha",
-                        help="real .al project the LSP clients are pointed at")
+    parser.add_argument("--project", default=os.environ.get("FPGA_LSP_TEST_PROJECT"),
+                        help="project the LSP clients are pointed at. "
+                             "需自备工程：传 --project 或设 FPGA_LSP_TEST_PROJECT")
     parser.add_argument("--iterations", type=int, default=30, help="timed iterations per method")
     parser.add_argument("--repeats", type=int, default=3, help="fresh-process rounds per side")
     parser.add_argument("--warmups", type=int, default=3, help="warmup calls per method")

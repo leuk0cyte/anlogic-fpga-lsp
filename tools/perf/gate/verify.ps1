@@ -217,10 +217,11 @@ if ((Want "protocol") -and (-not $NoProtocol)) {
         $only = if ($run -eq 1) { @("--only", "all") } else { @("--only", "boundary") }
         $out = Join-Path $tagDir "lsp-raw$suffix.json"
         try {
-            # 钉死场景：基线是 --project %WORKSPACE%/CorpusAlpha --only all（见 baseline/lsp-raw.json.meta.argv），
+            # 钉死场景：基线 --only all（见 baseline/lsp-raw.json.meta.argv）；
             # 换工程/换 only 都会让 payload 天然不同 —— 那不是回归。
+            # 工程需自备：由 FPGA_LSP_TEST_PROJECT 指定。
             $probeArgs = @("tools\audit\probe_lsp.py", "--native-exe", $exePath,
-                           "--project", "%WORKSPACE%/CorpusAlpha", "--out", $out) + $only
+                           "--project", $env:FPGA_LSP_TEST_PROJECT, "--out", $out) + $only
             & python @probeArgs 2>&1 | Select-Object -Last 1
             if ($LASTEXITCODE -ne 0) { throw "lsp probe run$run exit=$LASTEXITCODE" }
         } catch { $stageErrors["protocol-lsp$suffix"] = "$_" }

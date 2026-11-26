@@ -1,7 +1,7 @@
 // =============================================================================
 //  src/hdl/primitives.h —— 器件原语 / Verilog 关键字表（vendored TD 数据）
 // =============================================================================
-//  对应参考实现：Y:\fpga-lsp\fpgalsp\server.py
+//  对应参考实现：%PYREF%\fpgalsp\server.py
 //    · `_primitives()`           -> DevicePrimitives() / IsDevicePrimitive()
 //    · `VERILOG_KEYWORDS`        -> VerilogKeywords()
 //
@@ -14,7 +14,7 @@
 //          `EF2_LOGIC_BUFG` / `EF2_PHY_PLL` 被展开成 2 个假的黑盒节点（36 vs 34）。
 //
 //  数据来源是**编译期嵌入**的 `data/primitives.inc`（生成器 scratch/gen_b10_data.py，
-//  数据源 `Y:\fpga-lsp\fpgalsp\data\primitives.json`）。刻意不做运行时读文件：
+//  数据源 `%PYREF%\fpgalsp\data\primitives.json`）。刻意不做运行时读文件：
 //  语言服务器不该依赖 Python 仓库的安装路径存在。
 //
 //  ⚠ 计数口径是契约（探针按集合/计数比对），改动前先看 data/primitives.inc 的头注释。

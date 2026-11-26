@@ -1,7 +1,7 @@
 # =============================================================================
 #  src/reports/ —— TD 报告解析（QoR / Timing / Area / FlowStatus / 产物）
 # =============================================================================
-#  对应参考实现：Y:\fpga-lsp\fpgalsp\reports.py + timing_map.py
+#  对应参考实现：%PYREF%\fpgalsp\reports.py + timing_map.py
 #
 #  约定：
 #   * 用 re2 而不是 std::regex —— 真实报告可达数 MB（final_timing.rpt 366 KB、

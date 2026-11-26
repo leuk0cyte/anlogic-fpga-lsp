@@ -73,12 +73,13 @@ os.makedirs(WORK_CWD, exist_ok=True)
 
 # --------------------------------------------------------------------------- 语料
 # 与 tests/golden/corpus/cases.json 的 projects 保持一致（含 skip 规则外的全部现存工程）。
-PROJECTS = [
-    {"id": "CorpusAlpha", "root": r"%WORKSPACE%\CorpusAlpha", "al": "demo_project.al"},
-    {"id": "CorpusAlpha_self_pwm_gen", "root": r"%WORKSPACE%\CorpusAlpha_self_pwm_gen",
-     "al": "demo_project.al"},
-    {"id": "CorpusBeta", "root": r"Y:\sic\unit_test\CorpusBeta", "al": "CorpusBeta.al"},
-]
+# 工程语料需自备：本仓库不附带任何工程。用 FPGA_LSP_TEST_PROJECT 指向一个工程目录；
+# 不给时 PROJECTS 为空，探针会跳过工程相关用例（而不是指向某台机器的绝对路径）。
+_PROJECT_ROOT = os.environ.get("FPGA_LSP_TEST_PROJECT")
+PROJECTS = []
+if _PROJECT_ROOT:
+    PROJECTS = [{"id": os.path.basename(os.path.normpath(_PROJECT_ROOT)),
+                 "root": _PROJECT_ROOT, "al": None}]
 
 # cases.json mcpTools.readOnly —— 13 个只读工具，顺序即契约顺序。
 READ_ONLY_TOOLS = [
@@ -317,7 +318,7 @@ class AuditNormalizer(Normalizer):
 def fold_copy_names(value):
     """把 `pm-copy-<pid>/{py,cpp}` 折成 `<side>`。
 
-    TD 的 `output` 里出现的是 **8.3 短路径**（`%USERPROFILE%/...`），
+    TD 的 `output` 里出现的是 **8.3 短路径**（`C:/Users/example/...`），
     与 Normalizer 注册的长路径同前缀不匹配，所以这里按"副本目录名"做一次正则折叠；
     两侧各自跑在不同副本目录，只有折掉名字才能看出"其余字段逐字一致"。
     """
@@ -464,8 +465,8 @@ def section_schema(exe, log_dir, out):
                          ("allow_flow_write", ["--allow-flow", "--allow-write"])):
         py_log = os.path.join(log_dir, "schema-py-%s.log" % label)
         cpp_log = os.path.join(log_dir, "schema-cpp-%s.log" % label)
-        py_client = McpClient(WORK_CWD, r"%WORKSPACE%\CorpusAlpha", py_log, extra_args=extra)
-        cpp_client = NativeMcpClient(WORK_CWD, r"%WORKSPACE%\CorpusAlpha", cpp_log,
+        py_client = McpClient(WORK_CWD, r"C:/work/CorpusAlpha", py_log, extra_args=extra)
+        cpp_client = NativeMcpClient(WORK_CWD, r"C:/work/CorpusAlpha", cpp_log,
                                      exe_path=exe, extra_args=extra)
         try:
             py_tools = (py_client.list_tools() or {}).get("tools") or []
@@ -877,16 +878,16 @@ def section_cli(exe, log_dir, out):
 
     # -- --project 支持面
     probe("project_py_lsp", [sys.executable, "-m", "fpgalsp", "--stdio", "--project",
-                             r"%WORKSPACE%\CorpusAlpha\demo_project.al"], CPP_ROOT,
+                             r"C:/work/CorpusAlpha\demo_project.al"], CPP_ROOT,
           stdin_text="", env_extra=py_env, timeout=90)
     probe("project_cpp_lsp", [exe, "--stdio", "--project",
-                              r"%WORKSPACE%\CorpusAlpha\demo_project.al"], CPP_ROOT, timeout=90)
+                              r"C:/work/CorpusAlpha\demo_project.al"], CPP_ROOT, timeout=90)
     probe("project_py_mcp", [sys.executable, "-m", "fpgalsp.mcp", "--root", work,
-                             "--project", r"%WORKSPACE%\CorpusAlpha\demo_project.al"], CPP_ROOT,
+                             "--project", r"C:/work/CorpusAlpha\demo_project.al"], CPP_ROOT,
           stdin_text='{"jsonrpc":"2.0","id":1,"method":"shutdown"}\n',
           env_extra=py_env, timeout=90)
     probe("project_cpp_mcp", [exe, "--mcp", "--root", work,
-                              "--project", r"%WORKSPACE%\CorpusAlpha\demo_project.al"],
+                              "--project", r"C:/work/CorpusAlpha\demo_project.al"],
           CPP_ROOT, stdin_text='{"jsonrpc":"2.0","id":1,"method":"shutdown"}\n', timeout=90)
 
     # -- --verible（Python 有，C++ 无）

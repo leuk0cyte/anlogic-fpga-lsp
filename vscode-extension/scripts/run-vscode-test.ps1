@@ -1,13 +1,13 @@
 # Run the real-VS-Code extension-host test suite (opens a window, ~10-30 s).
 #
-#   powershell -ExecutionPolicy Bypass -File scripts\run-vscode-test.ps1 [-Project %WORKSPACE%\CorpusAlpha]
+#   powershell -ExecutionPolicy Bypass -File scripts\run-vscode-test.ps1 [-Project C:/work/CorpusAlpha]
 #
 # Verifies the actual editor path: language client connects, documentSymbol / completion /
 # definition round-trip through LSP, an in-memory ADC edit produces a diagnostic, and the
 # reports command runs. Exits non-zero on failure.
 
 param(
-    [string]$Project = "%WORKSPACE%\CorpusAlpha",
+    [string]$Project = "C:/work/CorpusAlpha",
     [string]$CodeCli = "C:\Program Files\Microsoft VS Code\bin\code.cmd"
 )
 

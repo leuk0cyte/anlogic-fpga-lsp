@@ -1,7 +1,7 @@
 // =============================================================================
 //  src/constraints/adc.h —— ADC 引脚约束（.adc）解析 / 诊断 / 补全辅助
 // =============================================================================
-//  参考实现：Y:\fpga-lsp\fpgalsp\adc.py（913 行）+ CONTRACT.md §"adc.py"
+//  参考实现：%PYREF%\fpgalsp\adc.py（913 行）+ CONTRACT.md §"adc.py"
 //
 //  `.adc` 是**行式**格式，一行一条命令：
 //      set_pin_assignment<TAB>{ w[0] }<TAB>{ LOCATION = P76; IOSTANDARD = LVCMOS33; }

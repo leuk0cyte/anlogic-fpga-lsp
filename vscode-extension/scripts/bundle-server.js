@@ -33,7 +33,7 @@ function findNativeExe() {
             return candidate;
         }
     }
-    // 扩展可能在 C++ 仓库内，也可能是兄弟仓库（Y:\fpga-lsp\vscode-extension -> Y:\fpga-lsp-cpp）
+    // 扩展可能在 C++ 仓库内，也可能是兄弟仓库（%PYREF%\vscode-extension -> Y:\fpga-lsp-cpp）
     const repoRoots = [
         path.resolve(extRoot, '..'),
         path.resolve(extRoot, '..', '..', 'fpga-lsp-cpp'),

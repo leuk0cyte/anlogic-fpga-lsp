@@ -42,7 +42,7 @@
 
 | 项 | 值 |
 | --- | --- |
-| 可执行文件 | `%USERPROFILE%\verible\verible-verilog-syntax.exe` |
+| 可执行文件 | `C:/tools/verible\verible-verilog-syntax.exe` |
 | 调用方式 | `verible-verilog-syntax --printrawtokens <file>` |
 | 语义 | 输出**全部**词法 token（含被语法树过滤掉的空间/换行/注释） |
 
@@ -199,7 +199,7 @@ token mismatch at index 29 (official=3468 tokens, cst_dump=3468 tokens)
 
 | 子目录 | 来源 | 文件数 | 字节数 | 说明 |
 | --- | --- | --- | --- | --- |
-| `corpus_alpha/` | `%WORKSPACE%\CorpusAlpha` | 21 (`.v`) | 75,064 | 真实 Anlogic TangDynasty 工程，Verilog-2001/2005 风格 |
+| `corpus_alpha/` | `C:/work/CorpusAlpha` | 21 (`.v`) | 75,064 | 真实 Anlogic TangDynasty 工程，Verilog-2001/2005 风格 |
 | `verible_lint_testdata/` | `thirdparty/verible/verible/verilog/tools/lint/testdata` | 73 (`.sv`) | 8,865 | SystemVerilog 特性覆盖：class / covergroup / 约束 / 宏 / 属性 / UDP 等 |
 | `error-cases/` | 本任务手工构造 | 8 (`.sv`) | 987 | **故意语法错误**，验证错误恢复（G6b） |
 | **合计** | | **102** | **84,916** | token 总数 **18,815** |
@@ -232,7 +232,7 @@ token mismatch at index 29 (official=3468 tokens, cst_dump=3468 tokens)
 | `corpus_alpha/.fpgalsp/logs/`（server.log 等） | 语言服务器运行日志，与 CST/token 无关 |
 | `corpus_alpha/**/pll_gen.vhd` | VHDL，不归 Verible 管，且不是 token 对比对象（保留在原工程，未纳入对比） |
 | `corpus_alpha/*.al` / `*.sdc` / `*.adc` / `*.cfg` | TD 工程配置与约束文件，非 HDL 源码 |
-| `Y:\fpga-lsp\tests\fixtures` | **该目录不存在**（实测），已跳过 |
+| `%PYREF%\tests\fixtures` | **该目录不存在**（实测），已跳过 |
 | `Y:\verible-src-probe\verible` | **该目录存在但为空**（实测：`Y:\verible-src-probe` 是空目录，其中没有 `verible/` 子目录、0 个文件），已跳过 |
 | Verible 自带 `*_test.cc` 内嵌 testdata 字符串 | 不是独立文件；其覆盖的语法面已被 lint testdata 部分覆盖 |
 
@@ -255,7 +255,7 @@ token mismatch at index 29 (official=3468 tokens, cst_dump=3468 tokens)
 | 行尾归一化生效行数 | 38,064（仅 CRLF→LF 的行文本，不改 token 内容） |
 
 被测产物：`build/bin/cst_dump.exe`（1,208,832 B，MSVC 19.52 / Release / 静态 CRT）
-基准产物：`%USERPROFILE%\verible\verible-verilog-syntax.exe`
+基准产物：`C:/tools/verible\verible-verilog-syntax.exe`
 
 > 说明：门禁结论在 `build/`（工程正式构建目录）与独立验证目录 `build_gate/` 两处
 > **各跑一次，结果完全相同**（均为 102/102、100.00%），排除构建目录偶然性。
@@ -459,8 +459,8 @@ bison 解析器的每一步动作都由 `(state, token)` 决定，token 流相�
 
 | 项 | 路径 / 版本 |
 | --- | --- |
-| 官方基准 | `%USERPROFILE%\verible\verible-verilog-syntax.exe` |
-| win_bison | 3.8.2（`%USERPROFILE%\scoop\apps\winflexbison\current\win_bison.exe`） |
+| 官方基准 | `C:/tools/verible\verible-verilog-syntax.exe` |
+| win_bison | 3.8.2（`C:/Users/example\scoop\apps\winflexbison\current\win_bison.exe`） |
 | win_flex | 2.6.4（同目录 `win_flex.exe`） |
 | MSVC | Visual Studio 18 Community，`cl` 19.52 |
 | Python | 3.x（脚本用 stdlib，无第三方依赖） |
@@ -476,7 +476,7 @@ cmake -S . -B build -G Ninja ^
   -DFPGA_LSP_VERIBLE_ENABLED=ON ^
   -DFPGA_LSP_BUILD_THIRDPARTY_IN_ALL=OFF ^
   -DABSL_MSVC_STATIC_RUNTIME=ON ^
-  -DVERIBLE_FLEX_LEXER_INCLUDE_DIR="%USERPROFILE%/scoop/apps/winflexbison/current"
+  -DVERIBLE_FLEX_LEXER_INCLUDE_DIR="C:/Users/example/scoop/apps/winflexbison/current"
 
 cmake --build build --target cst_dump
 :: 产物: build/bin/cst_dump.exe
@@ -495,7 +495,7 @@ ctest --test-dir build -L gate --output-on-failure
 :: 方式二：直接调用脚本（可拿到 JSON 报告）
 python tests\compare_cst.py ^
   --cst-dump build\bin\cst_dump.exe ^
-  --official %USERPROFILE%\verible\verible-verilog-syntax.exe ^
+  --official C:/tools/verible\verible-verilog-syntax.exe ^
   --corpus   tests\gate-corpus ^
   --pattern  ".v,.sv" ^
   --report   build\gate-report.json
@@ -508,7 +508,7 @@ python tests\compare_cst.py ^
 ```bat
 python tests\compare_cst.py ^
   --cst-dump build\bin\cst_dump.exe ^
-  --official %USERPROFILE%\verible\verible-verilog-syntax.exe ^
+  --official C:/tools/verible\verible-verilog-syntax.exe ^
   --corpus   tests\gate-corpus\error-cases ^
   --pattern  ".sv"
 ```
@@ -518,8 +518,8 @@ python tests\compare_cst.py ^
 ```bat
 :: 自比：官方 vs 官方，必须 100%
 python tests\compare_cst.py --selftest ^
-  --cst-dump %USERPROFILE%\verible\verible-verilog-syntax.exe ^
-  --official %USERPROFILE%\verible\verible-verilog-syntax.exe ^
+  --cst-dump C:/tools/verible\verible-verilog-syntax.exe ^
+  --official C:/tools/verible\verible-verilog-syntax.exe ^
   --corpus   tests\gate-corpus --pattern ".v,.sv"
 ```
 

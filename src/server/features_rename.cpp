@@ -4,9 +4,9 @@
 //  OWNER: task B3 (parity-lsp)。对应矩阵 LSP-04 / LSP-05（S0）。
 //
 //  对应参考实现：
-//    Y:\fpga-lsp\fpgalsp\server.py:1670-1700  on_textDocument_prepareRename / on_textDocument_rename
-//    Y:\fpga-lsp\fpgalsp\nav.py:16-115        prepare / rename_edits / block_scopes
-//    Y:\fpga-lsp\fpgalsp\refs.py:68-142       find / token_span（code_only 搜索）
+//    %PYREF%\fpgalsp\server.py:1670-1700  on_textDocument_prepareRename / on_textDocument_rename
+//    %PYREF%\fpgalsp\nav.py:16-115        prepare / rename_edits / block_scopes
+//    %PYREF%\fpgalsp\refs.py:68-142       find / token_span（code_only 搜索）
 //
 //  契约（probe 实测，见 doc/audit/2026-11-18/parity-lsp/PROBE.md §3.1）：
 //    prepareRename(clk_50M @58:6) -> {range:58:5-58:12, placeholder:"clk_50M"}

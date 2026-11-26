@@ -113,7 +113,7 @@ def run_read_hdl(...):
 ```
 
 **问题**：`read_hdl -file` 按 **Verilog** 编译。当 IP 同时生成 `.v` 和 `.vhd`
-（本机 `%WORKSPACE%\CorpusAlpha/al_ip/pll_gen` 正是如此），`.vhd` 会被当 Verilog 喂进去。
+（本机 `C:/work/CorpusAlpha/al_ip/pll_gen` 正是如此），`.vhd` 会被当 Verilog 喂进去。
 
 **实测后果**（TD 2026.2）：
 
@@ -234,8 +234,8 @@ __main__.py:23       os.path.join(os.getcwd(), ".fpgalsp", "logs")
 **实际造成的麻烦**（本项目实证）：
 
 1. **golden 采集污染用户真实工程**：第一次采集直接往
-   `%WORKSPACE%\CorpusAlpha`、`%WORKSPACE%\CorpusAlpha_self_pwm_gen`、`Y:\sic\unit_test\CorpusBeta`
-   的 `.fpgalsp/` 写文件，必须手工清理
+   三个测试工程（`C:/work` 下的三个样例工程）的 `.fpgalsp/` 写文件，
+   必须手工清理
 2. **只读工程无法使用**：网络盘、版本控制只读检出、CI 里的挂载镜像都会失败
 3. **`.al` 同级目录被污染**，用户会误以为工程被改动
 
@@ -329,16 +329,16 @@ Python 版三处都遵守了这一点：
 
 ```xml
 tests/gate-corpus/corpus_alpha/demo_project.al
-<Project Version="3" Minor="2" Path="%WORKSPACE%/CorpusAlpha">
+<Project Version="3" Minor="2" Path="C:/work/CorpusAlpha">
 ```
 
 这个 `Path` 指向**另一个真实工程**。于是在副本里跑 flow 会：
 
-1. 把 `*_Runs` 写到 `%WORKSPACE%\CorpusAlpha`（**写坏用户工程**）；
+1. 把 `*_Runs` 写到 `C:/work/CorpusAlpha`（**写坏用户工程**）；
 2. 让"按副本目录找产物"的断言全部假失败（产物在别处）。
 
 2026-11-18 真的差点发生：`td.flow` 的 area 断言因为找不到产物而红了，
-核查 `%WORKSPACE%\CorpusAlpha` 后发现最新文件时间仍是 11/9、没有实际写入 —— 侥幸而已。
+核查 `C:/work/CorpusAlpha` 后发现最新文件时间仍是 11/9、没有实际写入 —— 侥幸而已。
 
 **影响**：任何"复制工程再跑 TD"的隔离方案**不能只复制，必须改写 `Path`**。
 
@@ -644,11 +644,11 @@ for raw in text.split("\n"):
 
 ```python
 base = os.path.join(project.dir, "%s_Runs" % project.name)
-# "%WORKSPACE%/CorpusBeta" + "\\" + "CorpusBeta_Runs"
+# "C:/work/CorpusBeta" + "\\" + "CorpusBeta_Runs"
 ```
 
 **实测后果**：`fpgaLsp/reports` 的 `files.*` / `artifacts.*.path` / `artifacts.runs[].dir`
-全部是 `%WORKSPACE%/CorpusBeta\CorpusBeta_Runs\phy_1\route.qor` 这种混合形态
+全部是 `C:/work/CorpusBeta\CorpusBeta_Runs\phy_1\route.qor` 这种混合形态
 （GitHub 上的协议文档 §2 示例写的是纯正斜杠，与实际输出不一致）。
 
 **C++ 处置**：忠实复现——`reports::JoinPath` 按 `os.sep` 语义插入 `\`

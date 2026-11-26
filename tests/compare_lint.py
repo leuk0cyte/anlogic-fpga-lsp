@@ -3,7 +3,7 @@
 #  tests/compare_lint.py —— 阶段 1 门禁：lint 等价验证
 # =============================================================================
 #  对比两条独立的实现路径：
-#    A) 官方基准:  %USERPROFILE%\verible\verible-verilog-lint.exe
+#    A) 官方基准:  C:/tools/verible\verible-verilog-lint.exe
 #    B) 本仓库:    build/bin/lint_dump.exe
 #
 #  四个层次（按成本从低到高，风险前移）：

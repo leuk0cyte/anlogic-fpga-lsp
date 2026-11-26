@@ -4,10 +4,10 @@
 //  OWNER: task B4 (parity-lsp)。B1 只放 stub；本文件是 LSP-06/07/08/09 四项 S0 的实现。
 //
 //  对应参考实现：
-//    Y:\fpga-lsp\fpgalsp\nav.py:141-187   call_hierarchy / call_hierarchy_for_module
-//    Y:\fpga-lsp\fpgalsp\nav.py:118-138   instance_parent_map
-//    Y:\fpga-lsp\fpgalsp\server.py:1702-1785  on_*CallHierarchy*
-//    Y:\fpga-lsp\fpgalsp\server.py:1646-1667  on_textDocument_rangeFormatting
+//    %PYREF%\fpgalsp\nav.py:141-187   call_hierarchy / call_hierarchy_for_module
+//    %PYREF%\fpgalsp\nav.py:118-138   instance_parent_map
+//    %PYREF%\fpgalsp\server.py:1702-1785  on_*CallHierarchy*
+//    %PYREF%\fpgalsp\server.py:1646-1667  on_textDocument_rangeFormatting
 //
 //  契约（逐条对齐 Python）：
 //    * CallHierarchyItem 恒为 {name, kind:2, uri, range, selectionRange, data{module, defined}}

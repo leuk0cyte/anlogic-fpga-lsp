@@ -8,7 +8,7 @@
   1. 造一棵与 TD 完全同构的 <name>_Runs 树（用 tests/fixtures/reports/ 里的真实报告）；
   2. 用 FPGALSP_REPORTS_DUMP / _PROJECT_DIR / _PROJECT_NAME 驱动 unit_reports_parity.exe
      把 C++ 解析结果导出成 JSON；
-  3. 对同样的文件调用 Y:\\fpga-lsp\\fpgalsp\\reports.py，得到参考 JSON；
+  3. 对同样的文件调用 %PYREF%\\fpgalsp\\reports.py，得到参考 JSON；
   4. 逐字段深比较，打印差异。
 
 判定标准（三者必须同时成立）：

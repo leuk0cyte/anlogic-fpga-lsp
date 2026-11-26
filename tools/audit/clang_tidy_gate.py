@@ -142,7 +142,7 @@ def find_clang_tidy(explicit: str | None) -> str | None:
     if found:
         return found
     # vcvars 里 LLVM 在 PATH 上；直接跑脚本（不经 vcvars）时退回到 scoop 安装位置。
-    fallback = Path(r"%USERPROFILE%\scoop\apps\llvm\current\bin\clang-tidy.exe")
+    fallback = Path(r"C:/Users/example\scoop\apps\llvm\current\bin\clang-tidy.exe")
     return str(fallback) if fallback.is_file() else None
 
 

@@ -38,7 +38,9 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(os.path.dirname(HERE))
-CORPUS = os.path.join(REPO_ROOT, "tests", "gate-corpus", "corpus_alpha")
+# 工程语料需自备：本仓库不附带任何工程。由 --project 或 FPGA_LSP_TEST_PROJECT
+# 指定；两者都缺时报清晰错误，而不是猜一个不存在的路径。
+CORPUS = None
 FALLBACK_SERVER = os.path.join(REPO_ROOT, "build", "bin", "fpgalsp-native.exe")
 
 
@@ -134,14 +136,23 @@ def corpus_is_clean() -> tuple[bool, str]:
 def main() -> int:
     parser = argparse.ArgumentParser(description="MCP flow 工具端到端冒烟")
     parser.add_argument("--server", default=FALLBACK_SERVER)
+    parser.add_argument("--project", default=None,
+                        help="工程根目录（**必填**：本仓库不附带工程语料；"
+                             "也可用环境变量 FPGA_LSP_TEST_PROJECT）")
     args = parser.parse_args()
+    global CORPUS
+    CORPUS = args.project or os.environ.get("FPGA_LSP_TEST_PROJECT")
+    if not CORPUS:
+        print("FAIL 缺少工程目录：请传 --project <dir>（或设 FPGA_LSP_TEST_PROJECT）")
+        return 2
+    CORPUS = os.path.abspath(CORPUS)
 
     exe = args.server
     if not os.path.isfile(exe):
         print("找不到 %s；请先构建或用 --server 指定。" % exe)
         return 2
     if not os.path.isdir(CORPUS):
-        print("找不到语料 %s" % CORPUS)
+        print("找不到工程目录 %s" % CORPUS)
         return 2
 
     # 先清掉其它用例（e2e.lsp_smoke / td.*）可能留在共享语料里的派生目录。
@@ -161,7 +172,7 @@ def main() -> int:
         return 1
 
     workdir = tempfile.mkdtemp(prefix="fpgalsp-mcp-flow-")
-    project_copy = os.path.join(workdir, "corpus_alpha")
+    project_copy = os.path.join(workdir, "project")
     checks: list[str] = []
     exit_code = 0
     try:

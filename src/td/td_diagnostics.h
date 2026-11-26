@@ -1,7 +1,7 @@
 // =============================================================================
 //  src/td/td_diagnostics.h —— TD 消息 → LSP Diagnostic 映射
 // =============================================================================
-//  对应参考实现：Y:\fpga-lsp\fpgalsp\td.py 的
+//  对应参考实现：%PYREF%\fpgalsp\td.py 的
 //      _resolve_file / _diag / run_read_hdl / ip_generated_hdl / _file_list_tcl
 //  以及 server.py 的 _sanitize / run_read_hdl 调用点。
 //

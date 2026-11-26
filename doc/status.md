@@ -953,7 +953,7 @@ config after: clock=reg_init/clk
 用户澄清：**TD GUI 的会话 cwd 就是 `.al` 所在目录**，所以它把 `<prj>_Runs/`、`log/`、`chip_debugger/`
 都写在 `.al` 同级；"不污染工作目录"指的是**我们插件/后端不要额外输出**，TD 自己的行为照旧。
 实测确认：`%WORKSPACE%\CorpusDelta\CorpusDelta_Runs` 与 `corpus_delta.al`
-同级；`%WORKSPACE%\CorpusAlpha\demo_project_Runs` 与 `demo_project.al` 同级，规则一致。
+同级；`C:/work/CorpusAlpha\demo_project_Runs` 与 `demo_project.al` 同级，规则一致。
 
 改动：
 1. **所有 TD 会话 cwd 改为 `<project.dir>`（.al 所在目录）**：
@@ -968,7 +968,7 @@ config after: clock=reg_init/clk
    期间索引被重新解析、token 回到正确位置。新增单测
    `SemanticsTokens.StaleIndexDoesNotMisplaceTokens`。
 
-**实测（小工程 %WORKSPACE%\CorpusAlpha）**：`stages:["syn"]` → `flow ok`，`demo_project_Runs/`（含
+**实测（小工程 C:/work/CorpusAlpha）**：`stages:["syn"]` → `flow ok`，`demo_project_Runs/`（含
 `syn_1/phy_1/best_result`）与 `log/` 都出现在 `.al` 同级，和 TD GUI 一致。
 
 `ctest` 64/64、插件 44/44。
@@ -977,7 +977,7 @@ config after: clock=reg_init/clk
 
 用户要求换小工程验证（大工程编译太慢），且当前接的板子不是 EF2L45，只跑到 phy。
 
-**实测（%WORKSPACE%\CorpusAlpha，EF2L45LG144B，top=top）**：
+**实测（C:/work/CorpusAlpha，EF2L45LG144B，top=top）**：
 ```
 probe_config: 2 总线 / 32 bit，unresolved=[]
 flow_run stages:["all"] -> flow ok
@@ -1077,7 +1077,7 @@ probe_verify: cntT_q embedded 16/16、d1_tx_s1 embedded 16/16、missing=[]
 
 ### 第二十六轮：多实例抓取打通到触发阶段
 
-链路（全部实测，工程 `%WORKSPACE%\CorpusAlpha`，两个时钟域）：
+链路（全部实测，工程 `C:/work/CorpusAlpha`，两个时钟域）：
 
 ```
 probe_capture{}                     -> refused: "one watcher per clock domain; pick one with instance"
@@ -1567,7 +1567,7 @@ JSON，再跑 `tests/compare_constraints.py`，93 个结构）。以前这两条
   `options.work_dir = project.dir + "/.fpgalsp/run"` —— 每次 LSP 保存触发 TD 检查就重建
   `<project>/.fpgalsp/run`。真机复现：删掉 `.fpgalsp` → 一次 `didSave` → 立刻重建。
 * **修复**：改为 `platform::state_dir(project.dir) + "/run"`；`state_dir()` 的 TEMP 不可用兜底也不再
-  回落到工程目录（改 %LOCALAPPDATA%/%USERPROFILE%）。
+  回落到工程目录（改 %LOCALAPPDATA%/C:/Users/example）。
 * **防复发**：新增机械门禁 `docs_no_project_state`（`tools/audit/check_project_state_paths.py` 扫
   `src/` 的**代码**（剥注释）里写工程目录 `.fpgalsp` 的路径；白名单仅允许"扫描时跳过该目录/临时后缀"），
   已注册进 CTest；单测 `PathStateDir.NeverReturnsProjectLocalFpgalsp`、TD 集成测试断言 cwd 在状态目录下。
@@ -1668,7 +1668,7 @@ Phase 4（内存 FS、写指标、MCP dry-run）。
 
 **根因（实测复现）**：`DocumentStore` 用 **uri 字符串**作为打开文档的键，而客户端发来的 uri
 是 `file:///y%3A/CorpusAlpha/src/top.v`（小写盘符 + 百分号编码冒号），服务端内部
-`platform::path_to_uri()` 产出 `file:///%WORKSPACE%/CorpusAlpha/src/top.v`。两者字符串不相等 →
+`platform::path_to_uri()` 产出 `file:///C:/work/CorpusAlpha/src/top.v`。两者字符串不相等 →
 `LspServer::LoadText` 查表永远 miss → 回落到**磁盘**。于是：
 * 未保存的缓冲区对语义高亮（以及格式化基线）不可见；
 * 格式化应用后 buffer 变了、磁盘没变 → token 仍按旧文本算 → 颜色错位；
@@ -1756,16 +1756,16 @@ PASS（132 文件/45 调用点）。
 
 ---
 
-## 第四十一轮（2026-11-22，0.28.1）：Update Project 在"移动过的工程"上必失败（真机 %WORKSPACE%\CorpusBeta）
+## 第四十一轮（2026-11-22，0.28.1）：Update Project 在"移动过的工程"上必失败（真机 C:/work/CorpusBeta）
 
-**症状**：`FPGA: Update Project` 在 `%WORKSPACE%\CorpusBeta` 上必失败，`output` 里是一串
+**症状**：`FPGA: Update Project` 在 `C:/work/CorpusBeta` 上必失败，`output` 里是一串
 `HDL-8007 ERROR: cannot open Verilog file '/src/ADC.v'`，末尾却是
 `PRJ-1401 : Successfully analyzed 52 source files.`。
 
 **根因**：TD 解析 `.al` 里的相对源文件路径（`<File Path="src/ADC.v">`）时用的"工程根"是
 `.al` 根节点的 `<Project Path="...">` 属性；该属性失效（工程被移动/拷贝过）时**退化成进程 cwd**。
 我们的 TD 会话 cwd 是 `%TEMP%/fpgalsp/<prj>-<hash>/run`，于是所有相对路径都落到临时目录 →
-`'/src/ADC.v'` 找不到。实测矩阵（`build/_audit/rt/mb210_update_probe.py`）：
+`'/src/ADC.v'` 找不到。实测矩阵（`build/_audit/rt/corpus_beta_update_probe.py`）：
 cwd=%TEMP% 10 条 HDL-8007；cwd=工程目录 **0 条**；cwd=%TEMP% + 改写 Path 属性 **0 条**。
 
 **修法**（3 处 TD 会话 cwd 统一成 `.al` 所在目录，与 TD GUI 一致）：
@@ -1783,9 +1783,9 @@ TD 自己的 `td_*.log/.logw`、`minidump-*.dmp` 仍由 `TdSession` 归位到 `<
 **顺带修**：clang-tidy 棘轮门禁的"行号漂移"匹配现在会归一化**消息里内嵌的** `:line:col`
 （`bugprone-exception-escape` 把 lambda 位置写进消息，纯漂移会一直被当成新问题）。
 
-**验证**：真机 `%WORKSPACE%\CorpusBeta`：`fpga_project_update` **ok:true**、HDL-8007 **0**、
+**验证**：真机 `C:/work/CorpusBeta`：`fpga_project_update` **ok:true**、HDL-8007 **0**、
 收到 warning；`ctest` **71/71**（**clang-tidy 门禁已改为默认不注册**；打开 `-DFPGA_LSP_ENABLE_TIDY_GATE=ON` 时 72/72）；插件 **64/64**（新增 warning 用例）；
-`td.diagnostics` 集成用例改为断言"cwd = 工程目录 + 工程根无 TD 日志"；`%WORKSPACE%\CorpusBeta` 根目录无
+`td.diagnostics` 集成用例改为断言"cwd = 工程目录 + 工程根无 TD 日志"；`C:/work/CorpusBeta` 根目录无
 残留（`log/` 收 TD 日志、无 `.fpgalsp`）。
 
 > 2026-11-22 调整：clang-tidy 棘轮门禁（`docs_clang_tidy`，约 +145 s）**默认不再进 CTest**，

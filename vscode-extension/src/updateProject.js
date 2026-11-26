@@ -79,7 +79,7 @@ async function runUpdateProject(deps) {
     // The backend can succeed while the `.al` still records a stale `<Project Path="...">`
     // (the project folder was moved or copied). Update Project is fine because the TD session
     // cwd is the .al folder, but the user should know: opening the project once in the TD GUI
-    // re-records that path. Measured on %WORKSPACE%\CorpusBeta (Path="C:/work/CorpusBeta/...").
+    // re-records that path. Measured on C:/work/CorpusBeta (Path="D:/projects/old-location/...").
     if (typeof result.warning === 'string' && result.warning.trim()) {
         const warning = result.warning.trim();
         appendLine(`${OUTPUT_PREFIX} WARNING command=${COMMAND_ID} project=${project} warning=${warning}`);

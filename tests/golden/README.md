@@ -178,10 +178,10 @@ C++ 侧只需实现同样的请求，并把输出按本文件的归一化规则�
 
 | 原样 | 归一化后 |
 | --- | --- |
-| `%WORKSPACE%\CorpusAlpha\src\top.v` | `<corpus:corpus_alpha>/src/top.v` |
+| `C:/work/CorpusAlpha\src\top.v` | `<corpus:corpus_alpha>/src/top.v` |
 | `Y:/fpga-lsp/tests/e2e_lsp.py` | `<repo>/tests/e2e_lsp.py` |
 | `C:\Anlogic\TD_Release_2026.2.210.850\bin\td_commands_prompt.exe` | `<abs:>.../bin/td_commands_prompt.exe` |
-| `%WORKSPACE%/CorpusAlpha`（非语料根，出现在诊断文案里） | `<abs:>.../sic/CorpusAlpha` |
+| `C:/work/CorpusAlpha`（非语料根，出现在诊断文案里） | `<abs:>.../sic/CorpusAlpha` |
 
 - 所有分隔符统一为正斜杠。
 - 语料根 → `<corpus:<id>>`，参考仓库 → `<repo>`，sandbox → `<sandbox>`；匹配时按最长根优先、忽略大小写
@@ -264,17 +264,17 @@ C++ 实现无法靠"猜"通过；`compare.py` 会为这类文件打印 **Truncat
 
 | id | 路径 | 说明 |
 | --- | --- | --- |
-| `CorpusAlpha` | `%WORKSPACE%\CorpusAlpha` | EF2L45LG144B，top=`top`，21 个 HDL 文件 |
-| `CorpusAlpha_self_pwm_gen` | `%WORKSPACE%\CorpusAlpha_self_pwm_gen` | 同系列变体，23 个 HDL 文件 |
-| `CorpusBeta` | `Y:\sic\unit_test\CorpusBeta` | EG4X20BG256，top=`main`，跨器件族 |
-| `CorpusGamma` | `Y:\CorpusGamma` | **本机不存在** → skipped |
-| `CorpusDelta` | `Y:\CorpusDelta` | **本机不存在** → skipped |
-| `CorpusEpsilon` | `Y:\CorpusEpsilon` | **本机不存在** → skipped |
+| `CorpusAlpha` | `C:/work/CorpusAlpha` | EF2L45LG144B，top=`top`，21 个 HDL 文件 |
+| `CorpusAlpha_self_pwm_gen` | `C:/work/CorpusAlpha_self_pwm_gen` | 同系列变体，23 个 HDL 文件 |
+| `CorpusBeta` | `C:/work\unit_test\CorpusBeta` | EG4X20BG256，top=`main`，跨器件族 |
+| `CorpusGamma` | `C:/work/CorpusGamma` | **本机不存在** → skipped |
+| `CorpusDelta` | `C:/work/CorpusDelta` | **本机不存在** → skipped |
+| `CorpusEpsilon` | `C:/work/CorpusEpsilon` | **本机不存在** → skipped |
 
-后三个是任务书要求登记但本机没有的工程；保留登记是为了将来这些工程出现时自动纳入，
-不需要改脚本。
+后三个是三个测试工程，用于覆盖本机暂不存在的跨工程形态；登记位保留着，等这些工程
+出现时会自动纳入，不需要改脚本。前三个由使用者自备（`WORKSPACE` 下按上表命名即可）。
 
-> `Y:\fpga-lsp\tests\fixtures` 不存在，原计划的"fixtures 下的 Verilog 文件"改用
+> 参考实现仓库里没有 fixtures 目录，原计划的"fixtures 下的 Verilog 文件"改用
 > `syntheticCases`（写入 `_sandbox/`，不触碰参考仓库）。需要固定边界用例时往那里加即可。
 
 ### 采集上限（写死在 `collect.py`，并记录在 `_meta.json` 的 `limits`）

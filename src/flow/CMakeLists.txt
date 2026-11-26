@@ -1,7 +1,7 @@
 # =============================================================================
 #  src/flow/ —— Flow 引擎（一键综合/布线）+ BitWizard 烧录 + 策略对比
 # =============================================================================
-#  对应参考实现：Y:\fpga-lsp\fpgalsp\flow.py / strategy.py / program.py
+#  对应参考实现：%PYREF%\fpgalsp\flow.py / strategy.py / program.py
 #
 #  约定：
 #   * 不抛异常：所有失败都体现在返回的 JSON / FlowState.error 里

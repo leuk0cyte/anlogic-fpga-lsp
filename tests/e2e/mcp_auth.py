@@ -101,10 +101,15 @@ def main() -> int:
     parser.add_argument("--server", required=True)
     parser.add_argument(
         "--root",
-        default=str(Path(__file__).resolve().parents[1] / "gate-corpus" / "corpus_alpha"),
+        default=None,
+        help="工程根目录（**必填**：本仓库不附带工程语料；也可用环境变量 FPGA_LSP_TEST_PROJECT）",
     )
     args = parser.parse_args()
-    root = str(Path(args.root).resolve())
+    requested = args.root or os.environ.get("FPGA_LSP_TEST_PROJECT")
+    if not requested:
+        print("FAIL 缺少工程目录：请传 --root <dir>（或设 FPGA_LSP_TEST_PROJECT）")
+        return 2
+    root = str(Path(requested).resolve())
     exe = str(Path(args.server).resolve())
     state_dir = Path(tempfile.mkdtemp(prefix="fpgalsp-mcp-auth-"))
     port = None

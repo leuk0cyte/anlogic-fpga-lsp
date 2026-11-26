@@ -74,17 +74,17 @@ function makeReports() {
         suggestions: [{ id: 'QOR-1302', priority: 'MEDIUM', text: 'Route HWNS -2649ps smaller than 0.' }],
     };
     const files = {
-        qor: '%WORKSPACE%/CorpusAlpha/.fpgalsp/run/syn/qor.rpt',
-        timing: '%WORKSPACE%/CorpusAlpha/.fpgalsp/run/syn/timing.rpt',
-        area: '%WORKSPACE%/CorpusAlpha/.fpgalsp/run/syn/area.rpt',
-        flow_status: '%WORKSPACE%/CorpusAlpha/.fpgalsp/run/syn/status.txt',
+        qor: 'C:/work/CorpusAlpha/.fpgalsp/run/syn/qor.rpt',
+        timing: 'C:/work/CorpusAlpha/.fpgalsp/run/syn/timing.rpt',
+        area: 'C:/work/CorpusAlpha/.fpgalsp/run/syn/area.rpt',
+        flow_status: 'C:/work/CorpusAlpha/.fpgalsp/run/syn/status.txt',
     };
     const base = {
         project: 'demo_project',
-        al: '%WORKSPACE%/CorpusAlpha/demo_project.al',
+        al: 'C:/work/CorpusAlpha/demo_project.al',
         generatedAt: 1761800000,
         files,
-        artifacts: { bit: '%WORKSPACE%/CorpusAlpha/demo_project.bit', syn_db: null, route_db: null, runs: ['run_1'] },
+        artifacts: { bit: 'C:/work/CorpusAlpha/demo_project.bit', syn_db: null, route_db: null, runs: ['run_1'] },
         flow: { running: false, stage: 'idle', elapsed: 0, lastMessage: 'flow finished', ok: true },
     };
     return {

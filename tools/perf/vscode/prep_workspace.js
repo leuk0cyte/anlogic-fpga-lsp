@@ -2,7 +2,7 @@
 //
 // The extension itself writes `<workspace>/.fpgalsp/logs/extension.log` on every `diag()` call
 // (sync fs append) and the highlight-report path writes `.fpgalsp/logs/highlight.txt`. The perf
-// rules forbid writing to %WORKSPACE%\CorpusAlpha, so the benchmarks run against this copy:
+// rules forbid writing to C:/work/CorpusAlpha, so the benchmarks run against this copy:
 //   %TEMP%\fpgalsp-perf\vscode\project   <- tests/gate-corpus/corpus_alpha (byte-identical corpus)
 //
 //   node prep_workspace.js

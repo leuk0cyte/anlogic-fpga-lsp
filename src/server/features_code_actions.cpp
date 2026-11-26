@@ -3,7 +3,7 @@
 // =============================================================================
 //  OWNER: task B3 (parity-lsp)。对应矩阵 LSP-03（S0）。
 //
-//  对应参考实现：Y:\fpga-lsp\fpgalsp\server.py:1517-1609
+//  对应参考实现：%PYREF%\fpgalsp\server.py:1517-1609
 //      _adc_code_actions / _code_action_position / on_textDocument_codeAction
 //
 //  返回形状（Python 原样，**不新增字段**）：

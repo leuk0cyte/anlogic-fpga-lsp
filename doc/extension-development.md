@@ -22,7 +22,7 @@ npm run test:integration   # 与真实服务端的集成
 npm run test:vscode        # 在 VS Code 里跑（脚本见 scripts/run-vscode-test.ps1）
 npm run bundle:server      # 从 ../build/bin 取 exe 放进 server/bin
 npm run package            # bundle:server + vsce package -> fpga-lsp-anlogic-<version>.vsix
-code --extensionDevelopmentPath="Y:\fpga-lsp-cpp\vscode-extension" %WORKSPACE%\CorpusAlpha
+code --extensionDevelopmentPath="Y:\fpga-lsp-cpp\vscode-extension" C:/work/CorpusAlpha
 ```
 
 ## 打包注意事项

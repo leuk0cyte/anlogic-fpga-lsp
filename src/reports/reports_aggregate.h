@@ -1,8 +1,8 @@
 // =============================================================================
 //  src/reports/reports_aggregate.h —— fpgaLsp/reports 的汇总入口
 // =============================================================================
-//  对应参考实现：Y:\fpga-lsp\fpgalsp\reports.py::collect()
-//  协议：Y:\fpga-lsp\PROTOCOL-V2.md §2 + v13 附录（分阶段 syn/phy）
+//  对应参考实现：%PYREF%\fpgalsp\reports.py::collect()
+//  协议：%PYREF%\PROTOCOL-V2.md §2 + v13 附录（分阶段 syn/phy）
 //
 //  输出骨架（结构见 BuildReports 的说明与 ToJson）：
 //      {

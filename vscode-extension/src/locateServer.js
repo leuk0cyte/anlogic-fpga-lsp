@@ -105,7 +105,7 @@ function resolveServerBinary(options) {
     // 1c. dev checkout：本仓库的构建目录
     //     扩展可能放在**两个**仓库里：
     //       * C++ 仓库内（<repo>/vscode-extension）  -> parent = <repo>
-    //       * Python 仓库内（Y:\fpga-lsp\vscode-extension）-> parent = Y:\fpga-lsp，
+    //       * Python 仓库内（%PYREF%\vscode-extension）-> parent = Y:\fpga-lsp，
     //         此时 C++ 仓库是**兄弟目录** Y:\fpga-lsp-cpp（本项目的实际开发布局）
     const devDirs = opts.devBinaryDirs || (parent ? devRoots(parent).flatMap((root) =>
         ['build', 'build-hdl', 'build-flow', 'build-mcp', 'build-fmt']

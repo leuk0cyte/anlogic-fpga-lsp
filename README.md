@@ -6,8 +6,10 @@ Anlogic（安路）TangDynasty FPGA 的 **LSP + MCP 语言服务器**，C++23 �
 SystemVerilog 解析 / lint / 格式化；既是 LSP 服务端（供 VS Code 扩展使用），
 也是 MCP 服务端（供 Copilot / Cline 等 agent 调用）。
 
-本工程是 [`fpga-lsp`](../fpga-lsp)（约 11.8k 行 Python 实现）的 C++ 重写，行为以
-Python 版为规格对照，等价性证据见 [`doc/audit/`](doc/audit/)。
+本仓库的权威规格是对外可见的行为契约：[`doc/commands.md`](doc/commands.md)
+（`workspace/executeCommand` 与 `fpgaLsp/*` 协议）与
+[`doc/mcp-usage.md`](doc/mcp-usage.md)（MCP 工具语义）。实现细节与边界条件以这两份
+文档为准。
 
 ## 特性
 

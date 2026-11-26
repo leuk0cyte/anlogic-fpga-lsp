@@ -2,7 +2,7 @@
 //  tests/unit/utf16_test.cpp
 // =============================================================================
 //  重点：utf16_column_to_byte_index 的 clamp 语义必须与
-//        Y:\fpga-lsp\fpgalsp\lsp.py :: utf16_to_py 逐字一致。
+//        %PYREF%\fpgalsp\lsp.py :: utf16_to_py 逐字一致。
 //
 //  Python 参考实现：
 //      def utf16_to_py(text, col):
