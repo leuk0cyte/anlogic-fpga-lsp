@@ -109,6 +109,23 @@ if (!bundledNative) {
     process.exit(1);
 }
 
+// ---- 3) 许可文件：随包分发二进制时必须带上 --------------------------------
+//  Apache-2.0 §4(a) 要求随二进制提供许可副本，§4(b) 要求对修改过的文件（Verible）
+//  作出显著声明。VSIX 里静态链接了 Verible/abseil/re2/json/spdlog/simdutf/ctre，
+//  所以 LICENSE（AGPL-3.0）与 THIRD-PARTY-NOTICES.md 必须一起进包。
+const legalFiles = ['LICENSE', 'THIRD-PARTY-NOTICES.md'];
+for (const name of legalFiles) {
+    const fromRepoRoot = path.join(extRoot, '..', name);
+    const fromExtRoot = path.join(extRoot, name);
+    const src = fs.existsSync(fromRepoRoot) ? fromRepoRoot : (fs.existsSync(fromExtRoot) ? fromExtRoot : '');
+    if (!src) {
+        console.warn(`[bundle-server] 缺少 ${name}（发布包将不含许可文本，不合规）`);
+        continue;
+    }
+    fs.copyFileSync(src, path.join(extRoot, name));
+    console.log(`[bundle-server] legal: ${path.relative(extRoot, src) || src} -> ${name}`);
+}
+
 const files = countFiles(dstRoot);
 console.log(`[bundle-server] server/: ${files} files, ` +
     `${(sizeOf(dstRoot) / 1024 / 1024).toFixed(1)} MiB ` +

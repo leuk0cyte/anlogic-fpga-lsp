@@ -238,6 +238,25 @@ function activate(context) {
     const python = () => 'python';
     const server = resolveLanguageServer(context);
     const isNative = server.kind === 'native';
+    if (!isNative || !server.exe) {
+        // 找不到原生语言服务器：给出**可执行的**提示并停用，而不是让
+        // path.dirname('') 抛 ERR_INVALID_ARG_TYPE（用户只看到 Node 内部错误）。
+        const detail = server.source === 'missing'
+            ? 'no fpgalsp-native.exe was found'
+            : `resolver returned source='${server.source || 'unknown'}'`;
+        const message =
+            `FPGA: language server not found (${detail}). ` +
+            'Set "fpgaLsp.serverPath" to fpgalsp-native.exe, or build it ' +
+            '(cmake --preset windows-msvc-release && cmake --build --preset windows-msvc-release).';
+        // 注意：`diag` 在 activate 后面才定义，这里直接用底层 appendLog。
+        try {
+            appendLog(workspaceFolder() || context.extensionPath || '.', 'extension', message);
+        } catch (_) {
+            /* logging must never break activation */
+        }
+        vscode.window.showErrorMessage(message);
+        return undefined;
+    }
     // 原生 exe 没有"serverRoot"概念，但 MCP/日志路径仍需要一个稳定的工作目录
     const serverRoot = path.dirname(server.exe);
     const cwd = workspaceFolder() || serverRoot;

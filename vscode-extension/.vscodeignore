@@ -34,6 +34,9 @@ scripts/
 **/*.md
 !README.md
 !readme.md
+# 许可文本必须进包（Apache-2.0 §4(a)(b)）
+!LICENSE
+!THIRD-PARTY-NOTICES.md
 
 # --- 构建/调试残留 ---
 *.log

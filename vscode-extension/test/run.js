@@ -6,6 +6,8 @@
 
 'use strict';
 
+const fs = require('fs');
+const path = require('path');
 const Module = require('module');
 const mock = require('./mock-vscode');
 
@@ -153,11 +155,11 @@ function sampleModuleTree() {
     return JSON.parse(JSON.stringify({
         ok: true,
         project: 'demo_project',
-        al: 'C:/work/CorpusAlpha/demo_project.al',
+        al: '%WORKSPACE%/CorpusAlpha/demo_project.al',
         root: {
             module: 'top',
             instance: '',
-            file: 'C:/work/CorpusAlpha/src/top.v',
+            file: '%WORKSPACE%/CorpusAlpha/src/top.v',
             range: { start: { line: 10, character: 7 }, end: { line: 10, character: 10 } },
             defined: true,
             blackbox: false,
@@ -168,14 +170,14 @@ function sampleModuleTree() {
                 {
                     module: 'pll_gen',
                     instance: 'pll_gen',
-                    file: 'C:/work/CorpusAlpha/src/top.v',
+                    file: '%WORKSPACE%/CorpusAlpha/src/top.v',
                     range: { start: { line: 64, character: 9 }, end: { line: 64, character: 16 } },
                     defined: false,
                     blackbox: true,
                     recursive: false,
                     portCount: 0,
                     usedAt: {
-                        uri: 'file:///C:/work/CorpusAlpha/src/top.v',
+                        uri: 'file:///%WORKSPACE%/CorpusAlpha/src/top.v',
                         range: { start: { line: 65, character: 0 }, end: { line: 65, character: 7 } },
                     },
                     children: [],
@@ -183,28 +185,28 @@ function sampleModuleTree() {
                 {
                     module: 'pwm_gen',
                     instance: 'u_pwm',
-                    file: 'C:/work/CorpusAlpha/src/system/pwm_gen.v',
+                    file: '%WORKSPACE%/CorpusAlpha/src/system/pwm_gen.v',
                     range: { start: { line: 3, character: 4 }, end: { line: 3, character: 11 } },
                     defined: true,
                     blackbox: false,
                     recursive: false,
                     portCount: 11,
                     usedAt: {
-                        uri: 'file:///C:/work/CorpusAlpha/src/top.v',
+                        uri: 'file:///%WORKSPACE%/CorpusAlpha/src/top.v',
                         range: { start: { line: 70, character: 1 }, end: { line: 70, character: 6 } },
                     },
                     children: [
                         {
                             module: 'counter',
                             instance: 'u_cnt',
-                            file: 'C:/work/CorpusAlpha/src/system/counter.v',
+                            file: '%WORKSPACE%/CorpusAlpha/src/system/counter.v',
                             range: { start: { line: 1, character: 7 }, end: { line: 1, character: 12 } },
                             defined: true,
                             blackbox: false,
                             recursive: false,
                             portCount: 4,
                             usedAt: {
-                                uri: 'file:///C:/work/CorpusAlpha/src/system/pwm_gen.v',
+                                uri: 'file:///%WORKSPACE%/CorpusAlpha/src/system/pwm_gen.v',
                                 range: { start: { line: 9, character: 2 }, end: { line: 9, character: 7 } },
                             },
                             children: [],
@@ -214,7 +216,7 @@ function sampleModuleTree() {
                 {
                     module: 'EF2_LUT4',
                     instance: 'u_lut',
-                    file: 'C:/work/CorpusAlpha/src/top.v',
+                    file: '%WORKSPACE%/CorpusAlpha/src/top.v',
                     range: { start: { line: 80, character: 5 }, end: { line: 80, character: 10 } },
                     defined: false,
                     blackbox: false,
@@ -236,10 +238,10 @@ function sampleReports() {
         generatedAt: 1761800000,
         flow: { running: true, stage: 'phy', elapsed: 12.3, lastMessage: 'Routing net 1234' },
         artifacts: {
-            bit: { path: 'C:/work/CorpusAlpha/prj/top.bit', exists: true, size: 1234, mtime: 1761800000 },
-            syn_db: { path: 'C:/work/CorpusAlpha/prj/syn.db', exists: true },
-            route_db: { path: 'C:/work/CorpusAlpha/prj/route.db', exists: true },
-            runs: [{ name: 'syn_1', dir: 'C:/work/CorpusAlpha/prj/syn_1', exists: true }],
+            bit: { path: '%WORKSPACE%/CorpusAlpha/prj/top.bit', exists: true, size: 1234, mtime: 1761800000 },
+            syn_db: { path: '%WORKSPACE%/CorpusAlpha/prj/syn.db', exists: true },
+            route_db: { path: '%WORKSPACE%/CorpusAlpha/prj/route.db', exists: true },
+            runs: [{ name: 'syn_1', dir: '%WORKSPACE%/CorpusAlpha/prj/syn_1', exists: true }],
         },
         qor: {
             step: 'route',
@@ -261,9 +263,9 @@ function sampleReports() {
             { step: 'Place', status: 'Running', elapsed: '5s' },
         ],
         files: {
-            qor: 'C:/work/CorpusAlpha/prj/route.qor',
-            timing: 'C:/work/CorpusAlpha/prj/final_timing.rpt',
-            area: 'C:/work/CorpusAlpha/prj/route.area',
+            qor: '%WORKSPACE%/CorpusAlpha/prj/route.qor',
+            timing: '%WORKSPACE%/CorpusAlpha/prj/final_timing.rpt',
+            area: '%WORKSPACE%/CorpusAlpha/prj/route.area',
         },
     };
 }
@@ -274,7 +276,7 @@ const sampleInfo = {
     family: 'EG4',
     device: 'EG4S20BG256',
     top: 'top',
-    al: 'C:/work/CorpusAlpha/demo_project.al',
+    al: '%WORKSPACE%/CorpusAlpha/demo_project.al',
 };
 
 // 0.19.3：后端 probeStatus 的真实形状（字段来自 src/flow/probe.cpp::Status）：
@@ -288,7 +290,7 @@ function sampleProbeStatus() {
         matches_user_mdn: true,
         reason: 'ready to capture on reg_init/clk',
         chip_debugger: {
-            path: 'C:/work/CorpusAlpha/chip_debugger/user.mdn',
+            path: '%WORKSPACE%/CorpusAlpha/chip_debugger/user.mdn',
             exists: true,
             count: 3,
             signals: ['WHG/b[1]', 'WHG/b[0]', 'WHG/a[7]'],
@@ -311,6 +313,28 @@ function sampleProbeStatus() {
 }
 
 // ------------------------------------------------------------------ module tree tests
+
+
+// ---------------------------------------------------------------------------
+// 本仓库（发布分支）没有 build/：activate() 会正确地提示 "language server not
+// found" 并停用，于是 extension-level 用例拿不到 view/command。测试里造一个占位
+// exe 并把 fpgaLsp.serverPath 指过去即可 —— 真正的语言客户端由 FakeLanguageClient
+// 接管，不会启动任何进程。
+// ---------------------------------------------------------------------------
+const os = require('os');
+const stubServerExe = (() => {
+    const dir = path.join(os.tmpdir(), 'fpgalsp-test-server');
+    const exe = path.join(dir, process.platform === 'win32' ? 'fpgalsp-native.exe' : 'fpgalsp-native');
+    if (!fs.existsSync(exe)) {
+        fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(exe, '');
+    }
+    return exe;
+})();
+
+function useStubServer() {
+    mock.__state.config['fpgaLsp.serverPath'] = stubServerExe;
+}
 
 test('module tree: nested payload builds depth, blackbox and primitive icons', async () => {
     const provider = new ModuleTreeProvider({ request: async () => sampleModuleTree() });
@@ -335,7 +359,7 @@ test('module tree: nested payload builds depth, blackbox and primitive icons', a
     eq(pllItem.description, 'pll_gen');
     eq(pllItem.contextValue, 'fpgaModuleBlackbox');
     eq(pllItem.iconPath.id, 'circle-slash');
-    includes(pllItem.tooltip, 'C:/work/CorpusAlpha/src/top.v:65');
+    includes(pllItem.tooltip, '%WORKSPACE%/CorpusAlpha/src/top.v:65');
     includes(pllItem.tooltip, 'ports: 0');
     includes(pllItem.tooltip, 'blackbox');
 
@@ -386,16 +410,16 @@ test('module tree: refresh sends the optional document uri and click opens the d
             return sampleModuleTree();
         },
     });
-    await provider.refresh('file:///C:/work/CorpusAlpha/src/top.v');
+    await provider.refresh('file:///%WORKSPACE%/CorpusAlpha/src/top.v');
     eq(calls.length, 1);
     eq(calls[0].method, 'fpgaLsp/moduleTree');
-    eq(calls[0].params.uri, 'file:///C:/work/CorpusAlpha/src/top.v');
+    eq(calls[0].params.uri, 'file:///%WORKSPACE%/CorpusAlpha/src/top.v');
 
     const root = provider.getChildren()[0];
     const rootTarget = provider.getTreeItem(root).command.arguments[0];
     eq(provider.getTreeItem(root).command.command, 'fpgaLsp.openModuleNode');
     eq(rootTarget.where, 'definition');
-    eq(rootTarget.uri.fsPath, 'C:/work/CorpusAlpha/src/top.v');
+    eq(rootTarget.uri.fsPath, '%WORKSPACE%/CorpusAlpha/src/top.v');
     eq(rootTarget.range.start.line, 10);
     eq(rootTarget.range.start.character, 7);
 });
@@ -408,13 +432,13 @@ test('module tree: defined -> definition, blackbox -> usedAt, top -> no instanti
 
     const definition = resolveTarget(pwm);
     eq(definition.where, 'definition');
-    eq(definition.uri.fsPath, 'C:/work/CorpusAlpha/src/system/pwm_gen.v');
+    eq(definition.uri.fsPath, '%WORKSPACE%/CorpusAlpha/src/system/pwm_gen.v');
     eq(definition.range.start.line, 3);
     eq(definition.range.start.character, 4);
 
     const click = resolveTarget(pll);
     eq(click.where, 'instantiation');
-    eq(click.uri.fsPath, 'C:/work/CorpusAlpha/src/top.v');
+    eq(click.uri.fsPath, '%WORKSPACE%/CorpusAlpha/src/top.v');
     eq(click.range.start.line, 65);
     eq(click.range.start.character, 0);
 
@@ -573,10 +597,10 @@ test('flow tree: running flowStatus, stages, artifacts and report files', async 
     ok(bit, 'bit artifact row present');
     const bitItem = provider.getTreeItem(bit);
     eq(bitItem.command.command, 'fpgaLsp.openArtifact');
-    eq(bitItem.command.arguments[0], 'C:/work/CorpusAlpha/prj/top.bit');
-    includes(bitItem.description, 'C:/work/CorpusAlpha/prj/top.bit');
+    eq(bitItem.command.arguments[0], '%WORKSPACE%/CorpusAlpha/prj/top.bit');
+    includes(bitItem.description, '%WORKSPACE%/CorpusAlpha/prj/top.bit');
     includes(bitItem.description, '1.2 KB');
-    includes(bitItem.tooltip, 'C:/work/CorpusAlpha/prj/top.bit');
+    includes(bitItem.tooltip, '%WORKSPACE%/CorpusAlpha/prj/top.bit');
     eq(artifactNodes.filter((node) => node.id.indexOf('artifact:run:') === 0).length, 1, 'run row');
 
     provider.applyFlowStatus({ ok: true, flow: { running: false, stage: 'done', elapsed: 42, lastMessage: 'bitstream saved' } });
@@ -759,6 +783,7 @@ test('extension: activation wires views, commands, reports panel and flow events
         update: async (key, value) => { globalStateStore.set(key, value); },
     },
 };
+    useStubServer();
     extension.activate(context);
     await new Promise((resolve) => setTimeout(resolve, 40));
 
@@ -820,7 +845,7 @@ test('extension: activation wires views, commands, reports panel and flow events
     eq(rootItem.command.command, 'fpgaLsp.openModuleNode');
     await mock.commands.executeCommand(rootItem.command.command, ...rootItem.command.arguments);
     eq(mock.__state.shownDocuments.length, 1, 'module click opened a document');
-    eq(mock.__state.shownDocuments[0].document.uri.fsPath, 'C:/work/CorpusAlpha/src/top.v');
+    eq(mock.__state.shownDocuments[0].document.uri.fsPath, '%WORKSPACE%/CorpusAlpha/src/top.v');
 
     await mock.commands.executeCommand('fpgaLsp.showReports');
     eq(mock.__state.webviewPanels.length, 1, 'reports panel created');
@@ -841,8 +866,8 @@ test('extension: activation wires views, commands, reports panel and flow events
     ok(indexHandler, 'indexChanged handler registered');
     const beforeRequests = FakeLanguageClient.requests.filter((entry) => entry.method === 'fpgaLsp/moduleTree').length;
     indexHandler({
-        al: 'C:/work/CorpusAlpha/demo_project.al',
-        paths: ['C:/work/CorpusAlpha/src/top.v'],
+        al: '%WORKSPACE%/CorpusAlpha/demo_project.al',
+        paths: ['%WORKSPACE%/CorpusAlpha/src/top.v'],
         modules: [{ module: 'pll_gen', portCount: 9 }],
     });
     const afterRequests = FakeLanguageClient.requests.filter((entry) => entry.method === 'fpgaLsp/moduleTree').length;
@@ -947,8 +972,8 @@ test('manifest: every command used by the client is declared and registered', ()
 
 test('mcp config: builds stdio definition and portable/VS Code JSON', () => {
     const definition = mcpConfig.buildMcpServerOptions({
-        root: 'C:/work/CorpusAlpha',
-        project: 'C:/work/CorpusAlpha/demo_project.al',
+        root: '%WORKSPACE%/CorpusAlpha',
+        project: '%WORKSPACE%/CorpusAlpha/demo_project.al',
         serverRoot: 'Y:/fpga_lsp',
         pythonPath: 'python',
         tdPath: 'C:/Anlogic/TD',
@@ -960,7 +985,7 @@ test('mcp config: builds stdio definition and portable/VS Code JSON', () => {
     eq(definition.label, 'Anlogic FPGA LSP');
     eq(definition.command, 'python');
     ok(definition.args.includes('-m') && definition.args.includes('fpgalsp.mcp'));
-    ok(definition.args.includes('C:/work/CorpusAlpha/demo_project.al'));
+    ok(definition.args.includes('%WORKSPACE%/CorpusAlpha/demo_project.al'));
     ok(definition.args.includes('--allow-flow') && !definition.args.includes('--allow-write'));
     includes(definition.env.PYTHONPATH, 'Y:/fpga_lsp');
     const portable = mcpConfig.buildPortableConfig(definition);
@@ -970,7 +995,7 @@ test('mcp config: builds stdio definition and portable/VS Code JSON', () => {
     eq(vscode.servers['fpga-lsp'].type, 'stdio');
     ok(!('cwd' in vscode.servers['fpga-lsp']));
     includes(vscode.servers['fpga-lsp'].args.join(' '), '${workspaceFolder}');
-    ok(!vscode.servers['fpga-lsp'].args.join(' ').includes('C:/work/CorpusAlpha'));
+    ok(!vscode.servers['fpga-lsp'].args.join(' ').includes('%WORKSPACE%/CorpusAlpha'));
 });
 
 test('snippets: contributes Verilog/SystemVerilog/VHDL/ADC/SDC snippet files', () => {
@@ -1241,8 +1266,8 @@ test('module tree: indexChanged patches the affected module in place', async () 
     eq(pll.raw.portCount, 0, 'portCount before');
 
     const outcome = provider.applyIndexChanged({
-        al: 'C:/work/CorpusAlpha/demo_project.al',
-        paths: ['C:/work/CorpusAlpha/src/top.v'],
+        al: '%WORKSPACE%/CorpusAlpha/demo_project.al',
+        paths: ['%WORKSPACE%/CorpusAlpha/src/top.v'],
         modules: [{ module: 'pll_gen', portCount: 7 }],
     });
     eq(outcome, 'in-place', 'module-level event patches without a request');
@@ -1262,8 +1287,8 @@ test('module tree: single-module indexChanged fires only that node', async () =>
     provider.onDidChangeTreeData((element) => fired.push(element));
 
     const outcome = provider.applyIndexChanged({
-        al: 'C:/work/CorpusAlpha/demo_project.al',
-        paths: ['C:/work/CorpusAlpha/src/top.v'],
+        al: '%WORKSPACE%/CorpusAlpha/demo_project.al',
+        paths: ['%WORKSPACE%/CorpusAlpha/src/top.v'],
         modules: [{ module: 'pll_gen', portCount: 9 }],
     });
     eq(outcome, 'in-place', 'module-level event patches without a request');
@@ -1310,23 +1335,23 @@ test('module tree: indexChanged without a patchable module refreshes immediately
         request: async (method, params) => { requested.push(params); return sampleModuleTree(); },
     });
     await provider.refresh();
-    const outcome = provider.applyIndexChanged({ paths: ['C:/work/CorpusAlpha/src/system/pwm_gen.v'] });
+    const outcome = provider.applyIndexChanged({ paths: ['%WORKSPACE%/CorpusAlpha/src/system/pwm_gen.v'] });
     eq(outcome, 'refresh', 'unknown effect -> refresh');
     await new Promise((resolve) => setTimeout(resolve, 20));
     eq(requested.length, 2, 'F6/R1: the refresh request goes out at once (no 150 ms wait)');
 
     // Each push is one server-side re-index, so each gets its own request; a slow older response
     // can never win because refresh() cancels the in-flight one and `_seq` drops stale results.
-    provider.applyIndexChanged({ paths: ['C:/work/CorpusAlpha/src/a.v'] });
-    provider.applyIndexChanged({ paths: ['C:/work/CorpusAlpha/src/b.v'] });
+    provider.applyIndexChanged({ paths: ['%WORKSPACE%/CorpusAlpha/src/a.v'] });
+    provider.applyIndexChanged({ paths: ['%WORKSPACE%/CorpusAlpha/src/b.v'] });
     await new Promise((resolve) => setTimeout(resolve, 20));
     eq(requested.length, 4, 'two pushes -> two requests (superseded responses are dropped)');
 
     // A pending debounced fallback must be cancelled by the pushed refresh, otherwise the save
     // handler would fire the same request again 150 ms later.
     const before = requested.length;
-    provider.requestRefresh('C:/work/CorpusAlpha/src/top.v', { reason: 'saved' });
-    provider.applyIndexChanged({ paths: ['C:/work/CorpusAlpha/src/c.v'] });
+    provider.requestRefresh('%WORKSPACE%/CorpusAlpha/src/top.v', { reason: 'saved' });
+    provider.applyIndexChanged({ paths: ['%WORKSPACE%/CorpusAlpha/src/c.v'] });
     await new Promise((resolve) => setTimeout(resolve, 220));
     eq(requested.length, before + 1, 'the pushed refresh cancelled the pending fallback timer');
 });
@@ -2539,11 +2564,11 @@ test('update project: success logs the project and .al', async () => {
 // succeeds anyway (the TD session cwd is the .al folder) but must tell the user, because the
 // recorded path is what the TD GUI would otherwise use.
 test('update project: success with a project Path warning logs and warns', async () => {
-    const warning = 'the .al records project Path="/old/CorpusBeta" but the project now lives at ' +
-        '"C:/work/CorpusBeta"; relative source paths were resolved against the project folder';
+    const warning = 'the .al records project Path="C:/old/CorpusBeta" but the project now lives at ' +
+        '"%WORKSPACE%/CorpusBeta"; relative source paths were resolved against the project folder';
     const { deps, lines, errors, info, warnings } = fakeUpdateProjectDeps({
         ok: true,
-        al: 'C:/work/CorpusBeta/CorpusBeta_Anlogic.al',
+        al: '%WORKSPACE%/CorpusBeta/CorpusBeta_Anlogic.al',
         warning,
     });
     const outcome = await runUpdateProject(deps);
@@ -2553,7 +2578,7 @@ test('update project: success with a project Path warning logs and warns', async
     eq(info.length, 0, 'no "completed" info message when there is a warning');
     eq(warnings.length, 1, 'exactly one warning message');
     includes(warnings[0].message, 'Update Project completed with a warning:');
-    includes(warnings[0].message, 'Path="/old/CorpusBeta"');
+    includes(warnings[0].message, 'Path="C:/old/CorpusBeta"');
     includes(warnings[0].items.join(','), 'Show Logs');
     eq(lines.length, 2, 'ok line + warning line');
     includes(lines[0], '[updateProject] ok');
@@ -2577,6 +2602,7 @@ test('update project: command wiring writes the failure to the FPGA LSP output c
         output: 'PRJ-1401 : Successfully analyzed 22 source files.\n' +
             "HDL-7225 CRITICAL-WARNING: 'gen_status' is already implicitly declared",
     });
+    useStubServer();
     extension.activate(context);
     await new Promise((resolve) => setTimeout(resolve, 40));
     try {
@@ -2647,6 +2673,7 @@ test('extension: switching the .al project refreshes ChipWatcher (multi-root reg
         return Array.isArray(items) && items.length > 1 ? items[1] : undefined;
     };
 
+    useStubServer();
     extension.activate(context);
     await new Promise((resolve) => setTimeout(resolve, 60));
     try {
@@ -2672,6 +2699,43 @@ test('extension: switching the .al project refreshes ChipWatcher (multi-root reg
         includes(String(info.message), 'selected project beta');
     } finally {
         mock.window.showQuickPick = previousQuickPick;
+        await extension.deactivate();
+    }
+});
+
+test('extension: missing language server deactivates gracefully (no TypeError)', async () => {
+    // 回归：resolveLanguageServer() 返回 kind='missing'/exe='' 时，曾经走
+    // path.dirname('') → TypeError [ERR_INVALID_ARG_TYPE]，用户只看到 Node 内部错误。
+    const path = require('path');
+    const extension = require('../extension.js');
+    const saved = mock.__state.config['fpgaLsp.serverPath'];
+    const savedRoot = mock.__state.config['fpgaLsp.serverRoot'];
+    delete mock.__state.config['fpgaLsp.serverPath'];
+    delete mock.__state.config['fpgaLsp.serverRoot'];
+    const context = {
+        extensionPath: path.join(__dirname, '..', 'this-directory-has-no-server'),
+        subscriptions: [],
+        workspaceState: { get: () => undefined, update: () => Promise.resolve() },
+        globalState: { get: () => undefined, update: () => Promise.resolve() },
+    };
+    try {
+        const before = mock.__state.messages.error.length;
+        let threw;
+        try {
+            await extension.activate(context);
+        } catch (err) {
+            threw = err;
+        }
+        eq(threw, undefined, 'activate() must not throw when the server is missing');
+        const errors = mock.__state.messages.error.slice(before);
+        ok(errors.length >= 1, 'an error message is shown to the user');
+        includes(String(errors[errors.length - 1].message), 'language server not found');
+        includes(String(errors[errors.length - 1].message), 'fpgaLsp.serverPath');
+    } finally {
+        if (saved === undefined) delete mock.__state.config['fpgaLsp.serverPath'];
+        else mock.__state.config['fpgaLsp.serverPath'] = saved;
+        if (savedRoot === undefined) delete mock.__state.config['fpgaLsp.serverRoot'];
+        else mock.__state.config['fpgaLsp.serverRoot'] = savedRoot;
         await extension.deactivate();
     }
 });

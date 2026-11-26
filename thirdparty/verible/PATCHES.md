@@ -9,21 +9,72 @@ Verible vendored commit：`c6b29d62`（详见同目录 `VENDOR-INFO.md`）。
 
 ## 一、上游 `.cc` / `.h` 源码补丁（业务逻辑）
 
-### 结论：**0 条**
+### 结论：**34 处 / 17 个文件**（全部是同一类修复）
 
-阶段 0-B（Bazel BUILD → CMake 转译 + MSVC 编译）**没有修改任何上游 `.cc` / `.h` 文件**。
+> ⚠ 本表在 2026-11-26 之前写的是"0 条" —— 那是**错误陈述**。当时确实没改上游，
+> 但后来为了在 **MSVC Debug**（`/MTd`，`_ITERATOR_DEBUG_LEVEL=2`）下能解析 Verible，
+> 对上游做了语义等价的必要修改（见下）。Apache-2.0 §4(b) 要求再分发者说明修改，
+> 因此必须如实登记。
 
-具体来说，以下这类常见妥协**都没有做**：
+**修改主题：跨 `std::string_view` 的迭代器比较/相减 → 指针运算**
 
-| 常见妥协 | 本项目的做法 |
-|---|---|
-| `/permissive-` 报两阶段查找错误 → 给源码加 `this->` 或 `using` | 未发生；上游代码在 MSVC 19.52 `/permissive-` + C++23 下直接通过 |
-| 缺 `#include` → 补 include | 未发生；所有 include 缺失都来自「构建期生成物还没到位」，用构建系统解决 |
-| absl API 差异 → 改调用 | 未发生；vendored abseil 与 Verible 预期版本一致 |
-| C1128（节数超限）→ 拆分编译单元 | 未发生；`/bigobj` 已生效，`verilog.y` 生成的 `.tab.cc` 不需要拆分 |
+Verible 大量用 `std::string_view::const_iterator` 表示"文本中的位置"，但比较/相减的
+两端常常来自**不同的 `string_view` 对象**（`contents_` 一个 view，`token.text()` 另一个，
+`line.text()` 又一个）。标准上这属于不同 range 的迭代器比较，是 UB；libstdc++ 不检查，
+所以 Linux/Release 一直没暴露，而 MSVC 的受检迭代器会直接断言：
 
-> 注：0-A（`verible-prune`）的删除操作（kythe / protobuf / zlib / portable-zip）
-> 不属于"业务逻辑补丁"，记录在 `VENDOR-INFO.md`。
+```
+cannot compare incompatible string_view iterators for equality   (__msvc_string_view.hpp:1384)
+cannot subtract incompatible string_view iterators               (__msvc_string_view.hpp:1370)
+cannot compare incompatible string_view iterators                (__msvc_string_view.hpp:1395)
+```
+
+修复方式统一为 `data()` 指针 + 长度，语义与输出**完全等价**（本项目的
+`compare_cst` / `compare_format` / `compare_lint` 三个门禁把输出与官方 Verible 二进制
+逐字节对比，改动后仍全过）。
+
+另新增一个重载：
+
+```cpp
+// common/strings/range.h
+std::string_view make_string_view_range(const char *begin, const char *end);
+```
+
+以及 `InterTokenInfo::preserved_space_start` / `InterTokenDecision::preserved_space_start`
+从 `std::string_view::const_iterator`（用默认构造的"空迭代器"当哨兵）改成
+`const char *` + `nullptr`（这正是 `format-token.h` 里原有 TODO 建议的方向）。
+
+### 逐文件清单
+
+| 文件（相对 `thirdparty/verible/`） | 补丁处数 |
+| --- | --- |
+| `common/formatting/align.h` | 1 |
+| `common/formatting/format-token.cc` | 1 |
+| `common/formatting/format-token.h` | 2 |
+| `common/formatting/token-partition-tree.cc` | 4 |
+| `common/formatting/tree-annotator.cc` | 1 |
+| `common/strings/range.cc` | 1 |
+| `common/strings/range.h` | 1 |
+| `common/text/text-structure.cc` | 7 |
+| `common/text/text-structure.h` | 1 |
+| `common/text/token-info.h` | 1 |
+| `common/text/token-stream-view.cc` | 1 |
+| `common/text/tree-utils.cc` | 2 |
+| `common/util/range.h` | 3 |
+| `verilog/formatting/comment-controls.cc` | 1 |
+| `verilog/formatting/formatter.cc` | 1 |
+| `verilog/formatting/token-annotator.cc` | 2 |
+| `verilog/formatting/tree-unwrapper.cc` | 4 |
+| **合计** | **34** |
+
+每个补丁点都有 `[fpgalsp patch]` 注释，可用：
+
+```powershell
+Select-String -Path thirdparty\verible\verible\**\*.cc,thirdparty\verible\verible\**\*.h -Pattern '\[fpgalsp patch\]'
+```
+
+复核。上游已报：<https://github.com/chipsalliance/verible/issues/2366>
+（含完整 patch：<https://gist.github.com/leuk0cyte/b6f65ed707d3cbe411be08ddde1>）。
 
 ---
 
