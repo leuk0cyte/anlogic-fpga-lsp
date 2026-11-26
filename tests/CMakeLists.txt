@@ -50,7 +50,9 @@ if(BUILD_TESTING AND _gate_cst_dump AND _gate_official
     else()
         add_test(
             NAME gate_cst_dump_token_consistency
-            COMMAND "${Python3_EXECUTABLE}"
+            COMMAND "${CMAKE_COMMAND}" -E env
+                    "PYTHONIOENCODING=utf-8" "PYTHONUTF8=1"
+                    "${Python3_EXECUTABLE}"
                     "${CMAKE_CURRENT_SOURCE_DIR}/compare_cst.py"
                     --cst-dump "${_gate_cst_dump}"
                     --official "${_gate_official}"
@@ -69,7 +71,9 @@ if(BUILD_TESTING AND _gate_cst_dump AND _gate_official
         if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/gate-corpus/error-cases")
             add_test(
                 NAME gate_cst_dump_error_recovery
-                COMMAND "${Python3_EXECUTABLE}"
+                COMMAND "${CMAKE_COMMAND}" -E env
+                    "PYTHONIOENCODING=utf-8" "PYTHONUTF8=1"
+                    "${Python3_EXECUTABLE}"
                         "${CMAKE_CURRENT_SOURCE_DIR}/compare_cst.py"
                         --cst-dump "${_gate_cst_dump}"
                         --official "${_gate_official}"
@@ -101,7 +105,9 @@ if(BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/compare_mcp_schema.py")
     else()
         add_test(
             NAME mcp_schema_consistency
-            COMMAND "${Python3_EXECUTABLE}"
+            COMMAND "${CMAKE_COMMAND}" -E env
+                    "PYTHONIOENCODING=utf-8" "PYTHONUTF8=1"
+                    "${Python3_EXECUTABLE}"
                     "${CMAKE_CURRENT_SOURCE_DIR}/compare_mcp_schema.py"
                     --exe "$<TARGET_FILE:fpgalsp-native>"
         )
@@ -149,7 +155,9 @@ if(FPGA_LSP_VERIBLE_ENABLED AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/check_genera
         if(EXISTS "${_genp}/verilog-final.tab.cc")
             add_test(
                 NAME generator_patch_integrity
-                COMMAND "${Python3_EXECUTABLE}"
+                COMMAND "${CMAKE_COMMAND}" -E env
+                    "PYTHONIOENCODING=utf-8" "PYTHONUTF8=1"
+                    "${Python3_EXECUTABLE}"
                         "${CMAKE_CURRENT_SOURCE_DIR}/check_generated_parser.py"
                         --generated      "${_genp}/verilog-final.tab.cc"
                         --raw-cc         "${_genp}/verilog.tab.cc"
@@ -188,7 +196,9 @@ if(BUILD_TESTING AND _lint_dump AND _official_lint
     if(Python3_Interpreter_FOUND)
         add_test(
             NAME lintgate_rules_file
-            COMMAND "${Python3_EXECUTABLE}"
+            COMMAND "${CMAKE_COMMAND}" -E env
+                    "PYTHONIOENCODING=utf-8" "PYTHONUTF8=1"
+                    "${Python3_EXECUTABLE}"
                     "${CMAKE_CURRENT_SOURCE_DIR}/compare_lint.py"
                     --lint-dump "${_lint_dump}"
                     --official "${_official_lint}"
@@ -200,7 +210,9 @@ if(BUILD_TESTING AND _lint_dump AND _official_lint
 
         add_test(
             NAME lintgate_corpus
-            COMMAND "${Python3_EXECUTABLE}"
+            COMMAND "${CMAKE_COMMAND}" -E env
+                    "PYTHONIOENCODING=utf-8" "PYTHONUTF8=1"
+                    "${Python3_EXECUTABLE}"
                     "${CMAKE_CURRENT_SOURCE_DIR}/compare_lint.py"
                     --lint-dump "${_lint_dump}"
                     --official "${_official_lint}"
@@ -216,7 +228,9 @@ if(BUILD_TESTING AND _lint_dump AND _official_lint
         if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/compare_lint_single_rule.py")
             add_test(
                 NAME lintgate_single_rule
-                COMMAND "${Python3_EXECUTABLE}"
+                COMMAND "${CMAKE_COMMAND}" -E env
+                    "PYTHONIOENCODING=utf-8" "PYTHONUTF8=1"
+                    "${Python3_EXECUTABLE}"
                         "${CMAKE_CURRENT_SOURCE_DIR}/compare_lint_single_rule.py"
                         --lint-dump "${_lint_dump}"
                         --official "${_official_lint}"
@@ -260,7 +274,9 @@ if(BUILD_TESTING AND _format_dump AND _official_format
     if(Python3_Interpreter_FOUND)
         add_test(
             NAME formatgate_corpus
-            COMMAND "${Python3_EXECUTABLE}"
+            COMMAND "${CMAKE_COMMAND}" -E env
+                    "PYTHONIOENCODING=utf-8" "PYTHONUTF8=1"
+                    "${Python3_EXECUTABLE}"
                     "${CMAKE_CURRENT_SOURCE_DIR}/compare_format.py"
                     --ours "${_format_dump}"
                     --official "${_official_format}"
@@ -271,7 +287,9 @@ if(BUILD_TESTING AND _format_dump AND _official_format
 
         add_test(
             NAME formatgate_selftest
-            COMMAND "${Python3_EXECUTABLE}"
+            COMMAND "${CMAKE_COMMAND}" -E env
+                    "PYTHONIOENCODING=utf-8" "PYTHONUTF8=1"
+                    "${Python3_EXECUTABLE}"
                     "${CMAKE_CURRENT_SOURCE_DIR}/compare_format.py"
                     --ours "${_format_dump}"
                     --official "${_official_format}"
@@ -310,7 +328,9 @@ if(BUILD_TESTING AND _format_dump AND _official_format
     if(Python3_Interpreter_FOUND)
         add_test(
             NAME formatgate_range
-            COMMAND "${Python3_EXECUTABLE}"
+            COMMAND "${CMAKE_COMMAND}" -E env
+                    "PYTHONIOENCODING=utf-8" "PYTHONUTF8=1"
+                    "${Python3_EXECUTABLE}"
                     "${CMAKE_CURRENT_SOURCE_DIR}/compare_format_range.py"
                     --ours "${_format_dump}"
                     --official "${_official_format}"
@@ -321,7 +341,9 @@ if(BUILD_TESTING AND _format_dump AND _official_format
 
         add_test(
             NAME formatgate_range_selftest
-            COMMAND "${Python3_EXECUTABLE}"
+            COMMAND "${CMAKE_COMMAND}" -E env
+                    "PYTHONIOENCODING=utf-8" "PYTHONUTF8=1"
+                    "${Python3_EXECUTABLE}"
                     "${CMAKE_CURRENT_SOURCE_DIR}/compare_format_range.py"
                     --ours "${_format_dump}"
                     --official "${_official_format}"
@@ -346,7 +368,9 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/check_versions.py")
     if(Python3_Interpreter_FOUND)
         add_test(
             NAME docs_version_consistency
-            COMMAND "${Python3_EXECUTABLE}"
+            COMMAND "${CMAKE_COMMAND}" -E env
+                    "PYTHONIOENCODING=utf-8" "PYTHONUTF8=1"
+                    "${Python3_EXECUTABLE}"
                     "${CMAKE_CURRENT_SOURCE_DIR}/check_versions.py"
                     --root "${CMAKE_CURRENT_SOURCE_DIR}/.."
         )
@@ -367,7 +391,9 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/tools/audit/check_project_state_paths.py")
     if(Python3_Interpreter_FOUND)
         add_test(
             NAME docs_no_project_state
-            COMMAND "${Python3_EXECUTABLE}"
+            COMMAND "${CMAKE_COMMAND}" -E env
+                    "PYTHONIOENCODING=utf-8" "PYTHONUTF8=1"
+                    "${Python3_EXECUTABLE}"
                     "${CMAKE_SOURCE_DIR}/tools/audit/check_project_state_paths.py"
                     --root "${CMAKE_SOURCE_DIR}"
         )
@@ -399,7 +425,9 @@ if(EXISTS "Y:/fpga-lsp/fpgalsp/reports.py")
 
         add_test(
             NAME parity.constraints
-            COMMAND "${Python3_EXECUTABLE}"
+            COMMAND "${CMAKE_COMMAND}" -E env
+                    "PYTHONIOENCODING=utf-8" "PYTHONUTF8=1"
+                    "${Python3_EXECUTABLE}"
                     "${CMAKE_CURRENT_SOURCE_DIR}/run_constraints_parity.py"
                     --bin-dir "${CMAKE_BINARY_DIR}/bin"
         )
@@ -422,7 +450,9 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/tools/audit/check_raw_file_writes.py")
     if(Python3_Interpreter_FOUND)
         add_test(
             NAME docs_no_raw_writes
-            COMMAND "${Python3_EXECUTABLE}"
+            COMMAND "${CMAKE_COMMAND}" -E env
+                    "PYTHONIOENCODING=utf-8" "PYTHONUTF8=1"
+                    "${Python3_EXECUTABLE}"
                     "${CMAKE_SOURCE_DIR}/tools/audit/check_raw_file_writes.py"
                     --root "${CMAKE_SOURCE_DIR}"
         )
@@ -468,7 +498,9 @@ if(FPGA_LSP_ENABLE_TIDY_GATE AND EXISTS "${CMAKE_SOURCE_DIR}/tools/audit/clang_t
         # `_bootstrap_vcvars_if_needed`）。
         add_test(
             NAME docs_clang_tidy
-            COMMAND "${Python3_EXECUTABLE}"
+            COMMAND "${CMAKE_COMMAND}" -E env
+                    "PYTHONIOENCODING=utf-8" "PYTHONUTF8=1"
+                    "${Python3_EXECUTABLE}"
                     "${CMAKE_SOURCE_DIR}/tools/audit/clang_tidy_gate.py"
                     --root "${CMAKE_SOURCE_DIR}"
                     --jobs 8
@@ -495,4 +527,27 @@ if(NOT DEFINED ENV{FPGA_LSP_PYTHON_ROOT} OR NOT DEFINED ENV{FPGA_LSP_TEST_PROJEC
         endif()
     endforeach()
     message(STATUS "tests: parity.* 需要参考实现 + 自备语料 —— 标记为跳过")
+endif()
+
+# -----------------------------------------------------------------------------
+#  公开仓库（release 分支）不含 Python 参考实现，这两个门禁无法运行 -> 标记 Not Run。
+#  设置 FPGA_LSP_PYTHON_ROOT 指向参考实现后会自动启用。
+# -----------------------------------------------------------------------------
+if(NOT DEFINED ENV{FPGA_LSP_PYTHON_ROOT})
+    foreach(_refgate IN ITEMS mcp_schema_consistency generator_patch_integrity)
+        if(TEST ${_refgate})
+            set_tests_properties(${_refgate} PROPERTIES DISABLED TRUE)
+        endif()
+    endforeach()
+    message(STATUS "tests: 参考实现门禁需要 FPGA_LSP_PYTHON_ROOT —— 标记为跳过")
+endif()
+
+# -----------------------------------------------------------------------------
+#  unit.td_install 需要一个真实 TD 安装目录；公开 CI 上没有 -> 标记 Not Run。
+# -----------------------------------------------------------------------------
+if(NOT DEFINED ENV{FPGA_LSP_TD_DIR})
+    if(TEST unit.td_install)
+        set_tests_properties(unit.td_install PROPERTIES DISABLED TRUE)
+        message(STATUS "tests: unit.td_install 需要本机 TD（FPGA_LSP_TD_DIR）—— 标记为跳过")
+    endif()
 endif()
