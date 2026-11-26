@@ -47,6 +47,10 @@ jobs:
         with:
           fetch-depth: 1
 
+      - name: Install winflexbison
+        shell: pwsh
+        run: scoop install winflexbison
+
       - name: Check version consistency
         shell: pwsh
         run: |
