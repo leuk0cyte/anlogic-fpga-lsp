@@ -11,15 +11,15 @@
   },
   "files": {
    "full": {
-    "path": "C:/Users/example\\AppData\\Local\\Temp\\fpgalsp-perf\\vscode\\reports-full.json",
+    "path": "<user>\\AppData\\Local\\Temp\\fpgalsp-perf\\vscode\\reports-full.json",
     "bytes": 27450261
    },
    "fullNoRaw": {
-    "path": "C:/Users/example\\AppData\\Local\\Temp\\fpgalsp-perf\\vscode\\reports-full-noraw.json",
+    "path": "<user>\\AppData\\Local\\Temp\\fpgalsp-perf\\vscode\\reports-full-noraw.json",
     "bytes": 8375631
    },
    "summary": {
-    "path": "C:/Users/example\\AppData\\Local\\Temp\\fpgalsp-perf\\vscode\\reports-summary.json",
+    "path": "<user>\\AppData\\Local\\Temp\\fpgalsp-perf\\vscode\\reports-summary.json",
     "bytes": 559
    }
   },

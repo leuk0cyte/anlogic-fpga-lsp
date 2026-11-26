@@ -510,7 +510,7 @@ std::string state_dir(std::string_view project_or_base) {
     if (base.empty()) {
         // 极端环境（TEMP 不可用）：退到用户本地目录，**绝不回落到工程目录**。
         // 以前这里返回 `<project>/.fpgalsp`，等于给"工程里重新长出 .fpgalsp"留了后门
-        //（2026-11-22 审计的回归点）。现在宁可写到 %LOCALAPPDATA% / C:/Users/example。
+        //（2026-11-22 审计的回归点）。现在宁可写到 %LOCALAPPDATA% / <user>。
         for (const char* var : {"LOCALAPPDATA", "USERPROFILE", "HOME"}) {
             const char* value = std::getenv(var);
             if (value != nullptr && *value != '\0') {

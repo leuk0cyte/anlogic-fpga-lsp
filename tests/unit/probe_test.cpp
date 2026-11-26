@@ -5,7 +5,7 @@
 //    * chip_debugger/user.mdn 的 mark_debug 解析与回写（保留其它行）
 //    * phy_1/cw/compiled.cwc 的解析（探针是否真的进了 bit 的证据）
 //    * write_hw_cw_data 生成的 CSV 解析（真机抓到的就是这个格式）
-//  语料全部取自本机实测文件（%WORKSPACE%\CorpusDelta\corpus_delta）的片段。
+//  语料全部取自本机实测文件（%WORKSPACE%/corpus_delta\corpus_delta）的片段。
 // =============================================================================
 
 #include <gtest/gtest.h>

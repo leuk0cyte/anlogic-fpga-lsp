@@ -460,7 +460,7 @@ bison 解析器的每一步动作都由 `(state, token)` 决定，token 流相�
 | 项 | 路径 / 版本 |
 | --- | --- |
 | 官方基准 | `C:/tools/verible\verible-verilog-syntax.exe` |
-| win_bison | 3.8.2（`C:/Users/example\scoop\apps\winflexbison\current\win_bison.exe`） |
+| win_bison | 3.8.2（`%LOCALAPPDATA%\scoop\apps\winflexbison\current\win_bison.exe`） |
 | win_flex | 2.6.4（同目录 `win_flex.exe`） |
 | MSVC | Visual Studio 18 Community，`cl` 19.52 |
 | Python | 3.x（脚本用 stdlib，无第三方依赖） |
@@ -476,7 +476,7 @@ cmake -S . -B build -G Ninja ^
   -DFPGA_LSP_VERIBLE_ENABLED=ON ^
   -DFPGA_LSP_BUILD_THIRDPARTY_IN_ALL=OFF ^
   -DABSL_MSVC_STATIC_RUNTIME=ON ^
-  -DVERIBLE_FLEX_LEXER_INCLUDE_DIR="C:/Users/example/scoop/apps/winflexbison/current"
+  -DVERIBLE_FLEX_LEXER_INCLUDE_DIR="<user>/scoop/apps/winflexbison/current"
 
 cmake --build build --target cst_dump
 :: 产物: build/bin/cst_dump.exe

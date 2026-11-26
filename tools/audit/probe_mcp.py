@@ -318,7 +318,7 @@ class AuditNormalizer(Normalizer):
 def fold_copy_names(value):
     """把 `pm-copy-<pid>/{py,cpp}` 折成 `<side>`。
 
-    TD 的 `output` 里出现的是 **8.3 短路径**（`C:/Users/example/...`），
+    TD 的 `output` 里出现的是 **8.3 短路径**（`<user>/...`），
     与 Normalizer 注册的长路径同前缀不匹配，所以这里按"副本目录名"做一次正则折叠；
     两侧各自跑在不同副本目录，只有折掉名字才能看出"其余字段逐字一致"。
     """

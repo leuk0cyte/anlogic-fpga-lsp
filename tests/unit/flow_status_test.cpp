@@ -2,7 +2,7 @@
 //  tests/unit/flow_status_test.cpp —— GUI 6 步（含每步耗时）
 // =============================================================================
 //  语料全部来自**实测文件**，不是编的：
-//   * kSynFlowStatus 是 %WORKSPACE%\CorpusDelta\...\corpus_delta_Runs\syn_1\flow.status
+//   * kSynFlowStatus 是 %WORKSPACE%/corpus_delta\...\corpus_delta_Runs\syn_1\flow.status
 //     的原文（TD 2026.2_SP1 写的 Flow Statistics 表）；
 //   * 标记文件名来自同一个 run 目录里的 .read_design.* / .opt_rtl.* / .opt_gate.*
 //     （phy_1 那次是手工 td_commands_prompt 跑的，没有 flow.status —— 正好当降级用例）。
@@ -34,10 +34,10 @@ using namespace fpgalsp::flow;  // NOLINT(google-build-using-namespace)
 // -----------------------------------------------------------------------------
 // 真实语料：syn_1/flow.status 原文
 // -----------------------------------------------------------------------------
-constexpr const char* kSynFlowStatus = R"(Location         : %WORKSPACE%\CorpusDelta\CorpusDelta_Runs\syn_1
+constexpr const char* kSynFlowStatus = R"(Location         : %WORKSPACE%/corpus_alpha/corpus_alpha_Runs/syn_1
 Running with     : Tang Dynasty Release_2026.2_SP1
                    Copyright (c) 2012-2026 Anlogic Inc.
-Top Model        : WHG
+Top Model        : synth_top
 Device           : PH1A100SFG676
 Speed            : 2
 

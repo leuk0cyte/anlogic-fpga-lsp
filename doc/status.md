@@ -192,7 +192,7 @@ vscode-extension/fpga-lsp-anlogic-0.15.3.vsix   228 files / 2.97 MB
 ## 片上探针（ChipWatcher，2026-11-20 落地并上板验证）
 
 > 设计与实测细节见 [doc/design/on-chip-probe.md](design/on-chip-probe.md)。
-> 工程：`%WORKSPACE%\CorpusDelta\corpus_delta`（PH1A100SFG676，TD 2026.2_SP1.218141），真机在环。
+> 工程：`%WORKSPACE%/corpus_delta\corpus_delta`（PH1A100SFG676，TD 2026.2_SP1.218141），真机在环。
 
 | 项 | 数据 |
 | --- | --- |
@@ -324,7 +324,7 @@ flash +0.5~0.7 %。
 
 ### 升级后工程侧的变化
 
-`%WORKSPACE%\CorpusDelta\corpus_delta\corpus_delta.al` 已被 SP1 的 GUI 重写为
+`%WORKSPACE%/corpus_delta\corpus_delta\corpus_delta.al` 已被 SP1 的 GUI 重写为
 `<!-- Last modified by TangDynasty Release_2026.2_SP1 -->` + `<TD_Version>6.2.3.218141</TD_Version>`。
 即 [`doc/design/on-chip-probe.md`](design/on-chip-probe.md) 里记的版本回退陷阱现在方向反了：
 用 `2026.2`（210850）及更早**打不开**这个工程（`PRJ-8641`），要回退必须先删掉 `.al` 第 2 行。
@@ -952,7 +952,7 @@ config after: clock=reg_init/clk
 
 用户澄清：**TD GUI 的会话 cwd 就是 `.al` 所在目录**，所以它把 `<prj>_Runs/`、`log/`、`chip_debugger/`
 都写在 `.al` 同级；"不污染工作目录"指的是**我们插件/后端不要额外输出**，TD 自己的行为照旧。
-实测确认：`%WORKSPACE%\CorpusDelta\CorpusDelta_Runs` 与 `corpus_delta.al`
+实测确认：`%WORKSPACE%/corpus_delta/corpus_delta_Runs` 与 `corpus_delta.al`
 同级；`C:/work/CorpusAlpha\demo_project_Runs` 与 `demo_project.al` 同级，规则一致。
 
 改动：
@@ -1104,7 +1104,7 @@ probe_capture{instance:cwc1}        -> cwc_path=<state>/probe/cwc_auto_created_c
 ### 第二十七轮：真实板子上抓通（corpus_delta / PH1A100）
 
 用户在 TD GUI 里重跑 flow 并 ChipWatcher 抓取成功之后，用同一个工程的同一份产物
-验证**我们自己的** capture 链路（`%WORKSPACE%\CorpusDelta`，`corpus_delta.al`，
+验证**我们自己的** capture 链路（`%WORKSPACE%/corpus_delta`，`corpus_delta.al`，
 PH1A100SFG676，48 根探针 = `pwm_reg0_i/pwm_reg1_i/pwm_reg6_i` 三个 16 位总线，
 单时钟域 `reg_init/clk`）。
 
@@ -1311,7 +1311,7 @@ with download:true confirm:true, or re-run stages:[\"all\"]"}`。
 ```
 
 结论：**代码路径本身是通的**（0.21.4 的修法有效）。用户看到"没反应"最可能是窗口还跑着
-旧 extension host —— 证据：那台机器上的 `%WORKSPACE%\CorpusDelta` 窗口最后一次激活是
+旧 extension host —— 证据：那台机器上的 `%WORKSPACE%/corpus_delta` 窗口最后一次激活是
 **2026-11-21 18:16 UTC（= 11-22 02:16）的 0.20.6**，而 0.20.6 里根本没有
 `FlowController.runStep`，点右键只会发一条 RPC 然后什么都不显示。
 
@@ -1567,7 +1567,7 @@ JSON，再跑 `tests/compare_constraints.py`，93 个结构）。以前这两条
   `options.work_dir = project.dir + "/.fpgalsp/run"` —— 每次 LSP 保存触发 TD 检查就重建
   `<project>/.fpgalsp/run`。真机复现：删掉 `.fpgalsp` → 一次 `didSave` → 立刻重建。
 * **修复**：改为 `platform::state_dir(project.dir) + "/run"`；`state_dir()` 的 TEMP 不可用兜底也不再
-  回落到工程目录（改 %LOCALAPPDATA%/C:/Users/example）。
+  回落到工程目录（改 %LOCALAPPDATA%/<user>）。
 * **防复发**：新增机械门禁 `docs_no_project_state`（`tools/audit/check_project_state_paths.py` 扫
   `src/` 的**代码**（剥注释）里写工程目录 `.fpgalsp` 的路径；白名单仅允许"扫描时跳过该目录/临时后缀"），
   已注册进 CTest；单测 `PathStateDir.NeverReturnsProjectLocalFpgalsp`、TD 集成测试断言 cwd 在状态目录下。

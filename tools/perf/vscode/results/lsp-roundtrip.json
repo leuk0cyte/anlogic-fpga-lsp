@@ -2,7 +2,7 @@
  "generatedAt": "2026-11-19T09:00:31+0800",
  "exe": "Y:\\fpga-lsp-cpp\\build\\bin\\fpgalsp-native.exe",
  "exeBytes": 5945344,
- "project": "C:/Users/example\\AppData\\Local\\Temp\\fpgalsp-perf\\vscode\\project",
+ "project": "<user>\\AppData\\Local\\Temp\\fpgalsp-perf\\vscode\\project",
  "serverInfo": {
   "name": "fpga-lsp",
   "version": "0.1.0"

@@ -120,7 +120,7 @@
 #   win_flex.exe   2.6.4                 (winflexbison scoop 包)
 #   win_bison.exe  GNU Bison 3.8.2
 #   FlexLexer.h    随 winflexbison 同目录
-#   路径：C:/Users/example\scoop\apps\winflexbison\current\
+#   路径：%LOCALAPPDATA%\scoop\apps\winflexbison\current\
 #   CMake 4.5.0 / Ninja 1.13.0 / MSVC (VS 18 Community)
 #
 #   在该版本下的实测锚点计数（写死在这里便于对照）：

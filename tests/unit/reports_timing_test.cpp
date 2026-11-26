@@ -63,8 +63,11 @@ TEST(ReportsTiming, ParsesMetadataWithContinuationLines) {
     const std::string* created = FindMeta(report, "Created by");
     ASSERT_NE(created, nullptr);
     // "                    : Copyright ..." 这一行是上一条的续行
-    EXPECT_EQ(*created,
-              "Tang Dynasty Release_2026.2 Copyright (c) 2012-2026 Anlogic Inc.");
+    // 续行（"                    : Copyright ..."）必须拼进上一条元数据。
+    // 这里只断言"拼接形态"，不锁定厂商版权文本本身。
+    EXPECT_NE(created->find("Tang Dynasty"), std::string::npos);
+    EXPECT_NE(created->find("Copyright"), std::string::npos);
+    EXPECT_EQ(created->find('\n'), std::string::npos) << "续行不能被当成新元数据";
     const std::string* device = FindMeta(report, "Device");
     ASSERT_NE(device, nullptr);
     EXPECT_EQ(*device, "EG4X20BG256");

@@ -74,7 +74,7 @@ COMPILE_ERR_RE = re.compile(r"^(?P<file>.+?):(?P<line>\d+):(?P<col>\d+): error: 
 def clang_tidy_exe() -> str:
     for cand in (
         os.environ.get("CLANG_TIDY"),
-        r"C:/Users/example\scoop\apps\llvm\current\bin\clang-tidy.exe",
+        r"%LOCALAPPDATA%\scoop\apps\llvm\current\bin\clang-tidy.exe",
         "clang-tidy",
     ):
         if not cand:

@@ -4,7 +4,7 @@
 > 并且这件事既能在 IDE 里点，也能让 agent 通过 MCP 直接调。
 >
 > 本文记录的全是本机（TD Release_2026.2.210.850 / PH1A100SFG676 /
-> `%WORKSPACE%\CorpusDelta\corpus_delta`）**实测**得到的结论，不是文档推演。
+> `%WORKSPACE%/corpus_delta\corpus_delta`）**实测**得到的结论，不是文档推演。
 
 ---
 

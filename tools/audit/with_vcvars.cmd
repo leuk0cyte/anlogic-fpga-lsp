@@ -10,7 +10,7 @@ if errorlevel 1 (
   echo [with_vcvars] vcvars64.bat failed 1>&2
   exit /b 900
 )
-set "PATH=C:/Users/example\scoop\apps\llvm\current\bin;%PATH%"
+set "PATH=%LOCALAPPDATA%\scoop\apps\llvm\current\bin;%PATH%"
 cd /d "%~dp0..\.."
 %*
 exit /b %errorlevel%

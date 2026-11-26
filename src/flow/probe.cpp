@@ -4126,7 +4126,7 @@ jsonrpc::Json Capture(const td::TdChoice& td, const project::Project& project,
             "open_project " + td::TclQuoteGrouped(Slashes(project.al_path)) + " -single_run";
         const std::string text = session->Run(command, 300.0);
         // ⚠ 这里只能用 HasFatal（只看 ERROR），不能用 HasError：
-        //    真实工程 `%WORKSPACE%\CorpusDelta` 的 RTL 自带
+        //    真实工程 `%WORKSPACE%/corpus_delta` 的 RTL 自带
         //    `HDL-7225 CRITICAL-WARNING: 'busclk' is already implicitly declared`
         //    —— 它跟 open_project 成不成功毫无关系，用 HasError 会把正常的工程判成失败。
         if (td::HasFatal(text)) return fail("open_project", "open_project failed", text);
