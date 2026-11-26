@@ -87,3 +87,28 @@ vscode-extension/.vsc_test/
 
 # TD 会话日志（测试时若 cwd 落到 fixture 目录会产生）
 tests/gate-corpus/**/log/
+
+# =============================================================================
+#  release 分支专用：公开版本**永不**包含以下内容（这些文件在 main 里是跟踪的）
+# =============================================================================
+#  这些规则只在 release 分支存在。它们的用途是**防止 `git add -A`/`git merge` 把
+#  内部语料带进公开历史**；真正的防护是"release 分支上这些路径没有任何提交"。
+#  换语料时请用合成语料生成脚本（见 release 的 README 说明），不要从 main 拷贝。
+
+# ---- 真实企业工程语料（公司所有，绝对不可开源）----
+tests/gate-corpus/corpus_alpha/
+
+# ---- 带厂商版权头 / 内部绝对路径的真实报告夹具 ----
+tests/fixtures/reports/
+
+# ---- 真实工程清单与快照（含 CorpusBeta / CorpusGamma / CorpusDelta / CorpusEpsilon 等）----
+tests/golden/corpus/cases.json
+tests/golden/snapshots/
+tests/golden/_pre_mtimes.json
+tests/td/fixtures/read_hdl_mb252.txt
+
+# ---- 审计原始转储（整份真实 timing / MCP / LSP 载荷）----
+doc/audit/
+
+# ---- 含工程名与人员标识的内部文档 ----
+doc/license-risk-assessment.md

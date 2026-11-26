@@ -1,0 +1,41 @@
+# =============================================================================
+#  .gitattributes —— 仓库导出/换行策略
+# =============================================================================
+#  注意：本文件**不做**泄漏隔离。真正隔离"内部语料 / 公开版本"的是**分支**：
+#    * main     ：私有，含真实企业工程语料（tests/gate-corpus/corpus_alpha）与
+#                 doc/audit 原始转储 —— **永不公开**（见 doc/license-risk-assessment.md）
+#    * release  ：公开版本，由 `.agents/worktrees/release` 这个独立 worktree 维护，
+#                 语料/审计/个人信息在那边**不跟踪**
+#  export-ignore 只影响 `git archive`，挡不住 `zip -r`、`Copy-Item -Recurse` 或直接
+#  把 main 设成 public —— 所以不要把"泄漏防护"寄托在这个文件上。
+
+# 内部文档：即使误用 `git archive` 打包 main，也不把风险评估（含工程名/工号）带走
+doc/license-risk-assessment.md export-ignore
+doc/audit export-ignore
+tests/gate-corpus/corpus_alpha export-ignore
+
+# 真实报告夹具带厂商 "All Rights Reserved" 头与内部绝对路径
+tests/fixtures/reports export-ignore
+tests/golden export-ignore
+tests/td/fixtures export-ignore
+
+# ---- 换行：C/C++ 源码与构建脚本统一 LF；Windows 脚本保留 CRLF ----
+* text=auto eol=lf
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.sln text eol=crlf
+*.vcxproj text eol=crlf
+
+# ---- 二进制（防止行尾转换/文本差异）----
+*.png binary
+*.jpg binary
+*.ico binary
+*.vsix binary
+*.pdf binary
+*.woff2 binary
+
+# ---- 语言统计（GitHub linguist）----
+thirdparty/** linguist-vendored
+doc/** linguist-documentation
+tests/gate-corpus/** linguist-vendored
