@@ -54,6 +54,17 @@ jobs:
           python tests/check_versions.py
           Write-Host "publishing version $($pkg.version)"
 
+      - name: Install winflexbison
+        shell: pwsh
+        run: |
+          # CMake 的 verible-generators.cmake 需要 win_flex / win_bison / FlexLexer.h。
+          # GH runner 上没有 scoop，用 choco 装；装完把目录导出给下一步。
+          choco install winflexbison3 -y --no-progress
+          $dir = Split-Path (Get-Command win_flex.exe).Source
+          if (-not (Test-Path (Join-Path $dir 'FlexLexer.h'))) { throw "FlexLexer.h missing in $dir" }
+          Add-Content -Path $env:GITHUB_ENV -Value "WINFLEXBISON_DIR=$dir"
+          Write-Host "WINFLEXBISON_DIR=$dir"
+
       - name: Configure (native server)
         shell: cmd
         run: |
@@ -63,7 +74,8 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release ^
             -DFPGA_LSP_VERIBLE_ENABLED=ON ^
             -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF ^
-            -DFPGA_LSP_VERIBLE_ALLOW_LTO=OFF
+            -DFPGA_LSP_VERIBLE_ALLOW_LTO=OFF ^
+            -DWINFLEXBISON_DIR="%WINFLEXBISON_DIR%"
 
       - name: Build native server
         shell: cmd
